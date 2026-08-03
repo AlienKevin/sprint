@@ -1,0 +1,10 @@
+{
+  "_comment": "Held-out physics draws. The ranges are stated in the instruction; these particular values are not, so a policy cannot be fitted to them. Regenerate per leaderboard season.",
+  "draws": [
+    {"seed": 8317, "static_friction": 0.72, "dynamic_friction": 0.54, "added_mass": -1.8, "start_yaw": 0.061},
+    {"seed": 2904, "static_friction": 0.88, "dynamic_friction": 0.66, "added_mass": 2.4, "start_yaw": -0.043},
+    {"seed": 5551, "static_friction": 0.80, "dynamic_friction": 0.48, "added_mass": 0.9, "start_yaw": 0.087},
+    {"seed": 1130, "static_friction": 0.95, "dynamic_friction": 0.71, "added_mass": -3.1, "start_yaw": -0.075},
+    {"seed": 7742, "static_friction": 0.68, "dynamic_friction": 0.58, "added_mass": 3.7, "start_yaw": 0.019}
+  ]
+}

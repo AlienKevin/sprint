@@ -1,0 +1,941 @@
+#!/usr/bin/env python3
+"""Recompute, capture, render, and deploy the current policy frontier."""
+from __future__ import annotations
+
+import argparse
+import contextlib
+import dataclasses
+import datetime as dt
+import fcntl
+import hashlib
+import json
+import math
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Any, Callable, Iterator, Sequence
+
+ROOT = Path("/data/qwop-bench")
+WEB_DEFAULT = ROOT / "sprint-web"
+CAPTURE_SCRIPT = ROOT / "runs/capture_lane_policy.py"
+BUILD_SCRIPT = ROOT / "runs/build_lane_3d.py"
+HQ_PATH = ROOT / "runs/g1_hq.json"
+PROJECT_ID = "prj_dgvTovRNwdSDcefYmo6oXfju9M3p"
+ORG_ID = "team_SNgoAcFfHYXYdUIXhj16bGek"
+VERCEL_SCOPE = "alienkevins-projects"
+TIME_TOLERANCE_SECONDS = 0.001
+DEPLOY_DEBOUNCE_SECONDS = 300
+PIPELINE_LOCK = ROOT / "runs" / "ops" / ".frontier-pipeline.lock"
+
+
+def utc_now() -> str:
+    return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse_iso(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def atomic_write_text(path: Path, text: str, mode: int = 0o644) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, raw = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    tmp = Path(raw)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def atomic_write_json(path: Path, payload: Any, mode: int = 0o644) -> None:
+    atomic_write_text(path, json.dumps(payload, indent=2, sort_keys=True) + "\n", mode)
+
+
+def atomic_copy(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    fd, raw = tempfile.mkstemp(
+        prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
+    )
+    os.close(fd)
+    tmp = Path(raw)
+    try:
+        shutil.copyfile(source, tmp)
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, destination)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+@dataclasses.dataclass(frozen=True)
+class LedgerRead:
+    rows: list[dict[str, Any]]
+    errors: list[str]
+    digest: str
+
+
+def read_ledger(path: Path) -> LedgerRead:
+    if not path.exists():
+        return LedgerRead([], [], hashlib.sha256(b"").hexdigest())
+    raw = path.read_bytes()
+    rows: list[dict[str, Any]] = []
+    errors: list[str] = []
+    lines = raw.splitlines()
+    for number, encoded in enumerate(lines, start=1):
+        if not encoded.strip():
+            continue
+        try:
+            row = json.loads(encoded)
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            suffix = "partial" if number == len(lines) and not raw.endswith(b"\n") else "malformed"
+            errors.append(f"line {number}: {suffix} JSON ({exc})")
+            continue
+        if not isinstance(row, dict):
+            errors.append(f"line {number}: row is not an object")
+            continue
+        rows.append(row)
+    return LedgerRead(rows, errors, hashlib.sha256(raw).hexdigest())
+
+
+def row_terminal(row: dict[str, Any]) -> bool:
+    return bool(
+        row.get("finished_at")
+        or row.get("error")
+        or row.get("rewards") is not None
+    )
+
+
+def ledger_counts(read: LedgerRead) -> dict[str, int]:
+    rows = read.rows
+    return {
+        "submitted": len(rows),
+        "queued": sum(not row.get("started_at") and not row_terminal(row) for row in rows),
+        "running": sum(bool(row.get("started_at")) and not row_terminal(row) for row in rows),
+        "scored": sum(row.get("rewards") is not None for row in rows),
+        "error": sum(bool(row.get("error")) for row in rows),
+        "terminal": sum(row_terminal(row) for row in rows),
+        "malformed": len(read.errors),
+    }
+
+
+def _as_number(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)) and math.isfinite(float(value)):
+        return float(value)
+    return None
+
+
+def attempt_dir_for_row(trial: Path, row: dict[str, Any]) -> Path | None:
+    root = trial / "artifacts" / "continuous" / "attempts"
+    try:
+        index = int(row["index"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    matches = sorted(root.glob(f"{index:04d}-*")) if root.is_dir() else []
+    name = str(row.get("name") or "")
+    named = [path for path in matches if name and path.name.endswith(name)]
+    if len(named) == 1:
+        return named[0]
+    return matches[0] if len(matches) == 1 else None
+
+
+def policy_for_row(trial: Path, row: dict[str, Any]) -> Path | None:
+    artifact = row.get("artifact_path")
+    if isinstance(artifact, str):
+        candidate = trial / "artifacts" / artifact
+        if candidate.is_file():
+            return candidate
+    attempt = attempt_dir_for_row(trial, row)
+    if not attempt:
+        return None
+    candidate = attempt / "artifacts" / "app" / "submission" / "policy.pt"
+    return candidate if candidate.is_file() else None
+
+
+def robustness_for_row(
+    trial: Path, row: dict[str, Any], rewards: dict[str, Any]
+) -> tuple[float | None, bool]:
+    rate = _as_number(rewards.get("robustness_rate"))
+    explicit = row.get("robustness_complete", rewards.get("robustness_complete"))
+    if explicit in (True, 1, 1.0):
+        return rate, rate is not None
+
+    completed = _as_number(
+        row.get(
+            "robustness_seeds_completed",
+            rewards.get("robustness_seeds_completed"),
+        )
+    )
+    total = _as_number(
+        row.get("robustness_seeds_total", rewards.get("robustness_seeds_total"))
+    )
+    if total and completed is not None:
+        return rate, completed >= total
+
+    attempt = attempt_dir_for_row(trial, row)
+    if not attempt:
+        return rate, False
+    results = attempt / "verifier" / "sprint_results.json"
+    stdout = attempt / "verifier" / "test-stdout.txt"
+    try:
+        result_doc = json.loads(results.read_text())
+    except (OSError, json.JSONDecodeError):
+        return rate, False
+    seed_total = int(result_doc.get("robustness_seeds") or 0)
+    result_rate = _as_number(result_doc.get("robustness_rate"))
+    if result_rate is not None:
+        rate = result_rate
+    if seed_total <= 0:
+        return rate, False
+    try:
+        completed_lines = len(
+            re.findall(r"^\s*seed\s+[^:]+:", stdout.read_text(), flags=re.MULTILINE)
+        )
+    except OSError:
+        return rate, False
+    return rate, completed_lines >= seed_total
+
+
+@dataclasses.dataclass(frozen=True)
+class Candidate:
+    index: int
+    name: str
+    time_seconds: float
+    robustness: float | None
+    robustness_complete: bool
+    policy_hash: str | None
+    policy_path: str | None
+
+
+def candidates_from_rows(trial: Path, rows: Sequence[dict[str, Any]]) -> list[Candidate]:
+    candidates: list[Candidate] = []
+    for row in rows:
+        rewards = row.get("rewards")
+        if not isinstance(rewards, dict) or row.get("error"):
+            continue
+        valid = _as_number(rewards.get("valid_run"))
+        best = _as_number(
+            rewards.get("best_100m_s", rewards.get("best_valid_100m_s"))
+        )
+        if valid != 1.0 or best is None or best <= 0:
+            continue
+        try:
+            index = int(row["index"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        policy = policy_for_row(trial, row)
+        policy_hash = sha256_file(policy) if policy else None
+        robustness, complete = robustness_for_row(trial, row, rewards)
+        candidates.append(
+            Candidate(
+                index=index,
+                name=str(row.get("name") or f"attempt-{index}"),
+                time_seconds=best,
+                robustness=robustness,
+                robustness_complete=complete,
+                policy_hash=policy_hash,
+                policy_path=str(policy) if policy else None,
+            )
+        )
+    return sorted(candidates, key=lambda candidate: candidate.index)
+
+
+def compute_frontier(candidates: Sequence[Candidate]) -> tuple[list[Candidate], bool]:
+    if not candidates:
+        return [], False
+    use_robustness = all(
+        candidate.robustness_complete and candidate.robustness is not None
+        for candidate in candidates
+    )
+    if not use_robustness:
+        best = candidates[0]
+        for candidate in candidates[1:]:
+            if (
+                candidate.time_seconds
+                < best.time_seconds - TIME_TOLERANCE_SECONDS
+            ):
+                best = candidate
+        return [best], False
+
+    def dominates(left: Candidate, right: Candidate) -> bool:
+        assert left.robustness is not None and right.robustness is not None
+        time_not_worse = (
+            left.time_seconds <= right.time_seconds + TIME_TOLERANCE_SECONDS
+        )
+        robustness_not_worse = left.robustness >= right.robustness
+        time_better = (
+            left.time_seconds < right.time_seconds - TIME_TOLERANCE_SECONDS
+        )
+        robustness_better = left.robustness > right.robustness
+        same_point = (
+            abs(left.time_seconds - right.time_seconds)
+            <= TIME_TOLERANCE_SECONDS
+            and abs(left.robustness - right.robustness) <= 1e-12
+        )
+        return time_not_worse and robustness_not_worse and (
+            time_better
+            or robustness_better
+            or (same_point and left.index < right.index)
+        )
+
+    frontier = [
+        candidate
+        for candidate in candidates
+        if not any(
+            other is not candidate and dominates(other, candidate)
+            for other in candidates
+        )
+    ]
+    return sorted(frontier, key=lambda item: (item.time_seconds, item.index)), True
+
+
+def site_tree_hash(web: Path) -> str:
+    digest = hashlib.sha256()
+    if not web.is_dir():
+        return digest.hexdigest()
+    for path in sorted(item for item in web.rglob("*") if item.is_file()):
+        relative = path.relative_to(web)
+        if any(part in {".vercel", ".git", "node_modules"} for part in relative.parts):
+            continue
+        digest.update(relative.as_posix().encode())
+        digest.update(b"\0")
+        digest.update(sha256_file(path).encode())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def initial_state(job: Path, trial: Path, web: Path) -> dict[str, Any]:
+    baseline = site_tree_hash(web)
+    return {
+        "schema_version": 1,
+        "created_at": utc_now(),
+        "updated_at": utc_now(),
+        "job": str(job.resolve()),
+        "trial": str(trial.resolve()),
+        "ledger_hash": None,
+        "ledger_errors": [],
+        "counts": {},
+        "robustness_objective": False,
+        "policies": {},
+        "frontier": [],
+        "frontier_candidates": [],
+        "capture_queue": [],
+        "captures": {},
+        "errors": [],
+        "baseline_site_hash": baseline,
+        "last_deployed_site_hash": baseline,
+        "pending_site_hash": None,
+        "site_change_first_seen_at": None,
+        "site_status": "noop",
+        "last_deployment_url": None,
+        "production_alias": "https://g1-sprint.vercel.app",
+    }
+
+
+def load_state(path: Path, job: Path, trial: Path, web: Path) -> dict[str, Any]:
+    try:
+        state = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        state = initial_state(job, trial, web)
+    if state.get("job") != str(job.resolve()) or state.get("trial") != str(
+        trial.resolve()
+    ):
+        raise ValueError("frontier state belongs to a different explicit job/trial")
+    return state
+
+
+def record_error(state: dict[str, Any], message: str) -> None:
+    errors = state.setdefault("errors", [])
+    errors.append({"at": utc_now(), "message": message})
+    del errors[:-100]
+
+
+def scan_frontier(
+    *, job: Path, trial: Path, state_path: Path, web: Path = WEB_DEFAULT
+) -> dict[str, Any]:
+    ledger_path = trial / "artifacts" / "continuous" / "ledger.jsonl"
+    read = read_ledger(ledger_path)
+    candidates = candidates_from_rows(trial, read.rows)
+    frontier, robust = compute_frontier(candidates)
+    state = load_state(state_path, job, trial, web)
+    previous = set(state.get("frontier") or [])
+    active = [candidate.policy_hash for candidate in frontier if candidate.policy_hash]
+
+    policies = state.setdefault("policies", {})
+    for candidate in candidates:
+        key = candidate.policy_hash or f"missing-policy-{candidate.index}"
+        policies[key] = {
+            "index": candidate.index,
+            "name": candidate.name,
+            "best_100m_s": candidate.time_seconds,
+            "robustness_rate": candidate.robustness,
+            "robustness_complete": candidate.robustness_complete,
+            "policy_hash": candidate.policy_hash,
+            "policy_path": candidate.policy_path,
+            "on_frontier": candidate.policy_hash in active,
+        }
+        if candidate.policy_hash is None:
+            record_error(state, f"attempt {candidate.index} has no archived policy")
+
+    queue = state.setdefault("capture_queue", [])
+    queued_hashes = {
+        item.get("policy_hash")
+        for item in queue
+        if item.get("status") in {"queued", "running"}
+    }
+    captured = set(state.setdefault("captures", {}))
+    for candidate in frontier:
+        policy_hash = candidate.policy_hash
+        if (
+            policy_hash
+            and policy_hash not in previous
+            and policy_hash not in queued_hashes
+            and policy_hash not in captured
+        ):
+            queue.append(
+                {
+                    "policy_hash": policy_hash,
+                    "index": candidate.index,
+                    "queued_at": utc_now(),
+                    "status": "queued",
+                }
+            )
+
+    for item in queue:
+        if (
+            item.get("status") == "queued"
+            and item.get("policy_hash") not in active
+        ):
+            item["status"] = "skipped_dominated"
+            item["finished_at"] = utc_now()
+
+    state.update(
+        {
+            "updated_at": utc_now(),
+            "last_scan_at": utc_now(),
+            "ledger_hash": read.digest,
+            "ledger_errors": read.errors,
+            "counts": ledger_counts(read),
+            "robustness_objective": robust,
+            "frontier": active,
+            "frontier_candidates": [
+                {
+                    "index": candidate.index,
+                    "policy_hash": candidate.policy_hash,
+                    "best_100m_s": candidate.time_seconds,
+                }
+                for candidate in frontier
+            ],
+        }
+    )
+    atomic_write_json(state_path, state)
+    return state
+
+
+@contextlib.contextmanager
+def file_lock(path: Path, *, blocking: bool = True) -> Iterator[bool]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+") as handle:
+        operation = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
+        try:
+            fcntl.flock(handle, operation)
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def _rotate_xyzw(quaternion: Sequence[float], vector: Sequence[float]) -> list[float]:
+    x, y, z, w = (float(value) for value in quaternion)
+    magnitude = math.sqrt(x * x + y * y + z * z + w * w)
+    x, y, z, w = x / magnitude, y / magnitude, z / magnitude, w / magnitude
+    vx, vy, vz = (float(value) for value in vector)
+    uv = (y * vz - z * vy, z * vx - x * vz, x * vy - y * vx)
+    uuv = (
+        y * uv[2] - z * uv[1],
+        z * uv[0] - x * uv[2],
+        x * uv[1] - y * uv[0],
+    )
+    return [
+        vx + 2 * (w * uv[0] + uuv[0]),
+        vy + 2 * (w * uv[1] + uuv[1]),
+        vz + 2 * (w * uv[2] + uuv[2]),
+    ]
+
+
+def validate_capture_precision(capture: Path, html: Path) -> dict[str, Any]:
+    sys.path.insert(0, str(ROOT / "runs"))
+    from build_lane_3d import G1_PARENT, _rest_offsets  # noqa: PLC0415
+
+    payload = json.loads(capture.read_text())
+    names = payload["body_names"]
+    links = [name for name in G1_PARENT if name in names]
+    rest = _rest_offsets(payload, names, links)
+    checked = [
+        child
+        for child in (
+            "left_knee_link",
+            "left_ankle_pitch_link",
+            "left_ankle_roll_link",
+            "right_knee_link",
+            "right_ankle_pitch_link",
+            "right_ankle_roll_link",
+        )
+        if child in rest and G1_PARENT.get(child) in names
+    ]
+    maximum_mm = 0.0
+    observations = 0
+    for run in payload["frames"]:
+        for row in run:
+            for child in checked:
+                parent = G1_PARENT[child]
+                child_offset = 1 + names.index(child) * 7
+                parent_offset = 1 + names.index(parent) * 7
+                parent_pos = row[parent_offset : parent_offset + 3]
+                parent_quat = row[parent_offset + 3 : parent_offset + 7]
+                rotated = _rotate_xyzw(parent_quat, rest[child])
+                predicted = [
+                    float(parent_pos[axis]) + rotated[axis] for axis in range(3)
+                ]
+                actual = row[child_offset : child_offset + 3]
+                error_mm = (
+                    math.sqrt(
+                        sum(
+                            (float(actual[axis]) - predicted[axis]) ** 2
+                            for axis in range(3)
+                        )
+                    )
+                    * 1000.0
+                )
+                maximum_mm = max(maximum_mm, error_mm)
+                observations += 1
+    page = html.read_text()
+    controls_ok = all(f'data-s="{speed}"' in page for speed in ("0.1", "0.6", "1"))
+    one_x_default = 'data-s="1" aria-pressed="true"' in page
+    result = {
+        "checked_at": utc_now(),
+        "observations": observations,
+        "max_attachment_error_mm": maximum_mm,
+        "threshold_mm": 2.0,
+        "controls_present": controls_ok,
+        "one_x_default": one_x_default,
+        "valid": observations > 0
+        and maximum_mm <= 2.0
+        and controls_ok
+        and one_x_default,
+    }
+    if not result["valid"]:
+        raise RuntimeError(f"renderer precision validation failed: {result}")
+    return result
+
+
+def run_checked(command: Sequence[str], *, cwd: Path | None = None) -> str:
+    completed = subprocess.run(
+        list(command),
+        cwd=cwd,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=True,
+    )
+    return completed.stdout
+
+
+def capture_and_render(
+    *, state: dict[str, Any], state_path: Path, web: Path, policy_hash: str
+) -> None:
+    policy = state["policies"][policy_hash]
+    source = Path(policy["policy_path"])
+    work = state_path.parent / "captures"
+    work.mkdir(parents=True, exist_ok=True)
+    short = policy_hash[:12]
+    label = f"frontier-{short}"
+    capture_final = work / f"{label}.json"
+    validation_final = work / f"{label}.validation.json"
+    web_capture = web / "captures" / f"{label}.json"
+    web_html = web / "replay" / f"{label}.html"
+
+    with tempfile.TemporaryDirectory(prefix="qwop-frontier-", dir=state_path.parent) as raw:
+        temporary = Path(raw)
+        capture_tmp = temporary / "capture.json"
+        html_tmp = temporary / "replay.html"
+        run_checked(
+            [
+                "run-heavy",
+                sys.executable,
+                "-u",
+                str(CAPTURE_SCRIPT),
+                "--policy",
+                str(source),
+                "--out",
+                str(capture_tmp),
+                "--label",
+                label,
+            ]
+        )
+        time_value = float(policy["best_100m_s"])
+        run_checked(
+            [
+                "run-heavy",
+                sys.executable,
+                str(BUILD_SCRIPT),
+                "--capture",
+                str(capture_tmp),
+                "--hq",
+                str(HQ_PATH),
+                "--out",
+                str(html_tmp),
+                "--meta-policy",
+                label,
+                "--title",
+                f"G1 lane frontier - {time_value:.3f} s",
+                "--eyebrow",
+                f"Unitree G1 · lane frontier · attempt #{policy['index']}",
+                "--headline",
+                f"Frontier {time_value:.3f} s",
+                "--lede",
+                f"Current valid 100 m frontier policy: <b>{time_value:.3f} s</b>.",
+                "--cap",
+                f"Attempt #{policy['index']} · <b>{time_value:.3f} s</b>",
+                "--story",
+                f"Policy SHA-256 {policy_hash}.",
+                "--active",
+                "timeline",
+            ]
+        )
+        validation = validate_capture_precision(capture_tmp, html_tmp)
+        atomic_copy(capture_tmp, capture_final)
+        atomic_copy(capture_tmp, web_capture)
+        atomic_copy(html_tmp, web_html)
+        atomic_write_json(validation_final, validation)
+
+    state.setdefault("captures", {})[policy_hash] = {
+        "captured_at": utc_now(),
+        "capture": str(capture_final),
+        "validation": str(validation_final),
+        "web_capture": str(web_capture.relative_to(web)),
+        "web_html": str(web_html.relative_to(web)),
+        "valid": True,
+    }
+    for item in state.get("capture_queue", []):
+        if item.get("policy_hash") == policy_hash and item.get("status") == "running":
+            item["status"] = "captured"
+            item["finished_at"] = utc_now()
+    atomic_write_json(state_path, state)
+
+
+def frontier_nav(state: dict[str, Any], current_path: str) -> str:
+    links: list[str] = []
+    first_active = next(
+        (
+            policy_hash
+            for policy_hash in state.get("frontier") or []
+            if state.get("captures", {}).get(policy_hash, {}).get("valid")
+        ),
+        None,
+    )
+    for policy_hash in state.get("frontier") or []:
+        capture = state.get("captures", {}).get(policy_hash)
+        policy = state.get("policies", {}).get(policy_hash)
+        if not capture or not capture.get("valid") or not policy:
+            continue
+        href = "/" + str(capture["web_html"]).removesuffix(".html")
+        current = "/" + current_path.removesuffix(".html")
+        on = (
+            " on"
+            if href == current
+            or (current_path == "index.html" and policy_hash == first_active)
+            else ""
+        )
+        links.append(
+            f'<a class="pol{on}" href="{href}">'
+            f'#{policy["index"]} · {float(policy["best_100m_s"]):.3f}s</a>'
+        )
+    links.extend(
+        [
+            '<a class="pol" href="/timeline">Opus timeline</a>',
+            '<a class="pol" href="/terra-timeline">Terra timeline</a>',
+        ]
+    )
+    return (
+        '<div class="polsel" role="navigation" aria-label="Active policy frontier">'
+        + "".join(links)
+        + "</div>"
+    )
+
+
+def refresh_site_navigation(state: dict[str, Any], web: Path) -> bool:
+    captured_frontier = [
+        policy_hash
+        for policy_hash in state.get("frontier") or []
+        if state.get("captures", {}).get(policy_hash, {}).get("valid")
+    ]
+    if captured_frontier:
+        fastest = min(
+            captured_frontier,
+            key=lambda key: float(state["policies"][key]["best_100m_s"]),
+        )
+        source = web / state["captures"][fastest]["web_html"]
+        if source.is_file():
+            atomic_copy(source, web / "index.html")
+
+    changed = False
+    targets = sorted(web.glob("*.html")) + sorted((web / "replay").glob("*.html"))
+    for path in targets:
+        original = path.read_text()
+        if 'class="polsel"' not in original:
+            continue
+        nav = frontier_nav(state, path.relative_to(web).as_posix())
+        updated = re.sub(
+            r'<div class="polsel"[^>]*>.*?</div>',
+            nav,
+            original,
+            count=1,
+            flags=re.DOTALL,
+        )
+        if updated != original:
+            atomic_write_text(path, updated)
+            changed = True
+    return changed
+
+
+def verify_project_link(web: Path) -> None:
+    path = web / ".vercel" / "project.json"
+    try:
+        project = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"missing or invalid Vercel project link: {path}") from exc
+    expected = {"projectId": PROJECT_ID, "orgId": ORG_ID, "projectName": "sprint"}
+    if any(project.get(key) != value for key, value in expected.items()):
+        raise RuntimeError(
+            f"refusing deployment: {path} is not linked to {VERCEL_SCOPE}/sprint"
+        )
+
+
+Runner = Callable[[Sequence[str], Path | None], str]
+
+
+def _default_runner(command: Sequence[str], cwd: Path | None) -> str:
+    return run_checked(command, cwd=cwd)
+
+
+def deploy_if_needed(
+    state: dict[str, Any],
+    *,
+    web: Path,
+    now: float | None = None,
+    debounce_seconds: int = DEPLOY_DEBOUNCE_SECONDS,
+    runner: Runner = _default_runner,
+) -> tuple[bool, str]:
+    now = time.time() if now is None else now
+    current_hash = site_tree_hash(web)
+    if current_hash == state.get("last_deployed_site_hash"):
+        state.update(
+            {
+                "pending_site_hash": None,
+                "site_change_first_seen_at": None,
+                "site_status": "noop",
+                "last_site_check_at": utc_now(),
+            }
+        )
+        return False, "no site file changes"
+
+    if state.get("pending_site_hash") != current_hash:
+        state["pending_site_hash"] = current_hash
+        state["site_change_first_seen_at"] = dt.datetime.fromtimestamp(
+            now, tz=dt.timezone.utc
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    first = parse_iso(state.get("site_change_first_seen_at")) or now
+    if now - first < debounce_seconds:
+        state["site_status"] = "debouncing"
+        return False, f"deploy debounced for {int(debounce_seconds - (now - first))}s"
+
+    verify_project_link(web)
+    output = runner(
+        [
+            "vercel",
+            "deploy",
+            "--prod",
+            "--yes",
+            "--scope",
+            VERCEL_SCOPE,
+        ],
+        web,
+    )
+    urls = re.findall(r"https://[A-Za-z0-9.-]+\.vercel\.app", output)
+    deployment_url = urls[-1] if urls else None
+    state.update(
+        {
+            "last_deployed_site_hash": current_hash,
+            "pending_site_hash": None,
+            "site_change_first_seen_at": None,
+            "site_status": "deployed",
+            "last_deployed_at": utc_now(),
+            "last_deployment_url": deployment_url,
+            "production_alias": "https://g1-sprint.vercel.app",
+        }
+    )
+    return True, deployment_url or "deployed"
+
+
+def run_worker(
+    *,
+    job: Path,
+    trial: Path,
+    state_path: Path,
+    web: Path,
+    deploy: bool,
+    debounce_seconds: int,
+) -> dict[str, Any]:
+    with file_lock(PIPELINE_LOCK, blocking=False) as acquired:
+        if not acquired:
+            return {"status": "busy"}
+        state = scan_frontier(job=job, trial=trial, state_path=state_path, web=web)
+        while True:
+            queued = next(
+                (
+                    item
+                    for item in state.get("capture_queue", [])
+                    if item.get("status") == "queued"
+                ),
+                None,
+            )
+            if not queued:
+                break
+            policy_hash = str(queued["policy_hash"])
+            state = scan_frontier(
+                job=job, trial=trial, state_path=state_path, web=web
+            )
+            if policy_hash not in state.get("frontier", []):
+                for item in state.get("capture_queue", []):
+                    if item.get("policy_hash") == policy_hash:
+                        item["status"] = "skipped_dominated"
+                        item["finished_at"] = utc_now()
+                atomic_write_json(state_path, state)
+                continue
+            queued = next(
+                item
+                for item in state["capture_queue"]
+                if item.get("policy_hash") == policy_hash
+                and item.get("status") == "queued"
+            )
+            queued["status"] = "running"
+            queued["started_at"] = utc_now()
+            atomic_write_json(state_path, state)
+            try:
+                capture_and_render(
+                    state=state,
+                    state_path=state_path,
+                    web=web,
+                    policy_hash=policy_hash,
+                )
+            except Exception as exc:
+                queued["status"] = "error"
+                queued["finished_at"] = utc_now()
+                queued["error"] = str(exc)
+                record_error(state, f"capture {policy_hash[:12]}: {exc}")
+                atomic_write_json(state_path, state)
+            state = load_state(state_path, job, trial, web)
+
+        state = scan_frontier(job=job, trial=trial, state_path=state_path, web=web)
+        refresh_site_navigation(state, web)
+        if deploy:
+            state = scan_frontier(
+                job=job, trial=trial, state_path=state_path, web=web
+            )
+            refresh_site_navigation(state, web)
+            ready = all(
+                candidate.get("policy_hash")
+                and state.get("captures", {})
+                .get(candidate["policy_hash"], {})
+                .get("valid")
+                for candidate in state.get("frontier_candidates", [])
+            )
+            try:
+                if not ready:
+                    raise RuntimeError("active frontier capture is missing or invalid")
+                deploy_if_needed(
+                    state,
+                    web=web,
+                    debounce_seconds=debounce_seconds,
+                )
+            except Exception as exc:
+                state["site_status"] = "error"
+                record_error(state, f"deploy: {exc}")
+        atomic_write_json(state_path, state)
+        return state
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command", required=True)
+    for name in ("scan", "worker", "status"):
+        command = sub.add_parser(name)
+        command.add_argument("--job", type=Path, required=True)
+        command.add_argument("--trial", type=Path, required=True)
+        command.add_argument("--state", type=Path, required=True)
+        command.add_argument("--web", type=Path, default=WEB_DEFAULT)
+        if name == "worker":
+            command.add_argument("--deploy", action="store_true")
+            command.add_argument(
+                "--debounce-seconds", type=int, default=DEPLOY_DEBOUNCE_SECONDS
+            )
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    job = args.job.resolve()
+    trial = args.trial.resolve()
+    state_path = args.state.resolve()
+    web = args.web.resolve()
+    if args.command == "status":
+        state = load_state(state_path, job, trial, web)
+    elif args.command == "scan":
+        with file_lock(PIPELINE_LOCK, blocking=False) as acquired:
+            if not acquired:
+                print(json.dumps({"status": "busy"}, indent=2))
+                return 0
+            state = scan_frontier(
+                job=job, trial=trial, state_path=state_path, web=web
+            )
+    else:
+        state = run_worker(
+            job=job,
+            trial=trial,
+            state_path=state_path,
+            web=web,
+            deploy=args.deploy,
+            debounce_seconds=args.debounce_seconds,
+        )
+    print(json.dumps(state, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

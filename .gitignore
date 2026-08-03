@@ -1,0 +1,33 @@
+# Secrets
+.env
+.env.*
+.oauth_token
+*.pem
+runs/.secrets/
+**/secrets/
+**/restic-password
+
+# Python / caches
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+
+# Large / generated artifacts
+*.pt
+runs/jobs*/
+runs/hub-scrubbed/
+runs/lane_capture_*.json
+runs/regrade/
+runs/ops/lane-*/
+runs/ops/smoke-*/
+dist/
+node_modules/
+.modal/
+
+# Sprint-web heavy capture/replay blobs (site HTML kept)
+sprint-web/captures/*.json
+sprint-web/replay/

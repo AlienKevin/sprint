@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+"""Submit a policy for scoring. Returns immediately.
+
+    sprint-submit mypolicy.pt --note "wider hips, 3k iters"
+
+Prints a job id and exits. Scoring runs on the real course in a container you
+cannot reach, so carry on training; the result arrives a few minutes later and
+`sprint-board` reads it.
+"""
+
+import os
+import shutil
+import subprocess
+import sys
+import uuid
+from datetime import datetime, timezone
+
+QUEUE = "/app/submissions/queue"
+NOTES = "/app/submissions/notes"
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help"):
+        print(__doc__)
+        return 0
+    policy = args[0]
+    note = args[args.index("--note") + 1] if "--note" in args else ""
+
+    if not os.path.exists(policy):
+        print(f"no such file: {policy}", file=sys.stderr)
+        return 1
+
+    # The full interface contract, checked here rather than in the verifier,
+    # where the same answer costs a container start and a quarter of an hour.
+    # Run automatically so it is not something to remember; `sprint-check` runs
+    # the identical checks by hand.
+    check = subprocess.run([sys.executable, "/usr/local/bin/sprint-check", policy],
+                           capture_output=True, text=True)
+    if check.returncode != 0:
+        sys.stderr.write(check.stdout + check.stderr)
+        print("not submitted: the policy does not meet the interface contract.",
+              file=sys.stderr)
+        return 1
+
+    os.makedirs(QUEUE, exist_ok=True)
+    os.makedirs(NOTES, exist_ok=True)
+    job_id = f"{datetime.now(timezone.utc):%H%M%S}-{uuid.uuid4().hex[:4]}"
+
+    # Copy under a hidden name and rename into place. The scorer only picks up
+    # a file whose size has settled, but an atomic rename means it never sees a
+    # partial checkpoint at all. Copying rather than referencing matters too:
+    # training continues and may overwrite this checkpoint before it is scored.
+    staged = os.path.join(QUEUE, f".{job_id}.pt")
+    shutil.copy2(policy, staged)
+    os.rename(staged, os.path.join(QUEUE, f"{job_id}.pt"))
+
+    if note:
+        with open(os.path.join(NOTES, f"{job_id}.txt"), "w") as f:
+            f.write(note + "\n")
+
+    print(f"submitted {job_id}" + (f"  ({note})" if note else ""))
+    print("scoring runs in the background; keep working. `sprint-board` for results.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

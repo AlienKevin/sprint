@@ -1,0 +1,32 @@
+<mujoco model="g1 sprint replay">
+  <!-- The 23-DoF Unitree G1 on a marked track, used only to draw a rollout
+       that was simulated in Isaac Lab.  Nothing here is stepped: joint angles
+       and the root pose are written straight into qpos each frame, so this is
+       a faithful replay of the recorded state rather than a second simulation
+       that could drift away from it. -->
+  <include file="g1_23dof.xml"/>
+
+  <statistic center="0 0 0.8" extent="1.4"/>
+
+  <visual>
+    <headlight diffuse="0.55 0.55 0.55" ambient="0.28 0.28 0.3" specular="0.25 0.25 0.25"/>
+    <rgba haze="0.62 0.66 0.72 1"/>
+    <global azimuth="140" elevation="-12" offwidth="1280" offheight="720"/>
+    <quality shadowsize="4096"/>
+    <map znear="0.05" zfar="60"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.42 0.52 0.66" rgb2="0.82 0.86 0.9"
+             width="512" height="3072"/>
+    <!-- 1 m stripes across the running direction, so speed is legible in the
+         frame instead of having to be taken on trust from a caption -->
+  </asset>
+
+  <worldbody>
+    <!-- g1_23dof.xml already brings its own floor and light; this adds a second
+         key light for the shadow that makes ground contact legible -->
+    <light pos="2 -3 6" dir="-0.2 0.3 -1" directional="true" diffuse="0.45 0.45 0.45"
+           castshadow="true"/>
+  </worldbody>
+</mujoco>
