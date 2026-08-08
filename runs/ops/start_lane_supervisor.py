@@ -28,6 +28,7 @@ def main() -> int:
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--launch-argv-json", required=True)
     parser.add_argument("--secret-env", required=True)
+    parser.add_argument("--batch-id", default="")
     parser.add_argument("--max-restarts", type=int, default=50)
     parser.add_argument("--min-backoff-s", type=float, default=30)
     parser.add_argument("--max-backoff-s", type=float, default=600)
@@ -47,6 +48,10 @@ def main() -> int:
         parser.error("launch argv must be a non-empty string array")
     if args.secret_env not in {"OPENAI_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"}:
         parser.error("unsupported secret environment variable")
+    if args.batch_id and not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._-]{2,48}", args.batch_id
+    ):
+        parser.error("unsafe batch id")
     if not os.environ.get(args.secret_env):
         parser.error(f"{args.secret_env} is not set")
     uv = os.environ.get("UV") or shutil.which("uv") or "/home/ubuntu/.local/bin/uv"
@@ -82,6 +87,7 @@ def main() -> int:
     metadata = {
         "schema_version": 1,
         "run_id": args.run_id,
+        "batch_id": args.batch_id or None,
         "unit": unit,
         "log_path": str(log_path),
         "launch_argv": launch_argv,
@@ -107,8 +113,10 @@ def main() -> int:
         f"--setenv=UV={uv}",
         f"--setenv=PATH={service_path}",
         f"--setenv={args.secret_env}",
-        *supervisor_argv,
     ]
+    if args.batch_id:
+        command.append(f"--setenv=SPRINT_BATCH_ID={args.batch_id}")
+    command.extend(supervisor_argv)
     completed = subprocess.run(command, check=False)
     if completed.returncode != 0:
         print(

@@ -938,6 +938,8 @@ class LauncherWiringTests(unittest.TestCase):
                 json.dumps(launch),
                 "--secret-env",
                 "OPENAI_API_KEY",
+                "--batch-id",
+                "eval-batch",
             ]
             completed = mock.Mock(returncode=0)
             with (
@@ -968,11 +970,13 @@ class LauncherWiringTests(unittest.TestCase):
             self.assertIn("--setenv=OPENAI_API_KEY", command)
             self.assertIn("--setenv=UV=/test/bin/uv", command)
             self.assertIn("--setenv=PATH=/test/bin:/usr/bin", command)
+            self.assertIn("--setenv=SPRINT_BATCH_ID=eval-batch", command)
             self.assertNotIn("secret-value", command)
             metadata = json.loads(
                 (Path(raw) / "unit-run" / "supervisor.json").read_text()
             )
             self.assertEqual(metadata["launch_argv"], launch)
+            self.assertEqual(metadata["batch_id"], "eval-batch")
 
     def test_goal_templates_are_launchable_and_synced(self) -> None:
         smoke = (ROOT / "runs" / "codex-recovery-smoke-goal.j2").read_text()
