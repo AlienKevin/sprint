@@ -109,6 +109,7 @@ def reconstruct_group(
             str(trajectory_path.relative_to(state_dir)) if trajectory_path else None
         ),
         "trajectory_sha256": sha256_file(trajectory_path) if trajectory_path else None,
+        "_session_path": str(session_path),
     }
     if not isinstance(audit, dict):
         source.update(
@@ -154,6 +155,107 @@ def reconstruct_group(
     return source
 
 
+def harbor_final_source(
+    *, state_dir: Path, run: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Load the complete normally-exited session Harbor archived locally.
+
+    The durable mirror remains authoritative for abruptly killed CPU attempts.
+    On a normal exit, Harbor's own archive may contain a final tail written
+    after the last mirror interval; merge that signed superset instead of
+    silently dropping the last model requests.
+    """
+    raw_trial = run.get("trial_path")
+    if not raw_trial:
+        return None
+    trial = Path(str(raw_trial)).resolve()
+    try:
+        trial.relative_to(state_dir)
+    except ValueError as exc:
+        raise SystemExit("Harbor trial path escapes the run state directory") from exc
+    audit_path = trial / "agent" / "usage-audit.json"
+    trajectory_path = trial / "agent" / "trajectory.json"
+    try:
+        audit = json.loads(audit_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    provenance = audit.get("provenance") or {}
+    source_name = provenance.get("source_session_file")
+    source_hash = provenance.get("source_session_sha256")
+    if not isinstance(source_name, str) or not source_name or not source_hash:
+        raise SystemExit("Harbor usage audit has incomplete source provenance")
+    matches = list((trial / "agent" / "sessions").rglob(source_name))
+    matches.extend((trial / "agent" / "codex-state" / "sessions").rglob(source_name))
+    matches = [path.resolve() for path in matches if path.is_file()]
+    if not matches or any(sha256_file(path) != source_hash for path in matches):
+        raise SystemExit("Harbor usage audit source session checksum mismatch")
+    session_path = matches[0]
+    if not trajectory_path.is_file() or provenance.get(
+        "trajectory_sha256"
+    ) != sha256_file(trajectory_path):
+        raise SystemExit("Harbor usage audit trajectory checksum mismatch")
+    attempt = int(run.get("cpu_launch_attempt") or 1)
+    session_id = str(audit.get("session_id") or source_hash[:20])
+    requests = [
+        {
+            **request,
+            "session_id": session_id,
+            "cpu_attempt": attempt,
+            "run_api_call_id": f"{session_id}:{request.get('api_call_id')}",
+        }
+        for request in audit.get("requests") or []
+        if isinstance(request, dict)
+    ]
+    return {
+        "cpu_attempt": attempt,
+        "source_id": f"harbor-final-{source_hash[:20]}",
+        "combined_session_sha256": source_hash,
+        "chunks": [
+            {
+                "path": str(session_path.relative_to(state_dir)),
+                "sha256": source_hash,
+                "bytes": session_path.stat().st_size,
+            }
+        ],
+        "trajectory_path": str(trajectory_path.relative_to(state_dir)),
+        "trajectory_sha256": sha256_file(trajectory_path),
+        "_session_path": str(session_path),
+        "session_id": session_id,
+        "request_count": len(requests),
+        "cost_reconstruction_complete": audit.get("cost_reconstruction_complete"),
+        "calculated_api_usage_usd": audit.get("calculated_api_usage_usd"),
+        "requests": requests,
+        "pricing_snapshots": audit.get("pricing_snapshots") or [],
+        "reconciliation_mismatches": audit.get("reconciliation_mismatches") or {},
+        "origin": "harbor_final_archive",
+    }
+
+
+def prefer_complete_session(
+    previous: dict[str, Any], candidate: dict[str, Any]
+) -> dict[str, Any]:
+    """Choose a byte-identical copy or a verified append-only superset."""
+    if previous["combined_session_sha256"] == candidate["combined_session_sha256"]:
+        return max(
+            (previous, candidate),
+            key=lambda source: (
+                int(source.get("request_count") or 0),
+                len(Path(source["_session_path"]).read_bytes()),
+            ),
+        )
+    previous_bytes = Path(previous["_session_path"]).read_bytes()
+    candidate_bytes = Path(candidate["_session_path"]).read_bytes()
+    shorter, longer = sorted(
+        ((previous_bytes, previous), (candidate_bytes, candidate)),
+        key=lambda item: len(item[0]),
+    )
+    if not longer[0].startswith(shorter[0]):
+        raise SystemExit(
+            f"conflicting durable copies for Codex session {candidate.get('session_id')}"
+        )
+    return longer[1]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state-dir", type=Path, required=True)
@@ -161,8 +263,6 @@ def main() -> int:
     state_dir = args.state_dir.resolve()
     run = json.loads((state_dir / "run.json").read_text())
     groups = source_groups(state_dir)
-    if not groups:
-        raise SystemExit("no durable Codex trace chunks are available")
     sources = [
         reconstruct_group(
             state_dir=state_dir,
@@ -173,21 +273,20 @@ def main() -> int:
         )
         for attempt, source_id, chunks in groups
     ]
+    final_source = harbor_final_source(state_dir=state_dir, run=run)
+    if final_source is not None:
+        sources.append(final_source)
+    if not sources:
+        raise SystemExit("no durable or Harbor Codex session is available")
     unique_sessions: dict[str, dict[str, Any]] = {}
     anonymous = []
     for source in sources:
         session_id = source.get("session_id")
         if session_id:
             previous = unique_sessions.get(str(session_id))
-            if (
-                previous
-                and previous["combined_session_sha256"]
-                != source["combined_session_sha256"]
-            ):
-                raise SystemExit(
-                    f"conflicting durable copies for Codex session {session_id}"
-                )
-            unique_sessions[str(session_id)] = source
+            unique_sessions[str(session_id)] = (
+                prefer_complete_session(previous, source) if previous else source
+            )
         else:
             anonymous.append(source)
     sessions = list(unique_sessions.values()) + anonymous
@@ -215,7 +314,11 @@ def main() -> int:
         "reasoning_effort": run["reasoning_effort"],
         "source": "durable_codex_session_chunks",
         "source_sessions": [
-            {key: value for key, value in source.items() if key != "requests"}
+            {
+                key: value
+                for key, value in source.items()
+                if key not in {"requests", "_session_path"}
+            }
             for source in sessions
         ],
         "expected_cpu_attempts": sorted(expected_attempts),

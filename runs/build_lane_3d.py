@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """Convert a sealed verifier replay and G1 meshes to self-contained 3D HTML."""
+
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import math
-import os
 import re
 import statistics
 from pathlib import Path
@@ -103,7 +102,9 @@ def _rotate_inverse_xyzw(q: list[float], v: list[float]) -> list[float]:
     ]
 
 
-def _rest_offsets(cap: dict, names: list[str], links: list[str]) -> dict[str, list[float]]:
+def _rest_offsets(
+    cap: dict, names: list[str], links: list[str]
+) -> dict[str, list[float]]:
     """Recover fixed child origins in each captured parent link frame.
 
     Capture rows store independently rounded world poses. Taking a median over
@@ -190,13 +191,19 @@ def compute_dq_event(
     if t_cross is None and finish is None:
         cands.append((min(last_t, SCORED_TIMEOUT_S), "finished"))
     if not cands:
-        t = t_cross if t_cross is not None else (float(finish) if finish is not None else last_t)
+        t = (
+            t_cross
+            if t_cross is not None
+            else (float(finish) if finish is not None else last_t)
+        )
         return t, str(run.get("dq_reason") or "disqualified")
     cands.sort(key=lambda x: x[0])
     return cands[0][0], cands[0][1]
 
 
-def capture_to_data(cap: dict, hq_all: dict, meta_policy: str, pad: float = 0.6) -> dict:
+def capture_to_data(
+    cap: dict, hq_all: dict, meta_policy: str, pad: float = 0.6
+) -> dict:
     names = cap["body_names"]
     links = [n for n in PREFERRED if n in hq_all and n in names]
     ridx = [names.index(n) for n in links]
@@ -292,6 +299,168 @@ def policy_nav_html(_active: str) -> str:
     )
 
 
+def inject_policy_nav(head: str, active: str) -> str:
+    """Add or replace the comparison link above the replay stage."""
+    nav = policy_nav_html(active)
+    css = (
+        ".polsel{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 14px}"
+        ".pol{display:inline-flex;align-items:center;padding:7px 12px;"
+        "border-radius:999px;border:1px solid var(--line);color:var(--muted);"
+        "text-decoration:none;font-size:13px;font-weight:700;letter-spacing:.01em;"
+        "background:transparent}.pol.on{background:var(--ink);color:var(--bg);"
+        "border-color:var(--ink)}.pol:hover{border-color:var(--ink);color:var(--ink)}"
+        ".pol.on:hover{color:var(--bg)}"
+    )
+    if ".polsel{" not in head:
+        head = head.replace("</style>", css + "\n</style>", 1)
+    if 'class="polsel"' in head:
+        return re.sub(
+            r'<div class="polsel"[^>]*>.*?</div>',
+            nav,
+            head,
+            count=1,
+            flags=re.S,
+        )
+    return head.replace(
+        '<div class="stagewrap">', nav + '\n      <div class="stagewrap">', 1
+    )
+
+
+def assemble_html(
+    data: dict,
+    *,
+    title: str,
+    eyebrow: str,
+    headline: str,
+    lede: str,
+    cap: str,
+    story: str,
+    sr_only: str,
+    active: str,
+) -> str:
+    """Render one self-contained replay from the checked-in HTML/JS chrome."""
+    scene = (SP / "scene_lane.js").read_text()
+    scene = scene.replace(
+        "let raf=null,startWall=null,speed=0.6;",
+        "let raf=null,startWall=null,speed=1;",
+    )
+    template = (SP / "sprint-3d.html").read_text()
+    marker = "<script>const DATA="
+    if marker not in template:
+        raise ValueError(
+            f"replay chrome is missing data marker: {SP / 'sprint-3d.html'}"
+        )
+    head = template.split(marker, 1)[0]
+
+    labels: list[str] = []
+    for index, policy in enumerate(data["policies"]):
+        color = COLS[index % len(COLS)]
+        if policy.get("valid") is False and policy.get("dq_time") is not None:
+            time_label = f"DQ {policy['dq_time']:.2f}"
+        else:
+            time_label = f"{policy['finish']:.2f}"
+        labels.append(
+            f'<div class="lc" id="lane{index}"><span class="sw" '
+            f'style="background:{color}"></span><span class="nm">'
+            f'{policy["label"]}</span><span class="tm" style="color:{color}">'
+            f'{time_label}s</span><span class="d">0.0 m</span></div>'
+        )
+    lanes_html = "\n".join(labels)
+    head = re.sub(
+        r'<div class="lanes">.*?</div>\s*<div class="ctl">',
+        f'<div class="lanes">\n{lanes_html}\n</div>\n      <div class="ctl">',
+        head,
+        count=1,
+        flags=re.S,
+    )
+    head = head.replace(
+        'data-s="0.6" aria-pressed="true"',
+        'data-s="0.6" aria-pressed="false"',
+    )
+    head = head.replace(
+        'data-s="1" aria-pressed="false"',
+        'data-s="1" aria-pressed="true"',
+    )
+    head = head.replace(
+        'data-s="0.1" aria-pressed="true"',
+        'data-s="0.1" aria-pressed="false"',
+    )
+
+    substitutions = (
+        (r"<title>.*?</title>", f"<title>{title}</title>"),
+        (r'<h2 class="sr-only">.*?</h2>', f'<h2 class="sr-only">{sr_only}</h2>'),
+        (r'<p class="eyebrow">.*?</p>', f'<p class="eyebrow">{eyebrow}</p>'),
+        (r"<h1>.*?</h1>", f"<h1>{headline}</h1>"),
+        (r'<p class="lede">.*?</p>', f'<p class="lede">{lede}</p>'),
+        (
+            r'<div class="cap">.*?</div>',
+            f'<div class="cap"><span>{cap}</span>'
+            "<span>Corridor half-width <b>±0.61 m</b>; freezes on torso crossing "
+            "or first DQ gate</span><span><b>Drag</b> to orbit, <b>scroll</b> to zoom, "
+            "<b>space</b> to pause</span></div>",
+        ),
+        (
+            r'<div class="story">.*?</div>\s*</div>\s*<script>',
+            f'<div class="story"><p>{story}</p></div>\n</div>\n<script>',
+        ),
+    )
+    for pattern, replacement in substitutions:
+        head = re.sub(pattern, replacement, head, count=1, flags=re.S)
+    head = inject_policy_nav(head, active)
+    payload = json.dumps(data, separators=(",", ":"))
+    return head + marker + payload + ";\n" + scene + "\n</script>"
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--capture", required=True, type=Path)
+    parser.add_argument("--hq", default=HQ_DEFAULT, type=Path)
+    parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument("--meta-policy", required=True)
+    parser.add_argument("--title", required=True)
+    parser.add_argument("--eyebrow", required=True)
+    parser.add_argument("--headline", required=True)
+    parser.add_argument("--lede", required=True)
+    parser.add_argument("--cap", required=True)
+    parser.add_argument("--story", required=True)
+    parser.add_argument("--sr-only", default="")
+    parser.add_argument("--active", required=True)
+    parser.add_argument("--pad", type=float, default=0.6)
+    args = parser.parse_args()
+
+    capture = json.loads(args.capture.read_text())
+    hq_all = json.loads(args.hq.read_text())["meshes"]
+    data = capture_to_data(
+        capture,
+        hq_all,
+        args.meta_policy,
+        pad=args.pad,
+    )
+    sr_only = args.sr_only or (
+        f"{args.headline}: Unitree G1 policy replay on a ±0.61 m corridor."
+    )
+    html = assemble_html(
+        data,
+        title=args.title,
+        eyebrow=args.eyebrow,
+        headline=args.headline,
+        lede=args.lede,
+        cap=args.cap,
+        story=args.story,
+        sr_only=sr_only,
+        active=args.active,
+    )
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(html)
+    finishes = [policy["finish"] for policy in data["policies"]]
+    disqualifications = [
+        (policy.get("dq_time"), policy.get("dq_reason")) for policy in data["policies"]
+    ]
+    lateral = [policy["max_lateral_m"] for policy in data["policies"]]
+    print(
+        f"wrote {args.out} ({args.out.stat().st_size} bytes) "
+        f"finishes={finishes} dq={disqualifications} max_lat={lateral}"
+    )
 
 
 if __name__ == "__main__":

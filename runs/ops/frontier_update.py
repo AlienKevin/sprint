@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Recompute, capture, render, and deploy the current policy frontier."""
+
 from __future__ import annotations
 
 import argparse
@@ -29,6 +30,7 @@ ORG_ID = "team_SNgoAcFfHYXYdUIXhj16bGek"
 VERCEL_SCOPE = "alienkevins-projects"
 TIME_TOLERANCE_SECONDS = 0.001
 DEPLOY_DEBOUNCE_SECONDS = 300
+CAPTURE_MAX_ATTEMPTS = 3
 PIPELINE_LOCK = ROOT / "runs" / "ops" / ".frontier-pipeline.lock"
 
 
@@ -107,7 +109,11 @@ def read_ledger(path: Path) -> LedgerRead:
         try:
             row = json.loads(encoded)
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-            suffix = "partial" if number == len(lines) and not raw.endswith(b"\n") else "malformed"
+            suffix = (
+                "partial"
+                if number == len(lines) and not raw.endswith(b"\n")
+                else "malformed"
+            )
             errors.append(f"line {number}: {suffix} JSON ({exc})")
             continue
         if not isinstance(row, dict):
@@ -119,9 +125,7 @@ def read_ledger(path: Path) -> LedgerRead:
 
 def row_terminal(row: dict[str, Any]) -> bool:
     return bool(
-        row.get("finished_at")
-        or row.get("error")
-        or row.get("rewards") is not None
+        row.get("finished_at") or row.get("error") or row.get("rewards") is not None
     )
 
 
@@ -129,8 +133,12 @@ def ledger_counts(read: LedgerRead) -> dict[str, int]:
     rows = read.rows
     return {
         "submitted": len(rows),
-        "queued": sum(not row.get("started_at") and not row_terminal(row) for row in rows),
-        "running": sum(bool(row.get("started_at")) and not row_terminal(row) for row in rows),
+        "queued": sum(
+            not row.get("started_at") and not row_terminal(row) for row in rows
+        ),
+        "running": sum(
+            bool(row.get("started_at")) and not row_terminal(row) for row in rows
+        ),
         "scored": sum(row.get("rewards") is not None for row in rows),
         "error": sum(bool(row.get("error")) for row in rows),
         "terminal": sum(row_terminal(row) for row in rows),
@@ -228,16 +236,16 @@ class Candidate:
     policy_path: str | None
 
 
-def candidates_from_rows(trial: Path, rows: Sequence[dict[str, Any]]) -> list[Candidate]:
+def candidates_from_rows(
+    trial: Path, rows: Sequence[dict[str, Any]]
+) -> list[Candidate]:
     candidates: list[Candidate] = []
     for row in rows:
         rewards = row.get("rewards")
         if not isinstance(rewards, dict) or row.get("error"):
             continue
         valid = _as_number(rewards.get("valid_run"))
-        best = _as_number(
-            rewards.get("best_100m_s", rewards.get("best_valid_100m_s"))
-        )
+        best = _as_number(rewards.get("best_100m_s", rewards.get("best_valid_100m_s")))
         if valid != 1.0 or best is None or best <= 0:
             continue
         try:
@@ -292,9 +300,7 @@ def graded_policy_records(
                 if name.startswith("gate_") and _as_number(value) == 0.0
             ]
         valid = _as_number(rewards.get("valid_run")) == 1.0
-        best = _as_number(
-            rewards.get("best_100m_s", rewards.get("best_valid_100m_s"))
-        )
+        best = _as_number(rewards.get("best_100m_s", rewards.get("best_valid_100m_s")))
         records.append(
             {
                 "index": index,
@@ -327,10 +333,7 @@ def compute_frontier(candidates: Sequence[Candidate]) -> tuple[list[Candidate], 
     if not use_robustness:
         best = candidates[0]
         for candidate in candidates[1:]:
-            if (
-                candidate.time_seconds
-                < best.time_seconds - TIME_TOLERANCE_SECONDS
-            ):
+            if candidate.time_seconds < best.time_seconds - TIME_TOLERANCE_SECONDS:
                 best = candidate
         return [best], False
 
@@ -340,19 +343,20 @@ def compute_frontier(candidates: Sequence[Candidate]) -> tuple[list[Candidate], 
             left.time_seconds <= right.time_seconds + TIME_TOLERANCE_SECONDS
         )
         robustness_not_worse = left.robustness >= right.robustness
-        time_better = (
-            left.time_seconds < right.time_seconds - TIME_TOLERANCE_SECONDS
-        )
+        time_better = left.time_seconds < right.time_seconds - TIME_TOLERANCE_SECONDS
         robustness_better = left.robustness > right.robustness
         same_point = (
-            abs(left.time_seconds - right.time_seconds)
-            <= TIME_TOLERANCE_SECONDS
+            abs(left.time_seconds - right.time_seconds) <= TIME_TOLERANCE_SECONDS
             and abs(left.robustness - right.robustness) <= 1e-12
         )
-        return time_not_worse and robustness_not_worse and (
-            time_better
-            or robustness_better
-            or (same_point and left.index < right.index)
+        return (
+            time_not_worse
+            and robustness_not_worse
+            and (
+                time_better
+                or robustness_better
+                or (same_point and left.index < right.index)
+            )
         )
 
     frontier = [
@@ -455,6 +459,83 @@ def record_error(state: dict[str, Any], message: str) -> None:
     del errors[:-100]
 
 
+def renderer_source_hash() -> str:
+    """Identify the exact checked-in renderer implementation used by a capture."""
+    digest = hashlib.sha256()
+    for path in (
+        BUILD_SCRIPT,
+        BUILD_SCRIPT.parent / "_lane_chrome" / "scene_lane.js",
+        BUILD_SCRIPT.parent / "_lane_chrome" / "sprint-3d.html",
+    ):
+        digest.update(path.name.encode())
+        digest.update(b"\0")
+        digest.update(sha256_file(path).encode())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def reconcile_capture_queue(state: dict[str, Any], renderer_hash: str) -> set[str]:
+    """Fence stale renderer work and recover an interrupted current attempt.
+
+    There is at most one actionable queue row per policy and renderer version.
+    A renderer code change permits a fresh bounded attempt without discarding
+    the prior error rows, while an unchanged broken renderer stays terminal.
+    """
+    queue = state.setdefault("capture_queue", [])
+    current: set[str] = set()
+    captured = state.setdefault("captures", {})
+    for item in queue:
+        policy_hash = str(item.get("policy_hash") or "")
+        if not policy_hash:
+            continue
+        if captured.get(policy_hash, {}).get("valid"):
+            if item.get("status") in {"queued", "running"}:
+                item["status"] = "captured"
+                item["finished_at"] = utc_now()
+            continue
+        if item.get("renderer_hash") != renderer_hash:
+            if item.get("status") in {"queued", "running"}:
+                item["status"] = "superseded_renderer"
+                item["finished_at"] = utc_now()
+            continue
+        if policy_hash in current:
+            if item.get("status") in {"queued", "running"}:
+                item["status"] = "superseded_duplicate"
+                item["finished_at"] = utc_now()
+            continue
+        current.add(policy_hash)
+        if item.get("status") == "running":
+            attempts = int(item.get("attempts") or 0)
+            item["interrupted_at"] = utc_now()
+            item["status"] = "queued" if attempts < CAPTURE_MAX_ATTEMPTS else "error"
+            if attempts >= CAPTURE_MAX_ATTEMPTS:
+                item["error"] = "capture worker terminated at retry limit"
+                item["finished_at"] = utc_now()
+    return current
+
+
+def enqueue_capture(
+    state: dict[str, Any],
+    *,
+    policy_hash: str,
+    index: int,
+    renderer_hash: str,
+    story: str | None = None,
+) -> None:
+    item: dict[str, Any] = {
+        "policy_hash": policy_hash,
+        "index": index,
+        "queued_at": utc_now(),
+        "status": "queued",
+        "attempts": 0,
+        "max_attempts": CAPTURE_MAX_ATTEMPTS,
+        "renderer_hash": renderer_hash,
+    }
+    if story:
+        item["story"] = story
+    state.setdefault("capture_queue", []).append(item)
+
+
 def scan_frontier(
     *, job: Path, trial: Path, state_path: Path, web: Path = WEB_DEFAULT
 ) -> dict[str, Any]:
@@ -493,10 +574,13 @@ def scan_frontier(
         }
 
     queue = state.setdefault("capture_queue", [])
+    renderer_hash = renderer_source_hash()
+    attempted_hashes = reconcile_capture_queue(state, renderer_hash)
     queued_hashes = {
         item.get("policy_hash")
         for item in queue
-        if item.get("status") in {"queued", "running"}
+        if item.get("renderer_hash") == renderer_hash
+        and item.get("status") in {"queued", "running"}
     }
     captured = set(state.setdefault("captures", {}))
     for candidate in frontier:
@@ -504,17 +588,17 @@ def scan_frontier(
         if (
             policy_hash
             and policy_hash not in previous
-            and policy_hash not in queued_hashes
+            and policy_hash not in attempted_hashes
             and policy_hash not in captured
         ):
-            queue.append(
-                {
-                    "policy_hash": policy_hash,
-                    "index": candidate.index,
-                    "queued_at": utc_now(),
-                    "status": "queued",
-                }
+            enqueue_capture(
+                state,
+                policy_hash=policy_hash,
+                index=candidate.index,
+                renderer_hash=renderer_hash,
             )
+            attempted_hashes.add(policy_hash)
+            queued_hashes.add(policy_hash)
 
     # Every fresh verifier now records one representative pose replay. Publish
     # all unique graded policies—not only successes—so falls, lane exits, and
@@ -524,18 +608,17 @@ def scan_frontier(
         policy_hash = str(record["policy_hash"])
         if (
             record.get("replay_path")
-            and policy_hash not in queued_hashes
+            and policy_hash not in attempted_hashes
             and policy_hash not in captured
         ):
-            queue.append(
-                {
-                    "policy_hash": policy_hash,
-                    "index": record["index"],
-                    "queued_at": utc_now(),
-                    "status": "queued",
-                    "story": "valid" if record["valid_run"] else "failure",
-                }
+            enqueue_capture(
+                state,
+                policy_hash=policy_hash,
+                index=record["index"],
+                renderer_hash=renderer_hash,
+                story="valid" if record["valid_run"] else "failure",
             )
+            attempted_hashes.add(policy_hash)
             queued_hashes.add(policy_hash)
 
     for item in queue:
@@ -677,8 +760,15 @@ def run_checked(command: Sequence[str], *, cwd: Path | None = None) -> str:
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        check=True,
+        check=False,
     )
+    if completed.returncode != 0:
+        rendered = " ".join(str(part) for part in command)
+        output = completed.stdout[-8_000:].strip()
+        raise RuntimeError(
+            f"command failed with exit {completed.returncode}: {rendered}"
+            + (f"\n{output}" if output else "")
+        )
     return completed.stdout
 
 
@@ -699,7 +789,9 @@ def capture_and_render(
     web_capture = web / "captures" / f"{label}.json"
     web_html = web / "replay" / f"{label}.html"
 
-    with tempfile.TemporaryDirectory(prefix="sprint-frontier-", dir=state_path.parent) as raw:
+    with tempfile.TemporaryDirectory(
+        prefix="sprint-frontier-", dir=state_path.parent
+    ) as raw:
         temporary = Path(raw)
         capture_tmp = temporary / "capture.json"
         html_tmp = temporary / "replay.html"
@@ -707,7 +799,9 @@ def capture_and_render(
         valid = bool(policy.get("valid_run"))
         time_value = policy.get("best_100m_s")
         failure = ", ".join(policy.get("failed_gates") or ["no valid finish"])
-        headline = f"{float(time_value):.3f} s" if valid and time_value else "Did not finish"
+        headline = (
+            f"{float(time_value):.3f} s" if valid and time_value else "Did not finish"
+        )
         lede = (
             f"Valid 100 m policy: <b>{float(time_value):.3f} s</b>."
             if valid and time_value
@@ -968,13 +1062,10 @@ def run_worker(
             if not queued:
                 break
             policy_hash = str(queued["policy_hash"])
-            state = scan_frontier(
-                job=job, trial=trial, state_path=state_path, web=web
-            )
+            state = scan_frontier(job=job, trial=trial, state_path=state_path, web=web)
             policy_record = state.get("policies", {}).get(policy_hash, {})
-            if (
-                policy_hash not in state.get("frontier", [])
-                and not policy_record.get("replay_path")
+            if policy_hash not in state.get("frontier", []) and not policy_record.get(
+                "replay_path"
             ):
                 for item in state.get("capture_queue", []):
                     if item.get("policy_hash") == policy_hash:
@@ -990,6 +1081,8 @@ def run_worker(
             )
             queued["status"] = "running"
             queued["started_at"] = utc_now()
+            queued["attempts"] = int(queued.get("attempts") or 0) + 1
+            queued["max_attempts"] = CAPTURE_MAX_ATTEMPTS
             atomic_write_json(state_path, state)
             try:
                 capture_and_render(
@@ -999,9 +1092,13 @@ def run_worker(
                     policy_hash=policy_hash,
                 )
             except Exception as exc:
-                queued["status"] = "error"
-                queued["finished_at"] = utc_now()
                 queued["error"] = str(exc)
+                if int(queued["attempts"]) < CAPTURE_MAX_ATTEMPTS:
+                    queued["status"] = "queued"
+                    queued["retry_queued_at"] = utc_now()
+                else:
+                    queued["status"] = "error"
+                    queued["finished_at"] = utc_now()
                 record_error(state, f"capture {policy_hash[:12]}: {exc}")
                 atomic_write_json(state_path, state)
             state = load_state(state_path, job, trial, web)
@@ -1009,9 +1106,7 @@ def run_worker(
         state = scan_frontier(job=job, trial=trial, state_path=state_path, web=web)
         write_web_policy_indexes(state_path, state, web)
         if deploy:
-            state = scan_frontier(
-                job=job, trial=trial, state_path=state_path, web=web
-            )
+            state = scan_frontier(job=job, trial=trial, state_path=state_path, web=web)
             write_web_policy_indexes(state_path, state, web)
             ready = all(
                 candidate.get("policy_hash")
@@ -1065,9 +1160,7 @@ def main() -> int:
             if not acquired:
                 print(json.dumps({"status": "busy"}, indent=2))
                 return 0
-            state = scan_frontier(
-                job=job, trial=trial, state_path=state_path, web=web
-            )
+            state = scan_frontier(job=job, trial=trial, state_path=state_path, web=web)
     else:
         state = run_worker(
             job=job,

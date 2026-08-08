@@ -25,6 +25,7 @@ runs/lane_capture_*.json
 runs/regrade/
 runs/ops/lane-*/
 runs/ops/smoke-*/
+runs/ops/canary-*/
 runs/ops/blind-verifier/
 runs/ops/modal-image-warmup.json
 runs/ops/*.lock
@@ -33,6 +34,8 @@ runs/ops/*.log
 runs/ops/batches/
 runs/monitor-*-telemetry.csv
 runs/.modal-*
+runs/.canary-*
+runs/CANARY_*.md
 runs/.hub_track_state.json
 runs/_lane_chrome/
 runs/captures/

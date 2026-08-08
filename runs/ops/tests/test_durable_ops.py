@@ -104,6 +104,10 @@ class DurableOpsTests(unittest.TestCase):
             }
             (trial / "agent" / "usage-audit.json").write_text(json.dumps(audit))
 
+            duplicate = trial / "agent" / "codex-state" / "sessions"
+            duplicate.mkdir(parents=True)
+            (duplicate / source.name).write_bytes(source.read_bytes())
+
             ready, details = sprintctl.usage_audit_ready(
                 trial, {"model": "openai/gpt-5.6-terra"}
             )
@@ -440,7 +444,10 @@ while true; do sleep 1; done
             watcher = subprocess.Popen(
                 [
                     "bash",
-                    str(ROOT / "challenge/g1-sprint-100m-lane/environment/sprint-snapshot-loop.sh"),
+                    str(
+                        ROOT
+                        / "challenge/g1-sprint-100m-lane/environment/sprint-snapshot-loop.sh"
+                    ),
                     "--run-id",
                     "test-watch",
                     "--agent-kind",
@@ -581,7 +588,9 @@ def record(name):
 signal.signal(signal.SIGINT, lambda *_: record("INT"))
 def terminate(*_):
     record("TERM")
-    raise SystemExit(143)
+    # Codex 0.147.0 may surface an interrupted unified_exec as exit 1. The
+    # wrapper must classify it from the trusted stop handshake, not this code.
+    raise SystemExit(1)
 signal.signal(signal.SIGTERM, terminate)
 while True:
     time.sleep(1)
@@ -595,12 +604,18 @@ while True:
                     "CODEX_HOME": str(codex_home),
                     "SPRINT_RUNTIME_DIR": str(runtime),
                     "SPRINT_AGENT_LOG_DIR": str(agent_logs),
+                    "SPRINT_DURABLE_DIR": str(durable),
+                    "SPRINT_RUN_ID": "test-codex",
+                    "SPRINT_STOP_ACK_TIMEOUT_SECONDS": "30",
                 }
             )
             wrapper = subprocess.Popen(
                 [
                     "bash",
-                    str(ROOT / "challenge/g1-sprint-100m-lane/environment/sprint-codex-exec-wrapper.sh"),
+                    str(
+                        ROOT
+                        / "challenge/g1-sprint-100m-lane/environment/sprint-codex-exec-wrapper.sh"
+                    ),
                     str(launcher),
                     "exec",
                     "--json",
@@ -618,7 +633,10 @@ while True:
             watcher = subprocess.Popen(
                 [
                     "bash",
-                    str(ROOT / "challenge/g1-sprint-100m-lane/environment/sprint-snapshot-loop.sh"),
+                    str(
+                        ROOT
+                        / "challenge/g1-sprint-100m-lane/environment/sprint-snapshot-loop.sh"
+                    ),
                     "--run-id",
                     "test-codex",
                     "--agent-kind",
@@ -959,7 +977,9 @@ while True:
             def runner(command, cwd):
                 commands.append((command, cwd))
                 if command[1] == "deploy":
-                    return "Production: https://sprint-new-alienkevins-projects.vercel.app"
+                    return (
+                        "Production: https://sprint-new-alienkevins-projects.vercel.app"
+                    )
                 return "Success"
 
             deployed, _ = frontier_update.deploy_if_needed(
@@ -983,9 +1003,7 @@ while True:
                     frontier_update.VERCEL_SCOPE,
                 ],
             )
-            self.assertEqual(
-                state["production_alias"], "https://g1-sprint.vercel.app"
-            )
+            self.assertEqual(state["production_alias"], "https://g1-sprint.vercel.app")
 
 
 if __name__ == "__main__":

@@ -472,8 +472,7 @@ def request_stop(run_id: str, *, reason: str = "operator_stop") -> dict[str, Any
         import gpu_worker
 
         gpu_stopped = [
-            str(item.get("job_id"))
-            for item in gpu_worker.stop_all(run, reason=reason)
+            str(item.get("job_id")) for item in gpu_worker.stop_all(run, reason=reason)
         ]
     except Exception as exc:  # noqa: BLE001
         gpu_stop_error = f"{type(exc).__name__}: {exc}"
@@ -967,7 +966,10 @@ def modal_billing_ready(state_dir: Path, run_id: str) -> tuple[bool, list[str]]:
         if not isinstance(payload.get(key), dict):
             details.append(f"Modal provider billing {key} is missing")
     volume_storage = payload.get("volume_storage")
-    if not isinstance(volume_storage, dict) or volume_storage.get("status") != "captured":
+    if (
+        not isinstance(volume_storage, dict)
+        or volume_storage.get("status") != "captured"
+    ):
         details.append("Modal Volume storage snapshot is missing")
     return not details, details
 
@@ -1000,9 +1002,7 @@ def usage_audit_ready(trial: Path, run: dict[str, Any]) -> tuple[bool, list[str]
 
     expected_model = str(run.get("model") or "").split("/", 1)[-1]
     expected_service_tier = (
-        "default"
-        if expected_model in {"gpt-5.6-terra", "gpt-5.6-luna"}
-        else None
+        "default" if expected_model in {"gpt-5.6-terra", "gpt-5.6-luna"} else None
     )
     for index, request in enumerate(requests, start=1):
         if not isinstance(request, dict):
@@ -1069,7 +1069,12 @@ def usage_audit_ready(trial: Path, run: dict[str, Any]) -> tuple[bool, list[str]
         source_matches = list(
             {path.resolve(): path for path in source_matches}.values()
         )
-    if len(source_matches) != 1 or source_hash != sha256_file(source_matches[0]):
+    # Harbor intentionally preserves the same Codex session in both
+    # agent/sessions and the restartable codex-state allowlist. Accept those
+    # duplicate paths only when every copy matches the signed provenance hash.
+    if not source_matches or any(
+        source_hash != sha256_file(path) for path in source_matches
+    ):
         details.append("usage audit source session checksum mismatch")
     return not details, details
 
@@ -1160,7 +1165,12 @@ def batch_site_deployed_ready(state_dir: Path, run: dict[str, Any]) -> bool:
     if not batch_id:
         return True
     marker_path = state_dir / "BATCH_SITE_DEPLOYED.json"
-    policy_index = Path(str(run.get("site_dir", WEB_DEFAULT))) / "data" / "policies" / f"{run['run_id']}.json"
+    policy_index = (
+        Path(str(run.get("site_dir", WEB_DEFAULT)))
+        / "data"
+        / "policies"
+        / f"{run['run_id']}.json"
+    )
     try:
         marker = json.loads(marker_path.read_text())
         return bool(

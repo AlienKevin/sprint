@@ -16,7 +16,15 @@ AGENT_LOG_DIR=${SPRINT_AGENT_LOG_DIR:-/logs/agent}
 CODEX_HOME_DIR=${CODEX_HOME:-/tmp/codex-home}
 PROCESS_FILE="$AGENT_STATE_DIR/codex-process"
 EXPECTED_INTERRUPT="$AGENT_STATE_DIR/expected-interrupt"
+DURABLE_DIR=${SPRINT_DURABLE_DIR:-/durable}
+RUN_ID=${SPRINT_RUN_ID:-}
+STOP_ACK_TIMEOUT_SECONDS=${SPRINT_STOP_ACK_TIMEOUT_SECONDS:-600}
 CODEX_EXECUTABLE=${SPRINT_CODEX_EXECUTABLE:-}
+
+if [[ ! "$STOP_ACK_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "SPRINT_STOP_ACK_TIMEOUT_SECONDS must be a positive integer" >&2
+  exit 2
+fi
 
 umask 077
 mkdir -p "$AGENT_STATE_DIR" "$AGENT_LOG_DIR" "$CODEX_HOME_DIR"
@@ -141,7 +149,40 @@ fi
 copy_codex_state
 rm -f "$PROCESS_FILE"
 
-if [[ -f "$EXPECTED_INTERRUPT" && ( "$rc" == "130" || "$rc" == "143" ) ]]; then
-  exit 0
+if [[ -f "$EXPECTED_INTERRUPT" ]]; then
+  if [[ -z "$RUN_ID" ]]; then
+    echo "requested interrupt is missing SPRINT_RUN_ID" >&2
+    exit 75
+  fi
+  stop_ack="$DURABLE_DIR/runs/$RUN_ID/STOP_ACK"
+  deadline=$((SECONDS + STOP_ACK_TIMEOUT_SECONDS))
+  while ((SECONDS < deadline)); do
+    if python3 - "$stop_ack" "$RUN_ID" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+try:
+    payload = json.loads(path.read_text())
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(1)
+valid = (
+    payload.get("run_id") == sys.argv[2]
+    and payload.get("reason") == "operator_stop"
+    and bool(payload.get("final_snapshot_id"))
+)
+raise SystemExit(0 if valid else 1)
+PY
+    then
+      # Codex 0.147.0 can report exit 1 when SIGINT invalidates an in-flight
+      # unified_exec process. The trusted interrupt marker plus a checksummed
+      # durable STOP_ACK prove this was the requested stop, not an agent crash.
+      exit 0
+    fi
+    sleep 1
+  done
+  echo "timed out waiting for durable operator-stop acknowledgement" >&2
+  exit 75
 fi
 exit "$rc"

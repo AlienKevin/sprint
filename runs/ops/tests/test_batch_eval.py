@@ -130,7 +130,9 @@ def test_dq_replay_is_queued_and_public_index_is_path_safe(tmp_path: Path) -> No
     digest = frontier_update.sha256_file(policy)
     assert state["policies"][digest]["failed_gates"] == ["in_lane"]
     assert state["policies"][digest]["replay_path"] == str(replay)
-    queued = next(item for item in state["capture_queue"] if item["policy_hash"] == digest)
+    queued = next(
+        item for item in state["capture_queue"] if item["policy_hash"] == digest
+    )
     assert queued["status"] == "queued"
     assert queued["story"] == "failure"
 
@@ -144,6 +146,115 @@ def test_dq_replay_is_queued_and_public_index_is_path_safe(tmp_path: Path) -> No
     assert str(tmp_path) not in encoded
     assert public["policies"][0]["replay_ready"] is True
     assert public["policies"][0]["replay_url"].startswith("/replay/frontier-")
+
+
+def test_replay_renderer_exposes_complete_cli() -> None:
+    completed = subprocess.run(
+        [sys.executable, str(ROOT / "runs/build_lane_3d.py"), "--help"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout
+    assert "--capture" in completed.stdout
+    assert "--meta-policy" in completed.stdout
+
+
+def test_capture_retries_are_bounded_and_renderer_versioned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job = tmp_path / "job"
+    trial = job / "task__trial"
+    web = tmp_path / "web"
+    state_path = tmp_path / "eval-luna-1" / "frontier-state.json"
+    attempt = trial / "artifacts/continuous/attempts/0001-fall.pt"
+    policy = attempt / "artifacts/app/submission/policy.pt"
+    replay = attempt / "verifier/replay.json"
+    policy.parent.mkdir(parents=True)
+    replay.parent.mkdir(parents=True)
+    state_path.parent.mkdir()
+    web.mkdir()
+    policy.write_bytes(b"failed-policy")
+    replay.write_text('{"schema_version":1,"body_names":[],"frames":[]}\n')
+    (attempt / "verifier/sprint_results.json").write_text(
+        json.dumps({"valid_run": False, "failed_gates": ["finished"]})
+    )
+    ledger = trial / "artifacts/continuous/ledger.jsonl"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(
+        json.dumps(
+            {
+                "index": 1,
+                "name": "fall.pt",
+                "submitted_at": "2026-08-08T00:00:00Z",
+                "finished_at": "2026-08-08T00:01:00Z",
+                "rewards": {"valid_run": 0.0, "gate_finished": 0.0},
+            }
+        )
+        + "\n"
+    )
+    monkeypatch.setattr(frontier_update, "PIPELINE_LOCK", tmp_path / "pipeline.lock")
+    monkeypatch.setattr(frontier_update, "renderer_source_hash", lambda: "renderer-a")
+    calls = 0
+
+    def broken_capture(**_kwargs: object) -> None:
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("renderer diagnostic")
+
+    monkeypatch.setattr(frontier_update, "capture_and_render", broken_capture)
+    state = frontier_update.run_worker(
+        job=job,
+        trial=trial,
+        state_path=state_path,
+        web=web,
+        deploy=False,
+        debounce_seconds=0,
+    )
+    current = [
+        item
+        for item in state["capture_queue"]
+        if item.get("renderer_hash") == "renderer-a"
+    ]
+    assert calls == frontier_update.CAPTURE_MAX_ATTEMPTS
+    assert len(current) == 1
+    assert current[0]["status"] == "error"
+    assert current[0]["attempts"] == frontier_update.CAPTURE_MAX_ATTEMPTS
+    assert "renderer diagnostic" in current[0]["error"]
+
+    frontier_update.run_worker(
+        job=job,
+        trial=trial,
+        state_path=state_path,
+        web=web,
+        deploy=False,
+        debounce_seconds=0,
+    )
+    assert calls == frontier_update.CAPTURE_MAX_ATTEMPTS
+
+    monkeypatch.setattr(frontier_update, "renderer_source_hash", lambda: "renderer-b")
+    updated = frontier_update.scan_frontier(
+        job=job,
+        trial=trial,
+        state_path=state_path,
+        web=web,
+    )
+    replacement = [
+        item
+        for item in updated["capture_queue"]
+        if item.get("renderer_hash") == "renderer-b"
+    ]
+    assert len(replacement) == 1
+    assert replacement[0]["status"] == "queued"
+    assert replacement[0]["attempts"] == 0
+
+
+def test_run_checked_preserves_failure_output() -> None:
+    with pytest.raises(RuntimeError, match="renderer diagnostic"):
+        frontier_update.run_checked(
+            [sys.executable, "-c", "print('renderer diagnostic'); raise SystemExit(9)"]
+        )
 
 
 def test_website_javascript_parses_and_has_no_legacy_opus_copy() -> None:
