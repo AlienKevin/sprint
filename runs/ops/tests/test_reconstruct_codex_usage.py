@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "reconstruct_codex_usage.py"
-UV = "/home/ubuntu/.local/bin/uv"
-HARBOR = str(ROOT / "harbor")
 
 
 def write_session(state: Path, attempt: int, session_id: str, timestamp: str) -> None:
@@ -76,14 +75,7 @@ def test_reconstructs_all_cpu_attempts_and_aggregates_cost(tmp_path: Path) -> No
 
     subprocess.run(
         [
-            UV,
-            "run",
-            "--project",
-            HARBOR,
-            "--frozen",
-            "--extra",
-            "modal",
-            "python",
+            sys.executable,
             str(SCRIPT),
             "--state-dir",
             str(tmp_path),

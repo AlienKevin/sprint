@@ -1,10 +1,8 @@
 """Pure lease, retry, and host-lock helpers for durable GPU jobs."""
 from __future__ import annotations
 
-import json
 import os
 import time
-import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator

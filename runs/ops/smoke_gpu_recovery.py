@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -98,7 +97,6 @@ marker = checkpoint_dir.parent.parent / "recovery-smoke-marker.json"
 durable_write(marker, final)
 print("ATTEMPT2_RESUMED_AND_SUCCEEDED", json.dumps(final, sort_keys=True), flush=True)
 """
-    run_id = str(run["run_id"])
     shell = (
         "set -euo pipefail\n"
         "cat > /app/gpu_recovery_probe.py <<'PY'\n"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import sys
 import tempfile
@@ -24,8 +25,6 @@ import supervise_lane  # noqa: E402
 import validate_agent_env  # noqa: E402
 
 # Timeline module is named with hyphens on disk; load via importlib.
-import importlib.util
-
 _spec = importlib.util.spec_from_file_location(
     "sprint_gpu_timeline", ENV / "sprint-gpu-timeline.py"
 )

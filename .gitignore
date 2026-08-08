@@ -1,6 +1,7 @@
 # Secrets
 .env
 .env.*
+!.env.example
 .oauth_token
 *.pem
 runs/.secrets/
@@ -36,6 +37,7 @@ runs/_lane_chrome/
 runs/captures/
 runs/compare/
 runs/dynamics_analysis/
+trials/
 dist/
 node_modules/
 .modal/

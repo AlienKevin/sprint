@@ -1,6 +1,7 @@
 """CPU-only failure simulations for the preemptible GPU job contract."""
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import signal
@@ -8,7 +9,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -22,8 +22,6 @@ sys.path.insert(0, str(ENV))
 import gpu_claim  # noqa: E402
 import gpu_worker  # noqa: E402
 import sprint_resilience as resilience  # noqa: E402
-
-import importlib.util
 
 _worker_spec = importlib.util.spec_from_file_location(
     "sprint_gpu_worker_run_resilience", ENV / "sprint-gpu-worker-run.py"
