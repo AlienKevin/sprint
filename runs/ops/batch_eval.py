@@ -36,6 +36,8 @@ TRIALS_PER_MODEL = 3
 REASONING_EFFORT = "max"
 RUN_HOURS = 24.0
 POLL_SECONDS = 30
+SHARED_VERIFIER_STALL_SECONDS = 15 * 60
+SHARED_VERIFIER_EVENTS = SCRIPT_DIR / "blind-verifier" / "scheduler-events.jsonl"
 # The production Vercel team is on Hobby. A 20-minute rolling publication
 # cadence caps this 24-hour batch at 72 live deployments, leaving headroom
 # below the 100/day Hobby allowance for warmups/manual releases. The final
@@ -431,6 +433,83 @@ def log_alerts(run_id: str) -> list[dict[str, str]]:
     return alerts
 
 
+def shared_verifier_stall_alerts(
+    payload: dict[str, Any], *, now: dt.datetime | None = None
+) -> list[dict[str, str]]:
+    """Alert when accepted blind submissions stop making scheduler progress.
+
+    A run can legitimately enqueue a burst, and one verifier evaluation may use
+    the full ten-minute task timeout.  Queue depth alone is therefore not a
+    fault.  What matters is whether the shared scheduler has acquired or
+    released a slot recently.  The oldest still-pending submission is also a
+    progress reference so a fresh queue is not compared with stale events from
+    an earlier batch.
+    """
+    pending = sum(
+        int(arm.get("ledger", {}).get(state, 0) or 0)
+        for arm in payload.get("arms", [])
+        for state in ("queued", "running")
+    )
+    if pending == 0:
+        return []
+
+    scheduler_progress: list[dt.datetime] = []
+    try:
+        for raw in SHARED_VERIFIER_EVENTS.read_text().splitlines():
+            try:
+                event = json.loads(raw)
+                if event.get("event") in {"acquired", "released"}:
+                    scheduler_progress.append(parse_time(str(event["at"])))
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+    except OSError:
+        pass
+
+    pending_submitted: list[dt.datetime] = []
+    for arm in payload.get("arms", []):
+        run_id = arm.get("run_id")
+        if not isinstance(run_id, str):
+            continue
+        for ledger in (SCRIPT_DIR / run_id / "harbor-jobs").glob(
+            "*/*/artifacts/continuous/ledger.jsonl"
+        ):
+            try:
+                rows = ledger.read_text().splitlines()
+            except OSError:
+                continue
+            for raw in rows:
+                try:
+                    row = json.loads(raw)
+                    if row.get("finished_at") is None and row.get("error") is None:
+                        pending_submitted.append(parse_time(str(row["submitted_at"])))
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                    continue
+
+    references = []
+    if scheduler_progress:
+        references.append(max(scheduler_progress))
+    if pending_submitted:
+        references.append(min(pending_submitted))
+    if not references:
+        return []
+    current = now or dt.datetime.now(dt.timezone.utc)
+    last_progress = max(references)
+    age_seconds = (current - last_progress).total_seconds()
+    if age_seconds <= SHARED_VERIFIER_STALL_SECONDS:
+        return []
+    return [
+        {
+            "run_id": "batch",
+            "kind": "shared_verifier_stalled",
+            "source": SHARED_VERIFIER_EVENTS.name,
+            "count_in_tail": str(pending),
+            "pending_submissions": str(pending),
+            "last_progress_at": last_progress.isoformat(),
+            "progress_age_seconds": str(round(age_seconds)),
+        }
+    ]
+
+
 def live_run_monitor_status(run_id: str) -> dict[str, Any] | None:
     """Read the independent run monitor instead of duplicating its work.
 
@@ -613,6 +692,8 @@ def monitor_cycle(batch_id: str, *, deploy: bool = True) -> dict[str, Any]:
                 arm["stop_requested_at"] = utc_now()
                 arm["status"] = "stopping"
             cycle_alerts.extend(log_alerts(run_id))
+
+        cycle_alerts.extend(shared_verifier_stall_alerts(payload, now=now))
 
         known = {
             (item.get("run_id"), item.get("kind"), item.get("source"))

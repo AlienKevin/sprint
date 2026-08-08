@@ -91,6 +91,105 @@ def test_public_batch_never_contains_secrets_or_host_paths() -> None:
     assert "/private" not in encoded
 
 
+def test_shared_verifier_stall_alert_requires_pending_work_and_old_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events = tmp_path / "scheduler-events.jsonl"
+    monkeypatch.setattr(batch_eval, "SHARED_VERIFIER_EVENTS", events)
+    payload = {
+        "arms": [
+            {
+                "run_id": "eval-luna-1",
+                "ledger": {"queued": 2, "running": 0},
+            }
+        ]
+    }
+    now = batch_eval.parse_time("2026-08-08T12:20:00Z")
+    events.write_text(
+        json.dumps(
+            {
+                "at": "2026-08-08T12:04:59Z",
+                "event": "acquired",
+                "queue_key": "eval-luna-1",
+            }
+        )
+        + "\n"
+    )
+
+    alerts = batch_eval.shared_verifier_stall_alerts(payload, now=now)
+    assert len(alerts) == 1
+    assert alerts[0]["kind"] == "shared_verifier_stalled"
+    assert alerts[0]["pending_submissions"] == "2"
+
+    events.write_text(
+        json.dumps(
+            {
+                "at": "2026-08-08T12:05:01Z",
+                "event": "released",
+                "queue_key": "eval-luna-1",
+            }
+        )
+        + "\n"
+    )
+    assert batch_eval.shared_verifier_stall_alerts(payload, now=now) == []
+    payload["arms"][0]["ledger"] = {"queued": 0, "running": 0}
+    events.write_text("")
+    assert batch_eval.shared_verifier_stall_alerts(payload, now=now) == []
+
+
+def test_fresh_pending_submission_outranks_old_scheduler_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ops = tmp_path / "ops"
+    events = ops / "blind-verifier" / "scheduler-events.jsonl"
+    events.parent.mkdir(parents=True)
+    events.write_text(
+        json.dumps({"at": "2026-08-08T10:00:00Z", "event": "released"}) + "\n"
+    )
+    ledger = (
+        ops
+        / "eval-deepseek-1/harbor-jobs/job/task__trial/artifacts/continuous/ledger.jsonl"
+    )
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(
+        json.dumps(
+            {
+                "submitted_at": "2026-08-08T12:19:00Z",
+                "finished_at": None,
+                "error": None,
+            }
+        )
+        + "\n"
+    )
+    monkeypatch.setattr(batch_eval, "SCRIPT_DIR", ops)
+    monkeypatch.setattr(batch_eval, "SHARED_VERIFIER_EVENTS", events)
+    payload = {
+        "arms": [
+            {
+                "run_id": "eval-deepseek-1",
+                "ledger": {"queued": 1, "running": 0},
+            }
+        ]
+    }
+    now = batch_eval.parse_time("2026-08-08T12:20:00Z")
+    assert batch_eval.shared_verifier_stall_alerts(payload, now=now) == []
+
+    ledger.write_text(
+        json.dumps(
+            {
+                "submitted_at": "2026-08-08T12:00:00Z",
+                "finished_at": None,
+                "error": None,
+            }
+        )
+        + "\n"
+        + ledger.read_text()
+    )
+    alerts = batch_eval.shared_verifier_stall_alerts(payload, now=now)
+    assert len(alerts) == 1
+    assert alerts[0]["last_progress_at"] == "2026-08-08T12:00:00+00:00"
+
+
 def test_dq_replay_is_queued_and_public_index_is_path_safe(tmp_path: Path) -> None:
     job = tmp_path / "job"
     trial = job / "task__trial"
