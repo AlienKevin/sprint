@@ -983,6 +983,7 @@ def deploy_if_needed(
 
     if state.get("pending_site_hash") != current_hash:
         state["pending_site_hash"] = current_hash
+    if not state.get("site_change_first_seen_at"):
         state["site_change_first_seen_at"] = dt.datetime.fromtimestamp(
             now, tz=dt.timezone.utc
         ).strftime("%Y-%m-%dT%H:%M:%SZ")

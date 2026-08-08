@@ -984,6 +984,66 @@ while True:
             self.assertEqual(message, "no site file changes")
             self.assertEqual(state["site_status"], "noop")
 
+    def test_vercel_debounce_does_not_starve_on_continuous_site_changes(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            web = Path(raw)
+            page = web / "index.html"
+            page.write_text("first")
+            (web / ".vercel").mkdir()
+            (web / ".vercel/project.json").write_text(
+                json.dumps(
+                    {
+                        "projectId": frontier_update.PROJECT_ID,
+                        "orgId": frontier_update.ORG_ID,
+                        "projectName": "sprint",
+                    }
+                )
+            )
+            state = {"last_deployed_site_hash": "old"}
+
+            deployed, _ = frontier_update.deploy_if_needed(
+                state,
+                web=web,
+                now=1000,
+                debounce_seconds=60,
+                runner=lambda *_args: "unused",
+            )
+            self.assertFalse(deployed)
+            first_seen = state["site_change_first_seen_at"]
+            first_hash = state["pending_site_hash"]
+
+            page.write_text("second")
+            deployed, _ = frontier_update.deploy_if_needed(
+                state,
+                web=web,
+                now=1030,
+                debounce_seconds=60,
+                runner=lambda *_args: "unused",
+            )
+            self.assertFalse(deployed)
+            self.assertEqual(state["site_change_first_seen_at"], first_seen)
+            self.assertNotEqual(state["pending_site_hash"], first_hash)
+
+            commands = []
+
+            def runner(command, cwd):
+                commands.append((command, cwd))
+                if command[1] == "deploy":
+                    return "https://sprint-live-alienkevins-projects.vercel.app"
+                return "Success"
+
+            deployed, _ = frontier_update.deploy_if_needed(
+                state,
+                web=web,
+                now=1060,
+                debounce_seconds=60,
+                runner=runner,
+            )
+            self.assertTrue(deployed)
+            self.assertEqual(len(commands), 2)
+
     def test_vercel_deploy_reassigns_exact_public_alias(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             web = Path(raw)
