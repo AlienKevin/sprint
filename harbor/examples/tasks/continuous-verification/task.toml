@@ -1,0 +1,48 @@
+schema_version = "1.4"
+
+# The final verifier runs in a container of its own, so the answer has to be
+# declared as an artifact to reach it. It lands at the same absolute path, which
+# is also where continuous verification places each submission, so one test.sh
+# grades both.
+artifacts = ["/app/submission/answer.txt"]
+
+[task]
+name = "harbor/continuous-verification"
+version = "1.0.0"
+description = "Demonstrates scoring submissions in an isolated container while the agent is still working."
+authors = []
+keywords = ["verifier", "continuous", "artifacts"]
+
+[metadata]
+difficulty = "easy"
+category = "programming"
+tags = ["verifier", "continuous"]
+
+[verifier]
+timeout_sec = 120.0
+environment_mode = "separate"
+
+[verifier.continuous]
+enabled = true
+poll_interval_sec = 2.0
+watch_dir = "/app/submissions/queue"
+results_dir = "/app/submissions/results"
+submission_path = "/app/submission/answer.txt"
+max_submissions = 20
+
+[verifier.environment]
+network_mode = "no-network"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+gpus = 0
+
+[agent]
+timeout_sec = 300.0
+
+[environment]
+network_mode = "no-network"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+gpus = 0
