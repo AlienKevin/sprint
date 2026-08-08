@@ -425,6 +425,32 @@ def log_alerts(run_id: str) -> list[dict[str, str]]:
     return alerts
 
 
+def live_run_monitor_status(run_id: str) -> dict[str, Any] | None:
+    """Read the independent run monitor instead of duplicating its work.
+
+    Each lane owns a long-lived ``sprintctl monitor`` process that performs
+    telemetry, GPU dispatch, trace synchronization, and frontier updates.  The
+    batch monitor is an observer/supervisor of those lane monitors; running a
+    second full ``monitor_once`` serially here both wastes Modal API calls and
+    delays later arms in the batch.
+    """
+    state_dir = SCRIPT_DIR / run_id
+    try:
+        pid = int((state_dir / "monitor.pid").read_text().strip())
+    except (OSError, ValueError):
+        return None
+    if not sprintctl.process_alive(pid, f"sprintctl.py monitor --run-id {run_id}"):
+        return None
+    try:
+        payload = json.loads((state_dir / "status.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        _, run = sprintctl.load_run(run_id)
+        return sprintctl.status_snapshot(state_dir, run, include_remote=False)
+    if not isinstance(payload, dict) or payload.get("run_id") != run_id:
+        return None
+    return payload
+
+
 def public_batch(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "schema_version": 1,
@@ -549,7 +575,9 @@ def monitor_cycle(batch_id: str, *, deploy: bool = True) -> dict[str, Any]:
                     arm["status"] = "missing_run_state"
                 continue
             try:
-                status = sprintctl.monitor_once(run_id, upload=True)
+                status = live_run_monitor_status(run_id)
+                if status is None:
+                    status = sprintctl.monitor_once(run_id, upload=True)
                 for key in (
                     "ledger",
                     "snapshot_heartbeat_ok",

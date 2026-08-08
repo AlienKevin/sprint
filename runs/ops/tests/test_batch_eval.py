@@ -277,6 +277,30 @@ def test_batch_monitor_service_carries_absolute_uv_vercel_and_modal_profile(
     assert str(Path(sys.executable).resolve().parent) in path_arg
 
 
+def test_batch_monitor_reads_live_lane_status_without_duplicate_poll(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = "eval-luna-1"
+    state_dir = tmp_path / run_id
+    state_dir.mkdir()
+    (state_dir / "monitor.pid").write_text("1234\n")
+    expected = {
+        "schema_version": 2,
+        "run_id": run_id,
+        "updated_at": "2026-08-08T23:00:00Z",
+        "harbor_alive": True,
+    }
+    (state_dir / "status.json").write_text(json.dumps(expected))
+    monkeypatch.setattr(batch_eval, "SCRIPT_DIR", tmp_path)
+    monkeypatch.setattr(batch_eval.sprintctl, "process_alive", lambda *_args: True)
+    monkeypatch.setattr(
+        batch_eval.sprintctl,
+        "monitor_once",
+        lambda *_args, **_kwargs: pytest.fail("duplicate monitor poll"),
+    )
+    assert batch_eval.live_run_monitor_status(run_id) == expected
+
+
 def test_website_javascript_parses_and_has_no_legacy_opus_copy() -> None:
     source = (ROOT / "sprint-web/app.js").read_text()
     assert "DeepSeek V4 Flash 0731" in source
