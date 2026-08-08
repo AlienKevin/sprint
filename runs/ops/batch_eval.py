@@ -36,6 +36,11 @@ TRIALS_PER_MODEL = 3
 REASONING_EFFORT = "max"
 RUN_HOURS = 24.0
 POLL_SECONDS = 30
+# The production Vercel team is on Hobby. A 20-minute rolling publication
+# cadence caps this 24-hour batch at 72 live deployments, leaving headroom
+# below the 100/day Hobby allowance for warmups/manual releases. The final
+# completed site still bypasses this delay below.
+LIVE_SITE_DEPLOY_SECONDS = 20 * 60
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,48}$")
 ALERT_PATTERNS = {
     "provider_rate_limit": re.compile(
@@ -332,6 +337,7 @@ def launch(batch_id: str, env_file: Path, modal_profile: str) -> dict[str, Any]:
         "codex_version": CODEX_VERSION,
         "trials_per_model": TRIALS_PER_MODEL,
         "run_hours": RUN_HOURS,
+        "site_deploy_interval_seconds": LIVE_SITE_DEPLOY_SECONDS,
         "modal_profile": modal_profile,
         "preflight": report,
         "arms": matrix(batch_id),
@@ -628,7 +634,7 @@ def monitor_cycle(batch_id: str, *, deploy: bool = True) -> dict[str, Any]:
                 frontier_update.deploy_if_needed(
                     deploy_state,
                     web=WEB,
-                    debounce_seconds=60,
+                    debounce_seconds=LIVE_SITE_DEPLOY_SECONDS,
                 )
             except Exception as exc:
                 deploy_state["site_status"] = "error"

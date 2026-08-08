@@ -29,6 +29,7 @@ def test_batch_matrix_is_exact_six_arm_max_effort_contract() -> None:
     assert {
         row["resolved_model_version"] for row in rows if row["family"] == "deepseek"
     } == {"DeepSeek-V4-Flash-0731"}
+    assert batch_eval.LIVE_SITE_DEPLOY_SECONDS == 20 * 60
 
 
 def test_env_loader_reads_only_required_model_keys(tmp_path: Path) -> None:
