@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -325,6 +326,63 @@ def sync_durable_trace(
     }
     atomic_write_json(stamp, payload, mode=0o600)
     return result.returncode == 0
+
+
+def sync_durable_telemetry(
+    state_dir: Path,
+    run: dict[str, Any],
+    *,
+    force: bool = False,
+) -> bool:
+    """Import immutable in-sandbox telemetry needed for final coverage.
+
+    Host polling is intentionally a backup.  Training workers continuously
+    write their authoritative cgroup/GPU stream to the shared Volume, including
+    the samples immediately preceding abrupt preemption.  Import it once after
+    stop so finalization does not depend on a polling race or repeatedly
+    download an ever-growing 24-hour JSONL during the live run.
+    """
+    out_dir = state_dir / "telemetry"
+    stamp = out_dir / "durable-sync.json"
+    if not force and stamp.is_file():
+        try:
+            previous = json.loads(stamp.read_text())
+        except (OSError, json.JSONDecodeError):
+            previous = {}
+        if previous.get("ok") is True and previous.get("run_id") == run["run_id"]:
+            return True
+
+    prefix = f"runs/{run['run_id']}/telemetry"
+    sources = {
+        f"{prefix}/samples.jsonl": out_dir / "durable-samples.jsonl",
+        f"{prefix}/gpu-stream/samples.jsonl": out_dir / "durable-gpu-samples.jsonl",
+        f"{prefix}/gpu_timeline.jsonl": out_dir / "durable-gpu-timeline.jsonl",
+    }
+    captured: dict[str, dict[str, Any]] = {}
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for remote, local in sources.items():
+        text = volume_get_text(run, remote)
+        if text is None:
+            continue
+        atomic_write_text(local, text, mode=0o600)
+        captured[remote] = {
+            "local": str(local.relative_to(state_dir)),
+            "bytes": len(text.encode()),
+            "sha256": hashlib.sha256(text.encode()).hexdigest(),
+        }
+    ok = bool(captured)
+    atomic_write_json(
+        stamp,
+        {
+            "schema_version": 1,
+            "run_id": run["run_id"],
+            "synced_at": utc_now(),
+            "ok": ok,
+            "sources": captured,
+        },
+        mode=0o600,
+    )
+    return ok
 
 
 def build_unified_timeline(
@@ -1361,6 +1419,8 @@ def finalize(
         include_remote=include_remote,
         launch_worker=False,
     )
+    if (state_dir / "STOP_ACK.json").is_file():
+        sync_durable_telemetry(state_dir, run)
     if run.get("usage_audit_required"):
         sync_durable_trace(state_dir, run, force=True)
         reconstruct_codex_usage(state_dir, run)

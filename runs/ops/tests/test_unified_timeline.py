@@ -248,8 +248,7 @@ def fixture_run(
                 "type": "function_call_output",
                 "call_id": "call-shell-start",
                 "output": (
-                    "Wall time: 1.0000 seconds\n"
-                    "Process running with session ID 23796\n"
+                    "Wall time: 1.0000 seconds\nProcess running with session ID 23796\n"
                 ),
             },
         },
@@ -260,9 +259,7 @@ def fixture_run(
                 "type": "function_call",
                 "name": "write_stdin",
                 "call_id": "call-shell-finish",
-                "arguments": json.dumps(
-                    {"session_id": 23796, "yield_time_ms": 30_000}
-                ),
+                "arguments": json.dumps({"session_id": 23796, "yield_time_ms": 30_000}),
             },
         },
         {
@@ -478,13 +475,15 @@ def test_unified_timeline_is_joined_deduplicated_and_public_safe(
     assert payload["comparison_summary"]["best_result_epoch_ms"] == 1786104027000
     assert payload["comparison_summary"]["time_to_best_ms"] == 27_000
     assert (
-        payload["comparison_summary"]["modal_estimated_cost_at_best_usd"]
-        == 0.02657568
+        payload["comparison_summary"]["modal_estimated_cost_at_best_usd"] == 0.02657568
     )
     assert payload["comparison_summary"]["valid_submission_count"] == 2
     assert payload["comparison_summary"]["tool_call_count"] == 4
     assert payload["resource_usage_summary"]["training_gpu"]["allocation_count"] == 2
-    assert payload["resource_usage_summary"]["modal_estimate"]["estimated_cost_usd"] == 0.04904632
+    assert (
+        payload["resource_usage_summary"]["modal_estimate"]["estimated_cost_usd"]
+        == 0.04640232
+    )
     assert payload["artifacts"][1]["cost_at_submission"]["epoch_ms"] == 1786104022000
     assert payload["artifacts"][1]["cost_at_result"] == {
         "epoch_ms": 1786104027000,
@@ -502,6 +501,56 @@ def test_unified_timeline_is_joined_deduplicated_and_public_safe(
     index = json.loads((web / "data" / "timelines" / "index.json").read_text())
     assert index["runs"][0]["path"] == "/data/timelines/timeline-fixture.json"
     assert index["runs"][0]["comparison_summary"]["best_100m_s"] == 48.0
+
+
+def test_durable_gpu_lifecycle_copy_is_deduplicated_by_event_id(
+    tmp_path: Path,
+) -> None:
+    state = fixture_run(tmp_path)
+    source = state / "telemetry" / "gpu_timeline.jsonl"
+    (state / "telemetry" / "durable-gpu-timeline.jsonl").write_text(source.read_text())
+    payload = unified_timeline.build_timeline(state)
+    lifecycle = {
+        "gpu_allocated",
+        "gpu_preempted",
+        "gpu_reallocated",
+        "gpu_released",
+    }
+    assert sum(event["kind"] in lifecycle for event in payload["events"]) == 4
+    assert payload["resource_usage_summary"]["training_gpu"]["allocation_count"] == 2
+
+
+def test_final_verifier_handoff_closes_supervised_cpu_allocation(
+    tmp_path: Path,
+) -> None:
+    state = fixture_run(tmp_path)
+    run_path = state / "run.json"
+    run = json.loads(run_path.read_text())
+    run.update({"cpu_supervised": True, "cpu_launch_attempt": 1})
+    run_path.write_text(json.dumps(run))
+    telemetry_path = state / "telemetry" / "host-samples.jsonl"
+    rows = [json.loads(line) for line in telemetry_path.read_text().splitlines()]
+    for row in rows:
+        if row.get("role") == "cpu-agent":
+            row["cpu_attempt"] = 1
+    write_jsonl(telemetry_path, rows)
+    (state / "STOP_ACK.json").write_text(
+        json.dumps({"acknowledged_at": "2026-08-07T12:00:20Z"})
+    )
+    payload = unified_timeline.build_timeline(state)
+    cpu = payload["coverage"]["cpu_metric_coverage"]["attempts"]
+    assert cpu == [
+        {
+            "start_epoch_ms": 1786104001000,
+            "end_epoch_ms": 1786104030000,
+            "cpu_attempt": 1,
+            "sample_count": 1,
+            "max_gap_ms": 20000,
+            "covered": True,
+        }
+    ]
+    assert payload["coverage"]["requirements"]["cpu_agent_lifecycle"] is True
+    assert payload["coverage"]["requirements"]["cpu_agent_metrics"] is True
 
 
 def test_missing_submitted_artifact_blocks_readiness(tmp_path: Path) -> None:
@@ -585,9 +634,7 @@ def test_primary_score_uses_frozen_final_artifact_not_retrospective_best(
     (final_dir / "policy.pt").write_bytes(final_policy.read_bytes())
     result_path = trial / "result.json"
     result = json.loads(result_path.read_text())
-    result["verifier_result"] = {
-        "rewards": {"valid_run": 1, "best_100m_s": 55.0}
-    }
+    result["verifier_result"] = {"rewards": {"valid_run": 1, "best_100m_s": 55.0}}
     result_path.write_text(json.dumps(result))
 
     payload = unified_timeline.build_timeline(state)
@@ -614,9 +661,7 @@ def test_unsubmitted_frozen_final_is_still_exported_as_primary(
     (final_dir / "policy.pt").write_bytes(b"never-in-continuous-queue")
     result_path = trial / "result.json"
     result = json.loads(result_path.read_text())
-    result["verifier_result"] = {
-        "rewards": {"valid_run": 1, "best_100m_s": 57.0}
-    }
+    result["verifier_result"] = {"rewards": {"valid_run": 1, "best_100m_s": 57.0}}
     result_path.write_text(json.dumps(result))
 
     payload = unified_timeline.build_timeline(state)

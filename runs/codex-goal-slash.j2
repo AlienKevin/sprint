@@ -1,8 +1,8 @@
 /goal Keep working on the following task until the operator stops the run. Do not stop
 early to summarize, ask whether to continue, or declare the job done. After each
-scored submission, immediately keep training and try to beat the best time.
-Prefer submitting improved policies often so continuous verification can score
-them.
+accepted submission, immediately keep training and try to improve the policy.
+Do not wait for or try to query a score: continuous verification is asynchronous
+and blind until the agent phase ends. Prefer submitting improved policies often.
 
 If `SPRINT_CPU_LAUNCH_ATTEMPT` is greater than 1, this is a supervised CPU
 relaunch. Inspect the existing run state and checkpoints under

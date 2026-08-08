@@ -944,7 +944,18 @@ class LauncherWiringTests(unittest.TestCase):
                 mock.patch.object(start_lane_supervisor, "OPS", Path(raw)),
                 mock.patch.object(sys, "argv", argv),
                 mock.patch.dict(
-                    "os.environ", {"OPENAI_API_KEY": "secret-value"}, clear=True
+                    "os.environ",
+                    {
+                        "OPENAI_API_KEY": "secret-value",
+                        "UV": "/test/bin/uv",
+                        "PATH": "/usr/bin",
+                    },
+                    clear=True,
+                ),
+                mock.patch.object(Path, "is_file", return_value=True),
+                mock.patch("os.access", return_value=True),
+                mock.patch.object(
+                    start_lane_supervisor.shutil, "which", return_value=None
                 ),
                 mock.patch.object(
                     start_lane_supervisor.subprocess, "run", return_value=completed
@@ -955,6 +966,8 @@ class LauncherWiringTests(unittest.TestCase):
             self.assertIn("--property=Restart=on-failure", command)
             self.assertIn("--property=RestartPreventExitStatus=75 78", command)
             self.assertIn("--setenv=OPENAI_API_KEY", command)
+            self.assertIn("--setenv=UV=/test/bin/uv", command)
+            self.assertIn("--setenv=PATH=/test/bin:/usr/bin", command)
             self.assertNotIn("secret-value", command)
             metadata = json.loads(
                 (Path(raw) / "unit-run" / "supervisor.json").read_text()

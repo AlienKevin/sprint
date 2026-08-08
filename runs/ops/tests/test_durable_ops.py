@@ -61,6 +61,37 @@ def row(index: int, name: str, best: float | None) -> dict:
 
 
 class DurableOpsTests(unittest.TestCase):
+    def test_final_sync_imports_authoritative_durable_gpu_telemetry_once(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            run = {"run_id": "sync-run", "volume_name": "sync-volume"}
+            prefix = "runs/sync-run/telemetry"
+            remote = {
+                f"{prefix}/samples.jsonl": '{"role":"cpu-agent"}\n',
+                f"{prefix}/gpu-stream/samples.jsonl": ('{"role":"training-gpu"}\n'),
+                f"{prefix}/gpu_timeline.jsonl": '{"event_id":"gpu-1"}\n',
+            }
+            with mock.patch.object(
+                sprintctl,
+                "volume_get_text",
+                side_effect=lambda _run, path: remote.get(path),
+            ) as getter:
+                self.assertTrue(sprintctl.sync_durable_telemetry(state, run))
+                self.assertTrue(sprintctl.sync_durable_telemetry(state, run))
+            self.assertEqual(getter.call_count, 3)
+            telemetry = state / "telemetry"
+            self.assertEqual(
+                (telemetry / "durable-gpu-samples.jsonl").read_text(),
+                remote[f"{prefix}/gpu-stream/samples.jsonl"],
+            )
+            self.assertEqual(
+                (telemetry / "durable-gpu-timeline.jsonl").read_text(),
+                remote[f"{prefix}/gpu_timeline.jsonl"],
+            )
+            stamp = json.loads((telemetry / "durable-sync.json").read_text())
+            self.assertTrue(stamp["ok"])
+            self.assertEqual(len(stamp["sources"]), 3)
+
     def test_terra_usage_audit_requires_checksums_and_matching_atif_cost(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             trial = Path(raw)

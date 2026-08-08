@@ -8,6 +8,7 @@ infrastructure diagnosis, not the source used to attribute SCORE usage.
 Writes CSV/JSONL under ``runs/ops/<run_id>/telemetry/`` and a flat
 ``runs/monitor-<run_id>-telemetry.csv`` mirror.
 """
+
 from __future__ import annotations
 
 import csv
@@ -15,6 +16,7 @@ import json
 import os
 import pathlib
 import re
+import subprocess
 import sys
 from typing import Any
 
@@ -287,7 +289,9 @@ def _append_jsonl(path: pathlib.Path, payload: dict[str, Any]) -> None:
         os.fsync(handle.fileno())
 
 
-def _flatten_for_csv(sample: dict[str, Any], *, container_id: str) -> list[dict[str, Any]]:
+def _flatten_for_csv(
+    sample: dict[str, Any], *, container_id: str
+) -> list[dict[str, Any]]:
     base = {
         "ts_utc": sample.get("ts_utc"),
         "epoch_s": sample.get("epoch_s"),
@@ -461,6 +465,63 @@ def _parse_json_payload(raw: str) -> dict[str, Any] | None:
     return None
 
 
+def _exec_target(
+    run: dict[str, Any],
+    target_id: str,
+    shell_command: str,
+    *,
+    timeout: int = 180,
+) -> subprocess.CompletedProcess[str]:
+    """Exec in either a Harbor container (ta-) or agent GPU Sandbox (sb-).
+
+    Modal's ``container exec`` CLI deliberately accepts only ``ta-`` IDs.
+    Agent-controlled training workers are created through ``Sandbox.create``
+    and are identified by ``sb-`` IDs, so polling them through that CLI always
+    failed.  Use the Sandbox SDK for those workers while preserving the same
+    CompletedProcess contract and per-run Modal profile.
+    """
+    if not target_id.startswith("sb-"):
+        return sprintctl.exec_container(
+            run,
+            target_id,
+            shell_command,
+            check=False,
+            timeout=timeout,
+        )
+
+    previous_profile = os.environ.get("MODAL_PROFILE")
+    profile = run.get("modal_profile")
+    if profile:
+        os.environ["MODAL_PROFILE"] = str(profile)
+    try:
+        import modal
+
+        process = modal.Sandbox.from_id(target_id).exec(
+            "sh", "-c", shell_command, timeout=timeout
+        )
+        stdout = process.stdout.read()
+        stderr = process.stderr.read()
+        returncode = int(process.wait())
+    except Exception as exc:  # noqa: BLE001
+        return subprocess.CompletedProcess(
+            ["modal.Sandbox.exec", target_id],
+            1,
+            stdout="",
+            stderr=f"{type(exc).__name__}: {exc}",
+        )
+    finally:
+        if previous_profile is None:
+            os.environ.pop("MODAL_PROFILE", None)
+        else:
+            os.environ["MODAL_PROFILE"] = previous_profile
+    return subprocess.CompletedProcess(
+        ["modal.Sandbox.exec", target_id],
+        returncode,
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+
 def sample_container(
     run: dict[str, Any],
     container_id: str,
@@ -468,11 +529,10 @@ def sample_container(
     role: str,
     run_id: str,
 ) -> dict[str, Any] | None:
-    result = sprintctl.exec_container(
+    result = _exec_target(
         run,
         container_id,
         _shell_oneshot(role, run_id),
-        check=False,
     )
     payload = _parse_json_payload(result.stdout)
     if payload is None:
@@ -493,7 +553,7 @@ def sample_container(
 
 def _container_role_probe(run: dict[str, Any], container_id: str) -> str:
     """Classify a sandbox into one unambiguous resource-accounting role."""
-    result = sprintctl.exec_container(
+    result = _exec_target(
         run,
         container_id,
         "if [ -f /run/sprint-role ]; then cat /run/sprint-role; "
@@ -501,7 +561,6 @@ def _container_role_probe(run: dict[str, Any], container_id: str) -> str:
         "elif command -v nvidia-smi >/dev/null 2>&1 && "
         "[ -f /opt/sprint-gpu-worker-run.py ]; then echo training-gpu; "
         "else echo verifier-gpu; fi",
-        check=False,
         timeout=45,
     )
     text = ((result.stdout or "") + (result.stderr or "")).strip().splitlines()
@@ -553,9 +612,7 @@ def discover_sidecar_containers(
     return out
 
 
-def gpu_job_metadata(
-    run: dict[str, Any], container_id: str
-) -> dict[str, Any]:
+def gpu_job_metadata(run: dict[str, Any], container_id: str) -> dict[str, Any]:
     try:
         import gpu_worker
 
@@ -631,6 +688,17 @@ def poll_once(run_id: str) -> dict[str, Any]:
         if role == "training-gpu":
             for key, value in gpu_job_metadata(run, container_id).items():
                 sample.setdefault(key, value)
+        elif role == "cpu-agent":
+            # A one-shot exec is not a child of the keepalive process and does
+            # not inherit its launch-attempt/request metadata.  The trusted
+            # host knows these values exactly; attach them so coverage is
+            # attributed to the correct supervised CPU allocation.
+            sample["cpu_attempt"] = int(run.get("cpu_launch_attempt") or 1)
+            contract = (run.get("resource_contract") or {}).get("cpu_agent") or {}
+            if contract.get("physical_cpu_cores") is not None:
+                sample["cpu_requested_cores"] = float(contract["physical_cpu_cores"])
+            if contract.get("memory_mb") is not None:
+                sample["mem_requested_kib"] = int(contract["memory_mb"]) * 1024
         _append_jsonl(out_dir / "host-samples.jsonl", sample)
         rows = _flatten_for_csv(sample, container_id=container_id)
         _append_csv(state_csv, rows)

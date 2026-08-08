@@ -6,6 +6,9 @@ HARBOR="${HARBOR_PATH:-$ROOT/harbor}"
 HARBOR_COMMIT=2f50d4c78bac5420b50d5cd15bc549a9bb19fa9d
 HARBOR_BRANCH=continuous-verification
 UV="${UV:-$(command -v uv || true)}"
+if [[ -z "$UV" && -x /home/ubuntu/.local/bin/uv ]]; then
+  UV=/home/ubuntu/.local/bin/uv
+fi
 CONTROL="$ROOT/runs/ops/sprintctl.py"
 TASK="$ROOT/challenge/g1-sprint-100m-lane"
 MODAL_PROFILE=${MODAL_PROFILE:-kevinli020508}
@@ -169,7 +172,10 @@ if [[ "$CLAUDE_VERSION" != "$BAKED_CLAUDE_VERSION" ]]; then
   echo "Claude Code $CLAUDE_VERSION is not baked into the offline image (expected $BAKED_CLAUDE_VERSION)" >&2
   exit 2
 fi
-[[ -n "$UV" && -x "$UV" ]] || { echo "uv is required on PATH" >&2; exit 1; }
+[[ -n "$UV" && -x "$UV" ]] || {
+  echo "uv is required (set UV to its absolute executable path)" >&2
+  exit 1
+}
 [[ -d "$HARBOR/src/harbor" ]] || { echo "missing vendored Harbor: $HARBOR" >&2; exit 1; }
 [[ -f "$HARBOR/.sprint-upstream-commit" ]] || {
   echo "missing vendored Harbor provenance: $HARBOR/.sprint-upstream-commit" >&2

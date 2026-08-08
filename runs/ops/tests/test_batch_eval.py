@@ -257,6 +257,26 @@ def test_run_checked_preserves_failure_output() -> None:
         )
 
 
+def test_batch_monitor_service_carries_absolute_uv_vercel_and_modal_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands: list[list[str]] = []
+    monkeypatch.setattr(batch_eval.shutil, "which", lambda name: "/tools/vercel")
+    monkeypatch.setattr(
+        batch_eval,
+        "run_checked",
+        lambda command, **_kwargs: commands.append(command) or "ok",
+    )
+    monkeypatch.setattr(batch_eval.subprocess, "run", lambda *args, **kwargs: None)
+    batch_eval.start_monitor_service("eval", tmp_path / ".env", "profile-a")
+    command = commands[0]
+    assert "--setenv=UV=/home/ubuntu/.local/bin/uv" in command
+    assert "--setenv=MODAL_PROFILE=profile-a" in command
+    path_arg = next(item for item in command if item.startswith("--setenv=PATH="))
+    assert "/tools" in path_arg
+    assert str(Path(sys.executable).resolve().parent) in path_arg
+
+
 def test_website_javascript_parses_and_has_no_legacy_opus_copy() -> None:
     source = (ROOT / "sprint-web/app.js").read_text()
     assert "DeepSeek V4 Flash 0731" in source

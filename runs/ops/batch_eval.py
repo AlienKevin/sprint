@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -37,9 +38,15 @@ RUN_HOURS = 24.0
 POLL_SECONDS = 30
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,48}$")
 ALERT_PATTERNS = {
-    "provider_rate_limit": re.compile(r"\b(?:429|rate.?limit|too many requests)\b", re.I),
-    "provider_quota": re.compile(r"\b(?:insufficient_quota|quota exceeded|billing limit)\b", re.I),
-    "provider_auth": re.compile(r"\b(?:401|403|invalid api key|authentication failed)\b", re.I),
+    "provider_rate_limit": re.compile(
+        r"\b(?:429|rate.?limit|too many requests)\b", re.I
+    ),
+    "provider_quota": re.compile(
+        r"\b(?:insufficient_quota|quota exceeded|billing limit)\b", re.I
+    ),
+    "provider_auth": re.compile(
+        r"\b(?:401|403|invalid api key|authentication failed)\b", re.I
+    ),
     "modal_infrastructure": re.compile(
         r"\b(?:modal.*(?:internal|connection|timeout)|sandbox.*failed|container.*lost)\b",
         re.I,
@@ -72,7 +79,9 @@ def load_env(path: Path) -> dict[str, str]:
     return values
 
 
-def matrix(batch_id: str, trials_per_model: int = TRIALS_PER_MODEL) -> list[dict[str, Any]]:
+def matrix(
+    batch_id: str, trials_per_model: int = TRIALS_PER_MODEL
+) -> list[dict[str, Any]]:
     arms: list[dict[str, Any]] = []
     specs = (
         ("deepseek", "deepseek/deepseek-v4-flash", "run-deepseek.sh"),
@@ -89,7 +98,9 @@ def matrix(batch_id: str, trials_per_model: int = TRIALS_PER_MODEL) -> list[dict
                     "family": family,
                     "model": model,
                     "resolved_model_version": (
-                        "DeepSeek-V4-Flash-0731" if family == "deepseek" else "gpt-5.6-luna"
+                        "DeepSeek-V4-Flash-0731"
+                        if family == "deepseek"
+                        else "gpt-5.6-luna"
                     ),
                     "reasoning_effort": REASONING_EFFORT,
                     "codex_version": CODEX_VERSION,
@@ -131,7 +142,9 @@ def provider_models(url: str, key: str) -> set[str]:
         with urllib.request.urlopen(request, timeout=30) as response:
             payload = json.load(response)
     except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"provider model-list request failed: HTTP {exc.code}") from exc
+        raise RuntimeError(
+            f"provider model-list request failed: HTTP {exc.code}"
+        ) from exc
     return {
         str(row.get("id"))
         for row in payload.get("data", [])
@@ -174,19 +187,20 @@ def preflight(
     for name in ("OPENAI_API_KEY", "DEEPSEEK_API_KEY"):
         checks[f"secret_{name.lower()}"] = len(keys.get(name, "")) >= 16
     checks["harbor_revision"] = (
-        (ROOT / "harbor/.sprint-upstream-commit").read_text().strip()
-        == HARBOR_REVISION
+        ROOT / "harbor/.sprint-upstream-commit"
+    ).read_text().strip() == HARBOR_REVISION
+    checks["goal_template"] = (ROOT / "runs/codex-goal-slash.j2").read_bytes() == (
+        ROOT / "runs/codex-goal.j2"
+    ).read_bytes()
+    checks["warm_images"] = (
+        subprocess.run(
+            [sys.executable, str(SCRIPT_DIR / "check_modal_image_warmup.py")],
+            cwd=ROOT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode
+        == 0
     )
-    checks["goal_template"] = (
-        (ROOT / "runs/codex-goal-slash.j2").read_bytes()
-        == (ROOT / "runs/codex-goal.j2").read_bytes()
-    )
-    checks["warm_images"] = subprocess.run(
-        [sys.executable, str(SCRIPT_DIR / "check_modal_image_warmup.py")],
-        cwd=ROOT,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    ).returncode == 0
     checks["vercel_project_link"] = vercel_project_link_ready()
     command_env = dict(os.environ)
     command_env["MODAL_PROFILE"] = modal_profile
@@ -210,19 +224,26 @@ def preflight(
         checks["modal_auth"] = True
     except (subprocess.CalledProcessError, json.JSONDecodeError, OSError):
         pass
-    checks["vercel_auth"] = subprocess.run(
-        ["vercel", "whoami"],
-        cwd=WEB,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    ).returncode == 0
+    checks["vercel_auth"] = (
+        subprocess.run(
+            ["vercel", "whoami"],
+            cwd=WEB,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode
+        == 0
+    )
     if check_providers and checks["secret_openai_api_key"]:
-        models = provider_models("https://api.openai.com/v1/models", keys["OPENAI_API_KEY"])
+        models = provider_models(
+            "https://api.openai.com/v1/models", keys["OPENAI_API_KEY"]
+        )
         checks["openai_luna_visible"] = "gpt-5.6-luna" in models
     else:
         checks["openai_luna_visible"] = not check_providers
     if check_providers and checks["secret_deepseek_api_key"]:
-        models = provider_models("https://api.deepseek.com/models", keys["DEEPSEEK_API_KEY"])
+        models = provider_models(
+            "https://api.deepseek.com/models", keys["DEEPSEEK_API_KEY"]
+        )
         checks["deepseek_v4_flash_visible"] = "deepseek-v4-flash" in models
     else:
         checks["deepseek_v4_flash_visible"] = not check_providers
@@ -246,6 +267,19 @@ def preflight(
 
 
 def start_monitor_service(batch_id: str, env_file: Path, modal_profile: str) -> None:
+    vercel = shutil.which("vercel")
+    if not vercel:
+        raise RuntimeError("vercel CLI is not available for the batch monitor")
+    service_path = os.pathsep.join(
+        dict.fromkeys(
+            [
+                str(Path(sys.executable).resolve().parent),
+                str(UV.resolve().parent),
+                str(Path(vercel).resolve().parent),
+                *os.environ.get("PATH", "").split(os.pathsep),
+            ]
+        )
+    )
     unit = f"sprint-batch-{batch_id}-monitor"
     subprocess.run(
         ["systemctl", "--user", "stop", f"{unit}.service"],
@@ -261,6 +295,9 @@ def start_monitor_service(batch_id: str, env_file: Path, modal_profile: str) -> 
             "--collect",
             "--property=Restart=on-failure",
             "--property=RestartSec=30",
+            f"--setenv=PATH={service_path}",
+            f"--setenv=UV={UV.resolve()}",
+            f"--setenv=MODAL_PROFILE={modal_profile}",
             sys.executable,
             str(Path(__file__).resolve()),
             "monitor",
@@ -470,8 +507,7 @@ def mark_deployed_runs(payload: dict[str, Any]) -> list[dict[str, str]]:
                 existing = {}
             if (
                 existing.get("batch_id") == marker["batch_id"]
-                and existing.get("policy_index_sha256")
-                == marker["policy_index_sha256"]
+                and existing.get("policy_index_sha256") == marker["policy_index_sha256"]
             ):
                 continue
             temp = batch_dir(payload["batch_id"]) / f".{arm['run_id']}-site.json"
@@ -528,9 +564,16 @@ def monitor_cycle(batch_id: str, *, deploy: bool = True) -> dict[str, Any]:
             except Exception as exc:
                 arm["monitor_error"] = f"{type(exc).__name__}: {exc}"
                 cycle_alerts.append(
-                    {"run_id": run_id, "kind": "monitor_error", "source": type(exc).__name__, "count_in_tail": "1"}
+                    {
+                        "run_id": run_id,
+                        "kind": "monitor_error",
+                        "source": type(exc).__name__,
+                        "count_in_tail": "1",
+                    }
                 )
-            deadline = parse_time(arm["deadline_at"]) if arm.get("deadline_at") else None
+            deadline = (
+                parse_time(arm["deadline_at"]) if arm.get("deadline_at") else None
+            )
             if deadline and now >= deadline and arm.get("stop_requested_at") is None:
                 sprintctl.request_stop(run_id, reason="fixed_24h_batch_deadline")
                 arm["stop_requested_at"] = utc_now()
@@ -562,7 +605,12 @@ def monitor_cycle(batch_id: str, *, deploy: bool = True) -> dict[str, Any]:
             except Exception as exc:
                 deploy_state["site_status"] = "error"
                 cycle_alerts.append(
-                    {"run_id": "batch", "kind": "website_deploy", "source": type(exc).__name__, "count_in_tail": "1"}
+                    {
+                        "run_id": "batch",
+                        "kind": "website_deploy",
+                        "source": type(exc).__name__,
+                        "count_in_tail": "1",
+                    }
                 )
         cycle_alerts.extend(mark_deployed_runs(payload))
 
@@ -579,7 +627,12 @@ def monitor_cycle(batch_id: str, *, deploy: bool = True) -> dict[str, Any]:
                         arm["status"] = "finalized"
                 except Exception as exc:  # noqa: BLE001
                     cycle_alerts.append(
-                        {"run_id": run_id, "kind": "finalization", "source": type(exc).__name__, "count_in_tail": "1"}
+                        {
+                            "run_id": run_id,
+                            "kind": "finalization",
+                            "source": type(exc).__name__,
+                            "count_in_tail": "1",
+                        }
                     )
             if finalized_path.is_file():
                 arm["status"] = "finalized"
@@ -609,7 +662,12 @@ def monitor_cycle(batch_id: str, *, deploy: bool = True) -> dict[str, Any]:
                 )
             except Exception as exc:  # noqa: BLE001
                 cycle_alerts.append(
-                    {"run_id": "batch", "kind": "final_site_deploy", "source": type(exc).__name__, "count_in_tail": "1"}
+                    {
+                        "run_id": "batch",
+                        "kind": "final_site_deploy",
+                        "source": type(exc).__name__,
+                        "count_in_tail": "1",
+                    }
                 )
         deployed_current = bool(
             not deploy
@@ -640,7 +698,10 @@ def monitor_cycle(batch_id: str, *, deploy: bool = True) -> dict[str, Any]:
 def stop_batch(batch_id: str) -> dict[str, Any]:
     payload = read_batch(batch_id)
     for arm in payload["arms"]:
-        if arm.get("status") != "finalized" and (SCRIPT_DIR / arm["run_id"] / "run.json").is_file():
+        if (
+            arm.get("status") != "finalized"
+            and (SCRIPT_DIR / arm["run_id"] / "run.json").is_file()
+        ):
             sprintctl.request_stop(arm["run_id"], reason="operator_batch_stop")
             arm["stop_requested_at"] = arm.get("stop_requested_at") or utc_now()
             arm["status"] = "stopping"
@@ -655,9 +716,7 @@ def parser() -> argparse.ArgumentParser:
     for name in ("preflight", "launch", "monitor", "status", "stop"):
         command = sub.add_parser(name)
         command.add_argument("--batch-id", required=True)
-        command.add_argument(
-            "--env-file", type=Path, default=ROOT / ".env"
-        )
+        command.add_argument("--env-file", type=Path, default=ROOT / ".env")
         command.add_argument(
             "--modal-profile", default=os.environ.get("MODAL_PROFILE", "kevinli020508")
         )
@@ -693,7 +752,11 @@ def main() -> int:
         output = stop_batch(args.batch_id)
     else:
         output = read_batch(args.batch_id)
-    print(json.dumps(output if args.command == "preflight" else public_batch(output), indent=2))
+    print(
+        json.dumps(
+            output if args.command == "preflight" else public_batch(output), indent=2
+        )
+    )
     return 0
 
 

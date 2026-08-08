@@ -8,8 +8,10 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[3]
 TELEMETRY_PY = ROOT / "challenge/g1-sprint-100m-lane/environment/sprint-telemetry.py"
@@ -169,9 +171,7 @@ class TelemetrySamplerTests(unittest.TestCase):
             )
             (root / "memory/memory.usage_in_bytes").write_text(str(3 * 1024**3))
             (root / "memory/memory.limit_in_bytes").write_text(str(16 * 1024**3))
-            (root / "memory/memory.max_usage_in_bytes").write_text(
-                str(5 * 1024**3)
-            )
+            (root / "memory/memory.max_usage_in_bytes").write_text(str(5 * 1024**3))
             (root / "memory/memory.failcnt").write_text("1\n")
             old_cpu = os.environ.get("SPRINT_REQUESTED_CPU_CORES")
             old_memory = os.environ.get("SPRINT_REQUESTED_MEMORY_MIB")
@@ -338,6 +338,47 @@ class TelemetrySamplerTests(unittest.TestCase):
         self.assertNotIn("sk-ant-oat-abcdefghij", redacted)
         self.assertNotIn("sk-xyzABC12345", redacted)
         self.assertIn("[REDACTED]", redacted)
+
+    def test_host_exec_uses_sandbox_sdk_for_training_worker_ids(self) -> None:
+        calls: list[tuple] = []
+
+        class Stream:
+            def __init__(self, value: str) -> None:
+                self.value = value
+
+            def read(self) -> str:
+                return self.value
+
+        class Process:
+            stdout = Stream('{"ok":true}\n')
+            stderr = Stream("")
+
+            @staticmethod
+            def wait() -> int:
+                return 0
+
+        class SandboxInstance:
+            def exec(self, *args, **kwargs):
+                calls.append((args, kwargs))
+                return Process()
+
+        class Sandbox:
+            @staticmethod
+            def from_id(sandbox_id: str):
+                self.assertEqual(sandbox_id, "sb-training")
+                return SandboxInstance()
+
+        fake_modal = types.SimpleNamespace(Sandbox=Sandbox)
+        with mock.patch.dict(sys.modules, {"modal": fake_modal}):
+            result = telemetry_host._exec_target(
+                {"modal_profile": "test-profile"},
+                "sb-training",
+                "printf ok",
+                timeout=17,
+            )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, '{"ok":true}\n')
+        self.assertEqual(calls, [(("sh", "-c", "printf ok"), {"timeout": 17})])
 
     def test_host_fallback_collects_cpu_and_memory(self) -> None:
         completed = subprocess.run(

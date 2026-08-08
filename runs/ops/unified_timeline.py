@@ -226,6 +226,11 @@ class Builder:
                 kind=kind,
                 source=name,
                 identity=json.dumps(payload, sort_keys=True),
+                data=(
+                    {"cpu_attempt": int(self.run.get("cpu_launch_attempt") or 1)}
+                    if kind == "stop_acknowledged"
+                    else None
+                ),
             )
 
     def add_cpu_lifecycle(self) -> None:
@@ -257,7 +262,11 @@ class Builder:
                 )
 
     def telemetry_files(self, trials: Iterable[pathlib.Path]) -> list[pathlib.Path]:
-        paths = [self.state_dir / "telemetry" / "host-samples.jsonl"]
+        paths = [
+            self.state_dir / "telemetry" / "host-samples.jsonl",
+            self.state_dir / "telemetry" / "durable-samples.jsonl",
+            self.state_dir / "telemetry" / "durable-gpu-samples.jsonl",
+        ]
         for trial in trials:
             root = trial / "artifacts" / "logs" / "artifacts" / "telemetry"
             paths.extend((root / "samples.jsonl", root / "host-samples.jsonl"))
@@ -457,7 +466,10 @@ class Builder:
             )
 
     def timeline_files(self, trials: Iterable[pathlib.Path]) -> list[pathlib.Path]:
-        paths = [self.state_dir / "telemetry" / "gpu_timeline.jsonl"]
+        paths = [
+            self.state_dir / "telemetry" / "gpu_timeline.jsonl",
+            self.state_dir / "telemetry" / "durable-gpu-timeline.jsonl",
+        ]
         for trial in trials:
             paths.append(
                 trial
@@ -472,10 +484,16 @@ class Builder:
     def add_gpu_lifecycle(self, trials: list[pathlib.Path]) -> None:
         files = self.timeline_files(trials)
         self.source_counts["gpu_lifecycle_files"] = len(files)
+        seen_event_ids: set[str] = set()
         for path in files:
             rows, malformed = read_jsonl(path)
             self.counts["malformed_gpu_lifecycle"] += malformed
             for row in rows:
+                event_id = str(row.get("event_id") or "")
+                if event_id and event_id in seen_event_ids:
+                    continue
+                if event_id:
+                    seen_event_ids.add(event_id)
                 detail = (
                     row.get("detail") if isinstance(row.get("detail"), dict) else {}
                 )
@@ -489,9 +507,7 @@ class Builder:
                     category="infrastructure",
                     kind=kind,
                     source=self.relative(path),
-                    identity=str(
-                        row.get("event_id") or json.dumps(row, sort_keys=True)
-                    ),
+                    identity=str(event_id or json.dumps(row, sort_keys=True)),
                     data={
                         "gpu_job_id": row.get("job_id"),
                         "gpu_attempt": row.get("attempt"),
@@ -942,12 +958,9 @@ class Builder:
             if not isinstance(verifier, dict):
                 continue
             finished_at = verifier.get("finished_at")
-            if (
-                isinstance(finished_at, str)
-                and (
-                    self.final_verifier_finished_at is None
-                    or finished_at > self.final_verifier_finished_at
-                )
+            if isinstance(finished_at, str) and (
+                self.final_verifier_finished_at is None
+                or finished_at > self.final_verifier_finished_at
             ):
                 verifier_result = result.get("verifier_result") or {}
                 rewards = verifier_result.get("rewards")
@@ -974,10 +987,18 @@ class Builder:
                     "verifier_reused_continuous_evaluation_id"
                 ),
             }
+            self.add_event(
+                epoch_ms=parse_epoch_ms(verifier.get("started_at")),
+                category="infrastructure",
+                kind="cpu_released",
+                source=self.relative(result_path),
+                identity=(
+                    f"cpu:{common['cpu_attempt']}:released:{verifier.get('started_at')}"
+                ),
+                data={"cpu_attempt": common["cpu_attempt"]},
+            )
             start_kind = (
-                "evaluation_cache_hit"
-                if common["cache_hit"]
-                else "evaluation_started"
+                "evaluation_cache_hit" if common["cache_hit"] else "evaluation_started"
             )
             for key, kind in (
                 ("started_at", start_kind),
@@ -1178,9 +1199,7 @@ class Builder:
         for event in self.events:
             if event["kind"] != "tool_call":
                 continue
-            result = tool_results.get(
-                (event.get("cpu_attempt"), event.get("call_id"))
-            )
+            result = tool_results.get((event.get("cpu_attempt"), event.get("call_id")))
             if not result:
                 continue
             session_id = event.get("shell_session_id")
@@ -1289,7 +1308,7 @@ class Builder:
         cpu_intervals = self._paired_intervals(
             self.events,
             start_kinds={"cpu_allocated", "cpu_reallocated"},
-            end_kinds={"cpu_interrupted"},
+            end_kinds={"cpu_interrupted", "cpu_released"},
             key_fields=("cpu_attempt",),
         )
         training_intervals = self._paired_intervals(
@@ -1575,7 +1594,10 @@ class Builder:
             else modal_estimate["estimated_cost_usd"]
         )
         estimated_agent_modal_cost = sum(
-            float((modal_estimate["by_role"].get(role) or {}).get("estimated_cost_usd") or 0)
+            float(
+                (modal_estimate["by_role"].get(role) or {}).get("estimated_cost_usd")
+                or 0
+            )
             for role in ("cpu_agent", "training_gpu")
         )
         estimated_verifier_cost = float(
@@ -1590,9 +1612,7 @@ class Builder:
                 float(provider_by_role.get(role) or 0)
                 for role in ("cpu_agent", "training_gpu")
             )
-            selected_verifier_cost = float(
-                provider_by_role.get("verifier_gpu") or 0
-            )
+            selected_verifier_cost = float(provider_by_role.get("verifier_gpu") or 0)
         else:
             selected_agent_modal_cost = estimated_agent_modal_cost
             selected_verifier_cost = estimated_verifier_cost
@@ -1759,8 +1779,7 @@ class Builder:
             "modal_estimated_cost_at_best_usd": modal_estimate_at_best,
             "total_estimated_cost_at_best_usd": (
                 api_cost_at_best + modal_estimate_at_best
-                if api_cost_at_best is not None
-                and modal_estimate_at_best is not None
+                if api_cost_at_best is not None and modal_estimate_at_best is not None
                 else None
             ),
             "primary_final_agent_cost_at_submission_usd": (
@@ -1774,9 +1793,7 @@ class Builder:
                 else None
             ),
             "final_api_cost_usd": usage_summary["calculated_api_usage_usd"],
-            "final_modal_estimated_cost_usd": modal_estimate[
-                "estimated_cost_usd"
-            ],
+            "final_modal_estimated_cost_usd": modal_estimate["estimated_cost_usd"],
             "final_modal_provider_cost_precredits_usd": modal_provider.get(
                 "provider_cost_precredits_usd"
             )
@@ -1829,9 +1846,7 @@ class Builder:
                 "scoring_global_max_concurrent": self.run.get(
                     "scoring_global_max_concurrent"
                 ),
-                "scoring_feedback_policy": self.run.get(
-                    "scoring_feedback_policy"
-                ),
+                "scoring_feedback_policy": self.run.get("scoring_feedback_policy"),
                 "primary_score_policy": self.run.get("primary_score_policy"),
             },
             "resource_roles": {
