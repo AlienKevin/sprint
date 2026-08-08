@@ -152,6 +152,15 @@ def run_checked(command: list[str], *, env: dict[str, str] | None = None) -> str
     return completed.stdout
 
 
+def vercel_project_link_ready() -> bool:
+    """Accept Vercel CLI metadata while requiring the exact Sprint project."""
+    try:
+        frontier_update.verify_project_link(WEB)
+    except RuntimeError:
+        return False
+    return True
+
+
 def preflight(
     *,
     batch_id: str,
@@ -178,16 +187,7 @@ def preflight(
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     ).returncode == 0
-    project = WEB / ".vercel/project.json"
-    try:
-        link = json.loads(project.read_text())
-    except (OSError, json.JSONDecodeError):
-        link = {}
-    checks["vercel_project_link"] = link == {
-        "projectId": frontier_update.PROJECT_ID,
-        "orgId": frontier_update.ORG_ID,
-        "projectName": "sprint",
-    }
+    checks["vercel_project_link"] = vercel_project_link_ready()
     command_env = dict(os.environ)
     command_env["MODAL_PROFILE"] = modal_profile
     checks["modal_auth"] = False

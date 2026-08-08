@@ -44,6 +44,25 @@ def test_env_loader_reads_only_required_model_keys(tmp_path: Path) -> None:
     }
 
 
+def test_vercel_project_link_accepts_cli_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    web = tmp_path / "web"
+    (web / ".vercel").mkdir(parents=True)
+    (web / ".vercel/project.json").write_text(
+        json.dumps(
+            {
+                "projectId": frontier_update.PROJECT_ID,
+                "orgId": frontier_update.ORG_ID,
+                "projectName": "sprint",
+                "settings": {"nodeVersion": "24.x"},
+            }
+        )
+    )
+    monkeypatch.setattr(batch_eval, "WEB", web)
+    assert batch_eval.vercel_project_link_ready()
+
+
 def test_public_batch_never_contains_secrets_or_host_paths() -> None:
     payload = {
         "batch_id": "eval",
