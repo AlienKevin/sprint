@@ -92,6 +92,33 @@ class DurableOpsTests(unittest.TestCase):
             self.assertTrue(stamp["ok"])
             self.assertEqual(len(stamp["sources"]), 3)
 
+    def test_live_durable_telemetry_refreshes_after_bounded_ttl(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            run = {"run_id": "sync-run", "volume_name": "sync-volume"}
+            with (
+                mock.patch.object(
+                    sprintctl,
+                    "volume_get_text",
+                    return_value='{"role":"training-gpu"}\n',
+                ) as getter,
+                mock.patch.object(
+                    sprintctl.time,
+                    "time",
+                    side_effect=(1000.0, 1100.0, 1301.0),
+                ),
+            ):
+                self.assertTrue(
+                    sprintctl.sync_durable_telemetry(state, run, max_age_seconds=300)
+                )
+                self.assertTrue(
+                    sprintctl.sync_durable_telemetry(state, run, max_age_seconds=300)
+                )
+                self.assertTrue(
+                    sprintctl.sync_durable_telemetry(state, run, max_age_seconds=300)
+                )
+            self.assertEqual(getter.call_count, 6)
+
     def test_terra_usage_audit_requires_checksums_and_matching_atif_cost(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             trial = Path(raw)

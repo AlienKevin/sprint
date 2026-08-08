@@ -144,6 +144,30 @@ def test_billing_objects_must_have_unique_descriptions() -> None:
         raise AssertionError("ambiguous Modal billing descriptions were accepted")
 
 
+def test_continuous_verifier_result_does_not_end_running_cpu_billing(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "cost-run"
+    job = state / "harbor-jobs" / "cost-run"
+    continuous = job / "task" / "artifacts/continuous/attempts/0001"
+    continuous.mkdir(parents=True)
+    (continuous / "result.json").write_text(
+        json.dumps({"finished_at": "2026-08-08T04:30:00Z"})
+    )
+    run = run_payload()
+    run["job_path"] = str(job)
+    start, stopped = modal_cost.run_bounds(state, run)
+    assert start == dt.datetime(2026, 8, 8, 4, 10, tzinfo=dt.timezone.utc)
+    assert stopped is None
+
+    job.mkdir(parents=True, exist_ok=True)
+    (job / "result.json").write_text(
+        json.dumps({"finished_at": "2026-08-08T04:40:00Z"})
+    )
+    _, stopped = modal_cost.run_bounds(state, run)
+    assert stopped == dt.datetime(2026, 8, 8, 4, 40, tzinfo=dt.timezone.utc)
+
+
 def test_collection_waits_for_complete_hour_then_persists_provider_report(
     tmp_path: Path,
 ) -> None:
@@ -286,13 +310,13 @@ def test_collection_waits_when_expected_role_is_missing(tmp_path: Path) -> None:
     assert payload["pending_reason"] == "provider_report_missing_expected_role_rows"
 
 
-def test_expected_roles_use_source_lifecycle_even_without_timeline(tmp_path: Path) -> None:
+def test_expected_roles_use_source_lifecycle_even_without_timeline(
+    tmp_path: Path,
+) -> None:
     state = tmp_path / "cost-run"
     write_path = state / "telemetry" / "gpu_timeline.jsonl"
     write_path.parent.mkdir(parents=True)
-    write_path.write_text(
-        json.dumps({"detail": {"event": "gpu_allocated"}}) + "\n"
-    )
+    write_path.write_text(json.dumps({"detail": {"event": "gpu_allocated"}}) + "\n")
     verifier = (
         state
         / "harbor-jobs"

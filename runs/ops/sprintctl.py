@@ -333,24 +333,29 @@ def sync_durable_telemetry(
     run: dict[str, Any],
     *,
     force: bool = False,
+    max_age_seconds: int | None = None,
 ) -> bool:
-    """Import immutable in-sandbox telemetry needed for final coverage.
+    """Import authoritative in-sandbox telemetry for live and final coverage.
 
     Host polling is intentionally a backup.  Training workers continuously
     write their authoritative cgroup/GPU stream to the shared Volume, including
-    the samples immediately preceding abrupt preemption.  Import it once after
-    stop so finalization does not depend on a polling race or repeatedly
-    download an ever-growing 24-hour JSONL during the live run.
+    the samples immediately preceding abrupt preemption. ``max_age_seconds``
+    bounds live refresh traffic; finalization forces one last import.
     """
     out_dir = state_dir / "telemetry"
     stamp = out_dir / "durable-sync.json"
+    now = time.time()
     if not force and stamp.is_file():
         try:
             previous = json.loads(stamp.read_text())
         except (OSError, json.JSONDecodeError):
             previous = {}
         if previous.get("ok") is True and previous.get("run_id") == run["run_id"]:
-            return True
+            if max_age_seconds is None:
+                return True
+            synced_at = float(previous.get("synced_at_epoch_s") or 0)
+            if now - synced_at < max_age_seconds:
+                return True
 
     prefix = f"runs/{run['run_id']}/telemetry"
     sources = {
@@ -377,6 +382,7 @@ def sync_durable_telemetry(
             "schema_version": 1,
             "run_id": run["run_id"],
             "synced_at": utc_now(),
+            "synced_at_epoch_s": now,
             "ok": ok,
             "sources": captured,
         },
@@ -964,6 +970,11 @@ def monitor_once(
         archive_completed_attempts(state_dir, run, trial, upload=upload)
         if run.get("unified_timeline_required"):
             try:
+                sync_durable_telemetry(
+                    state_dir,
+                    run,
+                    max_age_seconds=5 * 60,
+                )
                 if upload:
                     sync_durable_trace(state_dir, run)
                 if run.get("usage_audit_required"):
@@ -1420,7 +1431,7 @@ def finalize(
         launch_worker=False,
     )
     if (state_dir / "STOP_ACK.json").is_file():
-        sync_durable_telemetry(state_dir, run)
+        sync_durable_telemetry(state_dir, run, force=True)
     if run.get("usage_audit_required"):
         sync_durable_trace(state_dir, run, force=True)
         reconstruct_codex_usage(state_dir, run)

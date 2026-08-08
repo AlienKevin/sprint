@@ -119,7 +119,9 @@ def estimate_cost(
                 continue
             value = seconds * quantity * _decimal(rates[category])
             components[category] = float(value)
-            category_totals[category] = category_totals.get(category, Decimal(0)) + value
+            category_totals[category] = (
+                category_totals.get(category, Decimal(0)) + value
+            )
             role_total += value
         by_role[role] = {
             "allocated_ms": int(seconds * 1000),
@@ -204,8 +206,7 @@ def aggregate_billing_rows(
         },
         "by_role_category_usd": {
             role: {
-                category: float(value)
-                for category, value in sorted(categories.items())
+                category: float(value) for category, value in sorted(categories.items())
             }
             for role, categories in sorted(by_role_category.items())
         },
@@ -240,7 +241,10 @@ def _expected_billed_roles(state_dir: pathlib.Path) -> set[str]:
         return expected
     for role in ("training_gpu", "verifier_gpu"):
         role_summary = summary.get(role)
-        if isinstance(role_summary, dict) and int(role_summary.get("allocated_ms") or 0) > 0:
+        if (
+            isinstance(role_summary, dict)
+            and int(role_summary.get("allocated_ms") or 0) > 0
+        ):
             expected.add(role)
     return expected
 
@@ -255,7 +259,9 @@ def _expected_role_categories(roles: set[str]) -> dict[str, set[str]]:
     return expected
 
 
-def scan_volume_storage(run: dict[str, Any], *, duration_seconds: float) -> dict[str, Any]:
+def scan_volume_storage(
+    run: dict[str, Any], *, duration_seconds: float
+) -> dict[str, Any]:
     """Capture final logical Volume bytes and a non-invoiced nominal estimate."""
     volume_name = str(run.get("volume_name") or "")
     if not volume_name:
@@ -287,9 +293,7 @@ def scan_volume_storage(run: dict[str, Any], *, duration_seconds: float) -> dict
         gib
         * Decimal(str(max(0.0, duration_seconds)))
         / seconds_per_month
-        * _decimal(
-            MODAL_SANDBOX_PRICING["volume_storage"]["rate_usd_per_gib_month"]
-        )
+        * _decimal(MODAL_SANDBOX_PRICING["volume_storage"]["rate_usd_per_gib_month"])
     )
     return {
         "status": "captured",
@@ -305,7 +309,9 @@ def scan_volume_storage(run: dict[str, Any], *, duration_seconds: float) -> dict
     }
 
 
-def run_bounds(state_dir: pathlib.Path, run: dict[str, Any]) -> tuple[dt.datetime, dt.datetime | None]:
+def run_bounds(
+    state_dir: pathlib.Path, run: dict[str, Any]
+) -> tuple[dt.datetime, dt.datetime | None]:
     start = parse_time(run.get("created_at"))
     if start is None:
         raise ValueError("run.json is missing a valid created_at")
@@ -319,8 +325,15 @@ def run_bounds(state_dir: pathlib.Path, run: dict[str, Any]) -> tuple[dt.datetim
             value = parse_time(payload.get(key))
             if value is not None:
                 end_candidates.append(value)
-    for path in (state_dir / "harbor-jobs").glob("**/result.json"):
-        value = parse_time(_read_json(path).get("finished_at"))
+    # Only the current Harbor job result is a run terminal boundary. Continuous
+    # blind-verifier attempts also contain result.json files, but the CPU agent
+    # keeps running after those scores and they must not truncate its billing
+    # interval.
+    job_path = run.get("job_path") or run.get("expected_job_path")
+    if isinstance(job_path, str) and job_path:
+        value = parse_time(
+            _read_json(pathlib.Path(job_path) / "result.json").get("finished_at")
+        )
         if value is not None:
             end_candidates.append(value)
     return start, max(end_candidates, default=None)
@@ -429,7 +442,9 @@ def collect_provider_billing(
     )
     if completed.returncode != 0:
         base["status"] = "error"
-        base["error"] = (completed.stderr or completed.stdout or "billing command failed")[-2000:]
+        base["error"] = (
+            completed.stderr or completed.stdout or "billing command failed"
+        )[-2000:]
         _atomic_json(output_path, base)
         return base
     try:
@@ -450,9 +465,9 @@ def collect_provider_billing(
         completed.stdout.encode("utf-8")
     ).hexdigest()
     base["selected_items_sha256"] = hashlib.sha256(
-        json.dumps(
-            aggregated["items"], sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
+        json.dumps(aggregated["items"], sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
     ).hexdigest()
     missing_roles = sorted(
         set(base["expected_billed_roles"]) - set(aggregated["by_role_usd"])
@@ -463,13 +478,9 @@ def collect_provider_billing(
         _atomic_json(output_path, base)
         return base
     missing_categories = {
-        role: sorted(
-            categories
-            - set(aggregated["by_role_category_usd"].get(role, {}))
-        )
+        role: sorted(categories - set(aggregated["by_role_category_usd"].get(role, {})))
         for role, categories in expected_categories.items()
-        if categories
-        - set(aggregated["by_role_category_usd"].get(role, {}))
+        if categories - set(aggregated["by_role_category_usd"].get(role, {}))
     }
     if missing_categories:
         base["pending_reason"] = "provider_report_missing_expected_category_rows"
