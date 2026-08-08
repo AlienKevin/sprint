@@ -35,6 +35,30 @@ GPT_5_6_TERRA_PRICING: dict[str, Any] = {
     },
 }
 
+GPT_5_6_LUNA_PRICING: dict[str, Any] = {
+    "id": "openai-gpt-5.6-luna-default-2026-08-08",
+    "provider": "openai",
+    "model": "gpt-5.6-luna",
+    "service_tier": "default",
+    "currency": "USD",
+    "captured_at": "2026-08-08",
+    "source_url": "https://developers.openai.com/api/docs/models/gpt-5.6-luna",
+    "unit_tokens": 1_000_000,
+    "rates_usd_per_million_tokens": {
+        "uncached_input": "1.00",
+        "cached_input": "0.10",
+        "cache_write_input": "1.25",
+        "output": "6.00",
+    },
+    "cache_write_multiplier": "1.25",
+    "long_context": {
+        "threshold_input_tokens": 272_000,
+        "input_multiplier": "2.0",
+        "output_multiplier": "1.5",
+        "scope": "full_request",
+    },
+}
+
 # DeepSeek publishes cache-hit, cache-miss, and output prices. Keep the dated
 # model version in the snapshot because the public API name is a moving alias.
 DEEPSEEK_V4_FLASH_PRICING: dict[str, Any] = {
@@ -119,6 +143,7 @@ def build_request_usage_record(
 
     supported = {
         GPT_5_6_TERRA_PRICING["model"],
+        GPT_5_6_LUNA_PRICING["model"],
         DEEPSEEK_V4_FLASH_PRICING["model"],
     }
     if normalized_model not in supported:
@@ -200,7 +225,12 @@ def build_request_usage_record(
         )
         return record
 
-    record["pricing_snapshot_id"] = GPT_5_6_TERRA_PRICING["id"]
+    pricing = (
+        GPT_5_6_LUNA_PRICING
+        if normalized_model == GPT_5_6_LUNA_PRICING["model"]
+        else GPT_5_6_TERRA_PRICING
+    )
+    record["pricing_snapshot_id"] = pricing["id"]
     missing = [
         name
         for name in (
@@ -217,7 +247,7 @@ def build_request_usage_record(
     if missing:
         reasons.append("missing_or_invalid_usage_fields:" + ",".join(missing))
 
-    if service_tier != GPT_5_6_TERRA_PRICING["service_tier"]:
+    if service_tier != pricing["service_tier"]:
         reasons.append(f"unsupported_or_unreported_service_tier:{service_tier}")
 
     if reasons:
@@ -253,19 +283,19 @@ def build_request_usage_record(
         record["incomplete_reasons"] = reasons
         return record
 
-    threshold = GPT_5_6_TERRA_PRICING["long_context"]["threshold_input_tokens"]
+    threshold = pricing["long_context"]["threshold_input_tokens"]
     long_context = input_tokens > threshold
     input_multiplier = Decimal(
-        GPT_5_6_TERRA_PRICING["long_context"]["input_multiplier"]
+        pricing["long_context"]["input_multiplier"]
         if long_context
         else "1"
     )
     output_multiplier = Decimal(
-        GPT_5_6_TERRA_PRICING["long_context"]["output_multiplier"]
+        pricing["long_context"]["output_multiplier"]
         if long_context
         else "1"
     )
-    rates = GPT_5_6_TERRA_PRICING["rates_usd_per_million_tokens"]
+    rates = pricing["rates_usd_per_million_tokens"]
     components = {
         "ordinary_uncached_input": _usd(
             ordinary_tokens, rates["uncached_input"], input_multiplier
@@ -340,7 +370,11 @@ def build_usage_audit(
     snapshots = [
         snapshot
         for snapshot_id in snapshot_ids
-        for snapshot in (GPT_5_6_TERRA_PRICING, DEEPSEEK_V4_FLASH_PRICING)
+        for snapshot in (
+            GPT_5_6_TERRA_PRICING,
+            GPT_5_6_LUNA_PRICING,
+            DEEPSEEK_V4_FLASH_PRICING,
+        )
         if snapshot_id == snapshot["id"]
     ]
     return {

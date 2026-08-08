@@ -31,6 +31,7 @@ git clone git@github.com:AlienKevin/sprint.git
 cd sprint
 uv sync --project harbor --extra modal
 uv run --project harbor modal setup
+npx vercel link --project sprint
 cp .env.example .env
 ```
 
@@ -50,27 +51,33 @@ uv run --project harbor python runs/ops/warm_modal_images.py \
   --policy /tmp/sprint-warmup.pt
 ```
 
-## Run an evaluation
+## Run the six-trial evaluation
 
-Every model wrapper performs a redacted dry-run unless `CONFIRM_LAUNCH=1` is
-set. Use a unique `RUN_ID` for each arm.
+The batch controller fixes the comparison contract to three independent
+DeepSeek V4 Flash 0731 trials and three independent GPT-5.6 Luna trials, all
+through Codex 0.147.0 at max reasoning. It enforces a 24-hour agent deadline,
+starts a restartable host monitor, publishes verifier-native success and failure
+replays without an extra GPU, and centralizes website deployments.
 
 ```bash
-# Terra / OpenAI
-RUN_ID=terra-high REASONING_EFFORT=high runs/run-terra.sh
-CONFIRM_LAUNCH=1 RUN_ID=terra-high REASONING_EFFORT=high runs/run-terra.sh
-
-# DeepSeek V4 Flash; the wrapper maps DEEPSEEK_API_KEY into Codex's compatible key name
-RUN_ID=deepseek-max REASONING_EFFORT=max runs/run-deepseek.sh
-CONFIRM_LAUNCH=1 RUN_ID=deepseek-max REASONING_EFFORT=max runs/run-deepseek.sh
+BATCH_ID="sprint-$(date -u +%Y%m%d)"
+python3 runs/ops/batch_eval.py preflight --batch-id "$BATCH_ID"
+python3 runs/ops/batch_eval.py launch --batch-id "$BATCH_ID" --confirm
+python3 runs/ops/batch_eval.py status --batch-id "$BATCH_ID"
 ```
 
-Operate a run without killing Harbor directly:
+To use a secrets file outside the clone, add `--env-file /absolute/path/.env`.
+
+The systemd batch monitor survives shell disconnects and continuously checks
+Modal state, CPU heartbeat, GPU dispatch, verifier/replay publishing, API rate
+limits/auth/quota failures, unified timelines, and Vercel deployment. Operate a
+single run without killing Harbor directly:
 
 ```bash
-python3 runs/ops/sprintctl.py status --run-id terra-high
-python3 runs/ops/sprintctl.py stop --run-id terra-high
-python3 runs/ops/sprintctl.py wait --run-id terra-high
+RUN_ID="${BATCH_ID}-luna-1"
+python3 runs/ops/sprintctl.py status --run-id "$RUN_ID"
+python3 runs/ops/sprintctl.py stop --run-id "$RUN_ID"
+python3 runs/ops/sprintctl.py wait --run-id "$RUN_ID"
 ```
 
 `stop` is idempotent and preserves traces/artifacts; `wait` succeeds only after
@@ -78,14 +85,20 @@ blind submissions drain, final verification completes, checksums reconcile,
 the timeline is ready, and Modal billing data is available. See
 [`runs/ops/RUNBOOK.md`](runs/ops/RUNBOOK.md) for recovery and failure handling.
 
+Stop the entire batch safely with:
+
+```bash
+python3 runs/ops/batch_eval.py stop --batch-id "$BATCH_ID"
+```
+
 ## Repository layout
 
 | Path | Purpose |
 | --- | --- |
 | `harbor/` | Vendored `AlienKevin/harbor` continuous-verification fork |
 | `challenge/g1-sprint-100m-lane/` | Agent image, task contract, and sealed verifier |
-| `runs/run-{terra,deepseek,opus,luna}.sh` | Safe model-specific launchers |
-| `runs/ops/` | Supervisor, recovery, telemetry, billing, finalization, and tests |
+| `runs/run-{deepseek,luna}.sh` | Safe model-specific launchers used by the fixed batch matrix |
+| `runs/ops/` | Batch controller, supervisor, recovery, telemetry, billing, finalization, and tests |
 | `sprint-web/` | Static site and schema-v6 timeline renderer |
 
 The exact Harbor source revision is recorded in

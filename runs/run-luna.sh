@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# DRAFT — Harbor Codex + gpt-5.6-luna (official OpenAI), durable Modal lane.
+# Harbor Codex + gpt-5.6-luna (official OpenAI), durable Modal lane.
 # Does NOT launch unless CONFIRM_LAUNCH=1.
 #
 # Usage:
@@ -28,7 +28,7 @@ if [[ -z "${OPENAI_API_KEY:-}" ]]; then
   exit 1
 fi
 
-echo "draft:    run-luna.sh"
+echo "launcher: run-luna.sh"
 echo "run_id:   $RUN_ID"
 echo "agent:    codex"
 echo "codex:    $CODEX_VERSION  (Harbor --ak version=...)"
@@ -52,7 +52,7 @@ echo "--- dry-run ---"
 "$ROOT/runs/run-lane-durable.sh" "${DRY_ARGS[@]}"
 
 if [[ "${CONFIRM_LAUNCH:-}" != "1" ]]; then
-  echo "dry-run only. Set CONFIRM_LAUNCH=1 after approving BLINDSPOTS_LUNA_DEEPSEEK.md" >&2
+  echo "dry-run only. Set CONFIRM_LAUNCH=1 to launch." >&2
   exit 0
 fi
 

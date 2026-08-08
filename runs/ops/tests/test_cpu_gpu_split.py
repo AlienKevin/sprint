@@ -900,12 +900,14 @@ class CheckpointContinuationTests(unittest.TestCase):
 
 class LauncherWiringTests(unittest.TestCase):
     def test_all_model_launchers_default_to_systemd_supervisor(self) -> None:
-        for name in ("run-opus.sh", "run-terra.sh", "run-luna.sh", "run-deepseek.sh"):
+        for name in ("run-luna.sh", "run-deepseek.sh"):
             text = (ROOT / "runs" / name).read_text()
             self.assertIn("start_lane_supervisor.py", text)
             self.assertIn("--supervised-launch", text)
             self.assertIn("CPU_MAX_RESTARTS", text)
             self.assertIn("CPU_MAX_RESTARTS:-50", text)
+        for name in ("run-opus.sh", "run-terra.sh", "run-lane.sh"):
+            self.assertFalse((ROOT / "runs" / name).exists())
         starter = (ROOT / "runs" / "ops" / "start_lane_supervisor.py").read_text()
         self.assertIn("Restart=on-failure", starter)
         self.assertIn("RestartPreventExitStatus=75 78", starter)

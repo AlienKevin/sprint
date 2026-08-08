@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="${SPRINT_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"
 HARBOR="${HARBOR_PATH:-$ROOT/harbor}"
-HARBOR_COMMIT=b69b181bceae132ca0018790dfed3654556a9ec3
+HARBOR_COMMIT=2f50d4c78bac5420b50d5cd15bc549a9bb19fa9d
 HARBOR_BRANCH=continuous-verification
 UV="${UV:-$(command -v uv || true)}"
 CONTROL="$ROOT/runs/ops/sprintctl.py"
@@ -14,10 +14,8 @@ DEPLOY_DEBOUNCE_SECONDS=300
 # These exact CLI versions are baked into the task image. Harbor verifies them
 # locally during offline agent setup and skips installation.
 CODEX_VERSION=${CODEX_VERSION:-0.147.0}
-# npm @anthropic-ai/claude-code@latest as of 2026-08-03. Pinned for the same
-# reason as the codex arm: an unpinned @latest install can resolve differently
-# between arms launched hours apart, which would break the fairness hold-constant
-# list in runs/BLINDSPOTS_LUNA_DEEPSEEK.md §5.
+# The optional Claude Code adapter remains pinned for reproducibility even
+# though the active comparison uses Codex for both model families.
 CLAUDE_VERSION=${CLAUDE_VERSION:-2.1.220}
 BAKED_CODEX_VERSION=0.147.0
 BAKED_CLAUDE_VERSION=2.1.220
@@ -26,6 +24,7 @@ BAKED_CLAUDE_VERSION=2.1.220
 # and survives Modal preempting it, at the cost of paying for an idle GPU
 # between jobs. Off by default. See runs/ops/gpu_worker.ensure_standing_sandbox.
 STANDING_GPU=${STANDING_GPU:-0}
+BATCH_ID=${SPRINT_BATCH_ID:-}
 RUN_ID=""
 AGENT_KIND=claude-code
 MODEL=""
@@ -86,6 +85,10 @@ if [[ -z "$RUN_ID" ]]; then
 fi
 if [[ ! "$RUN_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{2,48}$ ]]; then
   echo "run ID must be 3-49 safe filename characters" >&2
+  exit 2
+fi
+if [[ -n "$BATCH_ID" && ! "$BATCH_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{2,48}$ ]]; then
+  echo "SPRINT_BATCH_ID must be 3-49 safe filename characters" >&2
   exit 2
 fi
 if [[ "$AGENT_KIND" != "claude-code" && "$AGENT_KIND" != "codex" ]]; then
@@ -343,12 +346,14 @@ payload = {
     "hosted_model_tools_policy": "disabled" if agent_kind == "codex" else None,
     "service_tier": (
         "default"
-        if agent_kind == "codex" and model.split("/", 1)[-1] == "gpt-5.6-terra"
+        if agent_kind == "codex"
+        and model.split("/", 1)[-1] in {"gpt-5.6-terra", "gpt-5.6-luna"}
         else None
     ),
     "usage_audit_required": (
         agent_kind == "codex"
-        and model.split("/", 1)[-1] in {"gpt-5.6-terra", "deepseek-v4-flash"}
+        and model.split("/", 1)[-1]
+        in {"gpt-5.6-terra", "gpt-5.6-luna", "deepseek-v4-flash"}
     ),
     "modal_profile": profile,
     "harbor_path": harbor,
@@ -440,7 +445,7 @@ python3 - "$STATE_DIR/run.json" "$RUN_ID" "$APP_NAME" "$TRAINING_APP_NAME" \
   "$SANDBOX_TIMEOUT_SECONDS" "$DEPLOY_DEBOUNCE_SECONDS" "$HARBOR" \
   "$HARBOR_COMMIT" "$HARBOR_BRANCH" "$RESUMING" "$CPU_LAUNCH_ATTEMPT" \
   "$SUPERVISED_LAUNCH" "$STANDING_GPU" "$MODEL_API_HOST" \
-  "$PROMPT_TEMPLATE" "$ROOT/runs/ops/modal-image-warmup.json" "$ROOT" <<'PY'
+  "$PROMPT_TEMPLATE" "$ROOT/runs/ops/modal-image-warmup.json" "$ROOT" "$BATCH_ID" <<'PY'
 import datetime
 import fcntl
 import hashlib
@@ -452,7 +457,7 @@ import sys
 (path, run_id, app, training_app, verifier_app, volume, state, jobs, secrets, profile, agent_kind, model,
  endpoint, effort, codex_version, sandbox_timeout, debounce, harbor, commit,
  branch, resuming, cpu_attempt, supervised, standing_gpu_flag,
- model_api_host, prompt_template, warmup_manifest_path, root) = sys.argv[1:]
+ model_api_host, prompt_template, warmup_manifest_path, root, batch_id) = sys.argv[1:]
 standing_gpu = standing_gpu_flag == "1"
 target = pathlib.Path(path)
 root_path = pathlib.Path(root)
@@ -468,6 +473,7 @@ fcntl.flock(lock_fd, fcntl.LOCK_EX)
 base = {
     "schema_version": 2,
     "run_id": run_id,
+    "batch_id": batch_id or None,
     "created_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     "app_name": app,
     "training_app_name": training_app,
@@ -555,10 +561,10 @@ base = {
     "unified_timeline_required": True,
     "modal_billing_required": True,
     "cgroup_telemetry_required": True,
-    # Terra cost is accepted only from Harbor's per-request, checksummed usage
+    # OpenAI cost is accepted only from Harbor's per-request, checksummed usage
     # audit. Aggregate cached/uncached counters cannot recover long-context or
     # cache-write pricing correctly.
-    "usage_audit_required": agent_kind == "codex" and model.split("/", 1)[-1] in {"gpt-5.6-terra", "deepseek-v4-flash"},
+    "usage_audit_required": agent_kind == "codex" and model.split("/", 1)[-1] in {"gpt-5.6-terra", "gpt-5.6-luna", "deepseek-v4-flash"},
     "hosted_model_tools_policy": "disabled" if agent_kind == "codex" else None,
     "timeline_bucket_seconds": 60,
     "telemetry_cpu_max_gap_seconds": 45,
@@ -700,7 +706,7 @@ else
   if [[ "$ENDPOINT" == *api.deepseek.com* ]]; then
     AGENT_HARBOR_ARGS+=(--ae "SPRINT_CODEX_PROVIDER=deepseek")
   fi
-  if [[ "${MODEL#*/}" == "gpt-5.6-terra" ]]; then
+  if [[ "${MODEL#*/}" == "gpt-5.6-terra" || "${MODEL#*/}" == "gpt-5.6-luna" ]]; then
     # Pin standard pricing. Leaving this unset lets Codex/project defaults pick
     # another service tier, which cannot be reconstructed from token counts.
     AGENT_HARBOR_ARGS+=(--ak "service_tier=default")

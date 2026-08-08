@@ -4,6 +4,7 @@ import pytest
 
 from harbor.agents.installed.codex_cost import (
     DEEPSEEK_V4_FLASH_PRICING,
+    GPT_5_6_LUNA_PRICING,
     GPT_5_6_TERRA_PRICING,
     build_request_usage_record,
     build_usage_audit,
@@ -70,6 +71,48 @@ def test_long_context_multiplier_is_applied_per_request() -> None:
     assert short["calculated_cost_usd"] == pytest.approx(0.66)
     assert long["long_context_pricing_applied"] is True
     assert long["calculated_cost_usd"] == pytest.approx(1.272)
+
+
+def test_luna_cost_uses_pinned_standard_tariff_and_cache_write_rate() -> None:
+    result = build_request_usage_record(
+        api_call_id="api_call_luna",
+        model="openai/gpt-5.6-luna",
+        service_tier="default",
+        reasoning_effort="max",
+        usage=usage(
+            ordinary=60_000,
+            cached=40_000,
+            cache_write=30_000,
+            output=10_000,
+        ),
+        usage_reported_at="2026-08-08T00:00:00Z",
+        model_context_window=1_050_000,
+    )
+
+    assert result["pricing_snapshot_id"] == GPT_5_6_LUNA_PRICING["id"]
+    assert result["cost_reconstruction_status"] == "complete"
+    # 60k*$1/M + 40k*$0.10/M + 30k*$1.25/M + 10k*$6/M
+    assert result["calculated_cost_usd"] == pytest.approx(0.1615)
+
+
+def test_luna_long_context_multiplier_applies_to_entire_request() -> None:
+    result = build_request_usage_record(
+        api_call_id="api_call_luna_long",
+        model="gpt-5.6-luna",
+        service_tier="default",
+        reasoning_effort="max",
+        usage=usage(
+            ordinary=273_000,
+            cached=0,
+            cache_write=0,
+            output=10_000,
+        ),
+        usage_reported_at="2026-08-08T00:00:00Z",
+        model_context_window=1_050_000,
+    )
+
+    assert result["long_context_pricing_applied"] is True
+    assert result["calculated_cost_usd"] == pytest.approx(0.636)
 
 
 def test_invalid_usage_fails_closed_instead_of_guessing() -> None:

@@ -213,7 +213,10 @@ def main() -> int:
             "timeout --signal=TERM --kill-after=30 180 "
             "python3 /tests/verify.py --policy /warm/policy.pt "
             "--logs /tmp/verifier-warm --tests /tests --runs 1 "
-            "--distance 1 --max-seconds 2 --skip-robustness --headless"
+            "--distance 1 --max-seconds 2 --skip-robustness --headless && "
+            "python3 -c \"import json; p=json.load(open('/tmp/verifier-warm/replay.json')); "
+            "assert p['schema_version']==1; assert len(p['frames'])==1; "
+            "assert p['frames'][0]; assert p['policy_sha256']\""
         )
         payload["verifier_probes"] = [
             run_sandbox(

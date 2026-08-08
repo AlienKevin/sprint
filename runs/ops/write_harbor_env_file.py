@@ -6,9 +6,9 @@ never appear in process argv / ``ps``. Non-secret agent knobs may still use
 ``--ae KEY=value``.
 
 Usage:
-  python3 runs/ops/write_harbor_env_file.py --label terra-... \\
+  python3 runs/ops/write_harbor_env_file.py --label luna-... \\
       OPENAI_API_KEY \\
-      OPENAI_BASE_URL=https://openrouter.ai/api/v1
+      OPENAI_BASE_URL=https://api.openai.com/v1
 
 Keys without ``=`` are read from the current environment. Prints the env-file
 path on stdout. Never prints secret values.

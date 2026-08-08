@@ -446,7 +446,7 @@ def discover_job_and_trial(
     return job, trial
 
 
-def request_stop(run_id: str) -> dict[str, Any]:
+def request_stop(run_id: str, *, reason: str = "operator_stop") -> dict[str, Any]:
     state_dir, run = load_run(run_id)
     kind = agent_kind(run)
     marker = state_dir / "STOP_REQUESTED.json"
@@ -460,7 +460,7 @@ def request_stop(run_id: str) -> dict[str, Any]:
             "requested_at": utc_now(),
             "container_id": run.get("agent_container_id"),
             "method": "create /run/sprint-stop",
-            "reason": "operator_stop",
+            "reason": reason,
         }
         atomic_write_json(marker, payload, mode=0o600)
 
@@ -473,7 +473,7 @@ def request_stop(run_id: str) -> dict[str, Any]:
 
         gpu_stopped = [
             str(item.get("job_id"))
-            for item in gpu_worker.stop_all(run, reason="operator_stop")
+            for item in gpu_worker.stop_all(run, reason=reason)
         ]
     except Exception as exc:  # noqa: BLE001
         gpu_stop_error = f"{type(exc).__name__}: {exc}"
@@ -764,23 +764,29 @@ def maybe_start_frontier_worker(
     if not queued and not due_deploy:
         return None
     log = (state_dir / "frontier-worker.log").open("a")
+    command = [
+        sys.executable,
+        str(FRONTIER_SCRIPT),
+        "worker",
+        "--job",
+        str(job),
+        "--trial",
+        str(trial),
+        "--state",
+        str(frontier_path),
+        "--web",
+        str(run.get("site_dir", WEB_DEFAULT)),
+    ]
+    if not run.get("batch_id"):
+        command.extend(
+            [
+                "--deploy",
+                "--debounce-seconds",
+                str(run.get("deploy_debounce_seconds", DEPLOY_DEBOUNCE_SECONDS)),
+            ]
+        )
     process = subprocess.Popen(
-        [
-            sys.executable,
-            str(FRONTIER_SCRIPT),
-            "worker",
-            "--job",
-            str(job),
-            "--trial",
-            str(trial),
-            "--state",
-            str(frontier_path),
-            "--web",
-            str(run.get("site_dir", WEB_DEFAULT)),
-            "--deploy",
-            "--debounce-seconds",
-            str(run.get("deploy_debounce_seconds", DEPLOY_DEBOUNCE_SECONDS)),
-        ],
+        command,
         stdout=log,
         stderr=subprocess.STDOUT,
         env=command_env(run),
@@ -967,7 +973,7 @@ def modal_billing_ready(state_dir: Path, run_id: str) -> tuple[bool, list[str]]:
 
 
 def usage_audit_ready(trial: Path, run: dict[str, Any]) -> tuple[bool, list[str]]:
-    """Validate Terra's raw JSONL -> usage audit -> ATIF cost chain."""
+    """Validate raw JSONL -> usage audit -> ATIF cost reconstruction."""
     details: list[str] = []
     audit_path = trial / "agent" / "usage-audit.json"
     trajectory_path = trial / "agent" / "trajectory.json"
@@ -993,7 +999,11 @@ def usage_audit_ready(trial: Path, run: dict[str, Any]) -> tuple[bool, list[str]
         details.append("usage audit cumulative counters do not reconcile")
 
     expected_model = str(run.get("model") or "").split("/", 1)[-1]
-    expected_service_tier = "default" if expected_model == "gpt-5.6-terra" else None
+    expected_service_tier = (
+        "default"
+        if expected_model in {"gpt-5.6-terra", "gpt-5.6-luna"}
+        else None
+    )
     for index, request in enumerate(requests, start=1):
         if not isinstance(request, dict):
             details.append(f"usage audit request {index} is not an object")
@@ -1144,6 +1154,27 @@ def final_policy_frozen_ready(trial: Path) -> bool:
         return False
 
 
+def batch_site_deployed_ready(state_dir: Path, run: dict[str, Any]) -> bool:
+    """Require proof that this run's latest public index reached production."""
+    batch_id = run.get("batch_id")
+    if not batch_id:
+        return True
+    marker_path = state_dir / "BATCH_SITE_DEPLOYED.json"
+    policy_index = Path(str(run.get("site_dir", WEB_DEFAULT))) / "data" / "policies" / f"{run['run_id']}.json"
+    try:
+        marker = json.loads(marker_path.read_text())
+        return bool(
+            marker.get("schema_version") == 1
+            and marker.get("run_id") == run.get("run_id")
+            and marker.get("batch_id") == batch_id
+            and marker.get("production_alias") == "https://g1-sprint.vercel.app"
+            and policy_index.is_file()
+            and marker.get("policy_index_sha256") == sha256_file(policy_index)
+        )
+    except (OSError, json.JSONDecodeError):
+        return False
+
+
 def final_conditions(
     state_dir: Path, run: dict[str, Any]
 ) -> tuple[bool, dict[str, bool], list[str]]:
@@ -1167,6 +1198,8 @@ def final_conditions(
         conditions["usage_audit_complete"] = False
     if run.get("primary_score_policy") == "frozen_final_artifact":
         conditions["final_policy_frozen"] = False
+    if run.get("batch_id"):
+        conditions["batch_site_deployed"] = False
     details: list[str] = []
     if not job or not trial:
         return False, conditions, ["job or trial path is not available"]
@@ -1269,6 +1302,8 @@ def final_conditions(
         and active_captured
         and not worker_alive(state_dir)
     )
+    if run.get("batch_id"):
+        conditions["batch_site_deployed"] = batch_site_deployed_ready(state_dir, run)
     if run.get("unified_timeline_required"):
         timeline_path = state_dir / "telemetry" / "unified-timeline.json"
         try:
@@ -1546,22 +1581,6 @@ def recover_run(
     return payload
 
 
-HUB_TRACK = ROOT / "runs" / "hub_track_upload.py"
-
-
-def hub_upload(*, scrub_only: bool = False, force_rescrub: bool = False) -> int:
-    """Default Hub path: scrub → leak-gate → upload (or scrub-only)."""
-    if not HUB_TRACK.is_file():
-        raise RuntimeError(f"missing {HUB_TRACK}")
-    cmd = [sys.executable, str(HUB_TRACK), "--once"]
-    if scrub_only:
-        cmd.append("--scrub-only")
-    if force_rescrub:
-        cmd.append("--force-rescrub")
-    proc = subprocess.run(cmd, check=False)
-    return int(proc.returncode)
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1595,26 +1614,12 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("--force", action="store_true")
         if name == "gpu-terminate":
             command.add_argument("--job-id", required=True)
-    hub = sub.add_parser(
-        "hub-upload",
-        help="Scrub job dirs, leak-gate, then private Hub upload (default path).",
-    )
-    hub.add_argument(
-        "--scrub-only",
-        action="store_true",
-        help="Scrub + leak-gate only; do not call harbor upload",
-    )
-    hub.add_argument("--force-rescrub", action="store_true")
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
     try:
-        if args.command == "hub-upload":
-            return hub_upload(
-                scrub_only=args.scrub_only, force_rescrub=args.force_rescrub
-            )
         if args.command == "status":
             state_dir, run = load_run(args.run_id)
             payload = status_snapshot(state_dir, run, include_remote=not args.offline)

@@ -1,4 +1,4 @@
-# Copyright (c) 2026 QWOP-bench contributors.
+# Copyright (c) 2026 Sprint contributors.
 # SPDX-License-Identifier: BSD-3-Clause
 """Run one time trial and score it.
 
@@ -84,7 +84,7 @@ SELF_COLLISION_SPHERE_MARGIN_M = 0.02
 # Stock collision primitives are thinner than the visual limbs (knee capsules
 # are 1.5 cm radius).  Without a pad the gate only fires on co-located limbs
 # and misses ankle-through-torso near-misses that still look like body
-# intersection.  2 cm was calibrated on Opus lane captures: the early valid
+# intersection.  2 cm was calibrated on representative lane captures: a valid
 # 17.9 s gait stays under the 1 cm DQ threshold; the 6.9–7.4 s tight gaits do
 # not.  3 cm false-DQs the clean gait.
 SELF_COLLISION_RADIUS_PAD_M = 0.02

@@ -30,9 +30,9 @@ cost comparisons while preserving the distinct ceiling.
 
 | Path | How telemetry starts |
 |---|---|
-| `runs/run-lane-durable.sh` / `run-lane.sh` | Modal `keepalive` starts `/opt/sprint-telemetry.sh`, then `sprint-snapshot-loop` starts it again idempotently |
+| `runs/run-lane-durable.sh` | Modal `keepalive` starts `/opt/sprint-telemetry.sh`, then `sprint-snapshot-loop` starts it again idempotently |
 | `runs/run-luna.sh` / `run-deepseek.sh` | Same (they call the durable launcher) |
-| `runs/run-terra.sh` / `run-opus.sh` | Modal `keepalive` from `runs/ops/telemetry_keepalive.py` |
+| `runs/run-luna.sh` / `runs/run-deepseek.sh` | Use the durable launcher path above |
 | Host monitor (`sprintctl monitor`) | Backup poll via `modal container exec` every monitor tick |
 
 Disable in-sandbox only by removing the binary from the image or overriding
@@ -172,17 +172,6 @@ command lines or environment variables.
 Telemetry never dumps `environ`, API keys, OAuth tokens, or process argv.
 Process names matching `api_key|token|password|secret|...` are replaced with
 `[redacted]`. Host poller also redacts secret-shaped substrings in exec noise.
-
-## Hub upload caveat
-
-As of 2026-08-02, many Hub uploads are blocked by `HARBOR_API_KEY` **HTTP 401**
-(see `runs/HUB_JOBS.md`). Paths above are still correct for local trial dirs and
-will be in the archive once a valid `sk-harbor-...` key is configured. Prefer
-`/data/harbor-adapters-experiments/.env` for Hub keys.
-
-Telemetry JSON/CSV must not contain API keys (sampler redacts process names).
-Before any Hub upload, run the scrub + leak-gate path documented in
-`runs/SECRETS_AND_HUB.md` (`python3 runs/hub_track_upload.py --once`).
 
 ## Smoke (no Modal job)
 

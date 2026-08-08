@@ -335,6 +335,35 @@ class DurableOpsTests(unittest.TestCase):
         self.assertEqual(config["hosted_model_tools_policy"], "disabled")
         self.assertTrue(config["usage_audit_required"])
 
+    def test_luna_dry_run_pins_reconstructible_cost_policy(self) -> None:
+        run_id = f"dry-{uuid.uuid4().hex[:12]}"
+        env = os.environ.copy()
+        env["OPENAI_API_KEY"] = "fake-openai-key-that-must-never-print-123456789"
+        completed = subprocess.run(
+            [
+                "bash",
+                str(ROOT / "runs/run-lane-durable.sh"),
+                "--dry-run",
+                "--run-id",
+                run_id,
+                "--agent-kind",
+                "codex",
+                "--model",
+                "openai/gpt-5.6-luna",
+                "--reasoning-effort",
+                "max",
+            ],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        config = json.loads(completed.stdout)
+        self.assertEqual(config["service_tier"], "default")
+        self.assertEqual(config["reasoning_effort"], "max")
+        self.assertTrue(config["usage_audit_required"])
+
     def test_deepseek_dry_run_requires_reconstructible_cost_policy(self) -> None:
         run_id = f"dry-{uuid.uuid4().hex[:12]}"
         env = os.environ.copy()
@@ -905,6 +934,58 @@ while True:
             self.assertFalse(deployed)
             self.assertEqual(message, "no site file changes")
             self.assertEqual(state["site_status"], "noop")
+
+    def test_vercel_deploy_reassigns_exact_public_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            web = Path(raw)
+            (web / "index.html").write_text("new")
+            (web / ".vercel").mkdir()
+            (web / ".vercel/project.json").write_text(
+                json.dumps(
+                    {
+                        "projectId": frontier_update.PROJECT_ID,
+                        "orgId": frontier_update.ORG_ID,
+                        "projectName": "sprint",
+                    }
+                )
+            )
+            state = {
+                "last_deployed_site_hash": "old",
+                "pending_site_hash": frontier_update.site_tree_hash(web),
+                "site_change_first_seen_at": "2026-08-08T00:00:00Z",
+            }
+            commands = []
+
+            def runner(command, cwd):
+                commands.append((command, cwd))
+                if command[1] == "deploy":
+                    return "Production: https://sprint-new-alienkevins-projects.vercel.app"
+                return "Success"
+
+            deployed, _ = frontier_update.deploy_if_needed(
+                state,
+                web=web,
+                now=1786224000,
+                debounce_seconds=0,
+                runner=runner,
+            )
+            self.assertTrue(deployed)
+            self.assertEqual(len(commands), 2)
+            self.assertEqual(
+                commands[1][0],
+                [
+                    "vercel",
+                    "alias",
+                    "set",
+                    "https://sprint-new-alienkevins-projects.vercel.app",
+                    "g1-sprint.vercel.app",
+                    "--scope",
+                    frontier_update.VERCEL_SCOPE,
+                ],
+            )
+            self.assertEqual(
+                state["production_alias"], "https://g1-sprint.vercel.app"
+            )
 
 
 if __name__ == "__main__":

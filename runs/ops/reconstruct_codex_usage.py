@@ -79,7 +79,10 @@ def reconstruct_group(
         "model_name": str(run["model"]),
         "reasoning_effort": str(run["reasoning_effort"]),
     }
-    if str(run["model"]).split("/", 1)[-1] == "gpt-5.6-terra":
+    if str(run["model"]).split("/", 1)[-1] in {
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+    }:
         kwargs["service_tier"] = "default"
     agent = Codex(**kwargs)
     trajectory = agent._convert_events_to_trajectory(sessions)

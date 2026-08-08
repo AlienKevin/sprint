@@ -22,7 +22,6 @@ from typing import Any, Callable, Iterator, Sequence
 
 ROOT = Path(__file__).resolve().parents[2]
 WEB_DEFAULT = ROOT / "sprint-web"
-CAPTURE_SCRIPT = ROOT / "runs/capture_lane_policy.py"
 BUILD_SCRIPT = ROOT / "runs/build_lane_3d.py"
 HQ_PATH = ROOT / "runs/g1_hq.json"
 PROJECT_ID = "prj_dgvTovRNwdSDcefYmo6oXfju9M3p"
@@ -262,6 +261,62 @@ def candidates_from_rows(trial: Path, rows: Sequence[dict[str, Any]]) -> list[Ca
     return sorted(candidates, key=lambda candidate: candidate.index)
 
 
+def graded_policy_records(
+    trial: Path, rows: Sequence[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Return every uniquely graded policy, including DQs and failed runs."""
+    records: list[dict[str, Any]] = []
+    for row in rows:
+        rewards = row.get("rewards")
+        if not isinstance(rewards, dict) or row.get("error"):
+            continue
+        try:
+            index = int(row["index"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        policy = policy_for_row(trial, row)
+        if policy is None:
+            continue
+        attempt = attempt_dir_for_row(trial, row)
+        replay = attempt / "verifier" / "replay.json" if attempt else None
+        details_path = attempt / "verifier" / "sprint_results.json" if attempt else None
+        try:
+            details = json.loads(details_path.read_text()) if details_path else {}
+        except (OSError, json.JSONDecodeError):
+            details = {}
+        failed = details.get("failed_gates")
+        if not isinstance(failed, list):
+            failed = [
+                name.removeprefix("gate_")
+                for name, value in rewards.items()
+                if name.startswith("gate_") and _as_number(value) == 0.0
+            ]
+        valid = _as_number(rewards.get("valid_run")) == 1.0
+        best = _as_number(
+            rewards.get("best_100m_s", rewards.get("best_valid_100m_s"))
+        )
+        records.append(
+            {
+                "index": index,
+                "name": str(row.get("name") or f"attempt-{index}"),
+                "policy_hash": sha256_file(policy),
+                "policy_path": str(policy),
+                "replay_path": str(replay) if replay and replay.is_file() else None,
+                "valid_run": valid,
+                "best_100m_s": best if valid and best and best > 0 else None,
+                "max_distance_m": _as_number(details.get("max_distance_m")),
+                "peak_speed_mps": _as_number(rewards.get("peak_speed_mps")),
+                "robustness_rate": _as_number(rewards.get("robustness_rate")),
+                "failed_gates": sorted({str(name) for name in failed}),
+                "submitted_at": row.get("submitted_at"),
+                "finished_at": row.get("finished_at"),
+                "cache_hit": bool(row.get("cache_hit")),
+                "source_evaluation_id": row.get("source_evaluation_id"),
+            }
+        )
+    return sorted(records, key=lambda record: int(record["index"]))
+
+
 def compute_frontier(candidates: Sequence[Candidate]) -> tuple[list[Candidate], bool]:
     if not candidates:
         return [], False
@@ -406,6 +461,7 @@ def scan_frontier(
     ledger_path = trial / "artifacts" / "continuous" / "ledger.jsonl"
     read = read_ledger(ledger_path)
     candidates = candidates_from_rows(trial, read.rows)
+    graded = graded_policy_records(trial, read.rows)
     frontier, robust = compute_frontier(candidates)
     state = load_state(state_path, job, trial, web)
     previous = set(state.get("frontier") or [])
@@ -426,6 +482,15 @@ def scan_frontier(
         }
         if candidate.policy_hash is None:
             record_error(state, f"attempt {candidate.index} has no archived policy")
+
+    for record in graded:
+        key = str(record["policy_hash"])
+        previous_record = policies.get(key) or {}
+        policies[key] = {
+            **previous_record,
+            **record,
+            "on_frontier": key in active,
+        }
 
     queue = state.setdefault("capture_queue", [])
     queued_hashes = {
@@ -451,10 +516,33 @@ def scan_frontier(
                 }
             )
 
+    # Every fresh verifier now records one representative pose replay. Publish
+    # all unique graded policies—not only successes—so falls, lane exits, and
+    # collision failures remain part of the experiment story. Exact duplicate
+    # bytes share one replay page by policy hash.
+    for record in graded:
+        policy_hash = str(record["policy_hash"])
+        if (
+            record.get("replay_path")
+            and policy_hash not in queued_hashes
+            and policy_hash not in captured
+        ):
+            queue.append(
+                {
+                    "policy_hash": policy_hash,
+                    "index": record["index"],
+                    "queued_at": utc_now(),
+                    "status": "queued",
+                    "story": "valid" if record["valid_run"] else "failure",
+                }
+            )
+            queued_hashes.add(policy_hash)
+
     for item in queue:
         if (
             item.get("status") == "queued"
             and item.get("policy_hash") not in active
+            and not policies.get(str(item.get("policy_hash")), {}).get("replay_path")
         ):
             item["status"] = "skipped_dominated"
             item["finished_at"] = utc_now()
@@ -598,7 +686,10 @@ def capture_and_render(
     *, state: dict[str, Any], state_path: Path, web: Path, policy_hash: str
 ) -> None:
     policy = state["policies"][policy_hash]
-    source = Path(policy["policy_path"])
+    replay_path = policy.get("replay_path")
+    if not replay_path or not Path(replay_path).is_file():
+        raise RuntimeError("sealed verifier replay artifact is missing")
+    source = Path(replay_path)
     work = state_path.parent / "captures"
     work.mkdir(parents=True, exist_ok=True)
     short = policy_hash[:12]
@@ -612,21 +703,16 @@ def capture_and_render(
         temporary = Path(raw)
         capture_tmp = temporary / "capture.json"
         html_tmp = temporary / "replay.html"
-        run_checked(
-            [
-                "run-heavy",
-                sys.executable,
-                "-u",
-                str(CAPTURE_SCRIPT),
-                "--policy",
-                str(source),
-                "--out",
-                str(capture_tmp),
-                "--label",
-                label,
-            ]
+        atomic_copy(source, capture_tmp)
+        valid = bool(policy.get("valid_run"))
+        time_value = policy.get("best_100m_s")
+        failure = ", ".join(policy.get("failed_gates") or ["no valid finish"])
+        headline = f"{float(time_value):.3f} s" if valid and time_value else "Did not finish"
+        lede = (
+            f"Valid 100 m policy: <b>{float(time_value):.3f} s</b>."
+            if valid and time_value
+            else f"Failed policy: <b>{failure}</b>."
         )
-        time_value = float(policy["best_100m_s"])
         run_checked(
             [
                 "run-heavy",
@@ -641,15 +727,15 @@ def capture_and_render(
                 "--meta-policy",
                 label,
                 "--title",
-                f"G1 lane frontier - {time_value:.3f} s",
+                f"G1 Sprint attempt #{policy['index']} - {headline}",
                 "--eyebrow",
-                f"Unitree G1 · lane frontier · attempt #{policy['index']}",
+                f"Unitree G1 · blind submission #{policy['index']}",
                 "--headline",
-                f"Frontier {time_value:.3f} s",
+                headline,
                 "--lede",
-                f"Current valid 100 m frontier policy: <b>{time_value:.3f} s</b>.",
+                lede,
                 "--cap",
-                f"Attempt #{policy['index']} · <b>{time_value:.3f} s</b>",
+                f"Attempt #{policy['index']} · <b>{headline}</b>",
                 "--story",
                 f"Policy SHA-256 {policy_hash}.",
                 "--active",
@@ -669,6 +755,7 @@ def capture_and_render(
         "web_capture": str(web_capture.relative_to(web)),
         "web_html": str(web_html.relative_to(web)),
         "valid": True,
+        "story": "valid" if policy.get("valid_run") else "failure",
     }
     for item in state.get("capture_queue", []):
         if item.get("policy_hash") == policy_hash and item.get("status") == "running":
@@ -677,89 +764,86 @@ def capture_and_render(
     atomic_write_json(state_path, state)
 
 
-def frontier_nav(state: dict[str, Any], current_path: str) -> str:
-    links: list[str] = []
-    first_active = next(
-        (
-            policy_hash
-            for policy_hash in state.get("frontier") or []
-            if state.get("captures", {}).get(policy_hash, {}).get("valid")
-        ),
-        None,
+def write_web_policy_indexes(
+    state_path: Path, state: dict[str, Any], web: Path
+) -> None:
+    """Publish a public-safe policy history for the comparison dashboard."""
+    run_id = state_path.parent.name
+    try:
+        run = json.loads((state_path.parent / "run.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        run = {"run_id": run_id}
+    rows: list[dict[str, Any]] = []
+    captures = state.get("captures", {})
+    for policy_hash, policy in state.get("policies", {}).items():
+        capture = captures.get(policy_hash) or {}
+        web_html = capture.get("web_html") if capture.get("valid") else None
+        rows.append(
+            {
+                "submission_index": policy.get("index"),
+                "policy_sha256": policy_hash,
+                "submitted_at": policy.get("submitted_at"),
+                "finished_at": policy.get("finished_at"),
+                "valid_run": bool(policy.get("valid_run")),
+                "best_100m_s": policy.get("best_100m_s"),
+                "max_distance_m": policy.get("max_distance_m"),
+                "peak_speed_mps": policy.get("peak_speed_mps"),
+                "robustness_rate": policy.get("robustness_rate"),
+                "failed_gates": policy.get("failed_gates") or [],
+                "on_frontier": bool(policy.get("on_frontier")),
+                "replay_ready": bool(web_html),
+                "replay_url": (
+                    "/" + str(web_html).removesuffix(".html") if web_html else None
+                ),
+            }
+        )
+    rows.sort(key=lambda row: int(row.get("submission_index") or 0))
+    payload = {
+        "schema_version": 1,
+        "updated_at": utc_now(),
+        "run_id": run_id,
+        "model": run.get("model"),
+        "resolved_model_version": run.get("resolved_model_version"),
+        "reasoning_effort": run.get("reasoning_effort"),
+        "created_at": run.get("created_at"),
+        "policies": rows,
+    }
+    run_path = web / "data" / "policies" / f"{run_id}.json"
+    atomic_write_json(run_path, payload)
+
+    index_path = web / "data" / "policies" / "index.json"
+    try:
+        index = json.loads(index_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        index = {"schema_version": 1, "runs": []}
+    entries = {
+        str(item.get("run_id")): item
+        for item in index.get("runs", [])
+        if isinstance(item, dict) and item.get("run_id")
+    }
+    entries[run_id] = {
+        "run_id": run_id,
+        "model": payload["model"],
+        "resolved_model_version": payload["resolved_model_version"],
+        "reasoning_effort": payload["reasoning_effort"],
+        "created_at": payload["created_at"],
+        "updated_at": payload["updated_at"],
+        "policy_count": len(rows),
+        "valid_count": sum(row["valid_run"] for row in rows),
+        "replay_count": sum(row["replay_ready"] for row in rows),
+        "path": f"/data/policies/{run_id}.json",
+    }
+    atomic_write_json(
+        index_path,
+        {
+            "schema_version": 1,
+            "updated_at": payload["updated_at"],
+            "runs": sorted(
+                entries.values(),
+                key=lambda item: (item.get("created_at") or "", item["run_id"]),
+            ),
+        },
     )
-    for policy_hash in state.get("frontier") or []:
-        capture = state.get("captures", {}).get(policy_hash)
-        policy = state.get("policies", {}).get(policy_hash)
-        if not capture or not capture.get("valid") or not policy:
-            continue
-        href = "/" + str(capture["web_html"]).removesuffix(".html")
-        current = "/" + current_path.removesuffix(".html")
-        on = (
-            " on"
-            if href == current
-            or (current_path == "index.html" and policy_hash == first_active)
-            else ""
-        )
-        links.append(
-            f'<a class="pol{on}" href="{href}">'
-            f'#{policy["index"]} · {float(policy["best_100m_s"]):.3f}s</a>'
-        )
-    # Prefer captured Luna/DeepSeek bakeoff trials over legacy Opus/Terra links.
-    extra = [
-        ('/replay/frontier-f829f11b238d', 'DS #9 · 52.069s'),
-        ('/replay/frontier-7c818f1c031a', 'DS #19 · 47.770s'),
-        ('/replay/frontier-dba987769518', 'DS #20 · 42.573s'),
-        ('/replay/frontier-2c53c0e7bb9d', 'DS #22 · 39.811s'),
-        ('/replay/deepseek-61.66s', 'DS prior · 61.66s'),
-        ('/replay/luna-first-finish-outlane', 'Luna · first finish'),
-        ('/deepseek-timeline', 'DeepSeek timeline'),
-        ('/luna-timeline', 'Luna timeline'),
-    ]
-    existing_hrefs = {re.search(r'href="([^"]+)"', link).group(1) for link in links}
-    for href, label in extra:
-        if href in existing_hrefs:
-            continue
-        links.append(f'<a class="pol" href="{href}">{label}</a>')
-    return (
-        '<div class="polsel" role="navigation" aria-label="Active policy frontier">'
-        + "".join(links)
-        + "</div>"
-    )
-
-
-def refresh_site_navigation(state: dict[str, Any], web: Path) -> bool:
-    captured_frontier = [
-        policy_hash
-        for policy_hash in state.get("frontier") or []
-        if state.get("captures", {}).get(policy_hash, {}).get("valid")
-    ]
-    if captured_frontier:
-        fastest = min(
-            captured_frontier,
-            key=lambda key: float(state["policies"][key]["best_100m_s"]),
-        )
-        source = web / state["captures"][fastest]["web_html"]
-        if source.is_file():
-            atomic_copy(source, web / "index.html")
-
-    changed = False
-    targets = sorted(web.glob("*.html")) + sorted((web / "replay").glob("*.html"))
-    for path in targets:
-        original = path.read_text()
-        if 'class="polsel"' not in original:
-            continue
-        nav = frontier_nav(state, path.relative_to(web).as_posix())
-        updated = re.sub(
-            r'<div class="polsel"[^>]*>.*?</div>',
-            nav,
-            original,
-            count=1,
-            flags=re.DOTALL,
-        )
-        if updated != original:
-            atomic_write_text(path, updated)
-            changed = True
-    return changed
 
 
 def verify_project_link(web: Path) -> None:
@@ -826,7 +910,24 @@ def deploy_if_needed(
         web,
     )
     urls = re.findall(r"https://[A-Za-z0-9.-]+\.vercel\.app", output)
-    deployment_url = urls[-1] if urls else None
+    deployment_url = next(
+        (url for url in urls if "-alienkevins-projects.vercel.app" in url),
+        urls[0] if urls else None,
+    )
+    if not deployment_url:
+        raise RuntimeError("Vercel deploy succeeded without a deployment URL")
+    runner(
+        [
+            "vercel",
+            "alias",
+            "set",
+            deployment_url,
+            "g1-sprint.vercel.app",
+            "--scope",
+            VERCEL_SCOPE,
+        ],
+        web,
+    )
     state.update(
         {
             "last_deployed_site_hash": current_hash,
@@ -834,6 +935,7 @@ def deploy_if_needed(
             "site_change_first_seen_at": None,
             "site_status": "deployed",
             "last_deployed_at": utc_now(),
+            "production_alias_updated_at": utc_now(),
             "last_deployment_url": deployment_url,
             "production_alias": "https://g1-sprint.vercel.app",
         }
@@ -869,7 +971,11 @@ def run_worker(
             state = scan_frontier(
                 job=job, trial=trial, state_path=state_path, web=web
             )
-            if policy_hash not in state.get("frontier", []):
+            policy_record = state.get("policies", {}).get(policy_hash, {})
+            if (
+                policy_hash not in state.get("frontier", [])
+                and not policy_record.get("replay_path")
+            ):
                 for item in state.get("capture_queue", []):
                     if item.get("policy_hash") == policy_hash:
                         item["status"] = "skipped_dominated"
@@ -901,12 +1007,12 @@ def run_worker(
             state = load_state(state_path, job, trial, web)
 
         state = scan_frontier(job=job, trial=trial, state_path=state_path, web=web)
-        refresh_site_navigation(state, web)
+        write_web_policy_indexes(state_path, state, web)
         if deploy:
             state = scan_frontier(
                 job=job, trial=trial, state_path=state_path, web=web
             )
-            refresh_site_navigation(state, web)
+            write_web_policy_indexes(state_path, state, web)
             ready = all(
                 candidate.get("policy_hash")
                 and state.get("captures", {})

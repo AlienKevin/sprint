@@ -1,4 +1,4 @@
-# Copyright (c) 2026 QWOP-bench contributors.
+# Copyright (c) 2026 Sprint contributors.
 # SPDX-License-Identifier: BSD-3-Clause
 """Load a policy without depending on the framework that trained it.
 

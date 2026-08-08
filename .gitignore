@@ -30,6 +30,7 @@ runs/ops/modal-image-warmup.json
 runs/ops/*.lock
 runs/ops/*.pid
 runs/ops/*.log
+runs/ops/batches/
 runs/monitor-*-telemetry.csv
 runs/.modal-*
 runs/.hub_track_state.json
@@ -46,3 +47,4 @@ node_modules/
 # Sprint-web heavy capture/replay blobs (site HTML kept)
 sprint-web/captures/*.json
 sprint-web/replay/
+sprint-web/data/

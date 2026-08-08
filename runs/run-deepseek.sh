@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# DRAFT — Harbor Codex + deepseek-v4-flash (official DeepSeek Codex harness).
+# Harbor Codex + deepseek-v4-flash (official DeepSeek Codex harness).
 # Does NOT launch unless CONFIRM_LAUNCH=1.
 #
 # Official docs: https://api-docs.deepseek.com/quick_start/agent_integrations/codex/
 # Harbor still passes --endpoint (writes openai_base_url); the sandbox wrapper
 # then rewrites CODEX_HOME to model_provider=deepseek + wire_api=responses +
-# DeepSeek models.json (1M context). See runs/DEEPSEEK_EARLY_EXIT.md.
+# DeepSeek models.json (1M context).
 #
 # Usage:
 #   set -a; source runs/.secrets/deepseek.env; set +a
@@ -19,14 +19,14 @@ export MODAL_PROFILE="${MODAL_PROFILE:-kevinli020508}"
 MODEL="${MODEL:-deepseek/deepseek-v4-flash}"
 ENDPOINT="${ENDPOINT:-https://api.deepseek.com}"
 REASONING_EFFORT="${REASONING_EFFORT:-max}"  # API-max for DeepSeek Flash
-# Same pin as Terra; see runs/CODEX_PIN.md.
+# Same pin as Luna; see runs/CODEX_PIN.md.
 CODEX_VERSION="${CODEX_VERSION:-0.147.0}"
 RUN_ID="${RUN_ID:-lane-deepseek-$(date -u +%Y%m%dT%H%M%SZ)}"
 
 GOAL_SRC="$ROOT/runs/codex-goal-slash.j2"
 GOAL_DST="$ROOT/runs/codex-goal.j2"
 
-if [[ -z "${OPENAI_API_KEY:-}" && -n "${DEEPSEEK_API_KEY:-}" ]]; then
+if [[ -n "${DEEPSEEK_API_KEY:-}" ]]; then
   export OPENAI_API_KEY="$DEEPSEEK_API_KEY"
 fi
 if [[ -z "${OPENAI_API_KEY:-}" ]]; then
@@ -34,7 +34,7 @@ if [[ -z "${OPENAI_API_KEY:-}" ]]; then
   exit 1
 fi
 
-echo "draft:    run-deepseek.sh"
+echo "launcher: run-deepseek.sh"
 echo "run_id:   $RUN_ID"
 echo "agent:    codex"
 echo "codex:    $CODEX_VERSION  (Harbor --ak version=...)"
@@ -62,7 +62,7 @@ echo "--- dry-run ---"
 "$ROOT/runs/run-lane-durable.sh" "${DRY_ARGS[@]}"
 
 if [[ "${CONFIRM_LAUNCH:-}" != "1" ]]; then
-  echo "dry-run only. Set CONFIRM_LAUNCH=1 after approving BLINDSPOTS_LUNA_DEEPSEEK.md" >&2
+  echo "dry-run only. Set CONFIRM_LAUNCH=1 to launch." >&2
   exit 0
 fi
 

@@ -1,4 +1,4 @@
-# Copyright (c) 2026 QWOP-bench contributors.
+# Copyright (c) 2026 Sprint contributors.
 # SPDX-License-Identifier: BSD-3-Clause
 """A velocity command that is a *protocol* rather than a sampler.
 

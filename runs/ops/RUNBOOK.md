@@ -90,7 +90,7 @@ and backs off under a host lock. Do not start paid bakeoffs without approval.
 ```bash
 cd /path/to/sprint
 test "$(tr -d '[:space:]' < harbor/.sprint-upstream-commit)" = \
-  b69b181bceae132ca0018790dfed3654556a9ec3
+  2f50d4c78bac5420b50d5cd15bc549a9bb19fa9d
 RUN_ID="lane-$(date -u +%Y%m%dT%H%M%SZ)"
 ```
 

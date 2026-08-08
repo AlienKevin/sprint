@@ -1,4 +1,4 @@
-# Copyright (c) 2026 QWOP-bench contributors.
+# Copyright (c) 2026 Sprint contributors.
 # SPDX-License-Identifier: BSD-3-Clause
 """Gym registration for the sprint task. Importing this needs a running Kit app."""
 

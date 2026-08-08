@@ -99,9 +99,6 @@ terminate(handle) -> optional error
 ```
 
 Modal Sandbox mechanics implement that interface in `runs/ops/gpu_worker.py`.
-A Daytona adapter should map sandbox create/recover/state/stop to the same
-boundary. A SkyPilot adapter can delegate start/probe/recovery to Managed Jobs
-while retaining this checkpoint manifest for consistent agent behavior.
 
 ## Storage tree
 

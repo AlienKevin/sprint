@@ -1,4 +1,4 @@
-# Codex harness pin (Terra and DeepSeek)
+# Codex harness pin (Luna and DeepSeek)
 
 Pinned: **`0.147.0`** (`@openai/codex@0.147.0`)
 Checked: 2026-08-08
@@ -16,7 +16,7 @@ release.
 |---|---|
 | `challenge/g1-sprint-100m-lane/environment/Dockerfile` | Bakes `@openai/codex@0.147.0` and checks its version |
 | `runs/run-lane-durable.sh` | Requires `CODEX_VERSION=0.147.0`, records it in `run.json`, and passes `--ak version=...` to Harbor |
-| `runs/run-terra.sh` | Uses the same pin with the official OpenAI endpoint |
+| `runs/run-luna.sh` | Uses the same pin with the official OpenAI endpoint |
 | `runs/run-deepseek.sh` | Uses the same pin with DeepSeek's official Codex provider configuration |
 
 Both model arms must change together if this pin is advanced. A requested
@@ -25,7 +25,7 @@ created.
 
 ## Cost-reconstruction settings
 
-Terra additionally pins Codex `service_tier=default` and disables hosted web
+Luna additionally pins Codex `service_tier=default` and disables hosted web
 search. Harbor records every request's cache reads, cache writes, ordinary
 input, output, reasoning output, total tokens, context size, model, effort,
 tier, timestamp, long-context classification, pricing snapshot, and calculated
