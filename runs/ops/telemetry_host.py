@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Host-side backup telemetry poller for durable Modal lane runs.
 
-Uses ``modal container exec`` (via qwopctl helpers) to sample the agent
-sandbox, and best-effort samples verifier sandboxes in the same app.
+Uses ``modal container exec`` (via sprintctl helpers) to sample the agent
+sandbox and discover sidecar GPU sandboxes. Verifiers also write authoritative
+in-container telemetry into their archived output; this poller is a backup for
+infrastructure diagnosis, not the source used to attribute SCORE usage.
 Writes CSV/JSONL under ``runs/ops/<run_id>/telemetry/`` and a flat
 ``runs/monitor-<run_id>-telemetry.csv`` mirror.
 """
@@ -17,11 +19,11 @@ import sys
 from typing import Any
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
-ROOT = pathlib.Path("/data/qwop-bench")
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 RUNS = ROOT / "runs"
 sys.path.insert(0, str(SCRIPT_DIR))
 
-import qwopctl  # noqa: E402
+import sprintctl  # noqa: E402
 
 SECRET_RE = re.compile(
     r"(?i)("
@@ -34,12 +36,12 @@ SECRET_RE = re.compile(
 
 ONESHOT_SCRIPT = r"""
 umask 077
-OUT=/tmp/qwop-host-telemetry-once
+OUT=/tmp/sprint-host-telemetry-once
 mkdir -p "$OUT"
-if [ -x /opt/qwop-telemetry.sh ]; then
-  /opt/qwop-telemetry.sh --once --role __ROLE__ --run-id __RUN_ID__ \
-    --out-dir "$OUT" --pidfile /tmp/qwop-host-telemetry.pid --force \
-    >/tmp/qwop-host-telemetry-once.stdout 2>/tmp/qwop-host-telemetry-once.stderr || true
+if [ -x /opt/sprint-telemetry.sh ]; then
+  /opt/sprint-telemetry.sh --once --role __ROLE__ --run-id __RUN_ID__ \
+    --out-dir "$OUT" --pidfile /tmp/sprint-host-telemetry.pid --force \
+    >/tmp/sprint-host-telemetry-once.stdout 2>/tmp/sprint-host-telemetry-once.stderr || true
   if [ -f "$OUT/latest.json" ]; then
     cat "$OUT/latest.json"
   elif [ -f /logs/artifacts/telemetry/latest.json ]; then
@@ -48,24 +50,209 @@ if [ -x /opt/qwop-telemetry.sh ]; then
     printf '%s\n' '{"ok":false,"notes":"no_latest_json"}'
   fi
 else
-  # Minimal fallback when image lacks the sampler (pre-rebuild open jobs).
+  # Self-contained fallback for sealed verifier images. They intentionally do
+  # not contain the agent helper scripts, but the host still needs full CPU,
+  # memory, and GPU utilization on the common experiment clock.
   python3 - <<'PY'
-import json, os, time, pathlib, shutil
+import json, os, time, pathlib, shutil, subprocess
+
+def cpu_times():
+    values = [int(v) for v in pathlib.Path("/proc/stat").read_text().splitlines()[0].split()[1:]]
+    idle = values[3] + (values[4] if len(values) > 4 else 0)
+    return sum(values), idle
+
+def keyed(path):
+    try:
+        lines = pathlib.Path(path).read_text().splitlines()
+    except OSError:
+        return {}
+    result = {}
+    for line in lines:
+        parts = line.split()
+        if len(parts) == 2:
+            try:
+                result[parts[0]] = int(parts[1])
+            except ValueError:
+                pass
+    return result
+
+def scalar(path):
+    try:
+        value = pathlib.Path(path).read_text().strip()
+        return None if value == "max" else int(value)
+    except (OSError, ValueError):
+        return None
+
+def number(value):
+    value = value.strip()
+    if not value or value.lower() in {"n/a", "[n/a]", "not supported"}:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+root = pathlib.Path("/sys/fs/cgroup")
+try:
+    for line in pathlib.Path("/proc/self/cgroup").read_text().splitlines():
+        parts = line.split(":", 2)
+        if len(parts) == 3 and parts[0] == "0" and parts[1] == "":
+            candidate = root / parts[2].lstrip("/")
+            if (candidate / "cpu.stat").is_file():
+                root = candidate
+            break
+except OSError:
+    pass
+cpu0 = keyed(root / "cpu.stat")
+memory_current = scalar(root / "memory.current")
+requested_cpu = 8.0 if "__ROLE__" in {"training-gpu", "verifier-gpu"} else 4.0
+requested_memory_kib = (32768 if requested_cpu == 8.0 else 16384) * 1024
+resource = {}
+if "usage_usec" in cpu0 and memory_current is not None:
+    started_ns = time.monotonic_ns()
+    time.sleep(0.1)
+    cpu1 = keyed(root / "cpu.stat")
+    elapsed_usec = max(1.0, (time.monotonic_ns() - started_ns) / 1000)
+    used_cores = max(0, cpu1.get("usage_usec", 0) - cpu0["usage_usec"]) / elapsed_usec
+    memory_limit = scalar(root / "memory.max")
+    memory_limit_kib = memory_limit // 1024 if memory_limit else None
+    memory_total_kib = requested_memory_kib or memory_limit_kib
+    memory_used_kib = memory_current // 1024
+    events = keyed(root / "memory.events")
+    peak = scalar(root / "memory.peak")
+    resource = {
+      "resource_accounting_scope": "cgroup-v2",
+      "cpu_requested_cores": requested_cpu,
+      "cpu_usage_cores": round(used_cores, 4),
+      "cpu_usage_usec": cpu1.get("usage_usec"),
+      "cpu_user_usec": cpu1.get("user_usec"),
+      "cpu_system_usec": cpu1.get("system_usec"),
+      "cpu_nr_throttled": cpu1.get("nr_throttled"),
+      "cpu_throttled_usec": cpu1.get("throttled_usec"),
+      "cpu_util_pct": round(100.0 * used_cores / requested_cpu, 2),
+      "mem_requested_kib": requested_memory_kib,
+      "mem_limit_kib": memory_limit_kib,
+      "mem_total_kib": memory_total_kib,
+      "mem_used_kib": memory_used_kib,
+      "mem_available_kib": max(0, memory_total_kib - memory_used_kib),
+      "memory_peak_kib": peak // 1024 if peak is not None else None,
+      "memory_oom_events": events.get("oom"),
+      "memory_oom_kill_events": events.get("oom_kill"),
+    }
+else:
+    cpuacct_root = pathlib.Path("/sys/fs/cgroup/cpuacct")
+    cpu_root = pathlib.Path("/sys/fs/cgroup/cpu")
+    memory_root = pathlib.Path("/sys/fs/cgroup/memory")
+    usage0_ns = scalar(cpuacct_root / "cpuacct.usage")
+    memory_current_v1 = scalar(memory_root / "memory.usage_in_bytes")
+    if usage0_ns is not None and memory_current_v1 is not None:
+        started_ns = time.monotonic_ns()
+        time.sleep(0.1)
+        usage1_ns = scalar(cpuacct_root / "cpuacct.usage")
+        elapsed_usec = max(1.0, (time.monotonic_ns() - started_ns) / 1000)
+        used_cores = max(0, (usage1_ns or usage0_ns) - usage0_ns) / 1000 / elapsed_usec
+        memory_limit = scalar(memory_root / "memory.limit_in_bytes")
+        if memory_limit is not None and memory_limit >= 1 << 60:
+            memory_limit = None
+        memory_limit_kib = memory_limit // 1024 if memory_limit else None
+        memory_total_kib = requested_memory_kib or memory_limit_kib
+        memory_used_kib = memory_current_v1 // 1024
+        quota = scalar(cpu_root / "cpu.cfs_quota_us")
+        period = scalar(cpu_root / "cpu.cfs_period_us")
+        cpu_limit = quota / period if quota and quota > 0 and period and period > 0 else None
+        cpuacct_stat = keyed(cpuacct_root / "cpuacct.stat")
+        cpu_stat = keyed(cpu_root / "cpu.stat")
+        try:
+            tick_usec = 1000000 / os.sysconf("SC_CLK_TCK")
+        except (OSError, ValueError):
+            tick_usec = None
+        peak = scalar(memory_root / "memory.max_usage_in_bytes")
+        failures = scalar(memory_root / "memory.failcnt")
+        resource = {
+          "resource_accounting_scope": "cgroup-v1",
+          "cpu_requested_cores": requested_cpu,
+          "cpu_limit_cores": cpu_limit,
+          "cpu_usage_cores": round(used_cores, 4),
+          "cpu_usage_usec": (usage1_ns or usage0_ns) // 1000,
+          "cpu_user_usec": round(cpuacct_stat["user"] * tick_usec) if tick_usec is not None and "user" in cpuacct_stat else None,
+          "cpu_system_usec": round(cpuacct_stat["system"] * tick_usec) if tick_usec is not None and "system" in cpuacct_stat else None,
+          "cpu_nr_throttled": cpu_stat.get("nr_throttled"),
+          "cpu_throttled_usec": cpu_stat.get("throttled_time", 0) // 1000 if "throttled_time" in cpu_stat else None,
+          "cpu_util_pct": round(100.0 * used_cores / requested_cpu, 2),
+          "mem_requested_kib": requested_memory_kib,
+          "mem_limit_kib": memory_limit_kib,
+          "mem_total_kib": memory_total_kib,
+          "mem_used_kib": memory_used_kib,
+          "mem_available_kib": max(0, memory_total_kib - memory_used_kib),
+          "memory_peak_kib": peak // 1024 if peak is not None else None,
+          "memory_oom_events": failures,
+          "memory_oom_kill_events": None,
+        }
+    else:
+        total0, idle0 = cpu_times()
+        time.sleep(0.1)
+        total1, idle1 = cpu_times()
+        delta = max(1, total1 - total0)
+        mem = {}
+        for line in pathlib.Path("/proc/meminfo").read_text().splitlines():
+            key, value = line.split(":", 1)
+            try:
+                mem[key] = int(value.strip().split()[0])
+            except (ValueError, IndexError):
+                pass
+        resource = {
+          "resource_accounting_scope": "host-proc-fallback",
+          "cpu_util_pct": round(100.0 * (delta - (idle1 - idle0)) / delta, 2),
+          "mem_total_kib": mem.get("MemTotal"),
+          "mem_available_kib": mem.get("MemAvailable"),
+          "mem_free_kib": mem.get("MemFree"),
+          "mem_used_kib": ((mem.get("MemTotal") or 0) - (mem.get("MemAvailable") or 0)),
+        }
 sample = {
-  "schema_version": 1,
+  "schema_version": 2,
   "ts_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
   "epoch_s": int(time.time()),
   "role": "__ROLE__",
   "run_id": "__RUN_ID__",
   "hostname": os.uname().nodename,
-  "nproc": os.cpu_count(),
-  "notes": "fallback_no_qwop_telemetry",
-  "nvidia_smi_ok": bool(shutil.which("nvidia-smi")),
+  "nproc": len(os.sched_getaffinity(0)),
+  "notes": "fallback_no_sprint_telemetry",
+  **resource,
+  "load1": os.getloadavg()[0],
+  "load5": os.getloadavg()[1],
+  "load15": os.getloadavg()[2],
+  "gpus": [],
 }
 try:
     sample["uptime_s"] = float(pathlib.Path("/proc/uptime").read_text().split()[0])
 except Exception:
     sample["uptime_s"] = None
+query = [
+    "index", "name", "utilization.gpu", "utilization.memory",
+    "memory.used", "memory.total", "memory.free", "power.draw",
+    "power.limit", "temperature.gpu", "clocks.gr", "clocks.sm", "clocks.mem",
+]
+binary = shutil.which("nvidia-smi")
+gpu_result = subprocess.run(
+    [binary, "--query-gpu=" + ",".join(query), "--format=csv,noheader,nounits"],
+    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+) if binary else None
+sample["nvidia_smi_ok"] = bool(gpu_result and gpu_result.returncode == 0)
+if sample["nvidia_smi_ok"]:
+    keys = [
+        "gpu_index", "gpu_name", "util_gpu_pct", "util_mem_pct",
+        "mem_used_mib", "mem_total_mib", "mem_free_mib", "power_draw_w",
+        "power_limit_w", "temp_gpu_c", "clock_graphics_mhz", "clock_sm_mhz",
+        "clock_mem_mhz",
+    ]
+    for line in gpu_result.stdout.splitlines():
+        values = [v.strip() for v in line.split(",")]
+        if len(values) != len(keys):
+            continue
+        gpu = {keys[0]: int(number(values[0]) or 0), keys[1]: values[1]}
+        gpu.update({key: number(value) for key, value in zip(keys[2:], values[2:])})
+        sample["gpus"].append(gpu)
+sample["gpu_count"] = len(sample["gpus"])
 print(json.dumps(sample, sort_keys=True))
 PY
 fi
@@ -108,13 +295,23 @@ def _flatten_for_csv(sample: dict[str, Any], *, container_id: str) -> list[dict[
         "run_id": sample.get("run_id"),
         "container_id": container_id,
         "hostname": sample.get("hostname"),
+        "resource_accounting_scope": sample.get("resource_accounting_scope"),
+        "cpu_requested_cores": sample.get("cpu_requested_cores"),
+        "cpu_limit_cores": sample.get("cpu_limit_cores"),
+        "cpu_usage_cores": sample.get("cpu_usage_cores"),
+        "cpu_usage_usec": sample.get("cpu_usage_usec"),
         "cpu_util_pct": sample.get("cpu_util_pct"),
         "load1": sample.get("load1"),
         "load5": sample.get("load5"),
         "load15": sample.get("load15"),
+        "mem_requested_kib": sample.get("mem_requested_kib"),
+        "mem_limit_kib": sample.get("mem_limit_kib"),
         "mem_used_kib": sample.get("mem_used_kib"),
         "mem_total_kib": sample.get("mem_total_kib"),
         "mem_available_kib": sample.get("mem_available_kib"),
+        "memory_peak_kib": sample.get("memory_peak_kib"),
+        "memory_oom_events": sample.get("memory_oom_events"),
+        "memory_oom_kill_events": sample.get("memory_oom_kill_events"),
         "swap_used_kib": sample.get("swap_used_kib"),
         "disk_root_used_pct": sample.get("disk_root_used_pct"),
         "disk_tmp_used_pct": sample.get("disk_tmp_used_pct"),
@@ -166,13 +363,23 @@ CSV_FIELDS = [
     "run_id",
     "container_id",
     "hostname",
+    "resource_accounting_scope",
+    "cpu_requested_cores",
+    "cpu_limit_cores",
+    "cpu_usage_cores",
+    "cpu_usage_usec",
     "cpu_util_pct",
     "load1",
     "load5",
     "load15",
+    "mem_requested_kib",
+    "mem_limit_kib",
     "mem_used_kib",
     "mem_total_kib",
     "mem_available_kib",
+    "memory_peak_kib",
+    "memory_oom_events",
+    "memory_oom_kill_events",
     "swap_used_kib",
     "disk_root_used_pct",
     "disk_tmp_used_pct",
@@ -261,7 +468,7 @@ def sample_container(
     role: str,
     run_id: str,
 ) -> dict[str, Any] | None:
-    result = qwopctl.exec_container(
+    result = sprintctl.exec_container(
         run,
         container_id,
         _shell_oneshot(role, run_id),
@@ -284,57 +491,133 @@ def sample_container(
     return payload
 
 
+def _container_role_probe(run: dict[str, Any], container_id: str) -> str:
+    """Classify a sandbox into one unambiguous resource-accounting role."""
+    result = sprintctl.exec_container(
+        run,
+        container_id,
+        "if [ -f /run/sprint-role ]; then cat /run/sprint-role; "
+        "elif [ -x /opt/sprint-snapshot-loop.sh ]; then echo cpu-agent; "
+        "elif command -v nvidia-smi >/dev/null 2>&1 && "
+        "[ -f /opt/sprint-gpu-worker-run.py ]; then echo training-gpu; "
+        "else echo verifier-gpu; fi",
+        check=False,
+        timeout=45,
+    )
+    text = ((result.stdout or "") + (result.stderr or "")).strip().splitlines()
+    role = (text[-1] if text else "unknown").strip()
+    if role in {"cpu-agent", "training-gpu", "verifier-gpu"}:
+        return role
+    return "unknown"
+
+
+def discover_sidecar_containers(
+    state_dir: pathlib.Path, run: dict[str, Any]
+) -> list[tuple[str, str]]:
+    """GPU workers + verifiers in the same Modal app (not the CPU agent)."""
+    app_id = sprintctl.discover_app_id(state_dir, run)
+    if not app_id:
+        return []
+    containers = sprintctl.containers_for_app(run, app_id)
+    agent = sprintctl.discover_agent_container(state_dir, run)
+    # Also include sandboxes recorded on dispatched GPU jobs.
+    known_gpu: set[str] = set()
+    try:
+        import gpu_worker
+
+        for job_id in gpu_worker.list_job_ids(run):
+            job = gpu_worker.load_job(run, job_id) or {}
+            sid = job.get("sandbox_id")
+            if isinstance(sid, str) and sid.startswith(("sb-", "ta-")):
+                known_gpu.add(sid)
+    except Exception:  # noqa: BLE001
+        pass
+
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for container in list(containers) + sorted(known_gpu):
+        if container in seen:
+            continue
+        seen.add(container)
+        if agent and container == agent:
+            continue
+        try:
+            role = _container_role_probe(run, container)
+        except Exception:  # noqa: BLE001
+            role = "verifier-gpu" if container.startswith("ta-") else "training-gpu"
+        if role == "cpu-agent":
+            continue
+        if role == "unknown":
+            role = "training-gpu" if container in known_gpu else "verifier-gpu"
+        out.append((role, container))
+    return out
+
+
+def gpu_job_metadata(
+    run: dict[str, Any], container_id: str
+) -> dict[str, Any]:
+    try:
+        import gpu_worker
+
+        for job_id in gpu_worker.list_job_ids(run):
+            job = gpu_worker.load_job(run, job_id) or {}
+            if str(job.get("sandbox_id") or "") == container_id:
+                return {
+                    "job_id": job_id,
+                    "attempt": int(job.get("attempt") or 0),
+                    "lease_id": job.get("lease_id"),
+                }
+    except Exception:  # noqa: BLE001
+        pass
+    return {}
+
+
 def discover_verifier_containers(
     state_dir: pathlib.Path, run: dict[str, Any]
 ) -> list[str]:
     """Best-effort: app containers that are not the durable agent sandbox."""
-    app_id = qwopctl.discover_app_id(state_dir, run)
-    if not app_id:
-        return []
-    containers = qwopctl.containers_for_app(run, app_id)
-    agent = qwopctl.discover_agent_container(state_dir, run)
-    out: list[str] = []
-    for container in containers:
-        if agent and container == agent:
-            continue
-        # Skip anything that looks like the agent keepalive image.
-        if qwopctl.is_agent_container(run, container):
-            continue
-        out.append(container)
-    return out
+    return [
+        cid
+        for role, cid in discover_sidecar_containers(state_dir, run)
+        if role == "verifier-gpu"
+    ]
 
 
 def poll_once(run_id: str) -> dict[str, Any]:
-    state_dir, run = qwopctl.load_run(run_id)
+    state_dir, run = sprintctl.load_run(run_id)
     pathlib.Path("/data/.keepalive").touch()
     out_dir = _state_telemetry_dir(state_dir)
     monitor_csv = _monitor_csv_path(run_id)
     state_csv = out_dir / "host-samples.csv"
     summary: dict[str, Any] = {
         "run_id": run_id,
-        "polled_at": qwopctl.utc_now(),
+        "polled_at": sprintctl.utc_now(),
         "agent_container_id": None,
-        "verifier_container_ids": [],
+        "verifier_gpu_container_ids": [],
+        "training_gpu_container_ids": [],
         "samples": 0,
         "errors": [],
     }
 
-    agent = qwopctl.discover_agent_container(state_dir, run)
+    agent = sprintctl.discover_agent_container(state_dir, run)
     targets: list[tuple[str, str]] = []
     if agent:
         summary["agent_container_id"] = agent
-        targets.append(("agent", agent))
+        targets.append(("cpu-agent", agent))
     else:
         summary["errors"].append("agent_container_unavailable")
 
     try:
-        verifiers = discover_verifier_containers(state_dir, run)
+        sidecars = discover_sidecar_containers(state_dir, run)
     except Exception as exc:  # noqa: BLE001
-        verifiers = []
-        summary["errors"].append(f"verifier_discover_failed:{type(exc).__name__}")
-    summary["verifier_container_ids"] = verifiers
-    for container in verifiers:
-        targets.append(("verifier", container))
+        sidecars = []
+        summary["errors"].append(f"sidecar_discover_failed:{type(exc).__name__}")
+    for role, container in sidecars:
+        targets.append((role, container))
+        if role == "verifier-gpu":
+            summary["verifier_gpu_container_ids"].append(container)
+        elif role == "training-gpu":
+            summary["training_gpu_container_ids"].append(container)
 
     for role, container_id in targets:
         try:
@@ -345,12 +628,15 @@ def poll_once(run_id: str) -> dict[str, Any]:
         if not sample:
             summary["errors"].append(f"{role}:{container_id}:empty")
             continue
+        if role == "training-gpu":
+            for key, value in gpu_job_metadata(run, container_id).items():
+                sample.setdefault(key, value)
         _append_jsonl(out_dir / "host-samples.jsonl", sample)
         rows = _flatten_for_csv(sample, container_id=container_id)
         _append_csv(state_csv, rows)
         _append_csv(monitor_csv, rows)
         # Also mirror into trial artifacts when the job/trial is known.
-        job, trial = qwopctl.discover_job_and_trial(state_dir, run)
+        job, trial = sprintctl.discover_job_and_trial(state_dir, run)
         if trial is not None:
             trial_telem = trial / "artifacts" / "logs" / "artifacts" / "telemetry"
             trial_telem.mkdir(parents=True, exist_ok=True)
@@ -358,7 +644,7 @@ def poll_once(run_id: str) -> dict[str, Any]:
             _append_csv(trial_telem / "host-samples.csv", rows)
         summary["samples"] += 1
 
-    qwopctl.atomic_write_json(out_dir / "host-latest.json", summary, mode=0o600)
+    sprintctl.atomic_write_json(out_dir / "host-latest.json", summary, mode=0o600)
     return summary
 
 

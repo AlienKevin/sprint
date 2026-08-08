@@ -4,5 +4,9 @@ scored submission, immediately keep training and try to beat the best time.
 Prefer submitting improved policies often so continuous verification can score
 them.
 
+If `SPRINT_CPU_LAUNCH_ATTEMPT` is greater than 1, this is a supervised CPU
+relaunch. Inspect the existing run state and checkpoints under
+`/durable/runs/$SPRINT_RUN_ID` before continuing. Do not start from scratch.
+
 Task:
 {{ instruction }}

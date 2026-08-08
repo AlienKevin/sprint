@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 
-ROOT = Path("/data/qwop-bench")
+ROOT = Path(__file__).resolve().parents[2]
 WEB_DEFAULT = ROOT / "sprint-web"
 CAPTURE_SCRIPT = ROOT / "runs/capture_lane_policy.py"
 BUILD_SCRIPT = ROOT / "runs/build_lane_3d.py"
@@ -362,7 +362,35 @@ def load_state(path: Path, job: Path, trial: Path, web: Path) -> dict[str, Any]:
     if state.get("job") != str(job.resolve()) or state.get("trial") != str(
         trial.resolve()
     ):
-        raise ValueError("frontier state belongs to a different explicit job/trial")
+        # A supervised lane legitimately moves: supervise_lane.py relaunches the
+        # same logical run into a fresh cpu-attempts/<n>/harbor-jobs/... tree
+        # after Harbor or the agent is lost. The old guard treated that as a
+        # foreign state file and raised, which killed the frontier worker for
+        # the rest of the run -- taking per-policy artifact sync and the site
+        # deploy down with it (observed on both lane arms, 2026-08-03).
+        #
+        # The state file is already per-run (runs/ops/<run_id>/frontier-state.json),
+        # and `policies` is keyed by policy_hash rather than by path, so carrying
+        # the accumulated history across a relaunch is safe and is exactly what
+        # the Pareto front needs. Migrate when the new paths belong to this run;
+        # keep raising when they do not, which is the case the guard was for.
+        run_id = path.resolve().parent.name
+        same_run = run_id in job.resolve().parts or run_id in trial.resolve().parts
+        if not same_run:
+            raise ValueError("frontier state belongs to a different explicit job/trial")
+        migrations = state.setdefault("path_migrations", [])
+        migrations.append(
+            {
+                "at": utc_now(),
+                "from_job": state.get("job"),
+                "from_trial": state.get("trial"),
+                "to_job": str(job.resolve()),
+                "to_trial": str(trial.resolve()),
+            }
+        )
+        del migrations[:-50]
+        state["job"] = str(job.resolve())
+        state["trial"] = str(trial.resolve())
     return state
 
 
@@ -580,7 +608,7 @@ def capture_and_render(
     web_capture = web / "captures" / f"{label}.json"
     web_html = web / "replay" / f"{label}.html"
 
-    with tempfile.TemporaryDirectory(prefix="qwop-frontier-", dir=state_path.parent) as raw:
+    with tempfile.TemporaryDirectory(prefix="sprint-frontier-", dir=state_path.parent) as raw:
         temporary = Path(raw)
         capture_tmp = temporary / "capture.json"
         html_tmp = temporary / "replay.html"
@@ -676,12 +704,22 @@ def frontier_nav(state: dict[str, Any], current_path: str) -> str:
             f'<a class="pol{on}" href="{href}">'
             f'#{policy["index"]} · {float(policy["best_100m_s"]):.3f}s</a>'
         )
-    links.extend(
-        [
-            '<a class="pol" href="/timeline">Opus timeline</a>',
-            '<a class="pol" href="/terra-timeline">Terra timeline</a>',
-        ]
-    )
+    # Prefer captured Luna/DeepSeek bakeoff trials over legacy Opus/Terra links.
+    extra = [
+        ('/replay/frontier-f829f11b238d', 'DS #9 · 52.069s'),
+        ('/replay/frontier-7c818f1c031a', 'DS #19 · 47.770s'),
+        ('/replay/frontier-dba987769518', 'DS #20 · 42.573s'),
+        ('/replay/frontier-2c53c0e7bb9d', 'DS #22 · 39.811s'),
+        ('/replay/deepseek-61.66s', 'DS prior · 61.66s'),
+        ('/replay/luna-first-finish-outlane', 'Luna · first finish'),
+        ('/deepseek-timeline', 'DeepSeek timeline'),
+        ('/luna-timeline', 'Luna timeline'),
+    ]
+    existing_hrefs = {re.search(r'href="([^"]+)"', link).group(1) for link in links}
+    for href, label in extra:
+        if href in existing_hrefs:
+            continue
+        links.append(f'<a class="pol" href="{href}">{label}</a>')
     return (
         '<div class="polsel" role="navigation" aria-label="Active policy frontier">'
         + "".join(links)

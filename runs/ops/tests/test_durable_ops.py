@@ -13,11 +13,12 @@ import uuid
 from pathlib import Path
 from unittest import mock
 
-OPS = Path("/data/qwop-bench/runs/ops")
+ROOT = Path(__file__).resolve().parents[3]
+OPS = ROOT / "runs/ops"
 sys.path.insert(0, str(OPS))
 
 import frontier_update  # noqa: E402
-import qwopctl  # noqa: E402
+import sprintctl  # noqa: E402
 
 
 def write_policy(trial: Path, index: int, name: str, data: bytes) -> Path:
@@ -60,16 +61,197 @@ def row(index: int, name: str, best: float | None) -> dict:
 
 
 class DurableOpsTests(unittest.TestCase):
+    def test_terra_usage_audit_requires_checksums_and_matching_atif_cost(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            trial = Path(raw)
+            sessions = trial / "agent" / "sessions" / "2026" / "08" / "08"
+            sessions.mkdir(parents=True)
+            source = sessions / "rollout.jsonl"
+            source.write_text('{"type":"event_msg"}\n')
+            trajectory = trial / "agent" / "trajectory.json"
+            trajectory.write_text(
+                json.dumps({"final_metrics": {"total_cost_usd": 0.25}})
+            )
+            (trial / "result.json").write_text(
+                json.dumps({"agent_result": {"cost_usd": 0.25}})
+            )
+            audit = {
+                "schema_version": 1,
+                "cost_reconstruction_complete": True,
+                "request_count": 1,
+                "requests": [
+                    {
+                        "model": "gpt-5.6-terra",
+                        "service_tier": "default",
+                        "cost_reconstruction_status": "complete",
+                    }
+                ],
+                "reconciliation_mismatches": {},
+                "pricing_snapshots": [
+                    {
+                        "model": "gpt-5.6-terra",
+                        "captured_at": "2026-08-08",
+                        "source_url": "https://developers.openai.com/api/docs/models/gpt-5.6-terra",
+                    }
+                ],
+                "calculated_api_usage_usd": 0.25,
+                "selected_total_cost_usd": 0.25,
+                "provenance": {
+                    "source_session_file": source.name,
+                    "source_session_sha256": sprintctl.sha256_file(source),
+                    "trajectory_sha256": sprintctl.sha256_file(trajectory),
+                },
+            }
+            (trial / "agent" / "usage-audit.json").write_text(json.dumps(audit))
+
+            ready, details = sprintctl.usage_audit_ready(
+                trial, {"model": "openai/gpt-5.6-terra"}
+            )
+
+            self.assertTrue(ready)
+            self.assertEqual(details, [])
+
+    def test_terra_usage_audit_rejects_tampered_trajectory(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            trial = Path(raw)
+            sessions = trial / "agent" / "sessions"
+            sessions.mkdir(parents=True)
+            source = sessions / "rollout.jsonl"
+            source.write_text("{}\n")
+            trajectory = trial / "agent" / "trajectory.json"
+            trajectory.write_text(
+                json.dumps({"final_metrics": {"total_cost_usd": 0.25}})
+            )
+            (trial / "result.json").write_text(
+                json.dumps({"agent_result": {"cost_usd": 0.25}})
+            )
+            original_hash = sprintctl.sha256_file(trajectory)
+            audit = {
+                "schema_version": 1,
+                "cost_reconstruction_complete": True,
+                "request_count": 1,
+                "requests": [
+                    {
+                        "model": "gpt-5.6-terra",
+                        "service_tier": "default",
+                        "cost_reconstruction_status": "complete",
+                    }
+                ],
+                "reconciliation_mismatches": {},
+                "calculated_api_usage_usd": 0.25,
+                "selected_total_cost_usd": 0.25,
+                "provenance": {
+                    "source_session_file": source.name,
+                    "source_session_sha256": sprintctl.sha256_file(source),
+                    "trajectory_sha256": original_hash,
+                },
+            }
+            (trial / "agent" / "usage-audit.json").write_text(json.dumps(audit))
+            trajectory.write_text(
+                json.dumps({"final_metrics": {"total_cost_usd": 0.10}})
+            )
+
+            ready, details = sprintctl.usage_audit_ready(
+                trial, {"model": "gpt-5.6-terra"}
+            )
+
+            self.assertFalse(ready)
+            self.assertIn("ATIF total cost differs from usage audit", details)
+            self.assertIn("usage audit trajectory checksum mismatch", details)
+
+    def test_unified_timeline_readiness_requires_current_schema(self) -> None:
+        payload = {
+            "schema_version": 6,
+            "run": {"run_id": "timeline-current"},
+            "coverage": {"ready": True},
+        }
+        self.assertTrue(sprintctl.unified_timeline_ready(payload, "timeline-current"))
+        payload["schema_version"] = 1
+        self.assertFalse(sprintctl.unified_timeline_ready(payload, "timeline-current"))
+        payload["schema_version"] = 6
+        self.assertFalse(sprintctl.unified_timeline_ready(payload, "other-run"))
+
+    def test_stale_finalized_file_is_rechecked(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state_dir = Path(raw)
+            run = {"run_id": "stale-final", "agent_kind": "codex"}
+            (state_dir / "FINALIZED.json").write_text(
+                json.dumps({"complete": True, "schema_version": 1})
+            )
+            with (
+                mock.patch.object(sprintctl, "load_run", return_value=(state_dir, run)),
+                mock.patch.object(sprintctl, "monitor_once") as monitor,
+                mock.patch.object(
+                    sprintctl,
+                    "final_conditions",
+                    return_value=(
+                        False,
+                        {"unified_timeline_ready": False},
+                        ["unified_timeline_ready"],
+                    ),
+                ),
+            ):
+                complete, payload = sprintctl.finalize(
+                    "stale-final", upload=False, include_remote=False
+                )
+            self.assertFalse(complete)
+            self.assertFalse(payload["complete"])
+            self.assertEqual(payload["timeline_schema_version"], 6)
+            monitor.assert_called_once()
+
+    def test_verifier_cannot_replace_a_known_agent_in_discovery(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state_dir = Path(raw)
+            run = {
+                "run_id": "known-agent",
+                "agent_kind": "codex",
+                "app_id": "ap-test",
+                "agent_container_id": "ta-old-agent",
+                "cpu_agent_gpu_worker": True,
+            }
+            (state_dir / "run.json").write_text(json.dumps(run))
+            with (
+                mock.patch.object(sprintctl, "discover_app_id", return_value="ap-test"),
+                mock.patch.object(
+                    sprintctl, "containers_for_app", return_value=["ta-verifier"]
+                ),
+                mock.patch.object(sprintctl, "is_agent_container", return_value=False),
+            ):
+                self.assertIsNone(sprintctl.discover_agent_container(state_dir, run))
+            saved = json.loads((state_dir / "run.json").read_text())
+            self.assertEqual(saved["agent_container_id"], "ta-old-agent")
+
+    def test_single_container_startup_fallback_still_discovers_agent(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state_dir = Path(raw)
+            run = {
+                "run_id": "startup-agent",
+                "agent_kind": "codex",
+                "app_id": "ap-test",
+                "cpu_agent_gpu_worker": True,
+            }
+            (state_dir / "run.json").write_text(json.dumps(run))
+            with (
+                mock.patch.object(sprintctl, "discover_app_id", return_value="ap-test"),
+                mock.patch.object(
+                    sprintctl, "containers_for_app", return_value=["ta-starting"]
+                ),
+                mock.patch.object(sprintctl, "is_agent_container", return_value=False),
+            ):
+                self.assertEqual(
+                    sprintctl.discover_agent_container(state_dir, run), "ta-starting"
+                )
+
     def test_redacted_dry_run_does_not_create_state(self) -> None:
         run_id = f"dry-{uuid.uuid4().hex[:12]}"
         token = "fake-oauth-value-that-must-never-print-123456789"
-        state = Path("/data/qwop-bench/runs/ops") / run_id
+        state = OPS / run_id
         env = os.environ.copy()
         env["CLAUDE_CODE_OAUTH_TOKEN"] = token
         completed = subprocess.run(
             [
                 "bash",
-                "/data/qwop-bench/runs/run-lane-durable.sh",
+                str(ROOT / "runs/run-lane-durable.sh"),
                 "--dry-run",
                 "--run-id",
                 run_id,
@@ -91,13 +273,13 @@ class DurableOpsTests(unittest.TestCase):
     def test_codex_dry_run_is_redacted_and_manual_only(self) -> None:
         run_id = f"dry-{uuid.uuid4().hex[:12]}"
         key = "fake-openai-key-that-must-never-print-123456789"
-        state = Path("/data/qwop-bench/runs/ops") / run_id
+        state = OPS / run_id
         env = os.environ.copy()
         env["OPENAI_API_KEY"] = key
         completed = subprocess.run(
             [
                 "bash",
-                "/data/qwop-bench/runs/run-lane-durable.sh",
+                str(ROOT / "runs/run-lane-durable.sh"),
                 "--dry-run",
                 "--run-id",
                 run_id,
@@ -106,7 +288,7 @@ class DurableOpsTests(unittest.TestCase):
                 "--model",
                 "openai/test-codex-model",
                 "--endpoint",
-                "https://example.invalid/v1",
+                "https://api.openai.com/v1",
             ],
             env=env,
             text=True,
@@ -118,9 +300,68 @@ class DurableOpsTests(unittest.TestCase):
         config = json.loads(completed.stdout)
         self.assertEqual(config["agent_kind"], "codex")
         self.assertEqual(config["model"], "openai/test-codex-model")
+        self.assertEqual(config["agent_allowed_host"], "api.openai.com")
+        self.assertEqual(config["hosted_model_tools_policy"], "disabled")
+        self.assertIsNone(config["service_tier"])
+        self.assertFalse(config["usage_audit_required"])
         self.assertFalse(config["automatic_stop"])
         self.assertNotIn("stop_after_seconds", config)
         self.assertFalse(state.exists())
+
+    def test_terra_dry_run_pins_reconstructible_cost_policy(self) -> None:
+        run_id = f"dry-{uuid.uuid4().hex[:12]}"
+        env = os.environ.copy()
+        env["OPENAI_API_KEY"] = "fake-openai-key-that-must-never-print-123456789"
+        completed = subprocess.run(
+            [
+                "bash",
+                str(ROOT / "runs/run-lane-durable.sh"),
+                "--dry-run",
+                "--run-id",
+                run_id,
+                "--agent-kind",
+                "codex",
+                "--model",
+                "openai/gpt-5.6-terra",
+            ],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        config = json.loads(completed.stdout)
+        self.assertEqual(config["service_tier"], "default")
+        self.assertEqual(config["hosted_model_tools_policy"], "disabled")
+        self.assertTrue(config["usage_audit_required"])
+
+    def test_deepseek_dry_run_requires_reconstructible_cost_policy(self) -> None:
+        run_id = f"dry-{uuid.uuid4().hex[:12]}"
+        env = os.environ.copy()
+        env["OPENAI_API_KEY"] = "fake-deepseek-key-that-must-never-print-123456789"
+        completed = subprocess.run(
+            [
+                "bash",
+                str(ROOT / "runs/run-lane-durable.sh"),
+                "--dry-run",
+                "--run-id",
+                run_id,
+                "--agent-kind",
+                "codex",
+                "--model",
+                "deepseek/deepseek-v4-flash",
+                "--endpoint",
+                "https://api.deepseek.com",
+            ],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        config = json.loads(completed.stdout)
+        self.assertEqual(config["agent_allowed_host"], "api.deepseek.com")
+        self.assertTrue(config["usage_audit_required"])
 
     def test_stop_watcher_signals_only_dummy_claude_and_acks(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -158,7 +399,7 @@ exit 0
             fake_restic.chmod(0o755)
 
             signal_file = root / "dummy-signal"
-            dummy = root / "qwop-dummy-claude.sh"
+            dummy = root / "sprint-dummy-claude.sh"
             dummy.write_text(
                 f"""#!/usr/bin/env bash
 trap 'printf INT > "{signal_file}"; exit 0' INT
@@ -170,7 +411,7 @@ while true; do sleep 1; done
             watcher = subprocess.Popen(
                 [
                     "bash",
-                    "/data/qwop-bench/challenge/g1-sprint-100m-lane/environment/qwop-snapshot-loop.sh",
+                    str(ROOT / "challenge/g1-sprint-100m-lane/environment/sprint-snapshot-loop.sh"),
                     "--run-id",
                     "test-watch",
                     "--agent-kind",
@@ -204,17 +445,17 @@ while true; do sleep 1; done
                 text=True,
             )
             try:
-                first_seen = durable / "runs/test-watch/snapshot/first-claude-seen"
+                first_seen = (
+                    durable / "runs/test-watch/snapshot/first-claude-seen.attempt-001"
+                )
                 deadline = time.time() + 15
                 while not first_seen.exists() and time.time() < deadline:
                     time.sleep(0.1)
                 self.assertTrue(first_seen.exists())
-                (runtime / "qwop-stop").touch()
+                (runtime / "sprint-stop").touch()
                 watcher.wait(timeout=20)
                 dummy_process.wait(timeout=10)
-                ack = json.loads(
-                    (durable / "runs/test-watch/STOP_ACK").read_text()
-                )
+                ack = json.loads((durable / "runs/test-watch/STOP_ACK").read_text())
                 self.assertEqual(ack["reason"], "operator_stop")
                 self.assertEqual(ack["final_snapshot_id"], "deadbeef")
                 self.assertEqual(signal_file.read_text(), "INT")
@@ -323,14 +564,14 @@ while True:
             wrapper_env.update(
                 {
                     "CODEX_HOME": str(codex_home),
-                    "QWOP_RUNTIME_DIR": str(runtime),
-                    "QWOP_AGENT_LOG_DIR": str(agent_logs),
+                    "SPRINT_RUNTIME_DIR": str(runtime),
+                    "SPRINT_AGENT_LOG_DIR": str(agent_logs),
                 }
             )
             wrapper = subprocess.Popen(
                 [
                     "bash",
-                    "/data/qwop-bench/challenge/g1-sprint-100m-lane/environment/qwop-codex-exec-wrapper.sh",
+                    str(ROOT / "challenge/g1-sprint-100m-lane/environment/sprint-codex-exec-wrapper.sh"),
                     str(launcher),
                     "exec",
                     "--json",
@@ -348,7 +589,7 @@ while True:
             watcher = subprocess.Popen(
                 [
                     "bash",
-                    "/data/qwop-bench/challenge/g1-sprint-100m-lane/environment/qwop-snapshot-loop.sh",
+                    str(ROOT / "challenge/g1-sprint-100m-lane/environment/sprint-snapshot-loop.sh"),
                     "--run-id",
                     "test-codex",
                     "--agent-kind",
@@ -384,12 +625,14 @@ while True:
                 text=True,
             )
             try:
-                first_seen = durable / "runs/test-codex/snapshot/first-codex-seen"
+                first_seen = (
+                    durable / "runs/test-codex/snapshot/first-codex-seen.attempt-001"
+                )
                 deadline = time.time() + 15
                 while not first_seen.exists() and time.time() < deadline:
                     time.sleep(0.1)
                 self.assertTrue(first_seen.exists())
-                (runtime / "qwop-stop").touch()
+                (runtime / "sprint-stop").touch()
 
                 deadline = time.time() + 15
                 while not failed_final.exists() and time.time() < deadline:
@@ -403,9 +646,7 @@ while True:
                 self.assertIsNone(monitor.poll())
                 self.assertEqual(signal_file.read_text().splitlines(), ["INT", "TERM"])
 
-                ack = json.loads(
-                    (durable / "runs/test-codex/STOP_ACK").read_text()
-                )
+                ack = json.loads((durable / "runs/test-codex/STOP_ACK").read_text())
                 self.assertEqual(ack["agent_kind"], "codex")
                 self.assertEqual(ack["reason"], "operator_stop")
                 self.assertEqual(ack["final_snapshot_id"], "codex-snapshot")
@@ -440,7 +681,7 @@ while True:
                 watcher.kill()
                 monitor.kill()
                 wrapper.kill()
-                process_file = runtime / "qwop-agent/codex-process"
+                process_file = runtime / "sprint-agent/codex-process"
                 if process_file.exists():
                     try:
                         _, pgid, _ = process_file.read_text().split()
@@ -458,22 +699,22 @@ while True:
             attempt.mkdir()
             (attempt / "result.json").write_text('{"finished_at":"now"}\n')
             (attempt / "policy.pt").write_bytes(b"policy")
-            archive, digest, checksum = qwopctl.tar_attempt_atomic(
+            archive, digest, checksum = sprintctl.tar_attempt_atomic(
                 attempt, root / "archives"
             )
-            again, again_digest, _ = qwopctl.tar_attempt_atomic(
+            again, again_digest, _ = sprintctl.tar_attempt_atomic(
                 attempt, root / "archives"
             )
             self.assertEqual(archive, again)
             self.assertEqual(digest, again_digest)
-            self.assertEqual(qwopctl.sha256_file(archive), digest)
+            self.assertEqual(sprintctl.sha256_file(archive), digest)
             self.assertEqual(checksum.read_text().split()[0], digest)
             self.assertFalse(archive.stat().st_mode & stat.S_IWUSR)
 
     def test_malformed_partial_ledger_keeps_valid_rows(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             ledger = Path(raw) / "ledger.jsonl"
-            ledger.write_text(json.dumps(row(1, "one.pt", 10.0)) + "\n{\"index\":")
+            ledger.write_text(json.dumps(row(1, "one.pt", 10.0)) + '\n{"index":')
             read = frontier_update.read_ledger(ledger)
             self.assertEqual(len(read.rows), 1)
             self.assertEqual(len(read.errors), 1)
@@ -495,7 +736,10 @@ while True:
 
             ledger.write_text(
                 "\n".join(
-                    [json.dumps(row(1, "one.pt", None)), json.dumps(row(2, "two.pt", 9.0))]
+                    [
+                        json.dumps(row(1, "one.pt", None)),
+                        json.dumps(row(2, "two.pt", 9.0)),
+                    ]
                 )
                 + "\n"
             )
@@ -507,7 +751,10 @@ while True:
 
             ledger.write_text(
                 "\n".join(
-                    [json.dumps(row(1, "one.pt", 8.0)), json.dumps(row(2, "two.pt", 9.0))]
+                    [
+                        json.dumps(row(1, "one.pt", 8.0)),
+                        json.dumps(row(2, "two.pt", 9.0)),
+                    ]
                 )
                 + "\n"
             )
@@ -550,40 +797,81 @@ while True:
                 "agent_container_id": "ta-test",
             }
             with (
-                mock.patch.object(qwopctl, "load_run", return_value=(state_dir, run)),
-                mock.patch.object(qwopctl, "fetch_remote_json", return_value=None),
+                mock.patch.object(sprintctl, "load_run", return_value=(state_dir, run)),
+                mock.patch.object(sprintctl, "fetch_remote_json", return_value=None),
                 mock.patch.object(
-                    qwopctl, "discover_agent_container", return_value="ta-test"
+                    sprintctl, "discover_agent_container", return_value="ta-test"
                 ),
-                mock.patch.object(qwopctl, "exec_container") as remote_exec,
+                mock.patch.object(sprintctl, "exec_container") as remote_exec,
             ):
-                first = qwopctl.request_stop("test-idempotent")
+                first = sprintctl.request_stop("test-idempotent")
                 marker = (state_dir / "STOP_REQUESTED.json").read_bytes()
-                second = qwopctl.request_stop("test-idempotent")
+                second = sprintctl.request_stop("test-idempotent")
                 self.assertEqual(first["agent_kind"], "codex")
                 self.assertEqual(first["requested_at"], second["requested_at"])
-                self.assertEqual(marker, (state_dir / "STOP_REQUESTED.json").read_bytes())
+                self.assertEqual(
+                    marker, (state_dir / "STOP_REQUESTED.json").read_bytes()
+                )
                 self.assertEqual(remote_exec.call_count, 2)
+
+            stale_crash_ack = {
+                "reason": "agent_exit",
+                "acknowledged_at": "2026-08-08T00:00:00Z",
+            }
+            with (
+                mock.patch.object(sprintctl, "load_run", return_value=(state_dir, run)),
+                mock.patch.object(
+                    sprintctl, "fetch_remote_json", return_value=stale_crash_ack
+                ),
+                mock.patch.object(
+                    sprintctl, "discover_agent_container", return_value="ta-test"
+                ),
+                mock.patch.object(sprintctl, "exec_container") as remote_exec,
+            ):
+                resumed_stop = sprintctl.request_stop("test-idempotent")
+                self.assertEqual(resumed_stop["status"], "requested")
+                remote_exec.assert_called_once()
+
+            run_path = state_dir / "run.json"
+            run_path.write_text(
+                json.dumps(
+                    {
+                        "run_id": "test-idempotent",
+                        "agent_kind": "codex",
+                        "cpu_launch_attempt": 2,
+                        "cpu_launch_history": [{"attempt": 1}, {"attempt": 2}],
+                        "jobs_root": "/attempt-2",
+                    }
+                )
+            )
+            updated = sprintctl.update_run_fields(
+                state_dir, agent_container_id="ta-new"
+            )
+            self.assertEqual(updated["cpu_launch_attempt"], 2)
+            self.assertEqual(updated["jobs_root"], "/attempt-2")
+            self.assertEqual(updated["agent_container_id"], "ta-new")
 
             (state_dir / "archive-manifest.json").write_text(
                 '{"schema_version":1,"attempts":{}}\n'
             )
             with (
-                mock.patch.object(qwopctl, "load_run", return_value=(state_dir, run)),
-                mock.patch.object(qwopctl, "monitor_once") as monitor,
+                mock.patch.object(sprintctl, "load_run", return_value=(state_dir, run)),
+                mock.patch.object(sprintctl, "monitor_once") as monitor,
                 mock.patch.object(
-                    qwopctl,
+                    sprintctl,
                     "final_conditions",
                     return_value=(True, {"all": True}, []),
                 ),
-                mock.patch.object(qwopctl, "volume_upload"),
+                mock.patch.object(sprintctl, "volume_upload"),
             ):
-                complete_one, payload_one = qwopctl.finalize("test-idempotent")
+                complete_one, payload_one = sprintctl.finalize("test-idempotent")
                 final_bytes = (state_dir / "FINALIZED.json").read_bytes()
-                complete_two, payload_two = qwopctl.finalize("test-idempotent")
+                complete_two, payload_two = sprintctl.finalize("test-idempotent")
                 self.assertTrue(complete_one and complete_two)
                 self.assertEqual(payload_one, payload_two)
-                self.assertEqual(final_bytes, (state_dir / "FINALIZED.json").read_bytes())
+                self.assertEqual(
+                    final_bytes, (state_dir / "FINALIZED.json").read_bytes()
+                )
                 self.assertEqual(monitor.call_count, 1)
 
     def test_status_reports_explicit_agent_kind(self) -> None:
@@ -594,12 +882,10 @@ while True:
                 "agent_kind": "codex",
                 "state_dir": str(state_dir),
                 "jobs_root": str(state_dir / "jobs"),
-                "app_name": "qwop-test-status",
-                "volume_name": "qwop-test-status",
+                "app_name": "sprint-test-status",
+                "volume_name": "sprint-test-status",
             }
-            payload = qwopctl.status_snapshot(
-                state_dir, run, include_remote=False
-            )
+            payload = sprintctl.status_snapshot(state_dir, run, include_remote=False)
             self.assertEqual(payload["agent_kind"], "codex")
             self.assertTrue(payload["snapshot_agent_kind_matches"])
 

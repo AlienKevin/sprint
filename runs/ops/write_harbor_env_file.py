@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write a mode-0600 Harbor --env-file under /data/qwop-run-secrets/.
+"""Write a mode-0600 Harbor --env-file under /data/sprint-run-secrets/.
 
 Secrets go in the env file (loaded into the Harbor process via dotenv) so they
 never appear in process argv / ``ps``. Non-secret agent knobs may still use
@@ -22,7 +22,7 @@ import re
 import sys
 from pathlib import Path
 
-SECRETS_ROOT = Path("/data/qwop-run-secrets")
+SECRETS_ROOT = Path("/data/sprint-run-secrets")
 LABEL_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{1,80}$")
 KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -32,7 +32,7 @@ def main() -> int:
     ap.add_argument(
         "--label",
         required=True,
-        help="Subdir under /data/qwop-run-secrets/ (safe filename chars).",
+        help="Subdir under /data/sprint-run-secrets/ (safe filename chars).",
     )
     ap.add_argument(
         "--filename",

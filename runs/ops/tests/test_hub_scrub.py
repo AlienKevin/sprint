@@ -9,7 +9,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-HUB = Path("/data/qwop-bench/runs/hub_track_upload.py")
+ROOT = Path(__file__).resolve().parents[3]
+HUB = ROOT / "runs/hub_track_upload.py"
 
 
 def load_hub():

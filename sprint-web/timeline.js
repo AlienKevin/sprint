@@ -1,0 +1,67 @@
+(() => {
+  const $ = s => document.querySelector(s), canvas = $('#chart'), ctx = canvas.getContext('2d');
+  const runSelect = $('#run'), status = $('#status'), tip = $('#tip');
+  let data = null, index = null, view = null, dragging = null, cursor = null;
+  const layers = Object.fromEntries([...document.querySelectorAll('[data-layer]')].map(x => [x.dataset.layer, x.checked]));
+  const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const colors = {cpu:css('--cpu'),trainingGpu:css('--training-gpu'),trainingMem:css('--training-mem'),verifierGpu:css('--verifier-gpu'),verifierMem:css('--verifier-mem'),tools:css('--tool'),trace:css('--trace'),danger:css('--danger'),ok:css('--ok'),line:css('--line'),muted:css('--muted'),text:css('--text')};
+  const pad = {left:126,right:24,top:28,bottom:38};
+  const tracks = [
+    ['cpu',100],['training',120],['verifier',120],['tools',82],['trace',82],['infra',102],['artifacts',102]
+  ];
+  const chartHeight = 850, plotBottom = pad.top + tracks.reduce((sum, track) => sum + track[1], 0);
+  const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+  const fmtTime = ms => new Date(ms).toISOString().replace('T',' ').replace('Z',' UTC');
+  const fmtDur = ms => ms<60000?`${(ms/1000).toFixed(1)}s`:ms<3600000?`${(ms/60000).toFixed(1)}m`:`${(ms/3600000).toFixed(2)}h`;
+  function resize(){const dpr=devicePixelRatio||1,r=canvas.getBoundingClientRect();canvas.width=Math.round(r.width*dpr);canvas.height=Math.round(chartHeight*dpr);ctx.setTransform(dpr,0,0,dpr,0,0);draw()}
+  function bounds(){const w=canvas.getBoundingClientRect().width;return {x0:pad.left,x1:w-pad.right,w:w-pad.left-pad.right}}
+  function x(ms){const b=bounds();return b.x0+(ms-view[0])/(view[1]-view[0])*b.w}
+  function msAt(px){const b=bounds();return view[0]+(px-b.x0)/b.w*(view[1]-view[0])}
+  function visible(e){return e.epoch_ms>=view[0]&&e.epoch_ms<=view[1]}
+  function line(points,color,y0,h,max=100){const plotted=[];ctx.strokeStyle=color;ctx.lineWidth=1.6;ctx.beginPath();for(const p of points){if(!visible(p)||p.value==null)continue;const px=x(p.epoch_ms),py=y0+h-clamp(p.value/max,0,1)*h;if(!plotted.length)ctx.moveTo(px,py);else ctx.lineTo(px,py);plotted.push([px,py])}ctx.stroke();ctx.fillStyle=color;for(const [px,py] of plotted){ctx.beginPath();ctx.arc(px,py,plotted.length===1?4:2,0,Math.PI*2);ctx.fill()}}
+  function grid(y0,h,label){const b=bounds();ctx.strokeStyle=colors.line;ctx.lineWidth=1;ctx.fillStyle=colors.muted;ctx.font='12px ui-monospace,monospace';ctx.fillText(label,12,y0+16);ctx.beginPath();ctx.moveTo(b.x0,y0);ctx.lineTo(b.x1,y0);ctx.moveTo(b.x0,y0+h);ctx.lineTo(b.x1,y0+h);ctx.stroke()}
+  function timelineAxis(){const b=bounds(),span=view[1]-view[0],steps=[1000,5000,15000,30000,60000,300000,900000,1800000,3600000,10800000,21600000];const step=steps.find(s=>b.w/(span/s)>90)||43200000;let t=Math.ceil(view[0]/step)*step;ctx.strokeStyle=colors.line;ctx.fillStyle=colors.muted;ctx.font='11px ui-monospace,monospace';for(;t<=view[1];t+=step){const px=x(t);ctx.beginPath();ctx.moveTo(px,pad.top);ctx.lineTo(px,plotBottom);ctx.stroke();ctx.fillText(fmtDur(t-data.clock.origin_epoch_ms),px+3,plotBottom+28)}}
+  function eventMetrics(){const result={cpu:[],trainingGpu:[],trainingMem:[],verifierGpu:[],verifierMem:[]};for(const e of data.events.filter(e=>e.category==='metrics')){if(e.role==='cpu-agent')result.cpu.push({epoch_ms:e.epoch_ms,value:e.metrics?.cpu_util_pct});const prefix=e.role==='training-gpu'?'training':e.role==='verifier-gpu'?'verifier':null;if(!prefix)continue;for(const g of e.metrics?.gpus||[]){result[`${prefix}Gpu`].push({epoch_ms:e.epoch_ms,value:g.util_gpu_pct});if(g.mem_total_mib)result[`${prefix}Mem`].push({epoch_ms:e.epoch_ms,value:100*g.mem_used_mib/g.mem_total_mib})}}return result}
+  function draw(){
+    if(!data||!view)return;
+    const r=canvas.getBoundingClientRect();
+    ctx.clearRect(0,0,r.width,chartHeight);
+    timelineAxis();
+    let y=pad.top;
+    const met=eventMetrics();
+    grid(y,tracks[0][1],'CPU AGENT · %');
+    if(layers.cpu)line(met.cpu,colors.cpu,y+23,tracks[0][1]-28);
+    y+=tracks[0][1];
+    grid(y,tracks[1][1],'TRAINING GPU · %');
+    if(layers.trainingGpu)line(met.trainingGpu,colors.trainingGpu,y+23,tracks[1][1]-28);
+    if(layers.trainingMem)line(met.trainingMem,colors.trainingMem,y+23,tracks[1][1]-28);
+    y+=tracks[1][1];
+    grid(y,tracks[2][1],'VERIFIER GPU · %');
+    if(layers.verifierGpu)line(met.verifierGpu,colors.verifierGpu,y+23,tracks[2][1]-28);
+    if(layers.verifierMem)line(met.verifierMem,colors.verifierMem,y+23,tracks[2][1]-28);
+    y+=tracks[2][1];
+    grid(y,tracks[3][1],'TOOLS / BUCKET');
+    if(layers.tools){const bs=data.tool_call_buckets?.buckets||[],max=Math.max(1,...bs.filter(b=>b.start_epoch_ms>=view[0]&&b.start_epoch_ms<=view[1]).map(b=>b.total));for(const b of bs){if(b.start_epoch_ms>view[1]||b.start_epoch_ms+data.tool_call_buckets.width_ms<view[0])continue;const px=x(b.start_epoch_ms),pw=Math.max(2,x(b.start_epoch_ms+data.tool_call_buckets.width_ms)-px-1),ph=(b.total/max)*(tracks[3][1]-28);ctx.fillStyle=colors.tools;ctx.fillRect(px,y+tracks[3][1]-ph,pw,ph)}}
+    y+=tracks[3][1];
+    grid(y,tracks[4][1],'TRACE EVENTS');
+    if(layers.trace){const ev=data.events.filter(e=>e.category==='trace'&&visible(e));ctx.fillStyle=colors.trace;for(const e of ev){const py=e.kind==='tool_call'?y+31:e.kind==='tool_result'?y+48:y+65;ctx.fillRect(x(e.epoch_ms),py,1.5,5)}}
+    y+=tracks[4][1];
+    grid(y,tracks[5][1],'ALLOC / PREEMPT');
+    if(layers.infra){for(const e of data.events.filter(e=>e.category==='infrastructure'&&visible(e))){const pre=e.kind.includes('preempt')||e.kind.includes('lost'),alloc=e.kind.includes('allocated')||e.kind.includes('reallocated')||e.kind==='verifier_gpu_started';ctx.fillStyle=pre?colors.danger:alloc?colors.ok:'#607d8b';const px=x(e.epoch_ms),py=y+49;ctx.beginPath();if(pre){ctx.moveTo(px,py-8);ctx.lineTo(px+7,py+6);ctx.lineTo(px-7,py+6)}else{ctx.arc(px,py,5,0,Math.PI*2)}ctx.fill();ctx.fillStyle=colors.muted;ctx.font='10px ui-monospace,monospace';if(pre||alloc)ctx.fillText(e.kind.replace('gpu_',''),px+8,py+4)}}
+    y+=tracks[5][1];
+    grid(y,tracks[6][1],'SUBMISSIONS');
+    if(layers.artifacts){const ev=data.events.filter(e=>e.kind==='artifact_submitted'&&visible(e));for(const e of ev){const a=data.artifacts.find(a=>a.id===e.artifact_id),valid=Number(a?.rewards?.valid_run)>0;ctx.fillStyle=valid?colors.ok:colors.danger;const px=x(e.epoch_ms),py=y+48;ctx.beginPath();ctx.arc(px,py,5,0,Math.PI*2);ctx.fill();ctx.save();ctx.translate(px+4,py+24);ctx.rotate(-Math.PI/4);ctx.fillStyle=colors.muted;ctx.font='10px ui-monospace,monospace';ctx.fillText(`#${e.submission_index}`,0,0);ctx.restore()}}
+    if(cursor!=null){ctx.strokeStyle='#fff8';ctx.beginPath();ctx.moveTo(cursor,pad.top);ctx.lineTo(cursor,plotBottom);ctx.stroke()}
+  }
+  function nearest(px){const target=msAt(px),tol=(view[1]-view[0])/bounds().w*10;return data.events.filter(e=>Math.abs(e.epoch_ms-target)<=tol).sort((a,b)=>Math.abs(a.epoch_ms-target)-Math.abs(b.epoch_ms-target)).slice(0,8)}
+  function hover(ev){const rect=canvas.getBoundingClientRect();cursor=ev.clientX-rect.left;const rows=nearest(cursor);if(!rows.length){tip.style.display='none';draw();return}tip.style.display='block';tip.style.left=`${clamp(cursor+14,8,rect.width-440)}px`;tip.style.top=`${clamp(ev.clientY-rect.top+12,8,690)}px`;tip.textContent=rows.map(e=>{let extra=e.tool?` · ${e.tool}`:e.artifact_name?` · ${e.artifact_name}`:e.reason?` · ${e.reason}`:'';if(e.metrics?.cpu_util_pct!=null)extra+=` · CPU ${e.metrics.cpu_util_pct}%`;const g=e.metrics?.gpus?.[0];if(g)extra+=` · ${e.role} ${g.util_gpu_pct??'?'}% · ${g.mem_used_mib??'?'} MiB`;return `${fmtTime(e.epoch_ms)}\n${e.category} / ${e.kind}${extra}`}).join('\n\n');draw()}
+  async function loadRun(path){status.textContent='Loading…';const response=await fetch(path,{cache:'no-store'});if(!response.ok)throw Error(`${response.status} ${response.statusText}`);data=await response.json();view=[data.clock.origin_epoch_ms,data.clock.end_epoch_ms];status.className=`status ${data.coverage.ready?'ready':'not-ready'}`;const counts=data.coverage.counts||{};status.textContent=`${data.coverage.ready?'complete':'incomplete'} · training ${counts.training_gpu_intervals_covered||0}/${counts.training_gpu_intervals||0} · verifier ${counts.verifier_gpu_intervals_covered||0}/${counts.verifier_evaluation_intervals||0} · ${data.artifacts.length} artifacts`;draw()}
+  async function init(){try{const r=await fetch('/data/timelines/index.json',{cache:'no-store'});if(!r.ok)throw Error('No timeline index has been deployed yet');index=await r.json();runSelect.innerHTML='';for(const item of index.runs){const o=document.createElement('option');o.value=item.path;o.textContent=`${item.model||'model'} · ${item.run_id}${item.ready?'':' · incomplete'}`;runSelect.append(o)}if(!index.runs.length)throw Error('No experiment timelines found');await loadRun(runSelect.value)}catch(e){status.className='status warning';status.textContent=e.message;runSelect.innerHTML='<option>No timeline data</option>'}}
+  runSelect.addEventListener('change',()=>loadRun(runSelect.value).catch(e=>status.textContent=e.message));
+  $('#reset').addEventListener('click',()=>{if(data){view=[data.clock.origin_epoch_ms,data.clock.end_epoch_ms];draw()}});
+  $('#checks').addEventListener('change',e=>{if(e.target.dataset.layer){layers[e.target.dataset.layer]=e.target.checked;draw()}});
+  canvas.addEventListener('mousemove',e=>{if(dragging){const rect=canvas.getBoundingClientRect(),delta=msAt(dragging.x)-msAt(e.clientX-rect.left);const span=view[1]-view[0],full=[data.clock.origin_epoch_ms,data.clock.end_epoch_ms];let a=dragging.view[0]+delta,b=a+span;if(a<full[0]){a=full[0];b=a+span}if(b>full[1]){b=full[1];a=b-span}view=[a,b];draw()}else hover(e)});
+  canvas.addEventListener('mousedown',e=>{dragging={x:e.offsetX,view:[...view]};tip.style.display='none'});window.addEventListener('mouseup',()=>dragging=null);canvas.addEventListener('mouseleave',()=>{if(!dragging){cursor=null;tip.style.display='none';draw()}});
+  canvas.addEventListener('wheel',e=>{if(!data)return;e.preventDefault();const rect=canvas.getBoundingClientRect(),anchor=msAt(e.clientX-rect.left),factor=e.deltaY>0?1.25:.8,full=data.clock.end_epoch_ms-data.clock.origin_epoch_ms,newSpan=clamp((view[1]-view[0])*factor,10000,full),ratio=(anchor-view[0])/(view[1]-view[0]);let a=anchor-newSpan*ratio,b=a+newSpan;if(a<data.clock.origin_epoch_ms){a=data.clock.origin_epoch_ms;b=a+newSpan}if(b>data.clock.end_epoch_ms){b=data.clock.end_epoch_ms;a=b-newSpan}view=[a,b];draw()},{passive:false});
+  addEventListener('resize',resize);resize();init();
+})();

@@ -8,14 +8,14 @@
 #   CONFIRM_LAUNCH=1 runs/run-luna.sh # real launch
 set -euo pipefail
 
-ROOT=/data/qwop-bench
+ROOT="${SPRINT_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"
 export MODAL_PROFILE="${MODAL_PROFILE:-kevinli020508}"
 
 MODEL="${MODEL:-openai/gpt-5.6-luna}"
 # Codex/Responses accepts max for Luna (Chat Completions does not). See REASONING_EFFORT_PROBE.md.
 REASONING_EFFORT="${REASONING_EFFORT:-max}"
-# Same pin as DeepSeek; see runs/CODEX_PIN.md (npm @openai/codex@latest = 0.146.0).
-CODEX_VERSION="${CODEX_VERSION:-0.146.0}"
+# Same pin as the current eval launchers; see runs/CODEX_PIN.md.
+CODEX_VERSION="${CODEX_VERSION:-0.147.0}"
 RUN_ID="${RUN_ID:-lane-luna-$(date -u +%Y%m%dT%H%M%SZ)}"
 
 # Fair /goal template: durable launcher still reads codex-goal.j2.
@@ -63,12 +63,21 @@ if ! cmp -s "$GOAL_SRC" "$GOAL_DST"; then
 fi
 
 echo "--- launch ---"
-# Prefer nohup so the shell can exit; monitor starts inside durable launcher.
-nohup "$ROOT/runs/run-lane-durable.sh" \
+LAUNCH_ARGS=(
+  "$ROOT/runs/run-lane-durable.sh"
+  --supervised-launch
   --run-id "$RUN_ID" \
   --agent-kind codex \
   --model "$MODEL" \
   --reasoning-effort "$REASONING_EFFORT" \
-  --codex-version "$CODEX_VERSION" \
-  >"/data/qwop-launch-${RUN_ID}.log" 2>&1 </dev/null &
-echo "launched pid=$! log=/data/qwop-launch-${RUN_ID}.log"
+  --codex-version "$CODEX_VERSION"
+)
+LAUNCH_JSON=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${LAUNCH_ARGS[@]}")
+python3 "$ROOT/runs/ops/start_lane_supervisor.py" \
+  --run-id "$RUN_ID" \
+  --launch-argv-json "$LAUNCH_JSON" \
+  --secret-env OPENAI_API_KEY \
+  --max-restarts "${CPU_MAX_RESTARTS:-50}" \
+  --min-backoff-s "${CPU_MIN_BACKOFF_S:-30}" \
+  --max-backoff-s "${CPU_MAX_BACKOFF_S:-600}"
+echo "supervisor unit=sprint-lane-${RUN_ID}.service log=/data/sprint-launch-${RUN_ID}.log"

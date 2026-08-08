@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+# Rewrite $CODEX_HOME config to DeepSeek's official Codex harness shape.
+# See: https://api-docs.deepseek.com/quick_start/agent_integrations/codex/
+#
+# Harbor only appends openai_base_url; that routes Codex through the built-in
+# OpenAI provider (~258k window + remote compaction). This script installs
+# DeepSeek's models.json catalog (1M context) and [model_providers.deepseek]
+# with wire_api=responses, then removes openai_base_url.
+#
+# Auth uses env_key=OPENAI_API_KEY (Harbor already injects the key). Do not
+# write experimental_bearer_token — config.toml is copied into agent logs.
+set -euo pipefail
+
+CODEX_HOME_DIR=${CODEX_HOME:-/tmp/codex-home}
+MODELS_SRC=${SPRINT_CODEX_DEEPSEEK_MODELS_JSON:-/opt/sprint-codex-deepseek-models.json}
+BASE_URL=${SPRINT_CODEX_DEEPSEEK_BASE_URL:-https://api.deepseek.com/}
+MODEL_SLUG=${SPRINT_CODEX_DEEPSEEK_MODEL:-deepseek-v4-flash}
+
+if [[ ! -f "$MODELS_SRC" ]]; then
+  echo "DeepSeek Codex models.json missing: $MODELS_SRC" >&2
+  exit 1
+fi
+
+umask 077
+mkdir -p "$CODEX_HOME_DIR"
+cp -f -- "$MODELS_SRC" "$CODEX_HOME_DIR/models.json"
+
+CONFIG_PATH="$CODEX_HOME_DIR/config.toml"
+python3 - "$CONFIG_PATH" "$CODEX_HOME_DIR/models.json" "$BASE_URL" "$MODEL_SLUG" <<'PY'
+import pathlib
+import re
+import sys
+
+config_path = pathlib.Path(sys.argv[1])
+models_path = pathlib.Path(sys.argv[2])
+base_url = sys.argv[3]
+model_slug = sys.argv[4]
+
+raw = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+
+# Drop keys that mask or contradict the official DeepSeek provider + catalog.
+drop_keys = {
+    "openai_base_url",
+    "profile",
+    "oss_provider",
+    "model_context_window",
+    "model_auto_compact_token_limit",
+    "model_auto_compact_token_limit_scope",
+    "base_instructions",
+    "model_instructions_file",
+    "compact_prompt",
+    "experimental_compact_prompt_file",
+    "service_tier",
+    "model_verbosity",
+    "model_reasoning_summary",
+    "plan_mode_reasoning_effort",
+    "experimental_use_unified_exec_tool",
+}
+# Keys we rewrite to the official values (keep Harbor/CLI effort if already set).
+force_keys = {
+    "model",
+    "model_provider",
+    "preferred_auth_method",
+    "forced_login_method",
+    "model_catalog_json",
+}
+
+def is_header(line: str) -> bool:
+    return line.lstrip().startswith("[")
+
+def key_of(line: str) -> str | None:
+    s = line.strip()
+    if not s or s.startswith("#") or "=" not in s or is_header(s):
+        return None
+    return s.split("=", 1)[0].strip().strip("\"'")
+
+out: list[str] = []
+skip_section = False
+seen_effort = False
+i = 0
+lines = raw.splitlines()
+while i < len(lines):
+    line = lines[i]
+    trimmed = line.strip()
+    if trimmed.startswith("["):
+        header = trimmed.strip("[]").strip().strip("\"'")
+        skip_section = header == "model_providers.deepseek" or header.startswith(
+            "model_providers.deepseek."
+        )
+        if skip_section:
+            i += 1
+            continue
+        out.append(line)
+        i += 1
+        continue
+    if skip_section:
+        i += 1
+        continue
+    key = key_of(line)
+    if key in drop_keys or key in force_keys:
+        i += 1
+        continue
+    if key == "model_reasoning_effort":
+        seen_effort = True
+    out.append(line)
+    i += 1
+
+leading = [
+    f'model = "{model_slug}"',
+    'model_provider = "deepseek"',
+    'preferred_auth_method = "apikey"',
+    'forced_login_method = "api"',
+    f'model_catalog_json = "{models_path}"',
+]
+if not seen_effort:
+    # Bakeoff launchers pass -c model_reasoning_effort=max; default high matches docs.
+    leading.append('model_reasoning_effort = "high"')
+
+provider = [
+    "",
+    "[model_providers.deepseek]",
+    'name = "deepseek"',
+    f'base_url = "{base_url}"',
+    'wire_api = "responses"',
+    # Harbor already exports OPENAI_API_KEY into the Codex process.
+    'env_key = "OPENAI_API_KEY"',
+    "",
+]
+
+body = "\n".join(out).strip("\n")
+parts = ["\n".join(leading), "\n".join(provider).rstrip()]
+if body:
+    parts.append(body)
+text = "\n\n".join(parts).rstrip() + "\n"
+# Avoid triple blank lines when provider already ends with a blank.
+text = re.sub(r"\n{3,}", "\n\n", text)
+config_path.write_text(text, encoding="utf-8")
+PY
+
+echo "Applied official DeepSeek Codex config in $CODEX_HOME_DIR" >&2

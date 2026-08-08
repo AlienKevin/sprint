@@ -11,6 +11,21 @@ set -euo pipefail
 LOGS_DIR="${LOGS_DIR:-/logs/verifier}"
 mkdir -p "$LOGS_DIR"
 
+# Run inside the sealed SCORE sandbox so verifier metrics cannot be confused
+# with the agent-controlled training GPU. Harbor archives this whole directory
+# for continuous attempts and the final score.
+TELEMETRY_DIR="$LOGS_DIR/telemetry"
+SPRINT_REQUESTED_CPU_CORES=8 SPRINT_REQUESTED_MEMORY_MIB=32768 \
+  python3 /tests/verifier_telemetry.py \
+    --out-dir "$TELEMETRY_DIR" \
+    --interval-seconds "${SPRINT_VERIFIER_TELEMETRY_INTERVAL_S:-10}" &
+TELEMETRY_PID=$!
+stop_telemetry() {
+    kill -TERM "$TELEMETRY_PID" 2>/dev/null || true
+    wait "$TELEMETRY_PID" 2>/dev/null || true
+}
+trap stop_telemetry EXIT
+
 SUBMISSION="/app/submission/policy.pt"
 
 write_rewards() {
@@ -93,21 +108,37 @@ echo ""
 echo "=== Time trial ==="
 set +e
 # A hard wall-clock ceiling.  Rollout cost scales with how many lanes fail to
-# resolve, and the worst case is a policy that finishes just barely, where all
-# seven rollouts run close to the full simulated duration.
+# resolve, and the worst case is a policy that finishes just barely: all three
+# nominal lanes run close to the limit, followed by two one-lane held-out trials.
 #
 # Deliberately under the harness's own verifier timeout.  Whichever fires first
 # decides what the submitter learns, and this one can still write a reward file
 # saying why; the harness cutting the container off leaves nothing to read.
-timeout --signal=TERM --kill-after=120 "${VERIFY_TIMEOUT_S:-3000}" \
+ISAAC_STDOUT="$LOGS_DIR/isaac-stdout.txt"
+timeout --signal=TERM --kill-after=120 "${VERIFY_TIMEOUT_S:-720}" \
     python3 /tests/verify.py \
     --policy "$SUBMISSION" \
     --logs "$LOGS_DIR" \
     --tests /tests \
     --runs 3 \
-    --headless
-VERIFY_EXIT=$?
+    --headless 2>&1 | tee "$ISAAC_STDOUT"
+VERIFY_EXIT=${PIPESTATUS[0]}
 set -e
+
+# `gpu.foundation.plugin` is the Vulkan/RTX graphics foundation.  Modal's
+# gVisor GPU sandboxes do not expose a Vulkan device, so that warning is
+# expected for a camera-free headless verifier and does not mean CUDA physics
+# fell back.  PhysX emits these separate, explicit warnings when its solver or
+# broad-phase pipeline really switches to CPU.  Treat either as verifier
+# infrastructure failure rather than silently publishing a slow/misconfigured
+# score.
+if grep -Eq \
+    'GPU solver pipeline failed|GPU Bp pipeline failed|switching to software' \
+    "$ISAAC_STDOUT"; then
+    echo "ERROR: PhysX GPU pipeline fell back to CPU; refusing to score"
+    VALID=0 write_rewards
+    exit 1
+fi
 
 # A timeout or non-zero exit is only fatal if the time trial did not already
 # record a result.  verify.py writes sprint_results.json with the time trial
@@ -118,7 +149,7 @@ set -e
 # there is genuinely no time trial to read.
 if [ "$VERIFY_EXIT" -ne 0 ] && [ ! -f "$LOGS_DIR/sprint_results.json" ]; then
     if [ "$VERIFY_EXIT" -eq 124 ]; then
-        echo "ERROR: evaluation exceeded ${VERIFY_TIMEOUT_S:-3000}s before any result"
+        echo "ERROR: evaluation exceeded ${VERIFY_TIMEOUT_S:-720}s before any result"
     else
         echo "ERROR: evaluation did not complete (exit $VERIFY_EXIT)"
     fi
@@ -127,7 +158,7 @@ if [ "$VERIFY_EXIT" -ne 0 ] && [ ! -f "$LOGS_DIR/sprint_results.json" ]; then
 fi
 
 if [ "$VERIFY_EXIT" -eq 124 ]; then
-    echo "NOTE: hit the ${VERIFY_TIMEOUT_S:-3000}s cap during robustness; the time"
+    echo "NOTE: hit the ${VERIFY_TIMEOUT_S:-720}s cap during robustness; the time"
     echo "      trial completed and is scored, the robustness sweep may be partial."
 fi
 

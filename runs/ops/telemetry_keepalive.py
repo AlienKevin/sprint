@@ -2,7 +2,7 @@
 """Emit a Modal keepalive argv JSON that starts in-sandbox telemetry.
 
 Used by durable and open Harbor runners so every future trial gets sampling
-without host coupling. Safe when /opt/qwop-telemetry.sh is missing.
+without host coupling. Safe when /opt/sprint-telemetry.sh is missing.
 """
 from __future__ import annotations
 
@@ -17,15 +17,15 @@ def keepalive_argv(
     interval_seconds: int = 20,
     then: list[str] | None = None,
 ) -> list[str]:
-    run_export = f"QWOP_RUN_ID={shlex.quote(run_id)} " if run_id else ""
+    run_export = f"SPRINT_RUN_ID={shlex.quote(run_id)} " if run_id else ""
     run_arg = f"--run-id {shlex.quote(run_id)} " if run_id else ""
     start = (
         "umask 077; mkdir -p /logs/artifacts/telemetry /run; "
-        "if [ -x /opt/qwop-telemetry.sh ]; then "
-        f"{run_export}/opt/qwop-telemetry.sh --role agent {run_arg}"
+        "if [ -x /opt/sprint-telemetry.sh ]; then "
+        f"{run_export}/opt/sprint-telemetry.sh --role cpu-agent {run_arg}"
         f"--out-dir /logs/artifacts/telemetry "
         f"--interval-seconds {int(interval_seconds)} "
-        "--pidfile /run/qwop-telemetry.pid || true; "
+        "--pidfile /run/sprint-telemetry.pid || true; "
         "fi; "
     )
     if then:

@@ -2,4 +2,5 @@
 # Compatibility entrypoint. The durable launcher owns run identity, snapshots,
 # safe stop, and monitoring.
 set -euo pipefail
-exec /data/qwop-bench/runs/run-lane-durable.sh "$@"
+ROOT="${SPRINT_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"
+exec "$ROOT/runs/run-lane-durable.sh" "$@"

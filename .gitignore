@@ -24,9 +24,22 @@ runs/lane_capture_*.json
 runs/regrade/
 runs/ops/lane-*/
 runs/ops/smoke-*/
+runs/ops/blind-verifier/
+runs/ops/modal-image-warmup.json
+runs/ops/*.lock
+runs/ops/*.pid
+runs/ops/*.log
+runs/monitor-*-telemetry.csv
+runs/.modal-*
+runs/.hub_track_state.json
+runs/_lane_chrome/
+runs/captures/
+runs/compare/
+runs/dynamics_analysis/
 dist/
 node_modules/
 .modal/
+.agents/
 
 # Sprint-web heavy capture/replay blobs (site HTML kept)
 sprint-web/captures/*.json

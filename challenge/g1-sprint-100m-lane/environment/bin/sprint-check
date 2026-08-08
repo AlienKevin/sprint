@@ -50,12 +50,11 @@ Measured and reported, but not disqualifying:
   feet_leave_ground, foot_clearance, steady_progress, energy_accounted,
   returned_to_standing; plus a held-out robustness sweep.
 
-How failure reasons reach you:
-  sprint-submit queues a score; sprint-board shows DQs with the failed gate
-  names (e.g. [self_collision (2.30 cm overlap)]). reward.json also carries
-  numeric gate_* flags (1=pass, 0=fail) and deepest_self_penetration_cm.
-  sprint-check only validates the TorchScript interface on CPU — it does not
-  run the course. Official gate feedback is sprint-submit → sprint-board.
+Blind verification:
+  sprint-submit returns only a durable local receipt. Official scores, DQ
+  reasons, queue state, and completion timing stay sealed until the agent run
+  ends. sprint-check only validates the TorchScript interface on CPU — it does
+  not run the course. The host grades /app/submission/policy.pt after exit.
 
 Training tip: /app/train has a G1 PhysX spawn helper matching the verifier
   (full G1_CFG, self-collisions on); stock Isaac Lab G1 leaves them off.

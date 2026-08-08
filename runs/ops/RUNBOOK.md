@@ -4,7 +4,7 @@ This runbook supports `claude-code` and `codex`. It stops the chosen agent
 without stopping Harbor. Harbor stays alive while continuous graders drain,
 artifacts copy back, and the final verifier runs.
 
-Runs have no agent time cap. The supported stop path is the manual `qwopctl
+Runs have no agent time cap. The supported stop path is the manual `sprintctl
 stop` command below. The Modal sandbox timeout is 86,400 seconds and serves
 only as an infrastructure or orphan backstop. If that backstop fires, do not
 expect a normal `STOP_ACK`.
@@ -14,8 +14,8 @@ stop`.
 
 ## Harbor Codex process and state
 
-At pinned Harbor commit
-`c6d90cb50ff4a19e725e4724e004c21ecbd96f49`, the Codex adapter runs:
+At the Harbor commit recorded in `harbor/.sprint-upstream-commit`, the Codex
+adapter runs:
 
 ```text
 bash -c 'set -o pipefail; ...; codex exec \
@@ -40,7 +40,7 @@ Modal Sandbox.exec bash
 ```
 
 The wrapper records the exact group leader, PGID, and `/proc` start time in
-`/run/qwop-agent/codex-process`. The watcher does not select a process by a
+`/run/sprint-agent/codex-process`. The watcher does not select a process by a
 broad `pgrep`. Harbor and `tee` stay outside the Codex process group.
 
 The adapter sets `CODEX_HOME=/tmp/codex-home`. Live event JSONL files go under
@@ -65,15 +65,32 @@ in `/logs/artifacts/telemetry/` (Hub: `artifacts/logs/artifacts/telemetry/`)
 and host mirrors under `runs/ops/<run_id>/telemetry/` plus
 `runs/monitor-<run_id>-telemetry.csv`. See `runs/TELEMETRY.md`.
 
+New runs also mirror native trace JSONL to immutable durable chunks and build
+the public-safe, single-clock export described in `runs/UNIFIED_TIMELINE.md`.
+Do not restart a paid batch if `unified-timeline.py --require-ready` fails on
+the canary run.
+
+## CPU agent + GPU worker
+
+Lane agent sandboxes use `gpus = 0` so Modal cannot preempt the harness.
+Isaac training is launched with `sprint-gpu-train -- python3 …` onto a
+host-dispatched A10G worker sharing `/durable`. Dispatch claims
+(`status=claiming`) before `Sandbox.create`. A dead `running` worker is fenced
+and retried under the same logical job ID. Architecture:
+`runs/CPU_GPU_SPLIT.md`. Smoke report:
+`runs/SMOKE_GPU_RECOVERY_20260803T032006Z.md`.
+
+Luna and DeepSeek run `supervise_lane.py` by default. CPU relaunches use
+`run-lane-durable.sh --supervised-launch`, a fresh Harbor jobs directory, and
+the same run and Volume. The supervisor honors operator stop, caps restarts,
+and backs off under a host lock. Do not start paid bakeoffs without approval.
+
 ## Before launch
 
 ```bash
-cd /data/qwop-bench
-test "$(git -C /data/harbor-continuous rev-parse HEAD)" = \
-  c6d90cb50ff4a19e725e4724e004c21ecbd96f49
-test "$(git -C /data/harbor-continuous branch --show-current)" = \
-  continuous-verification
-test -z "$(git -C /data/harbor-continuous status --porcelain)"
+cd /path/to/sprint
+test "$(tr -d '[:space:]' < harbor/.sprint-upstream-commit)" = \
+  b69b181bceae132ca0018790dfed3654556a9ec3
 RUN_ID="lane-$(date -u +%Y%m%dT%H%M%SZ)"
 ```
 
@@ -92,7 +109,7 @@ does not set `CLAUDE_FORCE_OAUTH`.
 
 ### Codex dry run and launch
 
-Codex CLI is pinned (default `0.146.0`) via `--codex-version` → Harbor
+Codex CLI is pinned (default `0.147.0`) via `--codex-version` → Harbor
 `--ak version=…`. See `runs/CODEX_PIN.md`. Do not omit the pin for fair
 Luna/DeepSeek comparisons.
 
@@ -103,11 +120,11 @@ CODEX_ENDPOINT='https://api.example.com/v1'
 runs/run-lane-durable.sh --dry-run --run-id "$RUN_ID" \
   --agent-kind codex --model "$CODEX_MODEL" \
   --endpoint "$CODEX_ENDPOINT" --reasoning-effort high \
-  --codex-version 0.146.0
+  --codex-version 0.147.0
 runs/run-lane-durable.sh --run-id "$RUN_ID" \
   --agent-kind codex --model "$CODEX_MODEL" \
   --endpoint "$CODEX_ENDPOINT" --reasoning-effort high \
-  --codex-version 0.146.0
+  --codex-version 0.147.0
 ```
 
 Omit `--endpoint` for the default OpenAI endpoint. The launcher accepts only a
@@ -118,35 +135,38 @@ replace common short text.
 
 Dry runs print no credential and create no app, Volume, state directory, or
 job. Real launches write the selected credential and restic password under
-`/data/qwop-run-secrets/$RUN_ID/` with mode `0600`.
+`/data/sprint-run-secrets/$RUN_ID/` with mode `0600`.
 
-To detach either launch, use the same arguments with `nohup`:
+Use the model launchers to start the systemd-backed supervisor:
 
 ```bash
-nohup runs/run-lane-durable.sh --run-id "$RUN_ID" \
-  --agent-kind codex --model "$CODEX_MODEL" \
-  --endpoint "$CODEX_ENDPOINT" --reasoning-effort high \
-  --codex-version 0.146.0 \
-  >"/data/qwop-launch-$RUN_ID.log" 2>&1 </dev/null &
+CONFIRM_LAUNCH=1 RUN_ID="$RUN_ID" runs/run-deepseek.sh
+systemctl --user status "sprint-lane-$RUN_ID.service"
 ```
+
+The Modal CPU Sandbox receives the platform maximum 86,400-second lifetime.
+The systemd service restarts the host supervisor if it crashes; the supervisor
+then recreates Harbor's CPU Sandbox against the same durable Sprint Volume.
 
 ## Status and manual safe stop
 
 ```bash
-python3 runs/ops/qwopctl.py status --run-id "$RUN_ID"
-python3 runs/ops/qwopctl.py stop --run-id "$RUN_ID"
+python3 runs/ops/sprintctl.py status --run-id "$RUN_ID"
+python3 runs/ops/sprintctl.py stop --run-id "$RUN_ID"
 ```
 
 Both outputs report `agent_kind`. The controller selects the app recorded for
-this run, then creates `/run/qwop-stop` in its exact agent container. It does
-not select the newest job or container.
+this run, then creates `/run/sprint-stop` in its exact agent container. It does
+not select the newest job or container. It writes `STOP_REQUESTED.json` first,
+fences active GPU leases, and stops owned GPU sandboxes before signalling the
+CPU agent. The monitor cannot redispatch after that marker exists.
 
 For Claude Code, the watcher sends `SIGINT` to the exact Claude PID, waits up to
 90 seconds, then sends `SIGTERM` to that PID if needed. For Codex, it sends
 `SIGINT` to the recorded native group leader, which is the same signal the npm
 launcher documents and forwards. After 90 seconds it sends `SIGTERM` only to
 the isolated Codex process group. The wrapper treats exit 130 or 143 as clean
-only when the watcher first wrote `/run/qwop-agent/expected-interrupt`.
+only when the watcher first wrote `/run/sprint-agent/expected-interrupt`.
 
 The watcher takes a final snapshot and writes `STOP_ACK` only after that
 snapshot succeeds. Repeating `stop` is safe. Harbor, the container keepalive,
@@ -155,24 +175,27 @@ and grader containers receive no signal.
 ## Wait and finalize
 
 ```bash
-python3 runs/ops/qwopctl.py wait --run-id "$RUN_ID" \
+python3 runs/ops/sprintctl.py wait --run-id "$RUN_ID" \
   --timeout-seconds 10800
-python3 runs/ops/qwopctl.py finalize --run-id "$RUN_ID"
+python3 runs/ops/sprintctl.py finalize --run-id "$RUN_ID"
 ```
 
 Success requires `STOP_ACK`, a clean terminal ledger, checksummed archives for
 all attempt directories, the final artifact manifest and verifier result,
-`finished_at` in trial and job results, Harbor exit, and a current site state.
-`finalize` is safe to repeat.
+`finished_at` in trial and job results, Harbor exit, a current site state, and
+a complete Modal pre-credit billing reconciliation. The latter waits until the
+ending UTC hour is closed plus a five-minute provider collection buffer; use
+`sprintctl modal-cost --run-id "$RUN_ID"` to inspect it. `finalize` is safe to
+repeat.
 
 ## Recovery
 
 Recovery reads the named Volume and does not need a live Harbor app:
 
 ```bash
-python3 runs/ops/qwopctl.py check --run-id "$RUN_ID"
-python3 runs/ops/qwopctl.py recover --run-id "$RUN_ID" \
-  --destination "/data/qwop-recovered/$RUN_ID"
+python3 runs/ops/sprintctl.py check --run-id "$RUN_ID"
+python3 runs/ops/sprintctl.py recover --run-id "$RUN_ID" \
+  --destination "/data/sprint-recovered/$RUN_ID"
 ```
 
 Both outputs report `agent_kind`. `check` runs `restic check` and verifies
@@ -194,7 +217,7 @@ For a read-only frontier status with explicit paths:
 ```bash
 python3 runs/ops/frontier_update.py status \
   --job "$JOB" --trial "$TRIAL" \
-  --state "/data/qwop-bench/runs/ops/$RUN_ID/frontier-state.json"
+  --state "runs/ops/$RUN_ID/frontier-state.json"
 ```
 
 The updater checks `.vercel/project.json` before any production deployment. It
