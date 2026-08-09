@@ -46,6 +46,8 @@ SHARED_VERIFIER_EVENTS = SCRIPT_DIR / "blind-verifier" / "scheduler-events.jsonl
 # below the 100/day Hobby allowance for warmups/manual releases. The final
 # completed site still bypasses this delay below.
 LIVE_SITE_DEPLOY_SECONDS = 20 * 60
+PROVIDER_DISCOVERY_ATTEMPTS = 3
+PROVIDER_DISCOVERY_RETRY_SECONDS = 1.0
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,48}$")
 ALERT_PATTERNS = {
     "provider_rate_limit": re.compile(
@@ -174,13 +176,29 @@ def provider_models(url: str, key: str) -> set[str]:
         url,
         headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
     )
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            payload = json.load(response)
-    except urllib.error.HTTPError as exc:
-        raise RuntimeError(
-            f"provider model-list request failed: HTTP {exc.code}"
-        ) from exc
+    payload: dict[str, Any] | None = None
+    for attempt in range(PROVIDER_DISCOVERY_ATTEMPTS):
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                payload = json.load(response)
+            break
+        except urllib.error.HTTPError as exc:
+            if 500 <= exc.code < 600 and attempt + 1 < PROVIDER_DISCOVERY_ATTEMPTS:
+                time.sleep(PROVIDER_DISCOVERY_RETRY_SECONDS * (2**attempt))
+                continue
+            raise RuntimeError(
+                f"provider model-list request failed: HTTP {exc.code}"
+            ) from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            if attempt + 1 < PROVIDER_DISCOVERY_ATTEMPTS:
+                time.sleep(PROVIDER_DISCOVERY_RETRY_SECONDS * (2**attempt))
+                continue
+            reason = getattr(exc, "reason", str(exc))
+            raise RuntimeError(
+                f"provider model-list request failed: {reason}"
+            ) from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("provider model-list response was not an object")
     return {
         str(row.get("id"))
         for row in payload.get("data", [])

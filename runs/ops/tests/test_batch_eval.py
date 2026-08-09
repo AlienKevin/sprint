@@ -184,6 +184,50 @@ def test_provider_inference_probe_records_usage_without_secret(
     assert "top-secret-key" not in json.dumps(result)
 
 
+def test_provider_model_discovery_retries_transport_timeouts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+    delays: list[float] = []
+
+    def flaky_urlopen(request, timeout):
+        nonlocal calls
+        calls += 1
+        assert timeout == 30
+        assert request.get_header("Authorization") == "Bearer top-secret-key"
+        if calls < 3:
+            raise TimeoutError("timed out")
+        return io.BytesIO(json.dumps({"data": [{"id": "gpt-test"}]}).encode())
+
+    monkeypatch.setattr(batch_eval.urllib.request, "urlopen", flaky_urlopen)
+    monkeypatch.setattr(batch_eval.time, "sleep", delays.append)
+
+    assert batch_eval.provider_models("https://api.example/models", "top-secret-key") == {
+        "gpt-test"
+    }
+    assert calls == 3
+    assert delays == [1.0, 2.0]
+
+
+def test_provider_model_discovery_does_not_retry_auth_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def fail_urlopen(_request, timeout):
+        nonlocal calls
+        calls += 1
+        assert timeout == 30
+        raise urllib.error.HTTPError(
+            "https://api.example/models", 401, "Unauthorized", {}, io.BytesIO()
+        )
+
+    monkeypatch.setattr(batch_eval.urllib.request, "urlopen", fail_urlopen)
+    with pytest.raises(RuntimeError, match="HTTP 401"):
+        batch_eval.provider_models("https://api.example/models", "top-secret-key")
+    assert calls == 1
+
+
 def test_provider_inference_probe_preserves_sanitized_spend_limit_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
