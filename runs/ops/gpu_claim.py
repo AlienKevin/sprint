@@ -19,9 +19,60 @@ DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_RETRY_BACKOFF_SEC = 10
 DEFAULT_RETRY_BACKOFF_MAX_SEC = 120
 
+CLAIM_RESTORE_KEYS = (
+    "status",
+    "attempt",
+    "next_attempt",
+    "retry_not_before",
+    "retry_not_before_epoch_s",
+    "retry_reason",
+)
+
 
 def utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def process_identity(pid: int | None = None) -> dict[str, Any] | None:
+    """Return a PID identity that is safe against PID reuse and host reboot."""
+    process_id = os.getpid() if pid is None else int(pid)
+    try:
+        stat = Path(f"/proc/{process_id}/stat").read_text()
+        # Everything after the final ``)`` starts at proc stat field 3.  The
+        # process start time is field 22, hence index 19 in this tail.
+        start_ticks = int(stat.rsplit(") ", 1)[1].split()[19])
+        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    except (IndexError, OSError, ValueError):
+        return None
+    return {
+        "pid": process_id,
+        "start_ticks": start_ticks,
+        "boot_id": boot_id,
+    }
+
+
+def process_identity_state(identity: Any) -> str:
+    """Return ``alive``, ``dead``, or ``unknown`` for a recorded process."""
+    if not isinstance(identity, dict):
+        return "unknown"
+    try:
+        pid = int(identity["pid"])
+        expected_ticks = int(identity["start_ticks"])
+        expected_boot = str(identity["boot_id"])
+    except (KeyError, TypeError, ValueError):
+        return "unknown"
+    if pid <= 0 or not expected_boot:
+        return "unknown"
+    proc_path = Path(f"/proc/{pid}/stat")
+    if not proc_path.exists():
+        return "dead"
+    current = process_identity(pid)
+    if current is None:
+        # A transient or permission error is not proof that the owner died.
+        return "unknown"
+    if current["start_ticks"] != expected_ticks or current["boot_id"] != expected_boot:
+        return "dead"
+    return "alive"
 
 
 def parse_ts(value: str | None) -> float | None:
@@ -163,8 +214,10 @@ def build_claim_payload(
     *,
     claim_id: str,
     owner: str = "host",
+    owner_process: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload = dict(job)
+    restore = {key: job[key] for key in CLAIM_RESTORE_KEYS if key in job}
     current_attempt = int(payload.get("attempt") or 0)
     if str(payload.get("status") or "") == "retry_wait":
         attempt = int(payload.get("next_attempt") or current_attempt + 1)
@@ -183,6 +236,8 @@ def build_claim_payload(
             "claimed_at": utc_now(),
             "claimed_at_epoch_s": now_epoch,
             "claim_owner": owner,
+            "claim_owner_process": owner_process or process_identity(),
+            "claim_restore": restore,
             "gpu_type": payload.get("gpu_type") or "A10G",
         }
     )

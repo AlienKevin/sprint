@@ -1051,6 +1051,11 @@ class TryClaimPersistenceTests(unittest.TestCase):
         self.assertIsNone(out)
         self.assertEqual(written[0]["status"], "claiming")
         self.assertEqual(written[0]["claim_id"], "mine")
+        self.assertEqual(written[0]["claim_restore"], {"status": "pending"})
+        self.assertEqual(
+            gpu_claim.process_identity_state(written[0]["claim_owner_process"]),
+            "alive",
+        )
 
 
 class GpuConcurrencyLimitTests(unittest.TestCase):
@@ -1333,6 +1338,93 @@ class NetworkIsolationTests(unittest.TestCase):
 
 
 class RetryAndFencingTests(unittest.TestCase):
+    def test_live_claim_owner_keeps_startup_grace(self) -> None:
+        identity = gpu_claim.process_identity()
+        self.assertIsNotNone(identity)
+        job = gpu_claim.build_claim_payload(
+            {"job_id": "logical", "status": "pending"},
+            claim_id="lease",
+            owner_process=identity,
+        )
+        with (
+            mock.patch.object(gpu_worker, "load_attempt_record", return_value=None),
+            mock.patch.object(gpu_worker, "load_heartbeat", return_value=None),
+        ):
+            out, detail = gpu_worker.reconcile_job(
+                {"run_id": "unit"},
+                job,
+                now=float(job["claimed_at_epoch_s"]) + 1,
+                probe_fn=lambda _job: ("unknown", None, None),
+            )
+        self.assertIs(out, job)
+        self.assertEqual(detail["decision"], "grace")
+
+    def test_dead_claim_owner_restores_pending_without_consuming_attempt(self) -> None:
+        original = {"job_id": "logical", "status": "pending", "retry_count": 2}
+        job = gpu_claim.build_claim_payload(
+            original,
+            claim_id="abandoned",
+            owner_process={"pid": 999_999_999, "start_ticks": 1, "boot_id": "old"},
+        )
+        with (
+            mock.patch.object(
+                gpu_worker, "persist_job", side_effect=lambda _run, payload: payload
+            ),
+            mock.patch.object(gpu_worker, "_timeline_event") as timeline_event,
+        ):
+            out, detail = gpu_worker.reconcile_job(
+                {"run_id": "unit"},
+                job,
+                now=200,
+                probe_fn=mock.Mock(side_effect=AssertionError("must not probe")),
+            )
+        self.assertEqual(detail["decision"], "abandoned_claim_released")
+        self.assertEqual(out["status"], "pending")
+        self.assertEqual(out["retry_count"], 2)
+        self.assertNotIn("attempt", out)
+        self.assertNotIn("lease_id", out)
+        self.assertEqual(out["fenced_lease_id"], "abandoned")
+        self.assertEqual(len(out["abandoned_claim_history"]), 1)
+        self.assertEqual(timeline_event.call_count, 2)
+
+    def test_dead_retry_claim_restores_same_retry_attempt_and_due_time(self) -> None:
+        original = {
+            "job_id": "logical",
+            "status": "retry_wait",
+            "attempt": 1,
+            "next_attempt": 2,
+            "retry_count": 1,
+            "retry_not_before": "1970-01-01T00:01:40Z",
+            "retry_not_before_epoch_s": 100,
+            "retry_reason": "worker_lost",
+        }
+        job = gpu_claim.build_claim_payload(
+            original,
+            claim_id="retry-claim",
+            owner_process={"pid": 999_999_999, "start_ticks": 1, "boot_id": "old"},
+        )
+        self.assertEqual(job["attempt"], 2)
+        with (
+            mock.patch.object(
+                gpu_worker, "persist_job", side_effect=lambda _run, payload: payload
+            ),
+            mock.patch.object(gpu_worker, "_timeline_event"),
+        ):
+            out, detail = gpu_worker.reconcile_job({"run_id": "unit"}, job, now=200)
+        self.assertEqual(detail["decision"], "abandoned_claim_released")
+        self.assertEqual(out["status"], "retry_wait")
+        self.assertEqual(out["attempt"], 1)
+        self.assertEqual(out["next_attempt"], 2)
+        self.assertEqual(out["retry_count"], 1)
+        self.assertEqual(out["retry_not_before_epoch_s"], 100)
+
+    def test_mismatched_reused_pid_is_dead(self) -> None:
+        identity = gpu_claim.process_identity()
+        self.assertIsNotNone(identity)
+        mismatched = dict(identity or {})
+        mismatched["start_ticks"] = int(mismatched["start_ticks"]) + 1
+        self.assertEqual(gpu_claim.process_identity_state(mismatched), "dead")
+
     def test_operator_stop_waits_for_inflight_dispatch_lock(self) -> None:
         run = {"run_id": "unit", "state_dir": "/tmp/unit-stop-lock"}
         lock = mock.MagicMock()

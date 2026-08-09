@@ -944,6 +944,60 @@ def try_claim_job(
     return refreshed or payload
 
 
+def release_abandoned_claim(
+    run: dict[str, Any], job: dict[str, Any], *, now: float | None = None
+) -> dict[str, Any]:
+    """Fence a pre-spawn claim whose owning controller process has died.
+
+    The orphan-sandbox audit runs before reconciliation while holding the same
+    dispatch lock.  Therefore, by the time this is called, a Sandbox created in
+    the narrow crash window but not durably published has already been stopped.
+    Restoring the exact pre-claim state does not consume a worker attempt.
+    """
+    if str(job.get("status") or "") != "claiming" or job.get("sandbox_id"):
+        return job
+    payload = dict(job)
+    restore = payload.get("claim_restore")
+    if not isinstance(restore, dict) or str(restore.get("status") or "") not in {
+        "pending",
+        "retry_wait",
+    }:
+        return job
+    lease_id = str(payload.get("lease_id") or "")
+    recorded_at = time.time() if now is None else float(now)
+    history = list(payload.get("abandoned_claim_history") or [])
+    history.append(
+        {
+            "claim_id": payload.get("claim_id"),
+            "lease_id": lease_id or None,
+            "attempt": payload.get("attempt"),
+            "owner_process": payload.get("claim_owner_process"),
+            "abandoned_at": utc_now(),
+            "abandoned_at_epoch_s": recorded_at,
+        }
+    )
+    payload["abandoned_claim_history"] = history
+    payload["fence_epoch"] = int(payload.get("fence_epoch") or 0) + 1
+    payload["fenced_lease_id"] = lease_id or None
+    for key in (
+        "claim_id",
+        "lease_id",
+        "claim_owner",
+        "claim_owner_process",
+        "claim_restore",
+        "claimed_at",
+        "claimed_at_epoch_s",
+        "attempt",
+        "next_attempt",
+        "retry_not_before",
+        "retry_not_before_epoch_s",
+        "retry_reason",
+    ):
+        payload.pop(key, None)
+    payload.update(restore)
+    return persist_job(run, payload)
+
+
 def _timeline_event(
     run: dict[str, Any],
     job: dict[str, Any],
@@ -1121,6 +1175,35 @@ def reconcile_job(
     status = str(job.get("status") or "")
     if status not in gpu_claim.OWNED:
         return job, {"decision": "ignore"}
+
+    if status == "claiming" and not job.get("sandbox_id"):
+        owner_state = gpu_claim.process_identity_state(job.get("claim_owner_process"))
+        if owner_state == "dead":
+            released = release_abandoned_claim(run, job, now=ref)
+            if released is not job:
+                _timeline_event(
+                    run,
+                    job,
+                    phase="gpu_worker_starting",
+                    action="exit",
+                    epoch_s=int(ref),
+                    reason="claim_owner_died_before_spawn",
+                    synthetic=True,
+                )
+                _timeline_event(
+                    run,
+                    job,
+                    phase="gpu_lifecycle",
+                    action="instant",
+                    epoch_s=int(ref),
+                    event="gpu_claim_abandoned",
+                    reason="claim_owner_died_before_spawn",
+                )
+                return released, {
+                    "decision": "abandoned_claim_released",
+                    "status": released.get("status"),
+                    "fenced_lease_id": released.get("fenced_lease_id"),
+                }
 
     attempt_record = load_attempt_record(run, job)
     heartbeat = load_heartbeat(run, job)
