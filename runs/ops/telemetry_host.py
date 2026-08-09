@@ -609,6 +609,28 @@ def _container_role_probe(run: dict[str, Any], container_id: str) -> str:
     return "unknown"
 
 
+def active_training_container_ids(run: dict[str, Any]) -> set[str]:
+    """Return only currently owned training sandboxes from durable job state.
+
+    Historical job records deliberately retain their Sandbox IDs for
+    provenance.  They are not telemetry targets after the job is terminal;
+    repeatedly exec'ing every dead Sandbox makes monitor cycles grow with the
+    number of jobs and delays terminal-policy reconciliation.
+    """
+    import gpu_claim
+    import gpu_worker
+
+    active: set[str] = set()
+    for job_id in gpu_worker.list_job_ids(run):
+        job = gpu_worker.load_job(run, job_id) or {}
+        if str(job.get("status") or "") not in gpu_claim.OWNED:
+            continue
+        sandbox_id = job.get("sandbox_id")
+        if isinstance(sandbox_id, str) and sandbox_id.startswith(("sb-", "ta-")):
+            active.add(sandbox_id)
+    return active
+
+
 def discover_sidecar_containers(
     state_dir: pathlib.Path, run: dict[str, Any]
 ) -> list[tuple[str, str]]:
@@ -621,13 +643,7 @@ def discover_sidecar_containers(
     # Also include sandboxes recorded on dispatched GPU jobs.
     known_gpu: set[str] = set()
     try:
-        import gpu_worker
-
-        for job_id in gpu_worker.list_job_ids(run):
-            job = gpu_worker.load_job(run, job_id) or {}
-            sid = job.get("sandbox_id")
-            if isinstance(sid, str) and sid.startswith(("sb-", "ta-")):
-                known_gpu.add(sid)
+        known_gpu = active_training_container_ids(run)
     except Exception:  # noqa: BLE001
         pass
 

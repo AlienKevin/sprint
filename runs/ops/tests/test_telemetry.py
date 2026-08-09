@@ -25,6 +25,7 @@ sys.path.insert(0, str(OPS))
 
 import telemetry_keepalive  # noqa: E402
 import telemetry_host  # noqa: E402
+import gpu_worker  # noqa: E402
 
 
 def load_module(name: str, path: Path):
@@ -431,6 +432,28 @@ class TelemetrySamplerTests(unittest.TestCase):
         self.assertEqual(sample["mem_total_kib"], 32768 * 1024)
         self.assertEqual(sample["mem_available_kib"], 32768 * 1024 - 9_000_000)
         self.assertEqual(sample["mem_limit_kib"], 1_055_904_376)
+
+    def test_host_poll_skips_historical_training_sandboxes(self) -> None:
+        jobs = {
+            "claiming": {"status": "claiming", "sandbox_id": "sb-claiming"},
+            "running": {"status": "running", "sandbox_id": "sb-running"},
+            "observed": {
+                "status": "death_observed",
+                "sandbox_id": "sb-observed",
+            },
+            "retry": {"status": "retry_wait", "sandbox_id": "sb-retry"},
+            "succeeded": {"status": "succeeded", "sandbox_id": "sb-old-ok"},
+            "failed": {"status": "failed", "sandbox_id": "sb-old-failed"},
+        }
+        with (
+            mock.patch.object(gpu_worker, "list_job_ids", return_value=list(jobs)),
+            mock.patch.object(
+                gpu_worker, "load_job", side_effect=lambda _run, job_id: jobs[job_id]
+            ),
+        ):
+            active = telemetry_host.active_training_container_ids({})
+
+        self.assertEqual(active, {"sb-claiming", "sb-running", "sb-observed"})
 
     def test_sealed_verifier_sampler_stops_with_complete_lifecycle(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
