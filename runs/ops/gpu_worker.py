@@ -114,11 +114,27 @@ def put_json(run: dict[str, Any], remote_path: str, payload: dict[str, Any]) -> 
 
 
 def normalize_job_command(job: dict[str, Any]) -> dict[str, Any]:
-    """Prefer python3 when the image has no bare ``python`` binary."""
+    """Normalize Python launchers to the interpreter present in the image.
+
+    The pip-installed Isaac Lab tree ships ``isaaclab.sh``, but its ``-p``
+    branch shells out to a bare ``python`` executable.  The sealed training
+    image intentionally exposes only ``python3``.  Treat that standard Isaac
+    Lab spelling as an interpreter alias too so an otherwise valid agent job
+    cannot burn an A10 allocation before Python starts.
+    """
     command = list(job.get("command") or [])
+    normalized: list[str] | None = None
     if command and command[0] == "python":
+        normalized = ["python3", *command[1:]]
+    elif (
+        len(command) >= 3
+        and Path(command[0]).name == "isaaclab.sh"
+        and command[1] == "-p"
+    ):
+        normalized = ["python3", *command[2:]]
+    if normalized is not None:
         job = dict(job)
-        job["command"] = ["python3", *command[1:]]
+        job["command"] = normalized
     return job
 
 

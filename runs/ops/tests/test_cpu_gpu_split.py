@@ -83,6 +83,25 @@ class ClaimSelectionTests(unittest.TestCase):
         out = gpu_worker.normalize_job_command(job)
         self.assertEqual(out["command"][0], "python3")
 
+    def test_normalize_isaaclab_python_launcher_to_python3(self) -> None:
+        job = {
+            "command": [
+                "/opt/IsaacLab/isaaclab.sh",
+                "-p",
+                "/app/train.py",
+                "--headless",
+            ]
+        }
+        out = gpu_worker.normalize_job_command(job)
+        self.assertEqual(
+            out["command"],
+            ["python3", "/app/train.py", "--headless"],
+        )
+
+    def test_does_not_rewrite_other_isaaclab_actions(self) -> None:
+        job = {"command": ["/opt/IsaacLab/isaaclab.sh", "-s"]}
+        self.assertIs(gpu_worker.normalize_job_command(job), job)
+
 
 class LeaseLivenessTests(unittest.TestCase):
     def setUp(self) -> None:
