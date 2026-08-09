@@ -1433,6 +1433,64 @@ def list_pending_job_ids(run: dict[str, Any]) -> list[str]:
     ]
 
 
+def list_agent_cancelled_job_ids(run: dict[str, Any]) -> list[str]:
+    """Return jobs explicitly hidden by an agent before host dispatch.
+
+    The agent-facing queue is intentionally writable.  Some agents cancel a
+    queued job by atomically renaming both delivery records to
+    ``.cancelled-<job>.json``.  The append-only host registry must retain the
+    audit record, but must not revive that job merely because its old local
+    status was pending or retryable.
+    """
+    if not str(run.get("volume_name") or "").strip():
+        return []
+    prefix = jobs_prefix(str(run["run_id"]))
+    cancelled: set[str] = set()
+    pattern = re.compile(r"^\.cancelled-([A-Za-z0-9_-]+)\.json$")
+    for remote_dir in (f"{prefix}/queue", f"{prefix}/status"):
+        for name in volume_ls_json_names(run, remote_dir):
+            match = pattern.fullmatch(Path(name).name)
+            if match:
+                cancelled.add(match.group(1))
+    return sorted(cancelled)
+
+
+def reconcile_agent_cancelled_jobs(run: dict[str, Any]) -> list[dict[str, Any]]:
+    """Fence undispatched host records whose agent delivery was cancelled."""
+    reconciled: list[dict[str, Any]] = []
+    for job_id in list_agent_cancelled_job_ids(run):
+        job = load_host_job(run, job_id)
+        if not job:
+            continue
+        status = str(job.get("status") or "")
+        # Never infer cancellation for an allocated worker.  A running worker
+        # requires the explicit terminate path so its lease and sandbox are
+        # fenced together.
+        if status not in {"pending", "retry_wait", "claiming"} or job.get("sandbox_id"):
+            continue
+        payload = dict(job)
+        payload.update(
+            {
+                "status": "terminated",
+                "termination_reason": "agent_cancelled_before_dispatch",
+                "terminated_at": utc_now(),
+                "terminated_at_epoch_s": time.time(),
+                "fence_epoch": int(payload.get("fence_epoch") or 0) + 1,
+                "fenced_lease_id": payload.get("lease_id"),
+            }
+        )
+        persist_job(run, payload)
+        reconciled.append(
+            {
+                "job_id": job_id,
+                "attempt": payload.get("attempt"),
+                "status": "terminated",
+                "decision": "agent_cancelled_before_dispatch",
+            }
+        )
+    return reconciled
+
+
 def list_job_ids(run: dict[str, Any]) -> list[str]:
     prefix = jobs_prefix(str(run["run_id"]))
     names = {f"{job_id}.json" for job_id in list_host_job_ids(run)}
@@ -1685,6 +1743,7 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
             return result
 
         actions.extend(cleanup_orphaned_training_sandboxes(run))
+        reconciled.extend(reconcile_agent_cancelled_jobs(run))
         now = time.time()
         for job_id in list_job_ids(run):
             job = load_job(run, job_id)

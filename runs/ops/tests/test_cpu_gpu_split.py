@@ -1307,6 +1307,73 @@ class GpuConcurrencyLimitTests(unittest.TestCase):
         ):
             self.assertEqual(gpu_worker.active_training_job_ids(run), [])
 
+    def test_agent_cancelled_host_job_is_fenced_before_dispatch(self) -> None:
+        job = {
+            "job_id": "cancelled",
+            "run_id": "unit",
+            "status": "claiming",
+            "attempt": 2,
+            "lease_id": "old-lease",
+        }
+        persisted: list[dict] = []
+        with (
+            mock.patch.object(
+                gpu_worker, "list_agent_cancelled_job_ids", return_value=["cancelled"]
+            ),
+            mock.patch.object(gpu_worker, "load_host_job", return_value=job),
+            mock.patch.object(
+                gpu_worker,
+                "persist_job",
+                side_effect=lambda _run, payload: (
+                    persisted.append(dict(payload)) or payload
+                ),
+            ),
+        ):
+            result = gpu_worker.reconcile_agent_cancelled_jobs({"run_id": "unit"})
+
+        self.assertEqual(result[0]["decision"], "agent_cancelled_before_dispatch")
+        self.assertEqual(persisted[0]["status"], "terminated")
+        self.assertEqual(
+            persisted[0]["termination_reason"], "agent_cancelled_before_dispatch"
+        )
+        self.assertEqual(persisted[0]["fenced_lease_id"], "old-lease")
+        self.assertEqual(persisted[0]["fence_epoch"], 1)
+
+    def test_agent_cancel_markers_are_discovered_from_delivery_directories(self) -> None:
+        with mock.patch.object(
+            gpu_worker,
+            "volume_ls_json_names",
+            side_effect=[
+                [".cancelled-job-a.json", "live.json"],
+                [".cancelled-job-a.json", ".cancelled-job-b.json"],
+            ],
+        ):
+            self.assertEqual(
+                gpu_worker.list_agent_cancelled_job_ids(
+                    {"run_id": "unit", "volume_name": "unit-volume"}
+                ),
+                ["job-a", "job-b"],
+            )
+
+    def test_agent_cancel_marker_does_not_terminate_allocated_worker(self) -> None:
+        job = {
+            "job_id": "running",
+            "run_id": "unit",
+            "status": "running",
+            "sandbox_id": "sb-live",
+        }
+        with (
+            mock.patch.object(
+                gpu_worker, "list_agent_cancelled_job_ids", return_value=["running"]
+            ),
+            mock.patch.object(gpu_worker, "load_host_job", return_value=job),
+            mock.patch.object(gpu_worker, "persist_job") as persist,
+        ):
+            self.assertEqual(
+                gpu_worker.reconcile_agent_cancelled_jobs({"run_id": "unit"}), []
+            )
+        persist.assert_not_called()
+
     def test_retry_backoff_reserves_slot_ahead_of_new_job(self) -> None:
         jobs = {
             "recovering": {
