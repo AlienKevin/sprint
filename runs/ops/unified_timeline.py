@@ -2213,6 +2213,21 @@ def build_timeline(
             "event_count": len(payload["events"]),
             "comparison_summary": payload["comparison_summary"],
             "resource_usage_summary": payload["resource_usage_summary"],
+            "dashboard_artifacts": [
+                {
+                    "finished_epoch_ms": artifact.get("finished_epoch_ms"),
+                    "rewards": {
+                        "valid_run": (artifact.get("rewards") or {}).get(
+                            "valid_run"
+                        ),
+                        "best_100m_s": (artifact.get("rewards") or {}).get(
+                            "best_100m_s"
+                        ),
+                    },
+                    "cost_at_result": artifact.get("cost_at_result"),
+                }
+                for artifact in payload["artifacts"]
+            ],
         }
         index = {
             "schema_version": SCHEMA_VERSION,

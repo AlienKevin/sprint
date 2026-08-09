@@ -625,6 +625,12 @@ def test_public_policy_index_keeps_only_six_newest_runs(tmp_path: Path) -> None:
     ]
 
 
+def test_homepage_uses_compact_timeline_index_summaries() -> None:
+    source = (ROOT / "sprint-web" / "app.js").read_text()
+    assert "dashboard_artifacts" in source
+    assert "await json(tMeta.path)" not in source
+
+
 def test_replay_renderer_exposes_complete_cli() -> None:
     completed = subprocess.run(
         [sys.executable, str(ROOT / "runs/build_lane_3d.py"), "--help"],

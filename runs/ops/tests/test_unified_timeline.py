@@ -522,6 +522,19 @@ def test_unified_timeline_is_joined_deduplicated_and_public_safe(
     index = json.loads((web / "data" / "timelines" / "index.json").read_text())
     assert index["runs"][0]["path"] == "/data/timelines/timeline-fixture.json"
     assert index["runs"][0]["comparison_summary"]["best_100m_s"] == 48.0
+    assert index["runs"][0]["dashboard_artifacts"] == [
+        {
+            "finished_epoch_ms": artifact.get("finished_epoch_ms"),
+            "rewards": {
+                "valid_run": (artifact.get("rewards") or {}).get("valid_run"),
+                "best_100m_s": (artifact.get("rewards") or {}).get(
+                    "best_100m_s"
+                ),
+            },
+            "cost_at_result": artifact.get("cost_at_result"),
+        }
+        for artifact in payload["artifacts"]
+    ]
 
 
 def test_public_timeline_index_keeps_only_six_newest_runs(tmp_path: Path) -> None:
