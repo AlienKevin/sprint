@@ -356,6 +356,73 @@ class ClaimSelectionTests(unittest.TestCase):
                 b"complete child output\n",
             )
 
+    def test_streams_large_agent_mirror_payload_over_sandbox_stdin(self) -> None:
+        captured = bytearray()
+
+        class Writer:
+            def write(self, content: bytes) -> None:
+                captured.extend(content)
+
+            def drain(self) -> None:
+                return None
+
+            def write_eof(self) -> None:
+                return None
+
+        class Reader:
+            def read(self) -> bytes:
+                return b""
+
+        class Process:
+            stdin = Writer()
+            stdout = Reader()
+            stderr = Reader()
+
+            def wait(self) -> int:
+                return 0
+
+        class Sandbox:
+            def exec(self, *args: str, **kwargs: object) -> Process:
+                self_args = args
+                self_kwargs = kwargs
+                self.assertEqual(self_args[0:2], ("python3", "-c"))
+                self.assertEqual(self_args[-3], "-")
+                self.assertFalse(self_kwargs["text"])
+                return Process()
+
+            def assertEqual(self, left: object, right: object) -> None:
+                unittest.TestCase().assertEqual(left, right)
+
+            def assertFalse(self, value: object) -> None:
+                unittest.TestCase().assertFalse(value)
+
+        identity = subprocess.CompletedProcess([], 0, "sb-agent", "")
+        with (
+            mock.patch.object(gpu_worker, "AGENT_GPU_MIRROR_ARG_BYTES", 1),
+            mock.patch.object(
+                gpu_worker.sprintctl, "exec_container", return_value=identity
+            ),
+            mock.patch.object(
+                gpu_worker.modal.Sandbox, "from_id", return_value=Sandbox()
+            ) as from_id,
+        ):
+            detail = gpu_worker.mirror_agent_job(
+                {"agent_container_id": "ta-agent"},
+                {"job_id": "job-1", "attempt": 1, "status": "succeeded"},
+                artifact_name="policy.pt",
+                artifact_content=b"policy bytes",
+            )
+
+        from_id.assert_called_once_with("sb-agent")
+        envelope = json.loads(gpu_worker.gzip.decompress(bytes(captured)))
+        self.assertEqual(
+            gpu_worker.base64.b64decode(
+                envelope["files"]["artifacts/job-1/policy.pt"]
+            ),
+            b"policy bytes",
+        )
+        self.assertEqual(detail["agent_mirror"], "updated")
+
     def test_fetches_only_reported_scoped_policy_for_agent_mirror(self) -> None:
         run = {"run_id": "run-1", "volume_name": "volume-1"}
         job = {
@@ -382,6 +449,57 @@ class ClaimSelectionTests(unittest.TestCase):
             payload["agent_policy_mirror_path"],
             "/run/sprint-gpu-mirror/artifacts/job-1/policy_7.pt",
         )
+
+    def test_fetches_policy_from_its_job_checkpoint_directory(self) -> None:
+        run = {"run_id": "run-1", "volume_name": "volume-1"}
+        job = {
+            "job_id": "job-1",
+            "progress": {
+                "policy_path": (
+                    "/durable/runs/run-1/gpu-jobs/checkpoints/job-1/policy_2.pt"
+                )
+            },
+        }
+
+        def fake_get(command, **_kwargs):
+            self.assertIn(
+                "runs/run-1/gpu-jobs/checkpoints/job-1/policy_2.pt", command
+            )
+            Path(command[-1]).write_bytes(b"trusted checkpoint policy")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with mock.patch.object(
+            gpu_worker.sprintctl, "run_command", side_effect=fake_get
+        ):
+            payload, name, content, detail = gpu_worker.fetch_agent_policy_artifact(
+                run, job
+            )
+
+        self.assertEqual(name, "policy_2.pt")
+        self.assertEqual(content, b"trusted checkpoint policy")
+        self.assertEqual(detail["policy_mirror"], "fetched")
+        self.assertEqual(
+            payload["agent_policy_mirror_path"],
+            "/run/sprint-gpu-mirror/artifacts/job-1/policy_2.pt",
+        )
+
+    def test_rejects_policy_from_another_job_checkpoint_directory(self) -> None:
+        payload, name, content, detail = gpu_worker.fetch_agent_policy_artifact(
+            {"run_id": "run-1", "volume_name": "volume-1"},
+            {
+                "job_id": "job-1",
+                "progress": {
+                    "policy_path": (
+                        "/durable/runs/run-1/gpu-jobs/checkpoints/job-2/policy.pt"
+                    )
+                },
+            },
+        )
+
+        self.assertIsNone(name)
+        self.assertIsNone(content)
+        self.assertEqual(detail["policy_mirror"], "rejected_scope")
+        self.assertNotIn("agent_policy_mirror_path", payload)
 
     def test_rejects_policy_outside_run_policy_directory(self) -> None:
         payload, name, content, detail = gpu_worker.fetch_agent_policy_artifact(

@@ -23,6 +23,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import modal
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT = Path(__file__).resolve().parents[2]
 ENV_DIR = ROOT / "challenge" / "g1-sprint-100m-lane" / "environment"
@@ -61,6 +63,7 @@ DEAD_GRACE_SEC = int(
 AGENT_GPU_MIRROR_ROOT = "/run/sprint-gpu-mirror"
 AGENT_GPU_MIRROR_LOG_BYTES = 768 * 1024
 AGENT_GPU_MIRROR_ARTIFACT_BYTES = 32 * 1024 * 1024
+AGENT_GPU_MIRROR_ARG_BYTES = 64 * 1024
 AGENT_GPU_CLI_PATH = "/usr/local/bin/sprint-gpu-train"
 
 
@@ -122,13 +125,12 @@ def mirror_agent_job(
         "agent_cli": base64.b64encode(cli_content).decode("ascii"),
         "agent_cli_sha256": cli_sha256,
     }
-    encoded = base64.b64encode(
-        gzip.compress(json.dumps(envelope, separators=(",", ":")).encode())
-    ).decode("ascii")
+    compressed = gzip.compress(json.dumps(envelope, separators=(",", ":")).encode())
     install = """
 import base64, gzip, hashlib, json, os, pathlib, sys
 root = pathlib.Path(sys.argv[1]).resolve()
-payload = json.loads(gzip.decompress(base64.b64decode(sys.argv[2])))
+compressed = sys.stdin.buffer.read(int(sys.argv[4])) if sys.argv[2] == "-" else base64.b64decode(sys.argv[2])
+payload = json.loads(gzip.decompress(compressed))
 for relative, content in payload["files"].items():
     target = (root / relative).resolve()
     if root != target and root not in target.parents:
@@ -148,30 +150,73 @@ os.chmod(cli_temporary, 0o755)
 os.replace(cli_temporary, cli_target)
 """.strip()
     try:
-        result = sprintctl.exec_container(
-            run,
-            container_id,
-            " ".join(
-                [
-                    "python3",
-                    "-c",
-                    shlex.quote(install),
-                    shlex.quote(AGENT_GPU_MIRROR_ROOT),
-                    shlex.quote(encoded),
-                    shlex.quote(AGENT_GPU_CLI_PATH),
-                ]
-            ),
-            check=False,
-            timeout=20,
-        )
+        if len(compressed) <= AGENT_GPU_MIRROR_ARG_BYTES:
+            encoded = base64.b64encode(compressed).decode("ascii")
+            result = sprintctl.exec_container(
+                run,
+                container_id,
+                " ".join(
+                    [
+                        "python3",
+                        "-c",
+                        shlex.quote(install),
+                        shlex.quote(AGENT_GPU_MIRROR_ROOT),
+                        shlex.quote(encoded),
+                        shlex.quote(AGENT_GPU_CLI_PATH),
+                        str(len(compressed)),
+                    ]
+                ),
+                check=False,
+                timeout=20,
+            )
+            return_code = result.returncode
+            stdout = result.stdout or ""
+            stderr = result.stderr or ""
+        else:
+            identity = sprintctl.exec_container(
+                run,
+                container_id,
+                'printf "%s" "$MODAL_SANDBOX_ID"',
+                check=False,
+                timeout=20,
+            )
+            sandbox_id = (identity.stdout or "").strip()
+            if identity.returncode != 0 or not sandbox_id.startswith("sb-"):
+                error = (identity.stderr or identity.stdout or "missing sandbox ID").strip()
+                return {
+                    "agent_mirror": "error",
+                    "agent_mirror_error": error[-1000:],
+                }
+            process = modal.Sandbox.from_id(sandbox_id).exec(
+                "python3",
+                "-c",
+                install,
+                AGENT_GPU_MIRROR_ROOT,
+                "-",
+                AGENT_GPU_CLI_PATH,
+                str(len(compressed)),
+                text=False,
+                timeout=30,
+            )
+            process.stdin.write(compressed)
+            process.stdin.drain()
+            return_code = process.wait()
+            stdout_raw = process.stdout.read()
+            stderr_raw = process.stderr.read()
+            stdout = stdout_raw.decode(errors="replace")
+            stderr = stderr_raw.decode(errors="replace")
     except Exception as exc:  # noqa: BLE001
         return {
             "agent_mirror": "error",
             "agent_mirror_error": f"{type(exc).__name__}: {exc}",
         }
-    if result.returncode != 0:
-        error = (result.stderr or result.stdout or "container exec failed").strip()
-        return {"agent_mirror": "error", "agent_mirror_error": error[-1000:]}
+    if return_code != 0:
+        error = (stderr or stdout or "container exec failed").strip()
+        return {
+            "agent_mirror": "error",
+            "agent_mirror_error": error[-1000:],
+            "agent_mirror_return_code": return_code,
+        }
     return {
         "agent_mirror": "updated",
         "agent_mirror_files": len(files),
@@ -198,12 +243,24 @@ def fetch_agent_policy_artifact(
     if not raw_path:
         return payload, None, None, {"policy_mirror": "not_reported"}
     policy_path = Path(raw_path)
-    expected = Path("/durable") / "runs" / str(run["run_id"]) / "policies"
-    try:
-        relative = policy_path.relative_to(expected)
-    except ValueError:
-        return payload, None, None, {"policy_mirror": "rejected_scope"}
-    if len(relative.parts) != 1 or policy_path.suffix not in {".pt", ".pth"}:
+    run_root = Path("/durable") / "runs" / str(run["run_id"])
+    allowed_roots = (
+        run_root / "policies",
+        run_root / "gpu-jobs" / "checkpoints" / str(job["job_id"]),
+    )
+    relative: Path | None = None
+    for expected in allowed_roots:
+        try:
+            relative = policy_path.relative_to(expected)
+            break
+        except ValueError:
+            continue
+    if (
+        relative is None
+        or not relative.parts
+        or ".." in relative.parts
+        or policy_path.suffix not in {".pt", ".pth"}
+    ):
         return payload, None, None, {"policy_mirror": "rejected_scope"}
     remote = str(policy_path.relative_to("/durable"))
     with tempfile.TemporaryDirectory() as raw:
