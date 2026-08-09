@@ -6,6 +6,7 @@ Claims jobs written by in-sandbox ``sprint-gpu-train`` under
 Modal Sandbox that mounts the same volume. The Codex/agent sandbox stays on
 CPU (gpus=0) so GPU preemption cannot kill the harness.
 """
+
 from __future__ import annotations
 
 import base64
@@ -13,6 +14,7 @@ import gzip
 import hashlib
 import json
 import os
+import re
 import shlex
 import sys
 import tempfile
@@ -269,9 +271,7 @@ def load_job(run: dict[str, Any], job_id: str) -> dict[str, Any] | None:
         return None
 
 
-def load_remote_json(
-    run: dict[str, Any], remote_path: str
-) -> dict[str, Any] | None:
+def load_remote_json(run: dict[str, Any], remote_path: str) -> dict[str, Any] | None:
     text = sprintctl.volume_get_text(run, remote_path)
     if not text:
         return None
@@ -301,9 +301,7 @@ def load_attempt_record(
     )
 
 
-def load_heartbeat(
-    run: dict[str, Any], job: dict[str, Any]
-) -> dict[str, Any] | None:
+def load_heartbeat(run: dict[str, Any], job: dict[str, Any]) -> dict[str, Any] | None:
     attempt = int(job.get("attempt") or 0)
     if attempt <= 0:
         return None
@@ -367,11 +365,17 @@ def ensure_standing_sandbox(run: dict[str, Any]) -> dict[str, Any]:
         str(run.get("training_app_name") or run["app_name"]),
         create_if_missing=True,
     )
-    image = modal.Image.from_dockerfile(str(DOCKERFILE), context_dir=str(ENV_DIR))
+    image = training_image(run)
     volume = modal.Volume.from_name(str(run["volume_name"]))
     sandbox = modal.Sandbox.create(
-        "bash", "-c", "exec sleep infinity",
-        app=app, image=image, gpu="A10G", cpu=8, memory=32768,
+        "bash",
+        "-c",
+        "exec sleep infinity",
+        app=app,
+        image=image,
+        gpu="A10G",
+        cpu=8,
+        memory=32768,
         block_network=True,
         timeout=int(run.get("sandbox_timeout_secs") or 86400),
         volumes={"/durable": volume},
@@ -390,8 +394,11 @@ def ensure_standing_sandbox(run: dict[str, Any]) -> dict[str, Any]:
         "generation": int(state.get("generation") or 0) + 1,
     }
     sprintctl.atomic_write_json(path, payload, mode=0o600)
-    return {"sandbox_id": new_id, "action": "replaced" if prev else "created",
-            "replaced": prev}
+    return {
+        "sandbox_id": new_id,
+        "action": "replaced" if prev else "created",
+        "replaced": prev,
+    }
 
 
 def exec_on_standing(run: dict[str, Any], job: dict[str, Any]) -> str:
@@ -407,11 +414,15 @@ def exec_on_standing(run: dict[str, Any], job: dict[str, Any]) -> str:
     sid = info["sandbox_id"]
     sandbox = modal.Sandbox.from_id(sid)
     sandbox.exec(
-        "bash", "-c",
+        "bash",
+        "-c",
         "python3 /opt/sprint-gpu-worker-run.py "
-        + shlex.quote(str(run["run_id"])) + " "
-        + shlex.quote(str(job["job_id"])) + " "
-        + shlex.quote(str(int(job["attempt"]))) + " "
+        + shlex.quote(str(run["run_id"]))
+        + " "
+        + shlex.quote(str(job["job_id"]))
+        + " "
+        + shlex.quote(str(int(job["attempt"])))
+        + " "
         + shlex.quote(str(job["lease_id"])),
     )
     return sid
@@ -428,10 +439,7 @@ def spawn_gpu_sandbox(run: dict[str, Any], job: dict[str, Any]) -> str:
         str(run.get("training_app_name") or run["app_name"]),
         create_if_missing=True,
     )
-    image = modal.Image.from_dockerfile(
-        str(DOCKERFILE),
-        context_dir=str(ENV_DIR),
-    )
+    image = training_image(run)
     volume = modal.Volume.from_name(str(run["volume_name"]))
     timeout = int(job.get("timeout_sec") or 3600)
     timeout = max(60, min(timeout, 24 * 60 * 60))
@@ -468,6 +476,17 @@ def spawn_gpu_sandbox(run: dict[str, Any], job: dict[str, Any]) -> str:
     return str(sandbox.object_id)
 
 
+def training_image(run: dict[str, Any]):
+    """Resolve the exact image exercised by the launch warm-up gate."""
+    import modal
+
+    provenance = run.get("evaluation_provenance") or {}
+    image_id = provenance.get("agent_training_image_id")
+    if not isinstance(image_id, str) or not re.fullmatch(r"im-[A-Za-z0-9]+", image_id):
+        raise RuntimeError("run has no valid warmed agent/training Modal image ID")
+    return modal.Image.from_id(image_id)
+
+
 class ModalSandboxProvider:
     """Modal-specific mechanics behind the provider-neutral job contract."""
 
@@ -492,9 +511,7 @@ class ModalSandboxProvider:
 
             code = modal.Sandbox.from_id(handle.attempt_id).poll()
         except Exception as exc:  # noqa: BLE001
-            return ProbeResult(
-                ProbeState.UNKNOWN, error=f"{type(exc).__name__}: {exc}"
-            )
+            return ProbeResult(ProbeState.UNKNOWN, error=f"{type(exc).__name__}: {exc}")
         if code is None:
             return ProbeResult(ProbeState.ALIVE)
         return ProbeResult(ProbeState.EXITED, exit_code=int(code))
@@ -528,9 +545,7 @@ def provider_terminal_error(stream_text: str) -> str | None:
     diagnostics, but an unhandled Python traceback is terminal.
     """
     if "Traceback (most recent call last):" in stream_text:
-        tail = stream_text[
-            stream_text.rfind("Traceback (most recent call last):") :
-        ]
+        tail = stream_text[stream_text.rfind("Traceback (most recent call last):") :]
         final = next(
             (line.strip() for line in reversed(tail.splitlines()) if line.strip()),
             "unhandled Python exception",
@@ -611,9 +626,7 @@ def archive_provider_logs(
             + ("\n" if stderr and not stderr.endswith("\n") else "")
         )
         encoded = content.encode("utf-8", errors="replace")
-        with tempfile.NamedTemporaryFile(
-            "wb", suffix=".log", delete=False
-        ) as handle:
+        with tempfile.NamedTemporaryFile("wb", suffix=".log", delete=False) as handle:
             handle.write(encoded)
             tmp = Path(handle.name)
         try:
@@ -694,9 +707,7 @@ def try_claim_job(
     stale_sec: int = CLAIM_STALE_SEC,
 ) -> dict[str, Any] | None:
     """Persist claiming ownership before Sandbox.create. None if not ours."""
-    action = gpu_claim.select_claim_action(
-        job, claim_id=claim_id, stale_sec=stale_sec
-    )
+    action = gpu_claim.select_claim_action(job, claim_id=claim_id, stale_sec=stale_sec)
     if action == "skip":
         return None
     payload = gpu_claim.build_claim_payload(job, claim_id=claim_id)
@@ -787,7 +798,9 @@ def schedule_retry(
         phase="gpu_lifecycle",
         action="instant",
         epoch_s=close_epoch,
-        event="gpu_preempted" if reason in {"graceful_preemption", "worker_lost"} else "gpu_attempt_lost",
+        event="gpu_preempted"
+        if reason in {"graceful_preemption", "worker_lost"}
+        else "gpu_attempt_lost",
         reason=reason,
         checkpoint=(heartbeat or {}).get("checkpoint"),
         progress=(heartbeat or {}).get("progress"),
@@ -889,8 +902,7 @@ def reconcile_job(
     owned_record = bool(
         attempt_record
         and int(attempt_record.get("attempt") or 0) == int(job.get("attempt") or 0)
-        and str(attempt_record.get("lease_id") or "")
-        == str(job.get("lease_id") or "")
+        and str(attempt_record.get("lease_id") or "") == str(job.get("lease_id") or "")
     )
     if owned_record and str(attempt_record.get("status") or "") in {
         "succeeded",
@@ -1127,9 +1139,7 @@ def _candidate_job_ids(run: dict[str, Any], *, now: float | None = None) -> list
         if not job:
             continue
         if (
-            gpu_claim.select_claim_action(
-                job, claim_id=uuid.uuid4().hex, now=now
-            )
+            gpu_claim.select_claim_action(job, claim_id=uuid.uuid4().hex, now=now)
             == "claim"
         ):
             try:
@@ -1264,7 +1274,9 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
                 claimed,
                 phase="gpu_lifecycle",
                 action="instant",
-                event="gpu_allocated" if int(claimed.get("attempt") or 1) == 1 else "gpu_reallocated",
+                event="gpu_allocated"
+                if int(claimed.get("attempt") or 1) == 1
+                else "gpu_reallocated",
                 retry_reason=claimed.get("retry_reason"),
             )
             try:
@@ -1303,9 +1315,7 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
                             "sandbox_id": sandbox_id,
                             "status": "terminated",
                             "action": "stop_after_spawn",
-                            "stopped_jobs": [
-                                item.get("job_id") for item in stopped
-                            ],
+                            "stopped_jobs": [item.get("job_id") for item in stopped],
                         }
                     )
                     break
@@ -1343,9 +1353,7 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
 
         if log_backfill is not None:
             if log_backfill.get("provider_logs_archived_at"):
-                archived, detail = audit_archived_provider_logs(
-                    run, log_backfill
-                )
+                archived, detail = audit_archived_provider_logs(run, log_backfill)
             else:
                 archived, detail = archive_provider_logs(run, log_backfill)
             if archived != log_backfill:

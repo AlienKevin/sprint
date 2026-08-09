@@ -218,18 +218,6 @@ def discover_agent_container(state_dir: Path, run: dict[str, Any]) -> str | None
         run["agent_container_id"] = matches[0]
         update_run_fields(state_dir, agent_container_id=matches[0])
         return matches[0]
-    # During Modal image bring-up, exec probes time out. For durable CPU-agent
-    # runs there is exactly one Harbor sandbox in the app — accept it so host
-    # ops can proceed once the container exists.
-    if (
-        run.get("cpu_agent_gpu_worker")
-        and not cached
-        and len(containers) == 1
-        and str(containers[0]).startswith("ta-")
-    ):
-        run["agent_container_id"] = containers[0]
-        update_run_fields(state_dir, agent_container_id=containers[0])
-        return containers[0]
     return None
 
 
@@ -564,7 +552,9 @@ def request_stop(run_id: str, *, reason: str = "operator_stop") -> dict[str, Any
             container,
             "umask 077; : > /run/sprint-stop; chmod 0600 /run/sprint-stop",
         )
-        payload["container_id"] = container
+        if payload.get("container_id") != container:
+            payload["container_id"] = container
+            atomic_write_json(marker, payload, mode=0o600)
     return {
         "status": "requested",
         "agent_kind": kind,
@@ -948,6 +938,21 @@ def monitor_once(
 ) -> dict[str, Any]:
     state_dir, run = load_run(run_id)
     Path("/data/.keepalive").touch()
+    # A stop may be requested while Modal is still resolving the image and no
+    # runtime sandbox exists. Keep reapplying the durable request until the
+    # actual agent acknowledges it; never mistake an image-build container for
+    # the CPU agent or let a post-build sandbox escape an earlier stop.
+    stop_marker = state_dir / "STOP_REQUESTED.json"
+    if stop_marker.is_file() and not (state_dir / "STOP_ACK.json").is_file():
+        try:
+            stop_payload = json.loads(stop_marker.read_text())
+            request_stop(
+                run_id,
+                reason=str(stop_payload.get("reason") or "operator_stop"),
+            )
+            state_dir, run = load_run(run_id)
+        except Exception as exc:  # noqa: BLE001
+            record_controller_error(run_id, exc)
     # Host-side GPU/CPU telemetry backup (agent + best-effort verifiers).
     # In-sandbox sidecar is primary; this persists even if the mount lags.
     try:
@@ -1315,8 +1320,7 @@ def final_conditions(
                 entry
                 for entry in entries
                 if isinstance(entry, dict)
-                and entry.get("destination")
-                == "artifacts/app/submission/policy.pt"
+                and entry.get("destination") == "artifacts/app/submission/policy.pt"
             ]
             conditions["artifact_manifest"] = bool(
                 entries

@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="${SPRINT_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"
 HARBOR="${HARBOR_PATH:-$ROOT/harbor}"
-HARBOR_COMMIT=f2763377dddd1308334ba01fb39eee4e50c2c726
+HARBOR_COMMIT=03c5e328fa839052327fe2053a026b0a6d0e6ad8
 HARBOR_BRANCH=continuous-verification
 UV="${UV:-$(command -v uv || true)}"
 if [[ -z "$UV" && -x /home/ubuntu/.local/bin/uv ]]; then
@@ -388,6 +388,21 @@ fi
 # agent/training/verifier image change rather than paying a surprise lazy build
 # during the first model's run.
 python3 "$ROOT/runs/ops/check_modal_image_warmup.py"
+read -r AGENT_TRAINING_IMAGE_ID VERIFIER_IMAGE_ID < <(
+  python3 - "$ROOT/runs/ops/modal-image-warmup.json" <<'PY'
+import json
+import re
+import sys
+
+payload = json.load(open(sys.argv[1]))
+agent = payload["contexts"]["agent_training"]["image_id"]
+verifier = payload["contexts"]["verifier"]["image_id"]
+if not all(isinstance(value, str) and re.fullmatch(r"im-[A-Za-z0-9]+", value)
+           for value in (agent, verifier)):
+    raise SystemExit("warm-up manifest contains an invalid Modal image ID")
+print(agent, verifier)
+PY
+)
 
 umask 077
 RESUMING=0
@@ -781,7 +796,9 @@ exec run-heavy "$UV" run --frozen --extra modal harbor run \
   --jobs-dir "$JOBS_ROOT" \
   --env-file "$ENV_FILE" \
   --ek "app_name=$APP_NAME" \
+  --ek "modal_image_id=$AGENT_TRAINING_IMAGE_ID" \
   --ek "verifier_app_name=$VERIFIER_APP_NAME" \
+  --ek "verifier_image_id=$VERIFIER_IMAGE_ID" \
   --ek "verifier_labels=$VERIFIER_LABELS_JSON" \
   --ek "volumes=$VOLUMES_JSON" \
   --ek "labels=$LABELS_JSON" \

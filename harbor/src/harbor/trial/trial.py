@@ -662,8 +662,11 @@ class Trial(ABC):
         verifier_kwargs = dict(self.config.environment.kwargs)
         verifier_app_name = verifier_kwargs.pop("verifier_app_name", None)
         verifier_labels = verifier_kwargs.pop("verifier_labels", None)
+        verifier_image_id = verifier_kwargs.pop("verifier_image_id", None)
         if verifier_app_name:
             verifier_kwargs["app_name"] = verifier_app_name
+        if verifier_image_id:
+            verifier_kwargs["modal_image_id"] = verifier_image_id
         if verifier_labels:
             existing_labels = verifier_kwargs.get("labels") or {}
             if not isinstance(existing_labels, dict) or not isinstance(

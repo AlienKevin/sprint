@@ -318,7 +318,7 @@ class DurableOpsTests(unittest.TestCase):
             saved = json.loads((state_dir / "run.json").read_text())
             self.assertEqual(saved["agent_container_id"], "ta-old-agent")
 
-    def test_single_container_startup_fallback_still_discovers_agent(self) -> None:
+    def test_single_unverified_build_container_is_not_agent(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             state_dir = Path(raw)
             run = {
@@ -335,9 +335,7 @@ class DurableOpsTests(unittest.TestCase):
                 ),
                 mock.patch.object(sprintctl, "is_agent_container", return_value=False),
             ):
-                self.assertEqual(
-                    sprintctl.discover_agent_container(state_dir, run), "ta-starting"
-                )
+                self.assertIsNone(sprintctl.discover_agent_container(state_dir, run))
 
     def test_redacted_dry_run_does_not_create_state(self) -> None:
         run_id = f"dry-{uuid.uuid4().hex[:12]}"
@@ -1013,6 +1011,38 @@ while True:
                     final_bytes, (state_dir / "FINALIZED.json").read_bytes()
                 )
                 self.assertEqual(monitor.call_count, 1)
+
+    def test_monitor_reapplies_stop_requested_before_sandbox_existed(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state_dir = Path(raw)
+            run = {
+                "run_id": "stop-during-build",
+                "agent_kind": "codex",
+                "cpu_agent_gpu_worker": False,
+            }
+            (state_dir / "STOP_REQUESTED.json").write_text(
+                json.dumps({"reason": "operator_batch_stop"})
+            )
+            expected_status = {"run_id": "stop-during-build"}
+            with (
+                mock.patch.object(sprintctl, "load_run", return_value=(state_dir, run)),
+                mock.patch.object(sprintctl, "request_stop") as request_stop,
+                mock.patch("telemetry_host.poll_once"),
+                mock.patch.object(
+                    sprintctl, "discover_job_and_trial", return_value=(None, None)
+                ),
+                mock.patch.object(
+                    sprintctl, "status_snapshot", return_value=expected_status
+                ),
+            ):
+                status = sprintctl.monitor_once(
+                    "stop-during-build", upload=False, include_remote=False
+                )
+
+            self.assertEqual(status, expected_status)
+            request_stop.assert_called_once_with(
+                "stop-during-build", reason="operator_batch_stop"
+            )
 
     def test_status_reports_explicit_agent_kind(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

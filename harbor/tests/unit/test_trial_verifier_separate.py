@@ -260,22 +260,27 @@ class TestSingleStepSeparateVerifierLifecycle:
                     delete=False,
                     kwargs={
                         "app_name": "sprint-run-cpu",
+                        "modal_image_id": "im-AgentImage123",
                         "labels": {"sprint.run_id": "run", "sprint.role": "cpu-agent"},
                         "verifier_app_name": "sprint-run-verifier",
+                        "verifier_image_id": "im-VerifierImage456",
                         "verifier_labels": {"sprint.role": "verifier-gpu"},
                     },
                 ),
             )
 
             assert calls[0]["config"].kwargs["app_name"] == "sprint-run-cpu"
+            assert calls[0]["config"].kwargs["modal_image_id"] == "im-AgentImage123"
             verifier_config = calls[1]["config"]
             assert verifier_config.kwargs["app_name"] == "sprint-run-verifier"
+            assert verifier_config.kwargs["modal_image_id"] == "im-VerifierImage456"
             assert verifier_config.kwargs["labels"] == {
                 "sprint.run_id": "run",
                 "sprint.role": "verifier-gpu",
             }
             assert "verifier_app_name" not in verifier_config.kwargs
             assert "verifier_labels" not in verifier_config.kwargs
+            assert "verifier_image_id" not in verifier_config.kwargs
 
     async def test_verifier_env_stopped_immediately_after_verify(self):
         with tempfile.TemporaryDirectory() as tmp:

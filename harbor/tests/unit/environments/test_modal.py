@@ -1499,6 +1499,59 @@ class TestCreateSandboxEntrypoint:
         )
 
     @pytest.mark.asyncio
+    async def test_direct_strategy_uses_pinned_modal_image_id(self, temp_dir):
+        env = _make_env(
+            temp_dir,
+            environment_kwargs={"modal_image_id": "im-ExactImage123"},
+        )
+        env._strategy = _ModalDirect(env)
+        pinned_image = MagicMock()
+
+        with (
+            patch(
+                "harbor.environments.modal.Image.from_id",
+                return_value=pinned_image,
+            ) as from_id,
+            patch("harbor.environments.modal.Image.from_dockerfile") as from_dockerfile,
+            patch(
+                "harbor.environments.modal.App.lookup",
+                new=MagicMock(aio=AsyncMock(return_value=MagicMock())),
+            ),
+            patch.object(
+                env, "_create_sandbox", new=AsyncMock(return_value=MagicMock())
+            ),
+            patch.object(env._strategy, "exec", new=AsyncMock()),
+        ):
+            await env._strategy.start(force_build=False)
+
+        from_id.assert_called_once_with("im-ExactImage123")
+        from_dockerfile.assert_not_called()
+        assert env._image is pinned_image
+
+    @pytest.mark.asyncio
+    async def test_pinned_modal_image_rejects_force_build(self, temp_dir):
+        env = _make_env(
+            temp_dir,
+            environment_kwargs={"modal_image_id": "im-ExactImage123"},
+        )
+        env._strategy = _ModalDirect(env)
+
+        with pytest.raises(ValueError, match="force_build"):
+            await env._strategy.start(force_build=True)
+
+    @pytest.mark.parametrize("image_id", ["image-123", "im-", 123])
+    @pytest.mark.asyncio
+    async def test_pinned_modal_image_validates_id(self, temp_dir, image_id):
+        env = _make_env(
+            temp_dir,
+            environment_kwargs={"modal_image_id": image_id},
+        )
+        env._strategy = _ModalDirect(env)
+
+        with pytest.raises(ValueError, match="Modal image ID"):
+            await env._strategy.start(force_build=False)
+
+    @pytest.mark.asyncio
     async def test_dind_strategy_does_not_override_entrypoint(self, temp_dir):
         """DinD relies on the ``docker:dind`` image's own entrypoint (and/or
         Modal's ``enable_docker`` experimental option) to run dockerd —

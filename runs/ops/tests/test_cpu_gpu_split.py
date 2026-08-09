@@ -164,17 +164,16 @@ class ClaimSelectionTests(unittest.TestCase):
             "status": "failed",
             "sandbox_id": "sb-1",
         }
-        with mock.patch.object(gpu_worker.sprintctl, "volume_upload", side_effect=upload):
+        with mock.patch.object(
+            gpu_worker.sprintctl, "volume_upload", side_effect=upload
+        ):
             archived, detail = gpu_worker.archive_provider_logs(
                 {"run_id": "run-1"},
                 job,
                 read_output=lambda _sandbox_id: ("stdout line\n", "stderr line\n"),
             )
 
-        expected = (
-            b"== Modal stdout ==\nstdout line\n"
-            b"== Modal stderr ==\nstderr line\n"
-        )
+        expected = b"== Modal stdout ==\nstdout line\n== Modal stderr ==\nstderr line\n"
         self.assertEqual(
             uploaded["remote"],
             "runs/run-1/gpu-jobs/out/job-1/attempt-2/worker.log",
@@ -244,7 +243,9 @@ class ClaimSelectionTests(unittest.TestCase):
             archived["failure_reason"],
             "provider_stream_unhandled_exception",
         )
-        self.assertEqual(detail["provider_terminal_error"], "FileNotFoundError: robot.usd")
+        self.assertEqual(
+            detail["provider_terminal_error"], "FileNotFoundError: robot.usd"
+        )
 
     def test_recoverable_isaac_gpu_warning_does_not_override_success(self) -> None:
         self.assertIsNone(
@@ -312,12 +313,8 @@ class ClaimSelectionTests(unittest.TestCase):
             cli_path = Path(tmp) / "bin" / "sprint-gpu-train"
             cli_path.parent.mkdir()
             with (
-                mock.patch.object(
-                    gpu_worker, "AGENT_GPU_MIRROR_ROOT", str(mirror)
-                ),
-                mock.patch.object(
-                    gpu_worker, "AGENT_GPU_CLI_PATH", str(cli_path)
-                ),
+                mock.patch.object(gpu_worker, "AGENT_GPU_MIRROR_ROOT", str(mirror)),
+                mock.patch.object(gpu_worker, "AGENT_GPU_CLI_PATH", str(cli_path)),
                 mock.patch.object(
                     gpu_worker.sprintctl,
                     "exec_container",
@@ -341,13 +338,7 @@ class ClaimSelectionTests(unittest.TestCase):
                 job,
             )
             self.assertEqual(
-                (
-                    mirror
-                    / "out"
-                    / "job-1"
-                    / "attempt-2"
-                    / "worker.log"
-                ).read_bytes(),
+                (mirror / "out" / "job-1" / "attempt-2" / "worker.log").read_bytes(),
                 b"complete child output\n",
             )
 
@@ -1043,13 +1034,9 @@ class RetryAndFencingTests(unittest.TestCase):
                     "load_run",
                     return_value=(Path(raw), run),
                 ),
-                mock.patch.object(
-                    gpu_worker, "list_job_ids", return_value=["queued"]
-                ),
+                mock.patch.object(gpu_worker, "list_job_ids", return_value=["queued"]),
                 mock.patch.object(gpu_worker, "load_job", side_effect=load_job),
-                mock.patch.object(
-                    gpu_worker, "persist_job", side_effect=persist_job
-                ),
+                mock.patch.object(gpu_worker, "persist_job", side_effect=persist_job),
                 mock.patch.object(
                     gpu_worker,
                     "operator_stop_requested",
@@ -1263,6 +1250,30 @@ class CheckpointContinuationTests(unittest.TestCase):
 
 
 class LauncherWiringTests(unittest.TestCase):
+    def test_training_image_uses_pinned_warmup_id(self) -> None:
+        pinned = object()
+        run = {
+            "evaluation_provenance": {"agent_training_image_id": "im-ExactTraining123"}
+        }
+        with mock.patch("modal.Image.from_id", return_value=pinned) as from_id:
+            self.assertIs(gpu_worker.training_image(run), pinned)
+        from_id.assert_called_once_with("im-ExactTraining123")
+
+    def test_training_image_fails_closed_without_valid_id(self) -> None:
+        for run in (
+            {},
+            {"evaluation_provenance": {}},
+            {"evaluation_provenance": {"agent_training_image_id": "latest"}},
+        ):
+            with self.subTest(run=run):
+                with self.assertRaisesRegex(RuntimeError, "warmed.*image ID"):
+                    gpu_worker.training_image(run)
+
+    def test_launcher_passes_pinned_agent_and_verifier_images(self) -> None:
+        launcher = (ROOT / "runs" / "run-lane-durable.sh").read_text()
+        self.assertIn('--ek "modal_image_id=$AGENT_TRAINING_IMAGE_ID"', launcher)
+        self.assertIn('--ek "verifier_image_id=$VERIFIER_IMAGE_ID"', launcher)
+
     def test_all_model_launchers_default_to_systemd_supervisor(self) -> None:
         for name in ("run-luna.sh", "run-deepseek.sh"):
             text = (ROOT / "runs" / name).read_text()

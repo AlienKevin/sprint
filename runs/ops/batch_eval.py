@@ -30,7 +30,7 @@ import sprintctl  # noqa: E402
 UV = Path(os.environ.get("UV", "/home/ubuntu/.local/bin/uv"))
 WEB = ROOT / "sprint-web"
 BATCH_ROOT = SCRIPT_DIR / "batches"
-HARBOR_REVISION = "f2763377dddd1308334ba01fb39eee4e50c2c726"
+HARBOR_REVISION = "03c5e328fa839052327fe2053a026b0a6d0e6ad8"
 CODEX_VERSION = "0.147.0"
 TRIALS_PER_MODEL = 3
 DEFAULT_FAMILIES = ("deepseek", "luna")
@@ -261,11 +261,7 @@ def preflight(
         checks["openai_luna_visible"] = "gpt-5.6-luna" in models
     elif "luna" in families:
         checks["openai_luna_visible"] = not check_providers
-    if (
-        "deepseek" in families
-        and check_providers
-        and checks["secret_deepseek_api_key"]
-    ):
+    if "deepseek" in families and check_providers and checks["secret_deepseek_api_key"]:
         models = provider_models(
             "https://api.deepseek.com/models", keys["DEEPSEEK_API_KEY"]
         )
@@ -402,8 +398,7 @@ def launch(
             arm["launched_at"] = utc_now()
             arm["deadline_at"] = (
                 (
-                    parse_time(arm["launched_at"])
-                    + dt.timedelta(hours=RUN_HOURS)
+                    parse_time(arm["launched_at"]) + dt.timedelta(hours=RUN_HOURS)
                 ).strftime("%Y-%m-%dT%H:%M:%SZ")
                 if RUN_HOURS is not None
                 else None

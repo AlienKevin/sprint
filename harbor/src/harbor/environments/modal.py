@@ -259,13 +259,24 @@ class _ModalDirect(_ModalStrategy):
     async def start(self, force_build: bool) -> None:
         env = self._env
 
+        modal_image_id = env._kwargs.get("modal_image_id")
         docker_image = env.task_env_config.docker_image
         use_prebuilt = should_use_prebuilt_docker_image(
             env.environment_dir,
             docker_image=docker_image,
             force_build=force_build,
         )
-        if use_prebuilt and docker_image:
+        if modal_image_id:
+            if force_build:
+                raise ValueError(
+                    "force_build cannot be combined with a pinned modal_image_id"
+                )
+            if not isinstance(modal_image_id, str) or not re.fullmatch(
+                r"im-[A-Za-z0-9]+", modal_image_id
+            ):
+                raise ValueError("modal_image_id must be a Modal image ID (im-...)")
+            env._image = Image.from_id(modal_image_id)
+        elif use_prebuilt and docker_image:
             registry_secret = (
                 Secret.from_name(env._registry_secret) if env._registry_secret else None
             )
@@ -956,6 +967,9 @@ class ModalEnvironment(ComposeServiceOpsMixin, BaseEnvironment):
             labels: User labels to attach to each sandbox as Modal tags,
                 independent of ``auto_labels``.
             kwargs: Model-specific settings from ``environment.kwargs`` / ``--ek``
+                - ``modal_image_id=im-...``: Start the direct sandbox from an
+                  already-built immutable Modal image. This avoids resolving or
+                  rebuilding a Dockerfile graph after an explicit warm-up.
                 - ``modal_vm_runtime=true``: Use vm_runtime (alpha feature).
                   See https://modal.com/docs/guide/vm-sandboxes for more details.
                 - ``modal_sandbox_v2=true``: Use to scale up sandboxes faster
@@ -979,6 +993,8 @@ class ModalEnvironment(ComposeServiceOpsMixin, BaseEnvironment):
         self._compose_mode = (environment_dir / "docker-compose.yaml").exists() or bool(
             extra_docker_compose
         )
+        if self._compose_mode and kwargs.get("modal_image_id"):
+            raise ValueError("modal_image_id is supported only in direct mode")
         self._dynamic_network = self._dynamic_network and not self._compose_mode
         # DinD mode requires host networking — cannot enforce network isolation.
         self._capabilities = EnvironmentCapabilities(
@@ -1176,9 +1192,7 @@ class ModalEnvironment(ComposeServiceOpsMixin, BaseEnvironment):
             kwargs["gpu"] = gpu
         if self._dynamic_network:
             block_network = False
-            kwargs.update(
-                self._dynamic_network_creation_kwargs(self.network_policy)
-            )
+            kwargs.update(self._dynamic_network_creation_kwargs(self.network_policy))
         elif self._network_is_allowlist:
             kwargs.update(self._allowlist_network_kwargs(self.network_policy))
         if labels := self._sandbox_labels():
