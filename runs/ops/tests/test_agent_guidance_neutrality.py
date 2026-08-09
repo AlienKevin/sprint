@@ -57,6 +57,9 @@ def test_agent_guidance_is_method_neutral() -> None:
 def test_agent_and_verifier_submission_contracts_match() -> None:
     agent = (TASK / "environment/bin/sprint-check").read_text()
     verifier = (TASK / "tests/check_submission.py").read_text()
-    assert agent.replace(
-        "    sprint-check policy.pt", "    python check_submission.py policy.pt"
-    ) == verifier
+    assert (
+        agent.replace(
+            "    sprint-check policy.pt", "    python check_submission.py policy.pt"
+        )
+        == verifier
+    )

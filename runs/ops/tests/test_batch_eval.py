@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import datetime as dt
 import importlib.util
 import io
 import json
@@ -224,6 +225,127 @@ def test_training_gpu_fleet_probe_requires_every_exact_worker_and_image(
         batch_id="eval", modal_profile="test", worker_ids=["eval-1", "eval-2"]
     )
     assert not ready
+
+
+def test_sprint_modal_resource_audit_rejects_only_live_sprint_resources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def dirty_listing(command, **_kwargs):
+        calls.append(command)
+        if "container" in command:
+            return json.dumps(
+                [
+                    {
+                        "container_id": "ta-sprint",
+                        "app_id": "ap-sprint",
+                        "app_name": "sprint-old-run",
+                        "start_time": "now",
+                    },
+                    {
+                        "container_id": "ta-unrelated",
+                        "app_id": "ap-unrelated",
+                        "app_name": "kevin-unrelated",
+                        "start_time": "now",
+                    },
+                ]
+            )
+        return json.dumps(
+            [
+                {
+                    "app_id": "ap-sprint",
+                    "description": "sprint-old-run",
+                    "state": "deployed",
+                    "tasks": "0",
+                },
+                {
+                    "app_id": "ap-stopped",
+                    "description": "sprint-finished-run",
+                    "state": "stopped",
+                    "tasks": "0",
+                },
+                {
+                    "app_id": "ap-unrelated",
+                    "description": "kevin-unrelated",
+                    "state": "deployed",
+                    "tasks": "1",
+                },
+            ]
+        )
+
+    monkeypatch.setattr(batch_eval, "run_checked", dirty_listing)
+    ready, report = batch_eval.sprint_modal_resource_audit(modal_profile="test")
+    assert not ready
+    assert report["live_sprint_apps"] == [
+        {
+            "app_id": "ap-sprint",
+            "description": "sprint-old-run",
+            "state": "deployed",
+            "tasks": "0",
+        }
+    ]
+    assert report["live_sprint_containers"][0]["container_id"] == "ta-sprint"
+    assert report["unrelated_resources_ignored"] is True
+    assert len(calls) == 2
+
+
+def test_sprint_modal_resource_audit_accepts_stopped_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def clean_listing(command, **_kwargs):
+        if "container" in command:
+            return "[]"
+        return json.dumps(
+            [
+                {
+                    "app_id": "ap-stopped",
+                    "description": "sprint-finished-run",
+                    "state": "stopped",
+                    "tasks": "0",
+                },
+                {
+                    "app_id": "ap-unrelated",
+                    "description": "kevin-unrelated",
+                    "state": "deployed",
+                    "tasks": "1",
+                },
+            ]
+        )
+
+    monkeypatch.setattr(batch_eval, "run_checked", clean_listing)
+    ready, report = batch_eval.sprint_modal_resource_audit(modal_profile="test")
+    assert ready
+    assert report["live_sprint_apps"] == []
+    assert report["live_sprint_containers"] == []
+
+
+def test_vercel_daily_quota_error_backs_off_for_24_hours() -> None:
+    observed = dt.datetime(2026, 8, 9, 23, 45, tzinfo=dt.timezone.utc)
+    state: dict[str, object] = {}
+    batch_eval.record_deployment_error(
+        state,
+        RuntimeError(
+            "Resource is limited - try again in 24 hours "
+            '(more than 100, code: "api-deployments-free-per-day")'
+        ),
+        now=observed,
+    )
+    assert state["site_status"] == "quota_limited"
+    assert state["quota_code"] == "api-deployments-free-per-day"
+    assert state["retry_not_before"] == "2026-08-10T23:45:00Z"
+    assert not batch_eval.deployment_retry_due(
+        state, now=observed + dt.timedelta(hours=23, minutes=59)
+    )
+    assert batch_eval.deployment_retry_due(state, now=observed + dt.timedelta(hours=24))
+
+
+def test_nonquota_deployment_error_remains_normally_retryable() -> None:
+    state: dict[str, object] = {}
+    batch_eval.record_deployment_error(state, RuntimeError("transient deploy failure"))
+    assert state["site_status"] == "error"
+    assert "retry_not_before" not in state
+    assert batch_eval.deployment_retry_due(state)
 
 
 def test_provider_inference_probe_records_usage_without_secret(

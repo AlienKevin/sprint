@@ -55,6 +55,8 @@ PROVIDER_DISCOVERY_ATTEMPTS = 3
 PROVIDER_DISCOVERY_RETRY_SECONDS = 1.0
 PROVIDER_INFERENCE_ATTEMPTS = 3
 PROVIDER_INFERENCE_RETRY_SECONDS = 1.0
+VERCEL_DAILY_QUOTA_BACKOFF_SECONDS = 24 * 60 * 60
+VERCEL_DAILY_QUOTA_CODE = "api-deployments-free-per-day"
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,48}$")
 ALERT_PATTERNS = {
     "provider_rate_limit": re.compile(
@@ -345,6 +347,81 @@ def run_checked(command: list[str], *, env: dict[str, str] | None = None) -> str
     return completed.stdout
 
 
+def sprint_modal_resource_audit(*, modal_profile: str) -> tuple[bool, dict[str, Any]]:
+    """Fail closed when an older Sprint App or container is still live.
+
+    Modal's App list retains stopped history, so stopped Sprint Apps are valid
+    evidence of cleanup.  A deployed App with zero tasks is still rejected:
+    besides keeping the dashboard unambiguous, stopping it prevents a later
+    name lookup from accidentally reusing stale App state.  Non-Sprint Apps
+    are deliberately outside this benchmark's ownership boundary.
+    """
+    env = dict(os.environ)
+    env["MODAL_PROFILE"] = modal_profile
+    try:
+        apps = json.loads(
+            run_checked(
+                [str(HARBOR_PYTHON), "-m", "modal", "app", "list", "--json"],
+                env=env,
+            )
+        )
+        containers = json.loads(
+            run_checked(
+                [
+                    str(HARBOR_PYTHON),
+                    "-m",
+                    "modal",
+                    "container",
+                    "list",
+                    "--json",
+                ],
+                env=env,
+            )
+        )
+    except (subprocess.CalledProcessError, RuntimeError, json.JSONDecodeError) as exc:
+        return False, {
+            "checked_at": utc_now(),
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    if not isinstance(apps, list) or not isinstance(containers, list):
+        return False, {
+            "checked_at": utc_now(),
+            "error": "Modal resource listings were not arrays",
+        }
+
+    live_apps = [
+        {
+            "app_id": row.get("app_id"),
+            "description": row.get("description"),
+            "state": row.get("state"),
+            "tasks": row.get("tasks"),
+        }
+        for row in apps
+        if isinstance(row, dict)
+        and str(row.get("description") or "").startswith("sprint-")
+        and str(row.get("state") or "").lower() != "stopped"
+    ]
+    live_containers = [
+        {
+            "container_id": row.get("container_id"),
+            "app_id": row.get("app_id"),
+            "app_name": row.get("app_name"),
+            "start_time": row.get("start_time"),
+        }
+        for row in containers
+        if isinstance(row, dict)
+        and str(row.get("app_name") or "").startswith("sprint-")
+    ]
+    report = {
+        "checked_at": utc_now(),
+        "modal_profile": modal_profile,
+        "live_sprint_apps": live_apps,
+        "live_sprint_containers": live_containers,
+        "unrelated_resources_ignored": True,
+    }
+    return not live_apps and not live_containers, report
+
+
 def vercel_project_link_ready() -> bool:
     """Accept Vercel CLI metadata while requiring the exact Sprint project."""
     try:
@@ -352,6 +429,47 @@ def vercel_project_link_ready() -> bool:
     except RuntimeError:
         return False
     return True
+
+
+def deployment_retry_due(
+    deploy_state: dict[str, Any], *, now: dt.datetime | None = None
+) -> bool:
+    retry_not_before = deploy_state.get("retry_not_before")
+    if not isinstance(retry_not_before, str) or not retry_not_before:
+        return True
+    try:
+        boundary = parse_time(retry_not_before)
+    except (TypeError, ValueError):
+        return True
+    return (now or dt.datetime.now(dt.timezone.utc)) >= boundary
+
+
+def record_deployment_error(
+    deploy_state: dict[str, Any],
+    exc: Exception,
+    *,
+    now: dt.datetime | None = None,
+) -> None:
+    observed = now or dt.datetime.now(dt.timezone.utc)
+    message = " ".join(str(exc).split())[-2000:]
+    deploy_state["last_error"] = {
+        "at": observed.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "type": type(exc).__name__,
+        "message": message,
+    }
+    if VERCEL_DAILY_QUOTA_CODE in message:
+        deploy_state["site_status"] = "quota_limited"
+        deploy_state["retry_not_before"] = (
+            observed + dt.timedelta(seconds=VERCEL_DAILY_QUOTA_BACKOFF_SECONDS)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        deploy_state["quota_code"] = VERCEL_DAILY_QUOTA_CODE
+    else:
+        deploy_state["site_status"] = "error"
+
+
+def clear_deployment_error(deploy_state: dict[str, Any]) -> None:
+    for key in ("last_error", "retry_not_before", "quota_code"):
+        deploy_state.pop(key, None)
 
 
 def preflight(
@@ -368,6 +486,7 @@ def preflight(
     checks: dict[str, Any] = {}
     provider_probes: dict[str, Any] = {}
     provider_errors: dict[str, str] = {}
+    sprint_resource_report: dict[str, Any] | None = None
     keys = load_env(env_file)
     required_keys = {
         "deepseek": "DEEPSEEK_API_KEY",
@@ -424,6 +543,12 @@ def preflight(
         checks["modal_auth"] = True
     except (subprocess.CalledProcessError, json.JSONDecodeError, OSError):
         pass
+    if checks["modal_auth"]:
+        checks["no_live_sprint_resources"], sprint_resource_report = (
+            sprint_modal_resource_audit(modal_profile=modal_profile)
+        )
+    else:
+        checks["no_live_sprint_resources"] = False
     checks["vercel_auth"] = (
         subprocess.run(
             ["vercel", "whoami"],
@@ -512,6 +637,7 @@ def preflight(
         "checks": checks,
         "provider_probes": provider_probes,
         "provider_errors": provider_errors,
+        "sprint_modal_resource_audit": sprint_resource_report,
         "training_gpu_fleet_probe": fleet_probe,
         "ready": ready,
     }
@@ -1071,31 +1197,33 @@ def monitor_cycle(batch_id: str, *, deploy: bool = True) -> dict[str, Any]:
 
         if deploy:
             deploy_state = payload.setdefault("deploy", {})
-            try:
-                frontier_update.deploy_if_needed(
-                    deploy_state,
-                    web=WEB,
-                    # Once every lane is terminal, publication is the only
-                    # remaining external gate. Do not make an empty or
-                    # no-submission lane wait through the live-update cadence.
-                    debounce_seconds=deployment_debounce_seconds(payload),
-                )
-                resolve_alerts(
-                    payload,
-                    run_id="batch",
-                    kind="website_deploy",
-                    resolution="subsequent_site_snapshot_succeeded",
-                )
-            except Exception as exc:
-                deploy_state["site_status"] = "error"
-                cycle_alerts.append(
-                    {
-                        "run_id": "batch",
-                        "kind": "website_deploy",
-                        "source": type(exc).__name__,
-                        "count_in_tail": "1",
-                    }
-                )
+            if deployment_retry_due(deploy_state, now=now):
+                try:
+                    frontier_update.deploy_if_needed(
+                        deploy_state,
+                        web=WEB,
+                        # Once every lane is terminal, publication is the only
+                        # remaining external gate. Do not make an empty or
+                        # no-submission lane wait through the live-update cadence.
+                        debounce_seconds=deployment_debounce_seconds(payload),
+                    )
+                    clear_deployment_error(deploy_state)
+                    resolve_alerts(
+                        payload,
+                        run_id="batch",
+                        kind="website_deploy",
+                        resolution="subsequent_site_snapshot_succeeded",
+                    )
+                except Exception as exc:
+                    record_deployment_error(deploy_state, exc, now=now)
+                    cycle_alerts.append(
+                        {
+                            "run_id": "batch",
+                            "kind": "website_deploy",
+                            "source": type(exc).__name__,
+                            "count_in_tail": "1",
+                        }
+                    )
         cycle_alerts.extend(mark_deployed_runs(payload))
 
         for arm in payload["arms"]:
@@ -1137,7 +1265,11 @@ def monitor_cycle(batch_id: str, *, deploy: bool = True) -> dict[str, Any]:
         payload["status"] = "complete" if all_finalized else "running"
         payload["updated_at"] = utc_now()
         atomic_json(public_path, public_batch(payload), mode=0o644)
-        if deploy and all_finalized:
+        if (
+            deploy
+            and all_finalized
+            and deployment_retry_due(payload.setdefault("deploy", {}), now=now)
+        ):
             try:
                 frontier_update.deploy_if_needed(
                     payload.setdefault("deploy", {}),
@@ -1145,6 +1277,7 @@ def monitor_cycle(batch_id: str, *, deploy: bool = True) -> dict[str, Any]:
                     debounce_seconds=0,
                 )
             except Exception as exc:  # noqa: BLE001
+                record_deployment_error(payload.setdefault("deploy", {}), exc, now=now)
                 cycle_alerts.append(
                     {
                         "run_id": "batch",

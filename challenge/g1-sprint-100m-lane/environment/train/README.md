@@ -3,11 +3,8 @@
 The scored course uses full `G1_CFG`, `enabled_self_collisions=True`,
 `contact_offset=0.04`, and `max_depenetration_velocity=10.0`.
 
-This package contains the embodiment configuration and executable policy
-interface. It does not provide an objective, controller, training loop,
-algorithm, or reference policy. Any method that produces a compliant
-TorchScript policy may be used. The official course and geometric gate
-implementation remain verifier-only.
+This package only ships that robot spawn. Rewards, terrain, and the geometric
+self-collision DQ are still yours (the DQ is verifier-only).
 
 ## Policy interface
 
