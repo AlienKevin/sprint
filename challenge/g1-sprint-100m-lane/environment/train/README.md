@@ -1,12 +1,13 @@
-# `/app/train` — scored-course G1 PhysX spawn
+# `/app/train` — environment and policy contracts
 
-Stock Isaac Lab G1 locomotion leaves **self-collisions off** and often uses
-`G1_MINIMAL_CFG`. The scored course uses **full `G1_CFG`**,
-`enabled_self_collisions=True`, `contact_offset=0.04`, and
-`max_depenetration_velocity=10.0`.
+The scored course uses full `G1_CFG`, `enabled_self_collisions=True`,
+`contact_offset=0.04`, and `max_depenetration_velocity=10.0`.
 
-This package only ships that robot spawn. Rewards, terrain, and the geometric
-self-collision DQ are still yours (the DQ is verifier-only).
+This package contains the embodiment configuration and executable policy
+interface. It does not provide an objective, controller, training loop,
+algorithm, or reference policy. Any method that produces a compliant
+TorchScript policy may be used. The official course and geometric gate
+implementation remain verifier-only.
 
 ## Policy interface
 
@@ -30,8 +31,8 @@ exported TorchScript contract before submission.
 
 ## Runtime and GPU jobs
 
-The persistent agent sandbox has 4 physical CPU cores and 16 GiB RAM. Isaac
-training runs on a separate A10G worker:
+The persistent agent sandbox has 4 physical CPU cores and 16 GiB RAM. GPU work
+runs on a separate A10G worker:
 
 ```bash
 sprint-gpu-train -- python3 -u /app/train/YOUR_SCRIPT.py
@@ -40,16 +41,16 @@ sprint-gpu-train logs
 sprint-gpu-train wait
 ```
 
-One training job is active per run; additional jobs queue. Workers may be
+One GPU job is active per run; additional jobs queue. Workers may be
 preempted and replaced. Write checkpoints under `$SPRINT_GPU_CHECKPOINT_DIR`
 and inspect `$SPRINT_GPU_RESUME` and `$SPRINT_GPU_RESUME_CHECKPOINT` on startup.
 For atomic publication, use `sprint-gpu-train checkpoint save` or the
-`CheckpointStore` in `/opt/sprint_resilience.py`. A recovery checkpoint must be
-full trainer state: model, optimizer, scheduler or scaler state when used, and
-the completed iteration/cursor. Do not commit an exported TorchScript policy as
-a recovery checkpoint; policies are inference/submission artifacts and cannot
-resume optimization. A replacement attempt with `--resume-arg` fails closed if
-no valid trainer-state checkpoint exists, so it never silently restarts work.
+`CheckpointStore` in `/opt/sprint_resilience.py`. A recovery checkpoint must
+contain all mutable state needed to continue the chosen process, including its
+completed cursor. Do not use an exported TorchScript candidate as recovery
+state unless it is independently sufficient to continue that process. A
+replacement attempt with `--resume-arg` fails closed if no valid resumable
+checkpoint exists, so it never silently restarts work.
 Atomically update `progress.json` with `{"policy_path": "/durable/.../policy.pt"}`
 after each complete export. The host mirrors every new reported policy into the
 CPU sandbox, including while training continues, and reports its fresh path as
@@ -67,29 +68,21 @@ Run `sprint-gpu-train --help` for the full job and checkpoint interface.
 
 ## Import
 
-`/app` is on `PYTHONPATH` when you work from `/app`. Prefer:
+`/app` is on `PYTHONPATH` when you work from `/app`:
 
 ```python
 import sys
 sys.path.insert(0, "/app")
-from train.robot import make_scored_course_g1_cfg, apply_scored_course_g1
+from train.robot import make_scored_course_g1_cfg
 ```
 
-## Attach to a Velocity-derived env
+## Embodiment configuration
 
 ```python
-from isaaclab_tasks.manager_based.locomotion.velocity.config.g1.flat_env_cfg import (
-    G1FlatEnvCfg,
-)
-from train.robot import apply_scored_course_g1
-
-cfg = G1FlatEnvCfg()
-apply_scored_course_g1(cfg)   # replaces scene.robot after cfg __post_init__
-# Or: cfg.scene.robot = make_scored_course_g1_cfg()
+cfg.scene.robot = make_scored_course_g1_cfg()
 ```
 
-Call **after** the env cfg finishes `__post_init__` so a parent that rebuilds
-`scene.robot` does not wipe the settings.
+Apply this after any configuration lifecycle that rebuilds `scene.robot`.
 
 ## Constants
 
@@ -100,5 +93,5 @@ Call **after** the env cfg finishes `__post_init__` so a parent that rebuilds
 | `contact_offset` / `rest_offset` | `0.04` / `0.0` |
 | `max_depenetration_velocity` | `10.0` |
 
-See `sprint-check --rules` for gating; this starter does not implement the
+See `sprint-check --rules` for gating. This package does not implement the
 geometry pad check.

@@ -2,11 +2,11 @@
 
 ## Description
 
-Train a control policy that runs a Unitree G1 humanoid 100 m as fast as possible in Isaac Lab, on a frozen embodiment and physics, submitted as a TorchScript policy and timed from a standing start
+Produce a TorchScript policy that runs a Unitree G1 humanoid 100 m as fast as possible in Isaac Lab, on a frozen embodiment and physics, timed from a standing start.
 
 ## Difficulty Explanation
 
-Requires producing a running policy from scratch on one GPU: reward design, curriculum, algorithm and training budget are all the agent's own, and neither a reference policy nor a copy of the course is provided. The agent trains against whatever it builds and may submit immutable candidates for trusted scoring. The observation exposes cross-track and heading error but no target velocity, so the policy must choose its own speed. For scale, Isaac Lab's published G1 checkpoint averages 1.78 m/s and takes 56 s, the fastest published result on this robot is SPRINT (Wei et al., arXiv:2605.28549) at a 6 m/s peak, and the Guinness 100 m record for a bipedal robot is Cassie's 24.73 s.
+Requires producing a compliant policy from scratch with one CPU sandbox and at most one active training GPU per trial. The benchmark supplies the embodiment, physics, policy interface, and scoring contract, but no reference policy or course implementation. Any method that produces compliant TorchScript bytes is permitted.
 
 ## Verification Explanation
 

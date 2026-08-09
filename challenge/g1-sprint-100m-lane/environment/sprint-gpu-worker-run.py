@@ -199,7 +199,7 @@ def lease_owned(path: Path, attempt: int, lease_id: str) -> bool:
 def latest_checkpoint(checkpoint_dir: Path, *, verify_hash: bool = True) -> str | None:
     # The recovery store is for trainer state, not exported inference policies.
     # A TorchScript policy can be perfectly valid for SCORE while being
-    # impossible for an optimizer/runner to resume.  Keep older trainer-state
+    # impossible for the submitted process to resume. Keep older resumable
     # generations eligible when a newer policy artifact was committed by
     # mistake, and never feed a known inference-only artifact to --resume.
     non_resumable_kinds = {

@@ -35,8 +35,8 @@ ACT_DIM = 37
 BATCH_WIDTHS = (1, 5, 32)
 MAX_ABS_ACTION = 100.0
 
-# Official scoring contract.  Training reward is yours to design; these are the
-# checks the verifier actually applies.  Printed by `sprint-check --rules` and
+# Official scoring contract. These are the checks the verifier actually
+# applies. Printed by `sprint-check --rules` and
 # again at the top of every interface check so the bar is never only in prose.
 SCORING_RULES = """
 Official verifier gates (a valid 100 m time needs every gating check to pass):
@@ -54,9 +54,6 @@ Trusted verification:
   sprint-submit returns immediately. sprint-board reports acceptance and the
   official score/gates when the sealed verifier finishes. sprint-check only
   validates the TorchScript interface on CPU — it does not run the course.
-
-Training tip: /app/train has a G1 PhysX spawn helper matching the verifier
-  (full G1_CFG, self-collisions on); stock Isaac Lab G1 leaves them off.
 """.strip()
 
 

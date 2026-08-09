@@ -415,7 +415,7 @@ def main() -> int:
     checkpoint_save = checkpoint_sub.add_parser("save")
     checkpoint_save.add_argument(
         "source",
-        help="Full resumable trainer state (model, optimizer, and iteration)",
+        help="Complete state required to resume the submitted process",
     )
     checkpoint_save.add_argument("--sequence", type=int, required=True)
     checkpoint_save.add_argument("--cursor", default=None)
