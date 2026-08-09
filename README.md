@@ -61,20 +61,25 @@ uv run --project harbor python runs/ops/verifier_robustness_canary.py \
   --policy /absolute/path/to/valid-policy.pt
 ```
 
-## Run the six-trial evaluation
+## Run an evaluation batch
 
-The batch controller fixes the comparison contract to three independent
-DeepSeek V4 Flash 0731 trials and three independent GPT-5.6 Luna trials, all
-through Codex 0.147.0 at max reasoning. The evaluation has no fixed deadline;
-the 24-hour value is only the maximum lifetime of one Modal CPU sandbox, which
-the host supervisor can replace from durable state. The controller starts a
-restartable host monitor, publishes verifier-native success and failure replays
-without an extra GPU, and centralizes website deployments.
+The batch controller defaults to three independent DeepSeek V4 Flash 0731
+trials and three independent GPT-5.6 Luna trials, all through Codex 0.147.0 at
+max reasoning. Use `--trials-per-model` to freeze another equal trial count in
+the batch manifest, such as two per model for validation or five per model for
+production. The evaluation has no fixed deadline; the 24-hour value is only
+the maximum lifetime of one Modal CPU sandbox, which the host supervisor can
+replace from durable state. The controller starts a restartable host monitor,
+publishes verifier-native success and failure replays without an extra GPU,
+and centralizes website deployments.
 
 ```bash
 BATCH_ID="sprint-$(date -u +%Y%m%d)"
-python3 runs/ops/batch_eval.py preflight --batch-id "$BATCH_ID"
-python3 runs/ops/batch_eval.py launch --batch-id "$BATCH_ID" --confirm
+TRIALS_PER_MODEL=3
+python3 runs/ops/batch_eval.py preflight --batch-id "$BATCH_ID" \
+  --trials-per-model "$TRIALS_PER_MODEL"
+python3 runs/ops/batch_eval.py launch --batch-id "$BATCH_ID" \
+  --trials-per-model "$TRIALS_PER_MODEL" --confirm
 python3 runs/ops/batch_eval.py status --batch-id "$BATCH_ID"
 ```
 

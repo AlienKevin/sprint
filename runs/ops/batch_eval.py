@@ -33,7 +33,7 @@ WEB = ROOT / "sprint-web"
 BATCH_ROOT = SCRIPT_DIR / "batches"
 WARMUP_MANIFEST = SCRIPT_DIR / "modal-image-warmup.json"
 FUNCTIONAL_CANARY_REPORT = SCRIPT_DIR / "training-gpu-canary.json"
-HARBOR_REVISION = "eccb31361a2ffbb8841f9e12cf1640cb0fb495a2"
+HARBOR_REVISION = "89394fca3fbc3e3dcd4d45e1d766ed2b5ad46202"
 CODEX_VERSION = "0.147.0"
 TRIALS_PER_MODEL = 3
 DEFAULT_FAMILIES = ("deepseek", "luna")
@@ -120,6 +120,8 @@ def matrix(
     trials_per_model: int = TRIALS_PER_MODEL,
     families: tuple[str, ...] = DEFAULT_FAMILIES,
 ) -> list[dict[str, Any]]:
+    if isinstance(trials_per_model, bool) or not 1 <= trials_per_model <= 50:
+        raise ValueError("trials per model must be between 1 and 50")
     arms: list[dict[str, Any]] = []
     specs = {
         "deepseek": ("deepseek/deepseek-v4-flash", "run-deepseek.sh"),
@@ -303,6 +305,7 @@ def preflight(
     require_fresh: bool = True,
     check_providers: bool = True,
     families: tuple[str, ...] = DEFAULT_FAMILIES,
+    trials_per_model: int = TRIALS_PER_MODEL,
 ) -> dict[str, Any]:
     checks: dict[str, Any] = {}
     provider_probes: dict[str, Any] = {}
@@ -421,7 +424,11 @@ def preflight(
     elif "deepseek" in families:
         checks["deepseek_v4_flash_visible"] = not check_providers
         checks["deepseek_v4_flash_inference"] = not check_providers
-    planned = matrix(batch_id, families=families)
+    planned = matrix(
+        batch_id,
+        trials_per_model=trials_per_model,
+        families=families,
+    )
     checks["unique_runs"] = len({arm["run_id"] for arm in planned}) == len(planned)
     checks["fresh_run_ids"] = not any(
         (SCRIPT_DIR / arm["run_id"]).exists() for arm in planned
@@ -435,6 +442,7 @@ def preflight(
         "batch_id": batch_id,
         "modal_profile": modal_profile,
         "families": list(families),
+        "trials_per_model": trials_per_model,
         "env_file": str(env_file),
         "checks": checks,
         "provider_probes": provider_probes,
@@ -495,12 +503,14 @@ def launch(
     modal_profile: str,
     *,
     families: tuple[str, ...] = DEFAULT_FAMILIES,
+    trials_per_model: int = TRIALS_PER_MODEL,
 ) -> dict[str, Any]:
     report = preflight(
         batch_id=batch_id,
         env_file=env_file,
         modal_profile=modal_profile,
         families=families,
+        trials_per_model=trials_per_model,
     )
     if not report["ready"]:
         failed = [name for name, passed in report["checks"].items() if not passed]
@@ -514,13 +524,17 @@ def launch(
         "created_at": started,
         "reasoning_effort": REASONING_EFFORT,
         "codex_version": CODEX_VERSION,
-        "trials_per_model": TRIALS_PER_MODEL,
+        "trials_per_model": trials_per_model,
         "families": list(families),
         "run_hours": RUN_HOURS,
         "site_deploy_interval_seconds": LIVE_SITE_DEPLOY_SECONDS,
         "modal_profile": modal_profile,
         "preflight": report,
-        "arms": matrix(batch_id, families=families),
+        "arms": matrix(
+            batch_id,
+            trials_per_model=trials_per_model,
+            families=families,
+        ),
         "alerts": [],
         "deploy": {},
         "status": "launching",
@@ -1142,6 +1156,12 @@ def parser() -> argparse.ArgumentParser:
                 choices=DEFAULT_FAMILIES,
                 default=list(DEFAULT_FAMILIES),
             )
+            command.add_argument(
+                "--trials-per-model",
+                type=int,
+                default=TRIALS_PER_MODEL,
+                help="independent trials to launch for each selected model family",
+            )
         if name == "monitor":
             command.add_argument("--loop", action="store_true")
             command.add_argument("--poll-seconds", type=int, default=POLL_SECONDS)
@@ -1157,6 +1177,7 @@ def main() -> int:
             env_file=args.env_file.resolve(),
             modal_profile=args.modal_profile,
             families=tuple(args.families),
+            trials_per_model=args.trials_per_model,
         )
     elif args.command == "launch":
         if not args.confirm:
@@ -1166,6 +1187,7 @@ def main() -> int:
             args.env_file.resolve(),
             args.modal_profile,
             families=tuple(args.families),
+            trials_per_model=args.trials_per_model,
         )
     elif args.command == "monitor":
         while True:

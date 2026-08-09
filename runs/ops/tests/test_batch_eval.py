@@ -94,6 +94,26 @@ def test_batch_matrix_can_launch_three_deepseek_trials_only() -> None:
     assert {row["model"] for row in rows} == {"deepseek/deepseek-v4-flash"}
 
 
+@pytest.mark.parametrize("trials_per_model", [2, 5])
+def test_batch_matrix_supports_staged_trial_counts(trials_per_model: int) -> None:
+    rows = batch_eval.matrix(
+        "eval-staged",
+        trials_per_model=trials_per_model,
+    )
+    assert len(rows) == 2 * trials_per_model
+    assert sum(row["family"] == "deepseek" for row in rows) == trials_per_model
+    assert sum(row["family"] == "luna" for row in rows) == trials_per_model
+    assert [row["trial"] for row in rows if row["family"] == "deepseek"] == list(
+        range(1, trials_per_model + 1)
+    )
+
+
+@pytest.mark.parametrize("trials_per_model", [0, 51, True])
+def test_batch_matrix_rejects_invalid_trial_counts(trials_per_model: int) -> None:
+    with pytest.raises(ValueError, match="trials per model"):
+        batch_eval.matrix("eval-invalid", trials_per_model=trials_per_model)
+
+
 def test_env_loader_reads_only_required_model_keys(tmp_path: Path) -> None:
     path = tmp_path / ".env"
     path.write_text(
