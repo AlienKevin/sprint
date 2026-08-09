@@ -401,6 +401,37 @@ class TelemetrySamplerTests(unittest.TestCase):
         self.assertIn("gpus", sample)
         self.assertEqual(sample.get("gpu_count"), len(sample["gpus"]))
 
+    def test_host_poll_normalizes_to_requested_resource_contract(self) -> None:
+        run = {
+            "resource_contract": {
+                "cpu_agent": {"physical_cpu_cores": 4, "memory_mb": 16384},
+                "training_worker": {
+                    "physical_cpu_cores": 8,
+                    "memory_mb": 32768,
+                },
+                "verifier": {"physical_cpu_cores": 8, "memory_mb": 32768},
+            }
+        }
+        sample = {
+            "resource_accounting_scope": "cgroup-v1",
+            "cpu_limit_cores": 24.0,
+            "cpu_usage_cores": 4.8,
+            "cpu_util_pct": 20.0,
+            "mem_limit_kib": 1_055_904_376,
+            "mem_total_kib": 1_055_904_376,
+            "mem_used_kib": 9_000_000,
+        }
+
+        telemetry_host.normalize_resource_contract(run, "training-gpu", sample)
+
+        self.assertEqual(sample["cpu_requested_cores"], 8.0)
+        self.assertEqual(sample["cpu_limit_cores"], 24.0)
+        self.assertEqual(sample["cpu_util_pct"], 60.0)
+        self.assertEqual(sample["mem_requested_kib"], 32768 * 1024)
+        self.assertEqual(sample["mem_total_kib"], 32768 * 1024)
+        self.assertEqual(sample["mem_available_kib"], 32768 * 1024 - 9_000_000)
+        self.assertEqual(sample["mem_limit_kib"], 1_055_904_376)
+
     def test_sealed_verifier_sampler_stops_with_complete_lifecycle(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             out = Path(raw)

@@ -551,6 +551,45 @@ def sample_container(
     return payload
 
 
+def normalize_resource_contract(
+    run: dict[str, Any], role: str, sample: dict[str, Any]
+) -> None:
+    """Normalize host-polled utilization to the run's requested resources.
+
+    Long-lived immutable images can contain an older telemetry helper.  A
+    one-shot host exec also does not inherit the sandbox launch environment,
+    so that helper may report CPU utilization against Modal's larger cgroup
+    burst ceiling and memory totals against the ceiling rather than the
+    requested/billed baseline.  Preserve the observed ceiling fields, but use
+    the trusted run contract for percentages and chart totals.
+    """
+    contract_key = {
+        "cpu-agent": "cpu_agent",
+        "training-gpu": "training_worker",
+        "verifier-gpu": "verifier",
+    }.get(role)
+    contract = (run.get("resource_contract") or {}).get(contract_key or "") or {}
+
+    requested_cpu = contract.get("physical_cpu_cores")
+    if isinstance(requested_cpu, (int, float)) and requested_cpu > 0:
+        requested_cpu = float(requested_cpu)
+        sample["cpu_requested_cores"] = requested_cpu
+        used_cpu = sample.get("cpu_usage_cores")
+        if isinstance(used_cpu, (int, float)):
+            sample["cpu_util_pct"] = round(100.0 * float(used_cpu) / requested_cpu, 2)
+
+    requested_memory_mb = contract.get("memory_mb")
+    if isinstance(requested_memory_mb, (int, float)) and requested_memory_mb > 0:
+        requested_memory_kib = int(requested_memory_mb * 1024)
+        sample["mem_requested_kib"] = requested_memory_kib
+        sample["mem_total_kib"] = requested_memory_kib
+        used_memory_kib = sample.get("mem_used_kib")
+        if isinstance(used_memory_kib, (int, float)):
+            sample["mem_available_kib"] = max(
+                0, requested_memory_kib - int(used_memory_kib)
+            )
+
+
 def _container_role_probe(run: dict[str, Any], container_id: str) -> str:
     """Classify a sandbox into one unambiguous resource-accounting role."""
     result = _exec_target(
@@ -685,6 +724,7 @@ def poll_once(run_id: str) -> dict[str, Any]:
         if not sample:
             summary["errors"].append(f"{role}:{container_id}:empty")
             continue
+        normalize_resource_contract(run, role, sample)
         if role == "training-gpu":
             for key, value in gpu_job_metadata(run, container_id).items():
                 sample.setdefault(key, value)
@@ -694,11 +734,6 @@ def poll_once(run_id: str) -> dict[str, Any]:
             # host knows these values exactly; attach them so coverage is
             # attributed to the correct supervised CPU allocation.
             sample["cpu_attempt"] = int(run.get("cpu_launch_attempt") or 1)
-            contract = (run.get("resource_contract") or {}).get("cpu_agent") or {}
-            if contract.get("physical_cpu_cores") is not None:
-                sample["cpu_requested_cores"] = float(contract["physical_cpu_cores"])
-            if contract.get("memory_mb") is not None:
-                sample["mem_requested_kib"] = int(contract["memory_mb"]) * 1024
         _append_jsonl(out_dir / "host-samples.jsonl", sample)
         rows = _flatten_for_csv(sample, container_id=container_id)
         _append_csv(state_csv, rows)
