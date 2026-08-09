@@ -40,6 +40,7 @@ from sprint_resilience import (  # noqa: E402
 
 WORKER_TAG_ROLE = "gpu-worker"
 MAX_ACTIVE_TRAINING_JOBS_PER_RUN = 1
+STOP_DISPATCH_LOCK_TIMEOUT_SEC = 10 * 60
 CLAIM_STALE_SEC = int(os.environ.get("SPRINT_GPU_CLAIM_STALE_SEC", "900"))
 HEARTBEAT_TIMEOUT_SEC = int(
     os.environ.get(
@@ -1080,7 +1081,13 @@ def stop_all(
     run: dict[str, Any], *, reason: str = "operator_stop"
 ) -> list[dict[str, Any]]:
     state_dir = Path(str(run["state_dir"]))
-    with gpu_claim.dispatch_lock(state_dir) as got_lock:
+    # A Modal Sandbox.create call can legitimately hold this lock for longer
+    # than the normal 30-second monitor budget.  The durable stop marker is
+    # already present before this function is called, so wait for the in-flight
+    # dispatch and then fence it instead of returning a misleading partial stop.
+    with gpu_claim.dispatch_lock(
+        state_dir, timeout_sec=STOP_DISPATCH_LOCK_TIMEOUT_SEC
+    ) as got_lock:
         if not got_lock:
             raise RuntimeError("dispatch lock busy while stopping GPU workers")
         return _stop_all_locked(run, reason=reason)
@@ -1282,6 +1289,26 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
                     )
                     continue
                 payload = mark_dispatched(run, latest or claimed, sandbox_id)
+                # STOP_REQUESTED can arrive while Sandbox.create is in flight.
+                # Publish the new sandbox id first so the fencing pass can
+                # terminate the exact worker, then stop it before releasing the
+                # dispatch lock.  The stop caller also waits for this lock as a
+                # second, independent guarantee.
+                if operator_stop_requested(state_dir):
+                    stopped = _stop_all_locked(run, reason="operator_stop")
+                    actions.append(
+                        {
+                            "job_id": job_id,
+                            "attempt": payload.get("attempt"),
+                            "sandbox_id": sandbox_id,
+                            "status": "terminated",
+                            "action": "stop_after_spawn",
+                            "stopped_jobs": [
+                                item.get("job_id") for item in stopped
+                            ],
+                        }
+                    )
+                    break
                 actions.append(
                     {
                         "job_id": job_id,

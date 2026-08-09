@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 OPS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(OPS))
 
@@ -169,7 +171,7 @@ def test_continuous_verifier_result_does_not_end_running_cpu_billing(
 
 
 def test_collection_waits_for_complete_hour_then_persists_provider_report(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = tmp_path / "cost-run"
     state.mkdir()
@@ -203,6 +205,7 @@ def test_collection_waits_for_complete_hour_then_persists_provider_report(
         },
     ]
     calls = []
+    monkeypatch.setattr(modal_cost.shutil, "which", lambda name: "/tools/modal")
 
     def runner(command, **kwargs):
         calls.append((command, kwargs))
@@ -224,6 +227,7 @@ def test_collection_waits_for_complete_hour_then_persists_provider_report(
         "cpu_agent": {"CPU": 0.5, "Memory": 0.0}
     }
     assert "--show-resources" in calls[0][0]
+    assert calls[0][0][0] == "/tools/modal"
     assert calls[0][1]["env"]["MODAL_PROFILE"] == "test"
     assert len(complete["provider_report_sha256"]) == 64
     assert len(complete["selected_items_sha256"]) == 64

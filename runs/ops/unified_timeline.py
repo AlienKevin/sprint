@@ -765,9 +765,14 @@ class Builder:
     def add_submissions(self, trials: list[pathlib.Path]) -> None:
         for trial in trials:
             attempt = cpu_attempt_for(trial, self.state_dir)
+            uses_frozen_final = (
+                self.run.get("primary_score_policy") == "frozen_final_artifact"
+            )
             final_policy = trial / "artifacts" / "app" / "submission" / "policy.pt"
             try:
-                final_policy_digest = sha256_file(final_policy)
+                final_policy_digest = (
+                    sha256_file(final_policy) if uses_frozen_final else None
+                )
             except OSError:
                 final_policy_digest = None
             ledger = trial / "artifacts" / "continuous" / "ledger.jsonl"
@@ -837,12 +842,13 @@ class Builder:
                         "cache_hit": bool(row.get("cache_hit")),
                         "source_evaluation_id": row.get("source_evaluation_id"),
                         "submission_origin": "agent_blind_submit",
-                        "primary_final": primary_final,
                         "rewards": row.get("rewards")
                         if isinstance(row.get("rewards"), dict)
                         else {},
                         "error": row.get("error"),
                     }
+                    if uses_frozen_final:
+                        artifact["primary_final"] = primary_final
                     self.artifacts.append(artifact)
                     self.counts["submission_artifacts"] += 1
                     if not exists:
@@ -873,8 +879,9 @@ class Builder:
                     "cache_hit": bool(row.get("cache_hit")),
                     "evaluation_fingerprint": row.get("evaluation_fingerprint"),
                     "source_evaluation_id": row.get("source_evaluation_id"),
-                    "primary_final": primary_final,
                 }
+                if uses_frozen_final:
+                    common["primary_final"] = primary_final
                 start_key = (
                     "scheduler_acquired_at"
                     if row.get("cache_hit")
@@ -916,7 +923,7 @@ class Builder:
                         identity=f"{artifact_id}:{kind}:{row.get(key)}",
                         data=data,
                     )
-            if final_policy_digest and primary_row is None:
+            if uses_frozen_final and final_policy_digest and primary_row is None:
                 artifact_id = hashlib.sha256(
                     f"{self.relative(trial)}:{attempt}:host-final:{final_policy_digest}".encode()
                 ).hexdigest()
@@ -1664,9 +1671,19 @@ class Builder:
         best_result_ms = (
             parse_epoch_ms(best_artifact.get("finished_at")) if best_artifact else None
         ) or best_submitted_ms
-        primary_artifacts = [
-            artifact for artifact in self.artifacts if artifact.get("primary_final")
-        ]
+        uses_frozen_final = (
+            self.run.get("primary_score_policy") == "frozen_final_artifact"
+        )
+        evaluation_result_policy = self.run.get("evaluation_result_policy") or (
+            "frozen_final_artifact"
+            if uses_frozen_final
+            else "all_blind_submissions_by_deadline"
+        )
+        primary_artifacts = (
+            [artifact for artifact in self.artifacts if artifact.get("primary_final")]
+            if uses_frozen_final
+            else []
+        )
         primary_artifact = primary_artifacts[-1] if primary_artifacts else None
         primary_rewards = self.final_verifier_rewards
         primary_time_raw = primary_rewards.get("best_100m_s")
@@ -1746,7 +1763,7 @@ class Builder:
                 parse_epoch_ms(artifact.get("finished_at"))
             )
         best_cost = costs_at(best_result_ms)
-        primary_cost = costs_at(primary_submitted_ms)
+        primary_cost = costs_at(primary_submitted_ms) if uses_frozen_final else None
         modal_estimate_at_best = None
         api_cost_at_best = None
         if best_cost is not None:
@@ -1757,17 +1774,8 @@ class Builder:
             "valid_submission_count": len(scored_artifacts),
             "disqualified_submission_count": len(self.artifacts)
             - len(scored_artifacts),
-            "primary_score_policy": self.run.get("primary_score_policy"),
-            "primary_final_100m_s": primary_time,
-            "primary_final_valid": bool(primary_rewards.get("valid_run")),
-            "primary_final_submission_epoch_ms": primary_submitted_ms,
-            "primary_final_result_epoch_ms": primary_result_ms,
-            "retrospective_best_100m_s": best_time,
-            "best_100m_s": (
-                primary_time
-                if self.run.get("primary_score_policy") == "frozen_final_artifact"
-                else best_time
-            ),
+            "evaluation_result_policy": evaluation_result_policy,
+            "best_100m_s": primary_time if uses_frozen_final else best_time,
             "best_submission_epoch_ms": best_submitted_ms,
             "best_result_epoch_ms": best_result_ms,
             "time_to_best_ms": (
@@ -1780,16 +1788,6 @@ class Builder:
             "total_estimated_cost_at_best_usd": (
                 api_cost_at_best + modal_estimate_at_best
                 if api_cost_at_best is not None and modal_estimate_at_best is not None
-                else None
-            ),
-            "primary_final_agent_cost_at_submission_usd": (
-                primary_cost.get("total_estimated_usd")
-                if primary_cost is not None
-                else None
-            ),
-            "verifier_measurement_overhead_at_primary_submission_estimated_usd": (
-                primary_cost.get("verifier_measurement_overhead_estimated_usd")
-                if primary_cost is not None
                 else None
             ),
             "final_api_cost_usd": usage_summary["calculated_api_usage_usd"],
@@ -1825,6 +1823,29 @@ class Builder:
             "tool_call_count": sum(tool_call_counts.values()),
             "timed_tool_call_count": self.counts["timed_tool_calls"],
         }
+        if uses_frozen_final:
+            comparison_summary.update(
+                {
+                    "primary_score_policy": self.run.get("primary_score_policy"),
+                    "primary_final_100m_s": primary_time,
+                    "primary_final_valid": bool(primary_rewards.get("valid_run")),
+                    "primary_final_submission_epoch_ms": primary_submitted_ms,
+                    "primary_final_result_epoch_ms": primary_result_ms,
+                    "retrospective_best_100m_s": best_time,
+                    "primary_final_agent_cost_at_submission_usd": (
+                        primary_cost.get("total_estimated_usd")
+                        if primary_cost is not None
+                        else None
+                    ),
+                    "verifier_measurement_overhead_at_primary_submission_estimated_usd": (
+                        primary_cost.get(
+                            "verifier_measurement_overhead_estimated_usd"
+                        )
+                        if primary_cost is not None
+                        else None
+                    ),
+                }
+            )
         return {
             "schema_version": SCHEMA_VERSION,
             "generated_at": dt.datetime.now(dt.timezone.utc)
@@ -1847,7 +1868,7 @@ class Builder:
                     "scoring_global_max_concurrent"
                 ),
                 "scoring_feedback_policy": self.run.get("scoring_feedback_policy"),
-                "primary_score_policy": self.run.get("primary_score_policy"),
+                "evaluation_result_policy": evaluation_result_policy,
             },
             "resource_roles": {
                 "cpu-agent": {"resource": "cpu", "trust": "agent"},

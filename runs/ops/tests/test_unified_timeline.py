@@ -616,6 +616,26 @@ def test_request_costs_are_joined_to_performance_on_the_same_clock(
     assert request["elapsed_ms"] == 18_000
 
 
+def test_all_submission_result_set_has_no_privileged_primary(
+    tmp_path: Path,
+) -> None:
+    state = fixture_run(tmp_path)
+    run_path = state / "run.json"
+    run = json.loads(run_path.read_text())
+    run["evaluation_result_policy"] = "all_blind_submissions_by_deadline"
+    run_path.write_text(json.dumps(run))
+
+    payload = unified_timeline.build_timeline(state)
+
+    assert payload["comparison_summary"]["best_100m_s"] == 48.0
+    assert payload["comparison_summary"]["evaluation_result_policy"] == (
+        "all_blind_submissions_by_deadline"
+    )
+    assert "primary_score_policy" not in payload["comparison_summary"]
+    assert "primary_final_100m_s" not in payload["comparison_summary"]
+    assert all("primary_final" not in item for item in payload["artifacts"])
+
+
 def test_primary_score_uses_frozen_final_artifact_not_retrospective_best(
     tmp_path: Path,
 ) -> None:

@@ -16,6 +16,11 @@ from harbor.trial.continuous import ContinuousVerificationService
 POLICY = "/app/submission/policy.pt"
 
 
+def test_continuous_only_requires_continuous_verification():
+    with pytest.raises(ValueError, match="continuous_only requires"):
+        ContinuousVerificationConfig(continuous_only=True)
+
+
 def test_shared_paths_expand_environment_without_allowing_relative_paths(
     monkeypatch, tmp_path
 ):

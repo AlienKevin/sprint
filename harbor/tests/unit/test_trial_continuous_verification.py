@@ -389,6 +389,42 @@ class TestContinuousVerificationWiring:
             # And the final verifier still ran on its own.
             assert any(c["key"] == "trial" for c in calls)
 
+    async def test_continuous_only_uses_complete_ledger_without_final_verifier(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            queue: dict[str, int] = {}
+            trials_dir = tmp_path / "trials"
+            trials_dir.mkdir()
+            calls = []
+
+            async def agent_run(*args, **kwargs):
+                queue["candidate.pt"] = 128
+                for _ in range(10):
+                    await asyncio.sleep(0.02)
+
+            async def spy(self, **kwargs):
+                calls.append(kwargs)
+                return VerifierResult(
+                    rewards={"reward": 1.0, "best_100m_s": 9.9}
+                )
+
+            with patch.object(Trial, "_run_separate_verifier", spy):
+                trial = await _run(
+                    _task_dir(tmp_path, extra="continuous_only = true\n"),
+                    trials_dir,
+                    _make_env(queue),
+                    _make_env(),
+                    agent_run=agent_run,
+                )
+
+            assert [call["key"] for call in calls] == ["continuous-0001"]
+            assert trial.result.verifier is None
+            assert trial.result.verifier_result is None
+            summary = trial.result.continuous_verification
+            assert summary is not None
+            assert [row.name for row in summary.submissions] == ["candidate.pt"]
+            assert summary.submissions[0].rewards["best_100m_s"] == 9.9
+
     async def test_shared_mode_is_refused(self):
         """Shared mode cannot isolate the verifier, so it is an error, not a
         silent downgrade."""

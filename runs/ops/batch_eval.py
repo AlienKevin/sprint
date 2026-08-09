@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reproducible six-trial Sprint launch, monitoring, and website publishing."""
+"""Reproducible Sprint batch launch, monitoring, and website publishing."""
 
 from __future__ import annotations
 
@@ -30,9 +30,10 @@ import sprintctl  # noqa: E402
 UV = Path(os.environ.get("UV", "/home/ubuntu/.local/bin/uv"))
 WEB = ROOT / "sprint-web"
 BATCH_ROOT = SCRIPT_DIR / "batches"
-HARBOR_REVISION = "2f50d4c78bac5420b50d5cd15bc549a9bb19fa9d"
+HARBOR_REVISION = "f2763377dddd1308334ba01fb39eee4e50c2c726"
 CODEX_VERSION = "0.147.0"
 TRIALS_PER_MODEL = 3
+DEFAULT_FAMILIES = ("deepseek", "luna")
 REASONING_EFFORT = "max"
 RUN_HOURS = 24.0
 POLL_SECONDS = 30
@@ -87,14 +88,21 @@ def load_env(path: Path) -> dict[str, str]:
 
 
 def matrix(
-    batch_id: str, trials_per_model: int = TRIALS_PER_MODEL
+    batch_id: str,
+    trials_per_model: int = TRIALS_PER_MODEL,
+    families: tuple[str, ...] = DEFAULT_FAMILIES,
 ) -> list[dict[str, Any]]:
     arms: list[dict[str, Any]] = []
-    specs = (
-        ("deepseek", "deepseek/deepseek-v4-flash", "run-deepseek.sh"),
-        ("luna", "openai/gpt-5.6-luna", "run-luna.sh"),
-    )
-    for family, model, wrapper in specs:
+    specs = {
+        "deepseek": ("deepseek/deepseek-v4-flash", "run-deepseek.sh"),
+        "luna": ("openai/gpt-5.6-luna", "run-luna.sh"),
+    }
+    selected = tuple(dict.fromkeys(families))
+    unknown = sorted(set(selected) - set(specs))
+    if not selected or unknown:
+        raise ValueError(f"invalid model families: {unknown or list(selected)}")
+    for family in selected:
+        model, wrapper = specs[family]
         for trial in range(1, trials_per_model + 1):
             run_id = f"{batch_id}-{family}-{trial}"
             if not RUN_ID_RE.fullmatch(run_id):
@@ -188,10 +196,16 @@ def preflight(
     modal_profile: str,
     require_fresh: bool = True,
     check_providers: bool = True,
+    families: tuple[str, ...] = DEFAULT_FAMILIES,
 ) -> dict[str, Any]:
     checks: dict[str, Any] = {}
     keys = load_env(env_file)
-    for name in ("OPENAI_API_KEY", "DEEPSEEK_API_KEY"):
+    required_keys = {
+        "deepseek": "DEEPSEEK_API_KEY",
+        "luna": "OPENAI_API_KEY",
+    }
+    for family in families:
+        name = required_keys[family]
         checks[f"secret_{name.lower()}"] = len(keys.get(name, "")) >= 16
     checks["harbor_revision"] = (
         ROOT / "harbor/.sprint-upstream-commit"
@@ -240,22 +254,26 @@ def preflight(
         ).returncode
         == 0
     )
-    if check_providers and checks["secret_openai_api_key"]:
+    if "luna" in families and check_providers and checks["secret_openai_api_key"]:
         models = provider_models(
             "https://api.openai.com/v1/models", keys["OPENAI_API_KEY"]
         )
         checks["openai_luna_visible"] = "gpt-5.6-luna" in models
-    else:
+    elif "luna" in families:
         checks["openai_luna_visible"] = not check_providers
-    if check_providers and checks["secret_deepseek_api_key"]:
+    if (
+        "deepseek" in families
+        and check_providers
+        and checks["secret_deepseek_api_key"]
+    ):
         models = provider_models(
             "https://api.deepseek.com/models", keys["DEEPSEEK_API_KEY"]
         )
         checks["deepseek_v4_flash_visible"] = "deepseek-v4-flash" in models
-    else:
+    elif "deepseek" in families:
         checks["deepseek_v4_flash_visible"] = not check_providers
-    planned = matrix(batch_id)
-    checks["six_unique_runs"] = len({arm["run_id"] for arm in planned}) == 6
+    planned = matrix(batch_id, families=families)
+    checks["unique_runs"] = len({arm["run_id"] for arm in planned}) == len(planned)
     checks["fresh_run_ids"] = not any(
         (SCRIPT_DIR / arm["run_id"]).exists() for arm in planned
     )
@@ -267,6 +285,7 @@ def preflight(
         "checked_at": utc_now(),
         "batch_id": batch_id,
         "modal_profile": modal_profile,
+        "families": list(families),
         "env_file": str(env_file),
         "checks": checks,
         "ready": ready,
@@ -319,11 +338,18 @@ def start_monitor_service(batch_id: str, env_file: Path, modal_profile: str) -> 
     )
 
 
-def launch(batch_id: str, env_file: Path, modal_profile: str) -> dict[str, Any]:
+def launch(
+    batch_id: str,
+    env_file: Path,
+    modal_profile: str,
+    *,
+    families: tuple[str, ...] = DEFAULT_FAMILIES,
+) -> dict[str, Any]:
     report = preflight(
         batch_id=batch_id,
         env_file=env_file,
         modal_profile=modal_profile,
+        families=families,
     )
     if not report["ready"]:
         failed = [name for name, passed in report["checks"].items() if not passed]
@@ -338,11 +364,12 @@ def launch(batch_id: str, env_file: Path, modal_profile: str) -> dict[str, Any]:
         "reasoning_effort": REASONING_EFFORT,
         "codex_version": CODEX_VERSION,
         "trials_per_model": TRIALS_PER_MODEL,
+        "families": list(families),
         "run_hours": RUN_HOURS,
         "site_deploy_interval_seconds": LIVE_SITE_DEPLOY_SECONDS,
         "modal_profile": modal_profile,
         "preflight": report,
-        "arms": matrix(batch_id),
+        "arms": matrix(batch_id, families=families),
         "alerts": [],
         "deploy": {},
         "status": "launching",
@@ -837,6 +864,13 @@ def parser() -> argparse.ArgumentParser:
         )
         if name == "launch":
             command.add_argument("--confirm", action="store_true")
+        if name in {"preflight", "launch"}:
+            command.add_argument(
+                "--families",
+                nargs="+",
+                choices=DEFAULT_FAMILIES,
+                default=list(DEFAULT_FAMILIES),
+            )
         if name == "monitor":
             command.add_argument("--loop", action="store_true")
             command.add_argument("--poll-seconds", type=int, default=POLL_SECONDS)
@@ -851,11 +885,17 @@ def main() -> int:
             batch_id=args.batch_id,
             env_file=args.env_file.resolve(),
             modal_profile=args.modal_profile,
+            families=tuple(args.families),
         )
     elif args.command == "launch":
         if not args.confirm:
             raise SystemExit("launch requires --confirm")
-        output = launch(args.batch_id, args.env_file.resolve(), args.modal_profile)
+        output = launch(
+            args.batch_id,
+            args.env_file.resolve(),
+            args.modal_profile,
+            families=tuple(args.families),
+        )
     elif args.command == "monitor":
         while True:
             output = monitor_cycle(args.batch_id, deploy=not args.no_deploy)

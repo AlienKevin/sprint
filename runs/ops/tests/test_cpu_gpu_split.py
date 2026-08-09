@@ -115,6 +115,41 @@ class ClaimSelectionTests(unittest.TestCase):
         job = {"command": ["/opt/IsaacLab/isaaclab.sh", "-s"]}
         self.assertIs(gpu_worker.normalize_job_command(job), job)
 
+    def test_worker_wraps_agent_isaac_python_with_local_asset_bootstrap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            script = root / "train.py"
+            script.write_text("from isaaclab.app import AppLauncher\n")
+            bootstrap = root / "bootstrap.py"
+            bootstrap.write_text("# trusted bootstrap\n")
+            command = worker_run.build_attempt_command(
+                {"command": ["python3", "-u", str(script)]},
+                1,
+                None,
+                isaac_bootstrap=bootstrap,
+            )
+
+        self.assertEqual(
+            command,
+            ["python3", "-u", str(bootstrap), str(script)],
+        )
+
+    def test_worker_does_not_wrap_pure_torch_python(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            script = root / "train.py"
+            script.write_text("import torch\n")
+            bootstrap = root / "bootstrap.py"
+            bootstrap.write_text("# trusted bootstrap\n")
+            command = worker_run.build_attempt_command(
+                {"command": ["python3", str(script)]},
+                1,
+                None,
+                isaac_bootstrap=bootstrap,
+            )
+
+        self.assertEqual(command, ["python3", str(script)])
+
     def test_archives_terminal_modal_streams_to_agent_visible_log(self) -> None:
         uploaded: dict[str, object] = {}
 
@@ -963,6 +998,82 @@ class NetworkIsolationTests(unittest.TestCase):
 
 
 class RetryAndFencingTests(unittest.TestCase):
+    def test_operator_stop_waits_for_inflight_dispatch_lock(self) -> None:
+        run = {"run_id": "unit", "state_dir": "/tmp/unit-stop-lock"}
+        lock = mock.MagicMock()
+        lock.return_value.__enter__.return_value = True
+        lock.return_value.__exit__.return_value = False
+        with (
+            mock.patch.object(gpu_claim, "dispatch_lock", lock),
+            mock.patch.object(gpu_worker, "list_job_ids", return_value=[]),
+        ):
+            self.assertEqual(gpu_worker.stop_all(run), [])
+        lock.assert_called_once_with(
+            Path(run["state_dir"]),
+            timeout_sec=gpu_worker.STOP_DISPATCH_LOCK_TIMEOUT_SEC,
+        )
+
+    def test_stop_arriving_during_spawn_fences_new_sandbox(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            run = {
+                "run_id": "unit",
+                "state_dir": raw,
+                "cpu_agent_gpu_worker": True,
+            }
+            jobs = {
+                "queued": {
+                    "job_id": "queued",
+                    "run_id": "unit",
+                    "status": "pending",
+                    "command": ["python3", "train.py"],
+                }
+            }
+
+            def load_job(_run, job_id):
+                return dict(jobs[job_id])
+
+            def persist_job(_run, payload):
+                jobs[str(payload["job_id"])] = dict(payload)
+                return dict(payload)
+
+            handle = mock.Mock(attempt_id="sb-new")
+            with (
+                mock.patch.object(
+                    gpu_worker.sprintctl,
+                    "load_run",
+                    return_value=(Path(raw), run),
+                ),
+                mock.patch.object(
+                    gpu_worker, "list_job_ids", return_value=["queued"]
+                ),
+                mock.patch.object(gpu_worker, "load_job", side_effect=load_job),
+                mock.patch.object(
+                    gpu_worker, "persist_job", side_effect=persist_job
+                ),
+                mock.patch.object(
+                    gpu_worker,
+                    "operator_stop_requested",
+                    side_effect=[False, True],
+                ),
+                mock.patch.object(
+                    gpu_worker.ModalSandboxProvider,
+                    "start",
+                    return_value=handle,
+                ),
+                mock.patch.object(gpu_worker, "load_heartbeat", return_value=None),
+                mock.patch.object(gpu_worker, "_close_attempt_timeline"),
+                mock.patch.object(gpu_worker, "_timeline_event"),
+                mock.patch.object(
+                    gpu_worker, "_terminate_sandbox", return_value=None
+                ) as terminate,
+            ):
+                result = gpu_worker.dispatch_once("unit")
+
+        self.assertEqual(jobs["queued"]["status"], "terminated")
+        self.assertEqual(jobs["queued"]["sandbox_id"], "sb-new")
+        self.assertEqual(result["actions"][0]["action"], "stop_after_spawn")
+        terminate.assert_called_once()
+
     def test_retry_keeps_logical_job_and_fences_lease(self) -> None:
         job = {
             "job_id": "logical",

@@ -113,11 +113,11 @@ not model behavior.
 
 `run.json` records `scoring_queue_scope=central_blind_per_run_queues`, a
 run-unique provenance key, and global concurrency one. Timeline events carry
-central scheduler wait, cache/source provenance, and the host-frozen primary
-artifact. The official Pareto score is `/app/submission/policy.pt` as collected
-after the agent exits; the agent may keep replacing it until then.
-`retrospective_best_100m_s` remains available for trajectory analysis without
-becoming the benchmark score.
+central scheduler wait and cache/source provenance for every accepted policy.
+There is no host-frozen primary artifact. The result is the complete submitted
+policy trajectory; `best_100m_s` is the best valid policy achieved by the fixed
+agent stop, and the website derives the performance–time–cost Pareto
+frontier from all scored submissions.
 
 ## Build and validate
 

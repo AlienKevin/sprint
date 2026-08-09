@@ -187,6 +187,9 @@ def main() -> int:
             command=(
                 'python3 -c "import torch; assert torch.cuda.is_available(); '
                 'print(torch.cuda.get_device_name(0))" && '
+                "timeout --signal=TERM --kill-after=10 120 "
+                "python3 /opt/sprint-isaac-bootstrap.py "
+                "/app/train/asset_probe.py --headless --device cuda:0 && "
                 "mkdir -p /tmp/training-telemetry && "
                 "SPRINT_REQUESTED_CPU_CORES=8 SPRINT_REQUESTED_MEMORY_MIB=32768 "
                 "python3 /opt/sprint-telemetry.py --once --role training-gpu "

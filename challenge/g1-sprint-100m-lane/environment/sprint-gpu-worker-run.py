@@ -190,7 +190,11 @@ def checkpoint_resume_metadata(checkpoint: str | None) -> dict[str, str]:
 
 
 def build_attempt_command(
-    job: dict, attempt: int, checkpoint: str | None
+    job: dict,
+    attempt: int,
+    checkpoint: str | None,
+    *,
+    isaac_bootstrap: Path = Path("/opt/sprint-isaac-bootstrap.py"),
 ) -> list[str]:
     command = list(job.get("command") or [])
     if command and command[0] == "python" and shutil.which("python") is None:
@@ -199,6 +203,27 @@ def build_attempt_command(
     resume_arg = str(job.get("resume_arg") or "")
     if attempt > 1 and resume_arg and checkpoint:
         command.extend([resume_arg, checkpoint])
+    if command and Path(command[0]).name.startswith("python"):
+        script_index = 1
+        while script_index < len(command) and command[script_index] in {
+            "-u",
+            "-B",
+            "-E",
+            "-s",
+        }:
+            script_index += 1
+        if script_index < len(command):
+            script = Path(command[script_index])
+            try:
+                source = script.read_text(errors="ignore")[:1_000_000]
+            except OSError:
+                source = ""
+            if (
+                isaac_bootstrap.is_file()
+                and script.suffix == ".py"
+                and ("isaaclab" in source or "isaacsim" in source)
+            ):
+                command.insert(script_index, str(isaac_bootstrap))
     return command
 
 

@@ -85,12 +85,11 @@ def test_removed_final_flag_is_rejected(tmp_path: Path, monkeypatch) -> None:
         raise AssertionError("removed --final flag was accepted")
 
 
-def test_fixed_submission_cap_is_enforced_before_acceptance(
+def test_submission_accepts_after_sixty_prior_receipts(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
     submit = load_script("sprint-submit")
     configure_paths(submit, tmp_path)
-    submit.MAX_SUBMISSIONS = 1
     monkeypatch.setattr(
         submit.subprocess,
         "run",
@@ -98,12 +97,15 @@ def test_fixed_submission_cap_is_enforced_before_acceptance(
     )
     policy = tmp_path / "candidate.pt"
     policy.write_bytes(b"policy")
+    receipts = Path(submit.RECEIPTS)
+    receipts.mkdir(parents=True)
+    for index in range(60):
+        (receipts / f"prior-{index}.json").write_text("{}\n")
     monkeypatch.setattr(sys, "argv", ["sprint-submit", str(policy)])
 
     assert submit.main() == 0
-    assert submit.main() == 1
-    assert "fixed limit of 1" in capsys.readouterr().err
-    assert len(list(Path(submit.RECEIPTS).glob("*.json"))) == 1
+    assert "accepted" in capsys.readouterr().out
+    assert len(list(Path(submit.RECEIPTS).glob("*.json"))) == 61
     assert len(list(Path(submit.QUEUE).glob("*.pt"))) == 1
 
 
@@ -142,3 +144,59 @@ def test_finalization_requires_nonempty_host_frozen_policy(tmp_path: Path) -> No
     assert sprintctl.final_policy_frozen_ready(trial) is True
     policy.write_bytes(b"")
     assert sprintctl.final_policy_frozen_ready(trial) is False
+
+
+def test_all_submission_finalization_needs_no_final_policy_or_verifier(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "run"
+    jobs = state / "harbor-jobs"
+    job = jobs / "job"
+    trial = job / "task__trial"
+    continuous = trial / "artifacts" / "continuous"
+    continuous.mkdir(parents=True)
+    ledger = continuous / "ledger.jsonl"
+    ledger.write_text("")
+    (trial / "artifacts" / "manifest.json").write_text("[]\n")
+    (trial / "result.json").write_text(
+        json.dumps(
+            {
+                "finished_at": "2026-08-09T00:00:00Z",
+                "continuous_verification": {"submissions": []},
+                "verifier": None,
+                "verifier_result": None,
+            }
+        )
+    )
+    (job / "result.json").write_text(
+        json.dumps({"finished_at": "2026-08-09T00:00:00Z"})
+    )
+    (state / "STOP_ACK.json").write_text("{}\n")
+    (state / "archive-manifest.json").write_text('{"attempts": {}}\n')
+    ledger_digest = sprintctl.read_ledger(ledger).digest
+    (state / "frontier-state.json").write_text(
+        json.dumps(
+            {
+                "ledger_hash": ledger_digest,
+                "capture_queue": [],
+                "captures": {},
+                "frontier_candidates": [],
+                "pending_site_hash": None,
+                "site_status": "noop",
+            }
+        )
+    )
+    run = {
+        "run_id": "run",
+        "state_dir": str(state),
+        "jobs_root": str(jobs),
+        "evaluation_result_policy": "all_blind_submissions_by_deadline",
+    }
+    (state / "run.json").write_text(json.dumps(run))
+
+    ready, conditions, details = sprintctl.final_conditions(state, run)
+
+    assert ready, details
+    assert conditions["continuous_result_set"] is True
+    assert "final_verifier" not in conditions
+    assert "final_policy_frozen" not in conditions

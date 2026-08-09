@@ -5,8 +5,8 @@
 
 Prints an acceptance id and exits. Scoring runs on the real course in a sealed
 container, but no score, failure, queue state, or completion timing is exposed
-until the agent run has ended. The policy at ``/app/submission/policy.pt`` when
-the agent exits is frozen by the trusted host and becomes the primary artifact.
+until the agent run has ended. Every accepted policy is retained in the final
+trajectory and Pareto analysis.
 """
 
 import argparse
@@ -24,7 +24,6 @@ QUEUE = "/app/submissions/queue"
 NOTES = "/app/submissions/notes"
 RECEIPTS = "/app/submissions/receipts"
 LOCK = "/app/submissions/submit.lock"
-MAX_SUBMISSIONS = 60
 
 
 def atomic_json(path: str, payload: dict) -> None:
@@ -68,14 +67,6 @@ def main() -> int:
     lock_fd = os.open(LOCK, os.O_CREAT | os.O_RDWR, 0o600)
     fcntl.flock(lock_fd, fcntl.LOCK_EX)
     try:
-        accepted = sum(name.endswith(".json") for name in os.listdir(RECEIPTS))
-        if accepted >= MAX_SUBMISSIONS:
-            print(
-                f"not submitted: fixed limit of {MAX_SUBMISSIONS} accepted policies reached.",
-                file=sys.stderr,
-            )
-            return 1
-
         submitted_at = datetime.now(timezone.utc)
         job_id = f"{submitted_at:%H%M%S}-{uuid.uuid4().hex[:4]}"
 

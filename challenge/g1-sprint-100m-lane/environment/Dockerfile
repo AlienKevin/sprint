@@ -44,6 +44,12 @@ RUN git clone --depth 1 --branch v2.3.2 \
  && pip3 install --no-cache-dir --no-build-isolation -e /opt/IsaacLab/source/isaaclab_tasks \
  && pip3 install --no-cache-dir rsl-rl-lib==3.1.2
 
+# Training is no-network, so stock Isaac configs must resolve against the same
+# sealed asset tree as the verifier. Include both the robot and auxiliary
+# marker/material assets used by common agent-authored locomotion configs.
+COPY sprint_assets.py localize_assets.py /opt/
+RUN python3 /opt/localize_assets.py
+
 # The two commands that reach the scorer.  Neither of them scores anything: one
 # drops a file in a queue, the other reads results back.  The course, the
 # scoring code and the held-out seeds are not in this image at all, so there is
@@ -88,14 +94,16 @@ COPY sprint-apply-deepseek-codex-config.sh /opt/sprint-apply-deepseek-codex-conf
 COPY codex-deepseek-models.json /opt/sprint-codex-deepseek-models.json
 COPY sprint-agent-shell-env.sh /opt/sprint-agent-shell-env.sh
 COPY sprint-gpu-worker-run.py /opt/sprint-gpu-worker-run.py
+COPY sprint-isaac-bootstrap.py /opt/sprint-isaac-bootstrap.py
 COPY sprint-gpu-timeline.py /opt/sprint-gpu-timeline.py
 COPY sprint_resilience.py /opt/sprint_resilience.py
 RUN chmod 0755 /opt/sprint-snapshot-loop.sh /opt/sprint-telemetry.sh \
     /opt/sprint-trace-mirror.py \
     /opt/sprint-codex-exec-wrapper.sh /opt/sprint-apply-deepseek-codex-config.sh \
-    /opt/sprint-gpu-worker-run.py /opt/sprint-gpu-timeline.py \
+    /opt/sprint-gpu-worker-run.py /opt/sprint-isaac-bootstrap.py \
+    /opt/sprint-gpu-timeline.py \
     && chmod 0644 /opt/sprint-agent-shell-env.sh /opt/sprint-telemetry.py \
-       /opt/sprint_resilience.py \
+       /opt/sprint_resilience.py /opt/sprint_assets.py \
        /opt/sprint-codex-deepseek-models.json
 
 WORKDIR /app

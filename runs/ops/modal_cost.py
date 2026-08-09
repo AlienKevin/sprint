@@ -14,7 +14,9 @@ import hashlib
 import json
 import os
 import pathlib
+import shutil
 import subprocess
+import sys
 import tempfile
 from decimal import Decimal
 from typing import Any
@@ -414,10 +416,9 @@ def collect_provider_billing(
         _atomic_json(output_path, base)
         return base
 
+    modal_cli = os.environ.get("MODAL_CLI") or shutil.which("modal")
     cmd = [
-        "python3",
-        "-m",
-        "modal",
+        *([modal_cli] if modal_cli else [sys.executable, "-m", "modal"]),
         "billing",
         "report",
         "--start",

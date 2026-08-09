@@ -637,6 +637,14 @@ class ContinuousVerificationConfig(BaseModel):
             "the agent and the complete retrospective trajectory is required."
         ),
     )
+    continuous_only: bool = Field(
+        default=False,
+        description=(
+            "Treat the complete continuous-submission ledger as the task's result "
+            "set and skip the ordinary post-agent verifier. Use this for trajectory "
+            "or Pareto evaluations that do not designate one final artifact."
+        ),
+    )
     shared_scheduler_lock_path: str | None = Field(
         default=None,
         description=(
@@ -687,6 +695,8 @@ class ContinuousVerificationConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_trusted_host_paths(self) -> "ContinuousVerificationConfig":
+        if self.continuous_only and not self.enabled:
+            raise ValueError("continuous_only requires continuous verification")
         for field_name in (
             "shared_scheduler_lock_path",
             "shared_result_cache_dir",

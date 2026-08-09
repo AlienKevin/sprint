@@ -33,6 +33,16 @@ def test_batch_matrix_is_exact_six_arm_max_effort_contract() -> None:
     assert batch_eval.LIVE_SITE_DEPLOY_SECONDS == 20 * 60
 
 
+def test_batch_matrix_can_launch_three_deepseek_trials_only() -> None:
+    rows = batch_eval.matrix("eval-deepseek", families=("deepseek",))
+    assert len(rows) == 3
+    assert {row["family"] for row in rows} == {"deepseek"}
+    assert [row["trial"] for row in rows] == [1, 2, 3]
+    assert {row["model"] for row in rows} == {
+        "deepseek/deepseek-v4-flash"
+    }
+
+
 def test_env_loader_reads_only_required_model_keys(tmp_path: Path) -> None:
     path = tmp_path / ".env"
     path.write_text(
@@ -461,7 +471,9 @@ def test_partial_batch_launch_is_safely_rolled_back(
         for index in (1, 2)
     ]
     monkeypatch.setattr(batch_eval, "BATCH_ROOT", tmp_path / "batches")
-    monkeypatch.setattr(batch_eval, "matrix", lambda _batch_id: arms)
+    monkeypatch.setattr(
+        batch_eval, "matrix", lambda _batch_id, **_kwargs: arms
+    )
     monkeypatch.setattr(
         batch_eval,
         "preflight",

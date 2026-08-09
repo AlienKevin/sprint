@@ -8,6 +8,52 @@ Stock Isaac Lab G1 locomotion leaves **self-collisions off** and often uses
 This package only ships that robot spawn. Rewards, terrain, and the geometric
 self-collision DQ are still yours (the DQ is verifier-only).
 
+## Policy interface
+
+The executable interface contract is in `/app/train/spec.py`:
+
+```python
+from train.spec import (
+    ACTION_DIM,
+    ACTION_SCALE,
+    CONTROL_FREQUENCY_HZ,
+    OBSERVATION_DIM,
+    OBSERVATION_FIELDS,
+    OBSERVATION_SLICES,
+)
+```
+
+Your TorchScript policy maps `(N, OBSERVATION_DIM)` to `(N, ACTION_DIM)` joint
+position targets. Use `OBSERVATION_SLICES` instead of copying numeric offsets.
+An optional `reset()` method clears policy state between verifier trials.
+
+## Runtime and GPU jobs
+
+The persistent agent sandbox has 4 physical CPU cores and 16 GiB RAM. Isaac
+training runs on a separate A10G worker:
+
+```bash
+sprint-gpu-train -- python3 -u /app/train/YOUR_SCRIPT.py
+sprint-gpu-train status
+sprint-gpu-train logs
+sprint-gpu-train wait
+```
+
+One training job is active per run; additional jobs queue. Workers may be
+preempted and replaced. Write checkpoints under `$SPRINT_GPU_CHECKPOINT_DIR`
+and inspect `$SPRINT_GPU_RESUME` and `$SPRINT_GPU_RESUME_CHECKPOINT` on startup.
+For atomic publication, use `sprint-gpu-train checkpoint save` or the
+`CheckpointStore` in `/opt/sprint_resilience.py`.
+
+The sandbox has no general internet or cloud credentials. PyTorch, Isaac Lab,
+and required assets are preinstalled. The trusted worker redirects stock Isaac
+assets to `/opt/assets` after `AppLauncher` starts; do not restore NVIDIA remote
+asset URLs. Workspace and `/durable/runs/$SPRINT_RUN_ID` survive CPU sandbox
+recreation, but processes and RAM do not. On a relaunched CPU attempt, resume
+from durable state.
+
+Run `sprint-gpu-train --help` for the full job and checkpoint interface.
+
 ## Import
 
 `/app` is on `PYTHONPATH` when you work from `/app`. Prefer:

@@ -1258,6 +1258,9 @@ def final_conditions(
     state_dir: Path, run: dict[str, Any]
 ) -> tuple[bool, dict[str, bool], list[str]]:
     job, trial = discover_job_and_trial(state_dir, run)
+    all_submissions = (
+        run.get("evaluation_result_policy") == "all_blind_submissions_by_deadline"
+    )
     conditions: dict[str, bool] = {
         "stop_ack": (state_dir / "STOP_ACK.json").is_file(),
         "job_found": job is not None,
@@ -1266,11 +1269,15 @@ def final_conditions(
         "ledger_terminal": False,
         "attempt_archives": False,
         "artifact_manifest": False,
-        "final_verifier": False,
         "finished_at": False,
         "harbor_exited": not harbor_alive(run),
         "site_current": False,
     }
+    if all_submissions:
+        conditions["continuous_result_set"] = False
+    else:
+        # Retained while already-running frozen-final trials finish.
+        conditions["final_verifier"] = False
     if run.get("unified_timeline_required"):
         conditions["unified_timeline_ready"] = False
     if run.get("usage_audit_required"):
@@ -1296,21 +1303,28 @@ def final_conditions(
     try:
         manifest = json.loads(manifest_path.read_text())
         entries = manifest if isinstance(manifest, list) else []
-        policy_entries = [
-            entry
-            for entry in entries
-            if isinstance(entry, dict)
-            and entry.get("destination") == "artifacts/app/submission/policy.pt"
-        ]
-        conditions["artifact_manifest"] = bool(
-            entries
-            and all(
+        if all_submissions:
+            conditions["artifact_manifest"] = isinstance(manifest, list) and all(
                 isinstance(entry, dict) and entry.get("status") != "failed"
                 for entry in entries
             )
-            and len(policy_entries) == 1
-            and policy_entries[0].get("status") == "ok"
-        )
+        else:
+            policy_entries = [
+                entry
+                for entry in entries
+                if isinstance(entry, dict)
+                and entry.get("destination")
+                == "artifacts/app/submission/policy.pt"
+            ]
+            conditions["artifact_manifest"] = bool(
+                entries
+                and all(
+                    isinstance(entry, dict) and entry.get("status") != "failed"
+                    for entry in entries
+                )
+                and len(policy_entries) == 1
+                and policy_entries[0].get("status") == "ok"
+            )
     except (OSError, json.JSONDecodeError):
         pass
 
@@ -1319,18 +1333,27 @@ def final_conditions(
         job_result = json.loads((job / "result.json").read_text())
     except (OSError, json.JSONDecodeError):
         trial_result, job_result = {}, {}
-    verifier_file = any(
-        path.is_file()
-        for path in (
-            trial / "verifier" / "reward.json",
-            trial / "verifier" / "reward.txt",
+    if all_submissions:
+        summary = trial_result.get("continuous_verification")
+        conditions["continuous_result_set"] = bool(
+            isinstance(summary, dict)
+            and isinstance(summary.get("submissions"), list)
+            and conditions["ledger_parseable"]
+            and conditions["ledger_terminal"]
         )
-    )
-    conditions["final_verifier"] = bool(
-        verifier_file
-        and trial_result.get("verifier_result") is not None
-        and (trial_result.get("verifier") or {}).get("finished_at")
-    )
+    else:
+        verifier_file = any(
+            path.is_file()
+            for path in (
+                trial / "verifier" / "reward.json",
+                trial / "verifier" / "reward.txt",
+            )
+        )
+        conditions["final_verifier"] = bool(
+            verifier_file
+            and trial_result.get("verifier_result") is not None
+            and (trial_result.get("verifier") or {}).get("finished_at")
+        )
     conditions["finished_at"] = bool(
         trial_result.get("finished_at") and job_result.get("finished_at")
     )

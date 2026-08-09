@@ -29,6 +29,7 @@ runs/ops/canary-*/
 runs/ops/sprint-*/
 runs/ops/blind-verifier/
 runs/ops/modal-image-warmup.json
+runs/ops/training-gpu-canary.json
 runs/ops/*.lock
 runs/ops/*.pid
 runs/ops/*.log

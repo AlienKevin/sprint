@@ -312,6 +312,12 @@ import { TypeTable } from 'fumadocs-ui/components/type-table';
       default: "false",
       path: "verifier.continuous.drain_pending_on_stop"
     },
+    "verifier.continuous.continuous_only": {
+      description: "Treat the complete continuous-submission ledger as the task result set and skip the ordinary post-agent verifier.",
+      type: "boolean",
+      default: "false",
+      path: "verifier.continuous.continuous_only"
+    },
     "verifier.continuous.shared_scheduler_lock_path": {
       description: "Optional absolute trusted-host path for a cross-process verifier lease. Trials using the same path share one verifier slot.",
       type: "string | null",
@@ -704,9 +710,9 @@ submission_path = "/app/submission/policy.pt"
 max_concurrent = 1
 return_results_to_agent = false
 drain_pending_on_stop = true
+continuous_only = true
 shared_scheduler_lock_path = "/trusted/blind-verifier/lease.lock"
 shared_result_cache_dir = "/trusted/blind-verifier/result-cache"
-reuse_matching_result_for_final = true
 ```
 
 The queued file is placed at `submission_path` inside the verifier container, and nothing else crosses. That is the point: the verifier rebuilds the harness, the fixtures and the grading code from its own image every time, so a task whose agent environment contains a writable copy of the evaluation stack still grades against an untouched one.
@@ -722,9 +728,10 @@ Mechanics worth knowing when you write the task:
 - **Failures are results.** A verifier that crashes, times out or exceeds `max_submissions` produces an archived result with an `error` field. Feedback mode also returns it to the agent; blind mode does not.
 - **Last-second submissions count.** When the agent phase ends, Harbor does a final sweep and then waits for verifications already in flight. A submission made a second before the deadline is scored like any other.
 - **Complete blind drain.** `drain_pending_on_stop = true` finishes every accepted item after the agent exits. This is suitable when results are blind and a complete retrospective trajectory matters more than finalization latency.
+- **Continuous result sets.** `continuous_only = true` makes the complete submission ledger the task result set and skips the ordinary post-agent verifier. Use it for trajectory or Pareto evaluations with no privileged final artifact.
 - **Replay suppression.** `shared_result_cache_dir` reuses a checksummed result only when both the exact submitted bytes and complete task fingerprint match. Verifier changes therefore invalidate the cache automatically.
 - **Final-policy binding.** With `reuse_matching_result_for_final = true`, Harbor hashes the archived final policy after the agent exits. If a successful continuous row has identical bytes and all matching rows agree, that trusted result becomes the trial result; otherwise the final verifier runs normally.
-- **The final verify is unchanged.** Continuous results never feed the trial reward. The trial-level verifier still runs afterwards on the final state, exactly as it would without this.
+- **Default final verification.** Unless `continuous_only` is enabled, the trial-level verifier still runs afterwards on the final state exactly as it would without continuous scoring.
 
 Everything is archived under the trial's `artifacts/continuous/`:
 

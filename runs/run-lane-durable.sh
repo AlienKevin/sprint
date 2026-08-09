@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="${SPRINT_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"
 HARBOR="${HARBOR_PATH:-$ROOT/harbor}"
-HARBOR_COMMIT=2f50d4c78bac5420b50d5cd15bc549a9bb19fa9d
+HARBOR_COMMIT=f2763377dddd1308334ba01fb39eee4e50c2c726
 HARBOR_BRANCH=continuous-verification
 UV="${UV:-$(command -v uv || true)}"
 if [[ -z "$UV" && -x /home/ubuntu/.local/bin/uv ]]; then
@@ -586,7 +586,7 @@ base = {
     "scoring_feedback_policy": "sealed_until_agent_exit",
     "scoring_drain_policy": "all_accepted_submissions",
     "scoring_deduplication_key": "task_fingerprint_plus_policy_sha256",
-    "primary_score_policy": "frozen_final_artifact",
+    "evaluation_result_policy": "all_blind_submissions_by_deadline",
     "verifier_cost_attribution": "measurement_overhead_separate_from_agent_cost",
     "cpu_supervised": supervised == "1",
     "cpu_launch_attempt": int(cpu_attempt),

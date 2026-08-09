@@ -48,9 +48,9 @@ class SingleStepTrial(Trial):
     async def _run(self) -> None:
         mode = resolve_task_verifier_mode(self.task.config)
 
-        # Continuous verification wraps only the agent phase: submissions are
-        # scored while the agent can still act on the answer, and the final
-        # verify below is unaffected by any of it.
+        # Continuous verification wraps the agent phase. Tasks may either keep
+        # the ordinary post-agent verifier or declare the complete continuous
+        # ledger to be their result set.
         async with self._continuous_verification(mode):
             await self._run_agent()
         await self._upload_agent_logs()
@@ -152,11 +152,13 @@ class SingleStepTrial(Trial):
     async def _run_verifier(self) -> None:
         if self.config.verifier.disable:
             return
+        continuous = self.task.config.verifier.continuous
+        if continuous.enabled and continuous.continuous_only:
+            return
 
         await self._emit(TrialEvent.VERIFICATION_START)
         mode = resolve_task_verifier_mode(self.task.config)
         user = self.task.config.verifier.user
-        continuous = self.task.config.verifier.continuous
         try:
             reused = self._reuse_matching_continuous_result()
             if reused is not None:

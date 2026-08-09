@@ -22,6 +22,7 @@ sys.path.insert(0, "/tests")
 # because it builds the real scene with the mirror in front of the network.
 MIRRORED = (
     "Isaac/IsaacLab/Robots/Unitree/G1",
+    "Isaac/Props/UIElements",
     "Isaac/Environments/Grid",
     # Terrain visual material and the dome light's sky.  Found by grepping the
     # Isaac Lab locomotion, terrain and spawner sources for nucleus references

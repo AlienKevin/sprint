@@ -3,7 +3,7 @@
 # local receipts to land, and the final answer's home.
 set -euo pipefail
 
-mkdir -p /app/submission /app/submissions/queue /app/submissions/notes \
+mkdir -p /app/submissions/queue /app/submissions/notes \
          /app/submissions/receipts /logs/artifacts/telemetry
 
 # No reference policy, no copy of the course, no copy of the scorer. The agent

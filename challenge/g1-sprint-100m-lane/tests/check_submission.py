@@ -16,7 +16,7 @@ Everything asserted here is something the rollout depends on. A contract that is
 only prose gets interpreted differently by the agent and the verifier, which is
 how a policy ends up scoring 315 in an environment where it should score 6252.
 
-    python check_submission.py /app/submission/policy.pt
+    python check_submission.py policy.pt
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ Blind verification:
   sprint-submit returns only a durable local receipt. Official scores, DQ
   reasons, queue state, and completion timing stay sealed until the agent run
   ends. sprint-check only validates the TorchScript interface on CPU — it does
-  not run the course. The host grades /app/submission/policy.pt after exit.
+  not run the course. Every policy accepted by sprint-submit is graded.
 
 Training tip: /app/train has a G1 PhysX spawn helper matching the verifier
   (full G1_CFG, self-collisions on); stock Isaac Lab G1 leaves them off.
