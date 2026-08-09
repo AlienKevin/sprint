@@ -318,28 +318,76 @@ def run_bounds(
     if start is None:
         raise ValueError("run.json is missing a valid created_at")
     end_candidates: list[dt.datetime] = []
-    # STOP_ACK ends the agent process, not the run-owned Modal allocations:
-    # Harbor and sealed verifiers can remain alive while accepted submissions
-    # drain. Billing must extend through job/finalization completion.
-    for path, keys in (
-        (state_dir / "FINALIZED.json", ("finalized_at", "checked_at")),
-    ):
-        payload = _read_json(path)
-        for key in keys:
-            value = parse_time(payload.get(key))
-            if value is not None:
-                end_candidates.append(value)
+    # STOP_ACK ends the agent process, not necessarily every run-owned Modal
+    # allocation. Conversely, FINALIZED is a host-side evidence timestamp and
+    # must never extend the provider billing window: doing so makes a complete
+    # report reopen into the next hour merely because finalization ran later.
     # Only the current Harbor job result is a run terminal boundary. Continuous
     # blind-verifier attempts also contain result.json files, but the CPU agent
     # keeps running after those scores and they must not truncate its billing
     # interval.
     job_path = run.get("job_path") or run.get("expected_job_path")
+    job_finished_at: dt.datetime | None = None
     if isinstance(job_path, str) and job_path:
-        value = parse_time(
-            _read_json(pathlib.Path(job_path) / "result.json").get("finished_at")
+        job = pathlib.Path(job_path)
+        job_finished_at = parse_time(
+            _read_json(job / "result.json").get("finished_at")
         )
-        if value is not None:
-            end_candidates.append(value)
+        if job_finished_at is not None:
+            end_candidates.append(job_finished_at)
+        # Central blind scoring can drain accepted policies after the CPU
+        # agent exits. A trusted attempt result is written only after its
+        # sealed verifier GPU has stopped, so it is a safe terminal bound once
+        # the CPU agent itself is terminal. While the agent is running, an
+        # earlier verifier result must not make the run appear stopped.
+        if job_finished_at is not None:
+            for result_path in job.glob(
+                "*/artifacts/continuous/attempts/*/result.json"
+            ):
+                value = parse_time(_read_json(result_path).get("finished_at"))
+                if value is not None:
+                    end_candidates.append(value)
+
+    # Training workers can outlive the CPU process briefly while the host
+    # fences a lease. Preserve their authoritative lifecycle boundary without
+    # depending on the derived unified timeline.
+    for name in (
+        "cpu_lifecycle.jsonl",
+        "gpu_timeline.jsonl",
+        "durable-gpu-timeline.jsonl",
+    ):
+        path = state_dir / "telemetry" / name
+        try:
+            lines = path.read_text(errors="replace").splitlines()
+        except OSError:
+            continue
+        for raw in lines:
+            try:
+                row = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(row, dict):
+                continue
+            event = row.get("event")
+            detail = row.get("detail")
+            semantic = detail.get("event") if isinstance(detail, dict) else None
+            terminal = (
+                event == "cpu_launch_exited"
+                or semantic in {"gpu_preempted", "gpu_released"}
+                or (
+                    row.get("phase") == "active"
+                    and row.get("action") == "exit"
+                )
+            )
+            if not terminal:
+                continue
+            value = parse_time(row.get("ts_utc") or row.get("at"))
+            if value is None and isinstance(row.get("epoch_s"), (int, float)):
+                value = dt.datetime.fromtimestamp(
+                    float(row["epoch_s"]), tz=dt.timezone.utc
+                )
+            if value is not None:
+                end_candidates.append(value)
     return start, max(end_candidates, default=None)
 
 

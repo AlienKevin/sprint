@@ -1066,8 +1066,6 @@ def monitor_once(
                     sync_durable_trace(state_dir, run)
                 if run.get("usage_audit_required"):
                     reconstruct_codex_usage(state_dir, run)
-                if run.get("modal_billing_required"):
-                    modal_cost.collect_provider_billing(state_dir)
                 build_unified_timeline(state_dir, run, upload=upload)
             except Exception as exc:  # noqa: BLE001
                 record_controller_error(run_id, exc)
@@ -1595,9 +1593,29 @@ def finalize(
         if run.get("unified_timeline_required"):
             build_unified_timeline(state_dir, run, upload=upload)
     if run.get("modal_billing_required"):
-        modal_cost.collect_provider_billing(state_dir)
-        if run.get("unified_timeline_required"):
-            build_unified_timeline(state_dir, run, upload=upload)
+        # Do not declare a provider report complete while accepted verifier
+        # work can still extend the run-owned allocation window. All other
+        # finalization conditions must be green first. FINALIZED itself is a
+        # host-side timestamp and is deliberately excluded from run bounds.
+        _, preliminary_conditions, _ = final_conditions(state_dir, run)
+        non_billing_ready = all(
+            value
+            for name, value in preliminary_conditions.items()
+            if name != "modal_billing_complete"
+        )
+        if non_billing_ready:
+            billing = modal_cost.collect_provider_billing(state_dir)
+            billing_path = state_dir / "telemetry" / "modal-cost.json"
+            if billing.get("provider_complete") is True and upload:
+                # The reconciled report must win over any older pending copy
+                # on the durable Volume before FINALIZED can be written.
+                volume_upload(
+                    run,
+                    billing_path,
+                    f"runs/{run_id}/telemetry/modal-cost.json",
+                )
+            if run.get("unified_timeline_required"):
+                build_unified_timeline(state_dir, run, upload=upload)
     complete, conditions, details = final_conditions(state_dir, run)
     payload = {
         "schema_version": 1,

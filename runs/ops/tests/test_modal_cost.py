@@ -182,6 +182,58 @@ def test_stop_ack_does_not_end_billing_while_harbor_can_still_drain(
     assert stopped is None
 
 
+def test_host_finalization_timestamp_never_extends_modal_billing(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "cost-run"
+    job = state / "job"
+    job.mkdir(parents=True)
+    run = run_payload()
+    run["job_path"] = str(job)
+    (job / "result.json").write_text(
+        json.dumps({"finished_at": "2026-08-08T04:40:00Z"})
+    )
+    (state / "FINALIZED.json").write_text(
+        json.dumps({"finalized_at": "2026-08-08T06:50:00Z"})
+    )
+
+    _, stopped = modal_cost.run_bounds(state, run)
+
+    assert stopped == dt.datetime(2026, 8, 8, 4, 40, tzinfo=dt.timezone.utc)
+
+
+def test_resource_lifecycle_and_blind_verifier_results_extend_billing_bound(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "cost-run"
+    job = state / "job"
+    attempt = job / "task/artifacts/continuous/attempts/0001"
+    attempt.mkdir(parents=True)
+    run = run_payload()
+    run["job_path"] = str(job)
+    (job / "result.json").write_text(
+        json.dumps({"finished_at": "2026-08-08T04:40:00Z"})
+    )
+    (attempt / "result.json").write_text(
+        json.dumps({"finished_at": "2026-08-08T04:55:00Z"})
+    )
+    telemetry = state / "telemetry"
+    telemetry.mkdir()
+    (telemetry / "gpu_timeline.jsonl").write_text(
+        json.dumps(
+            {
+                "detail": {"event": "gpu_released"},
+                "ts_utc": "2026-08-08T05:02:00Z",
+            }
+        )
+        + "\n"
+    )
+
+    _, stopped = modal_cost.run_bounds(state, run)
+
+    assert stopped == dt.datetime(2026, 8, 8, 5, 2, tzinfo=dt.timezone.utc)
+
+
 def test_completed_report_is_reopened_when_final_allocation_hour_moves(
     tmp_path: Path,
 ) -> None:
@@ -220,9 +272,13 @@ def test_collection_waits_for_complete_hour_then_persists_provider_report(
 ) -> None:
     state = tmp_path / "cost-run"
     state.mkdir()
-    (state / "run.json").write_text(json.dumps(run_payload()))
-    (state / "FINALIZED.json").write_text(
-        json.dumps({"finalized_at": "2026-08-08T04:50:00Z"})
+    job = state / "job"
+    job.mkdir()
+    run = run_payload()
+    run["job_path"] = str(job)
+    (state / "run.json").write_text(json.dumps(run))
+    (job / "result.json").write_text(
+        json.dumps({"finished_at": "2026-08-08T04:50:00Z"})
     )
 
     pending = modal_cost.collect_provider_billing(
@@ -314,9 +370,13 @@ def test_modal_billing_readiness_rejects_pending_artifact(tmp_path: Path) -> Non
 def test_collection_waits_when_expected_role_is_missing(tmp_path: Path) -> None:
     state = tmp_path / "cost-run"
     (state / "telemetry").mkdir(parents=True)
-    (state / "run.json").write_text(json.dumps(run_payload()))
-    (state / "FINALIZED.json").write_text(
-        json.dumps({"finalized_at": "2026-08-08T04:50:00Z"})
+    job = state / "job"
+    job.mkdir()
+    run = run_payload()
+    run["job_path"] = str(job)
+    (state / "run.json").write_text(json.dumps(run))
+    (job / "result.json").write_text(
+        json.dumps({"finished_at": "2026-08-08T04:50:00Z"})
     )
     (state / "telemetry" / "unified-timeline.json").write_text(
         json.dumps(
@@ -388,9 +448,13 @@ def test_expected_roles_use_source_lifecycle_even_without_timeline(
 def test_collection_waits_for_volume_storage_snapshot(tmp_path: Path) -> None:
     state = tmp_path / "cost-run"
     state.mkdir()
-    (state / "run.json").write_text(json.dumps(run_payload()))
-    (state / "FINALIZED.json").write_text(
-        json.dumps({"finalized_at": "2026-08-08T04:50:00Z"})
+    job = state / "job"
+    job.mkdir()
+    run = run_payload()
+    run["job_path"] = str(job)
+    (state / "run.json").write_text(json.dumps(run))
+    (job / "result.json").write_text(
+        json.dumps({"finished_at": "2026-08-08T04:50:00Z"})
     )
     rows = [
         {
@@ -421,3 +485,92 @@ def test_collection_waits_for_volume_storage_snapshot(tmp_path: Path) -> None:
     )
     assert payload["provider_complete"] is False
     assert payload["pending_reason"] == "provider_volume_storage_snapshot_unavailable"
+
+
+def test_finalization_does_not_collect_billing_before_other_gates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = {
+        "run_id": "cost-run",
+        "agent_kind": "codex",
+        "modal_billing_required": True,
+    }
+    monkeypatch.setattr(sprintctl, "load_run", lambda _run_id: (tmp_path, run))
+    monkeypatch.setattr(sprintctl, "monitor_once", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        sprintctl,
+        "final_conditions",
+        lambda *_args: (
+            False,
+            {"ledger_terminal": False, "modal_billing_complete": False},
+            ["ledger_terminal", "modal_billing_complete"],
+        ),
+    )
+    monkeypatch.setattr(
+        modal_cost,
+        "collect_provider_billing",
+        lambda *_args, **_kwargs: pytest.fail("billing collected before ledger drain"),
+    )
+
+    complete, payload = sprintctl.finalize(
+        "cost-run", upload=False, include_remote=False
+    )
+
+    assert complete is False
+    assert payload["conditions"]["ledger_terminal"] is False
+
+
+def test_complete_billing_is_uploaded_before_finalized_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = {
+        "run_id": "cost-run",
+        "agent_kind": "codex",
+        "modal_billing_required": True,
+    }
+    billing_path = tmp_path / "telemetry" / "modal-cost.json"
+    billing_path.parent.mkdir()
+    monkeypatch.setattr(sprintctl, "load_run", lambda _run_id: (tmp_path, run))
+    monkeypatch.setattr(sprintctl, "monitor_once", lambda *_args, **_kwargs: {})
+
+    conditions = iter(
+        [
+            (
+                False,
+                {"ledger_terminal": True, "modal_billing_complete": False},
+                ["modal_billing_complete"],
+            ),
+            (
+                True,
+                {"ledger_terminal": True, "modal_billing_complete": True},
+                [],
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        sprintctl, "final_conditions", lambda *_args: next(conditions)
+    )
+
+    def collect(_state_dir):
+        payload = {"provider_complete": True}
+        billing_path.write_text(json.dumps(payload))
+        return payload
+
+    monkeypatch.setattr(modal_cost, "collect_provider_billing", collect)
+    uploads: list[tuple[Path, str]] = []
+    monkeypatch.setattr(
+        sprintctl,
+        "volume_upload",
+        lambda _run, source, remote: uploads.append((source, remote)),
+    )
+
+    complete, _ = sprintctl.finalize(
+        "cost-run", upload=True, include_remote=False
+    )
+
+    assert complete is True
+    assert uploads[0] == (
+        billing_path,
+        "runs/cost-run/telemetry/modal-cost.json",
+    )
+    assert uploads[1][1] == "runs/cost-run/state/FINALIZED.json"
