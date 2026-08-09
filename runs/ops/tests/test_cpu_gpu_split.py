@@ -113,7 +113,6 @@ class ClaimSelectionTests(unittest.TestCase):
             ["python3", "/app/train.py", "--headless"],
         )
 
-
     def test_host_pins_and_restores_exact_claimed_workspace(self) -> None:
         archive_bytes = b"agent workspace bytes"
         digest = hashlib.sha256(archive_bytes).hexdigest()
@@ -376,9 +375,7 @@ class ClaimSelectionTests(unittest.TestCase):
         )
 
     def test_physx_software_fallback_overrides_false_zero_exit(self) -> None:
-        output = (
-            "PhysX warning: GPU solver pipeline failed, switching to software"
-        )
+        output = "PhysX warning: GPU solver pipeline failed, switching to software"
         self.assertEqual(gpu_worker.provider_terminal_error(output), output)
 
     def test_kit_semantic_startup_failures_override_false_zero_exit(self) -> None:
@@ -543,9 +540,7 @@ class ClaimSelectionTests(unittest.TestCase):
         from_id.assert_called_once_with("sb-agent")
         envelope = json.loads(gpu_worker.gzip.decompress(bytes(captured)))
         self.assertEqual(
-            gpu_worker.base64.b64decode(
-                envelope["files"]["artifacts/job-1/policy.pt"]
-            ),
+            gpu_worker.base64.b64decode(envelope["files"]["artifacts/job-1/policy.pt"]),
             b"policy bytes",
         )
         self.assertEqual(detail["agent_mirror"], "updated")
@@ -589,9 +584,7 @@ class ClaimSelectionTests(unittest.TestCase):
         }
 
         def fake_get(command, **_kwargs):
-            self.assertIn(
-                "runs/run-1/gpu-jobs/checkpoints/job-1/policy_2.pt", command
-            )
+            self.assertIn("runs/run-1/gpu-jobs/checkpoints/job-1/policy_2.pt", command)
             Path(command[-1]).write_bytes(b"trusted checkpoint policy")
             return subprocess.CompletedProcess(command, 0, "", "")
 
@@ -668,9 +661,7 @@ class ClaimSelectionTests(unittest.TestCase):
             {
                 "job_id": "job-1",
                 "progress": {
-                    "policy_path": (
-                        "/durable/runs/run-1/private/checkpoints/policy.pt"
-                    )
+                    "policy_path": ("/durable/runs/run-1/private/checkpoints/policy.pt")
                 },
             },
         )
@@ -1339,7 +1330,9 @@ class GpuConcurrencyLimitTests(unittest.TestCase):
         self.assertEqual(persisted[0]["fenced_lease_id"], "old-lease")
         self.assertEqual(persisted[0]["fence_epoch"], 1)
 
-    def test_agent_cancel_markers_are_discovered_from_delivery_directories(self) -> None:
+    def test_agent_cancel_markers_are_discovered_from_delivery_directories(
+        self,
+    ) -> None:
         with mock.patch.object(
             gpu_worker,
             "volume_ls_json_names",
@@ -1984,6 +1977,22 @@ class LauncherWiringTests(unittest.TestCase):
         launcher = (ROOT / "runs" / "run-lane-durable.sh").read_text()
         self.assertIn('--ek "modal_image_id=$AGENT_TRAINING_IMAGE_ID"', launcher)
         self.assertIn('--ek "verifier_image_id=$VERIFIER_IMAGE_ID"', launcher)
+
+    def test_cpu_resume_uses_launch_source_and_recorded_images(self) -> None:
+        launcher = (ROOT / "runs" / "run-lane-durable.sh").read_text()
+        self.assertIn('"sprint_source_commit": sprint_source_commit', launcher)
+        self.assertIn('payload.get("sprint_source_commit")', launcher)
+        self.assertIn(
+            'SOURCE_ROOT="/data/sprint-run-sources/$RUN_ID-$SPRINT_SOURCE_COMMIT"',
+            launcher,
+        )
+        self.assertIn('git -C "$ROOT" worktree add --detach "$SOURCE_ROOT"', launcher)
+        self.assertIn('provenance.get("agent_training_image_id")', launcher)
+        self.assertIn('provenance.get("verifier_image_id")', launcher)
+        self.assertGreater(
+            launcher.index('python3 "$ROOT/runs/ops/check_modal_image_warmup.py"'),
+            launcher.index("if (( ! RESUMING )); then"),
+        )
 
     def test_all_model_launchers_default_to_systemd_supervisor(self) -> None:
         for name in ("run-luna.sh", "run-deepseek.sh"):

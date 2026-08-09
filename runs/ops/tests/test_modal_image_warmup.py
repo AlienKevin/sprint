@@ -68,6 +68,74 @@ def test_successful_sandbox_uses_returncode_after_wait(
     assert sandbox.terminated is True
 
 
+def test_warmup_reuses_unchanged_context_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    warmer = load_script("warm_modal_images.py")
+
+    class ReusedImage:
+        object_id = "im-existing"
+        build_calls = 0
+
+        def build(self, app: object) -> None:
+            assert app is not None
+            self.build_calls += 1
+
+    reused = ReusedImage()
+    monkeypatch.setattr(warmer.modal.Image, "from_id", lambda image_id: reused)
+    monkeypatch.setattr(
+        warmer,
+        "build_image",
+        lambda *args: (_ for _ in ()).throw(AssertionError("unexpected rebuild")),
+    )
+
+    image, metadata = warmer.build_or_reuse_image(
+        object(),
+        object(),
+        context_name="verifier",
+        context_sha256="same",
+        previous_manifest={
+            "completed": True,
+            "contexts": {
+                "verifier": {"sha256": "same", "image_id": "im-existing"}
+            },
+        },
+    )
+
+    assert image is reused
+    assert reused.build_calls == 1
+    assert metadata["image_id"] == "im-existing"
+    assert metadata["reused_from_manifest"] is True
+
+
+def test_warmup_rebuilds_only_changed_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    warmer = load_script("warm_modal_images.py")
+    built = object()
+    monkeypatch.setattr(
+        warmer,
+        "build_image",
+        lambda image, app: (built, {"image_id": "im-new"}),
+    )
+
+    image, metadata = warmer.build_or_reuse_image(
+        object(),
+        object(),
+        context_name="verifier",
+        context_sha256="new",
+        previous_manifest={
+            "completed": True,
+            "contexts": {
+                "verifier": {"sha256": "old", "image_id": "im-existing"}
+            },
+        },
+    )
+
+    assert image is built
+    assert metadata == {"image_id": "im-new", "reused_from_manifest": False}
+
+
 @pytest.mark.parametrize(
     ("output", "required", "match"),
     [

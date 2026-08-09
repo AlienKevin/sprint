@@ -23,6 +23,7 @@ from harbor.trial.continuous import (
 from harbor.trial.errors import AgentTimeoutError, VerifierTimeoutError
 from harbor.trial.hooks import TrialEvent
 from harbor.trial.trial import Trial
+from harbor.verifier.verifier import DownloadVerifierDirError
 
 
 class SingleStepTrial(Trial):
@@ -62,6 +63,11 @@ class SingleStepTrial(Trial):
             module = type(current).__module__
             name = type(current).__name__
             message = str(current).lower()
+            # The verifier completed in its sealed environment, but Harbor
+            # could not retrieve its output. This is transport/infrastructure
+            # loss, not evidence that the submitted policy is invalid.
+            if isinstance(current, DownloadVerifierDirError):
+                return True
             if module.startswith("modal."):
                 if name in transient_names:
                     return True

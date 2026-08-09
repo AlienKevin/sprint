@@ -2,15 +2,16 @@
 set -euo pipefail
 
 ROOT="${SPRINT_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"
-HARBOR="${HARBOR_PATH:-$ROOT/harbor}"
-HARBOR_COMMIT=eccb31361a2ffbb8841f9e12cf1640cb0fb495a2
+SOURCE_ROOT="$ROOT"
+HARBOR="${HARBOR_PATH:-$SOURCE_ROOT/harbor}"
+HARBOR_COMMIT=c3d43b321250fb121a28912fcd0ea45be658e76f
 HARBOR_BRANCH=continuous-verification
 UV="${UV:-$(command -v uv || true)}"
 if [[ -z "$UV" && -x /home/ubuntu/.local/bin/uv ]]; then
   UV=/home/ubuntu/.local/bin/uv
 fi
 CONTROL="$ROOT/runs/ops/sprintctl.py"
-TASK="$ROOT/challenge/g1-sprint-100m-lane"
+TASK="$SOURCE_ROOT/challenge/g1-sprint-100m-lane"
 MODAL_PROFILE=${MODAL_PROFILE:-kevinli020508}
 SANDBOX_TIMEOUT_SECONDS=86400
 DEPLOY_DEBOUNCE_SECONDS=300
@@ -176,17 +177,6 @@ fi
   echo "uv is required (set UV to its absolute executable path)" >&2
   exit 1
 }
-[[ -d "$HARBOR/src/harbor" ]] || { echo "missing vendored Harbor: $HARBOR" >&2; exit 1; }
-[[ -f "$HARBOR/.sprint-upstream-commit" ]] || {
-  echo "missing vendored Harbor provenance: $HARBOR/.sprint-upstream-commit" >&2
-  exit 1
-}
-actual_commit=$(tr -d '[:space:]' <"$HARBOR/.sprint-upstream-commit")
-[[ "$actual_commit" == "$HARBOR_COMMIT" ]] || {
-  echo "vendored Harbor $actual_commit does not match pin $HARBOR_COMMIT" >&2
-  exit 1
-}
-
 export SPRINT_SHARED_STATE_DIR="$ROOT/runs/ops/blind-verifier"
 
 if [[ "$AGENT_KIND" == "claude-code" ]]; then
@@ -228,6 +218,99 @@ PASSWORD_FILE="$SECRET_DIR/restic-password"
 ENV_FILE="$SECRET_DIR/harbor.env"
 REMOTE_PASSWORD="/durable/runs/$RUN_ID/secrets/restic-password"
 CPU_LAUNCH_ATTEMPT=1
+
+# A replacement CPU sandbox must execute the exact benchmark/Harbor source and
+# immutable images used at launch, even when main has advanced meanwhile. New
+# runs record the Sprint commit. Resumes materialize that commit in a detached
+# host worktree and read image IDs from run.json rather than today's warm-up
+# manifest. This keeps recovery possible without changing evaluation semantics.
+RESUMING=0
+WARMUP_MANIFEST_PATH="$ROOT/runs/ops/modal-image-warmup.json"
+if [[ -f "$STATE_DIR/run.json" ]]; then
+  if (( ! SUPERVISED_LAUNCH )); then
+    echo "run ID already exists: $RUN_ID" >&2
+    exit 1
+  fi
+  RESUMING=1
+  read -r SPRINT_SOURCE_COMMIT HARBOR_COMMIT HARBOR_BRANCH \
+    AGENT_TRAINING_IMAGE_ID VERIFIER_IMAGE_ID < <(
+    python3 - "$STATE_DIR/run.json" <<'PY'
+import json
+import re
+import sys
+
+payload = json.load(open(sys.argv[1]))
+provenance = payload.get("evaluation_provenance") or {}
+values = (
+    payload.get("sprint_source_commit"),
+    payload.get("harbor_commit"),
+    payload.get("harbor_branch"),
+    provenance.get("agent_training_image_id"),
+    provenance.get("verifier_image_id"),
+)
+if not isinstance(values[0], str) or not re.fullmatch(r"[0-9a-f]{40}", values[0]):
+    raise SystemExit("resume requires a recorded sprint_source_commit")
+if not isinstance(values[1], str) or not re.fullmatch(r"[0-9a-f]{40}", values[1]):
+    raise SystemExit("resume requires a recorded Harbor commit")
+if not isinstance(values[2], str) or not values[2]:
+    raise SystemExit("resume requires a recorded Harbor branch")
+if not all(isinstance(value, str) and re.fullmatch(r"im-[A-Za-z0-9]+", value) for value in values[3:]):
+    raise SystemExit("resume requires recorded immutable Modal image IDs")
+print(*values)
+PY
+  )
+  SOURCE_ROOT="/data/sprint-run-sources/$RUN_ID-$SPRINT_SOURCE_COMMIT"
+  if [[ ! -e "$SOURCE_ROOT/.git" ]]; then
+    mkdir -p /data/sprint-run-sources
+    git -C "$ROOT" worktree add --detach "$SOURCE_ROOT" "$SPRINT_SOURCE_COMMIT"
+  fi
+  [[ "$(git -C "$SOURCE_ROOT" rev-parse HEAD)" == "$SPRINT_SOURCE_COMMIT" ]] || {
+    echo "resume source worktree is not pinned to $SPRINT_SOURCE_COMMIT" >&2
+    exit 1
+  }
+  HARBOR="$SOURCE_ROOT/harbor"
+  TASK="$SOURCE_ROOT/challenge/g1-sprint-100m-lane"
+  WARMUP_MANIFEST_PATH="$STATE_DIR/resume-image-provenance.json"
+  python3 - "$STATE_DIR/run.json" "$WARMUP_MANIFEST_PATH" <<'PY'
+import json
+import os
+import pathlib
+import sys
+
+run = json.load(open(sys.argv[1]))
+provenance = run["evaluation_provenance"]
+payload = {
+    "completed": True,
+    "completed_at_epoch_s": provenance["image_warmup_completed_at_epoch_s"],
+    "contexts": {
+        "agent_training": {
+            "sha256": provenance["agent_training_context_sha256"],
+            "image_id": provenance["agent_training_image_id"],
+        },
+        "verifier": {
+            "sha256": provenance["verifier_context_sha256"],
+            "image_id": provenance["verifier_image_id"],
+        },
+    },
+}
+target = pathlib.Path(sys.argv[2])
+temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+os.chmod(temporary, 0o600)
+os.replace(temporary, target)
+PY
+fi
+
+[[ -d "$HARBOR/src/harbor" ]] || { echo "missing vendored Harbor: $HARBOR" >&2; exit 1; }
+[[ -f "$HARBOR/.sprint-upstream-commit" ]] || {
+  echo "missing vendored Harbor provenance: $HARBOR/.sprint-upstream-commit" >&2
+  exit 1
+}
+actual_commit=$(tr -d '[:space:]' <"$HARBOR/.sprint-upstream-commit")
+[[ "$actual_commit" == "$HARBOR_COMMIT" ]] || {
+  echo "vendored Harbor $actual_commit does not match pin $HARBOR_COMMIT" >&2
+  exit 1
+}
 
 VOLUMES_JSON=$(python3 - "$VOLUME_NAME" <<'PY'
 import json
@@ -383,13 +466,16 @@ if ((DRY_RUN)); then
   exit 0
 fi
 
-# Real evaluations only start from image definitions that were eagerly built
-# and exercised on Modal. The content hashes make this fail closed after any
-# agent/training/verifier image change rather than paying a surprise lazy build
-# during the first model's run.
-python3 "$ROOT/runs/ops/check_modal_image_warmup.py"
-read -r AGENT_TRAINING_IMAGE_ID VERIFIER_IMAGE_ID < <(
-  python3 - "$ROOT/runs/ops/modal-image-warmup.json" <<'PY'
+# New evaluations only start from image definitions that were eagerly built
+# and exercised on Modal. A resume consumes the recorded immutable IDs above.
+if (( ! RESUMING )); then
+  if [[ -n "$(git -C "$ROOT" status --porcelain --untracked-files=all -- challenge harbor runs)" ]]; then
+    echo "new evaluations require committed benchmark, Harbor, and launcher source" >&2
+    exit 1
+  fi
+  python3 "$ROOT/runs/ops/check_modal_image_warmup.py"
+  read -r AGENT_TRAINING_IMAGE_ID VERIFIER_IMAGE_ID < <(
+    python3 - "$WARMUP_MANIFEST_PATH" <<'PY'
 import json
 import re
 import sys
@@ -402,16 +488,12 @@ if not all(isinstance(value, str) and re.fullmatch(r"im-[A-Za-z0-9]+", value)
     raise SystemExit("warm-up manifest contains an invalid Modal image ID")
 print(agent, verifier)
 PY
-)
+  )
+  SPRINT_SOURCE_COMMIT=$(git -C "$ROOT" rev-parse HEAD)
+fi
 
 umask 077
-RESUMING=0
-if [[ -f "$STATE_DIR/run.json" ]]; then
-  if (( ! SUPERVISED_LAUNCH )); then
-    echo "run ID already exists: $RUN_ID" >&2
-    exit 1
-  fi
-  RESUMING=1
+if (( RESUMING )); then
   CPU_LAUNCH_ATTEMPT=$(python3 - "$STATE_DIR/run.json" <<'PY'
 import json
 import sys
@@ -454,9 +536,9 @@ chmod 0600 "$ENV_FILE" "$PASSWORD_FILE"
 python3 "$ROOT/runs/ops/validate_agent_env.py" "$ENV_FILE" "$AGENT_SECRET_NAME"
 
 if [[ "$AGENT_KIND" == "claude-code" ]]; then
-  PROMPT_TEMPLATE="${PROMPT_TEMPLATE_OVERRIDE:-$ROOT/runs/claude-code-goal.j2}"
+  PROMPT_TEMPLATE="${PROMPT_TEMPLATE_OVERRIDE:-$SOURCE_ROOT/runs/claude-code-goal.j2}"
 else
-  PROMPT_TEMPLATE="${PROMPT_TEMPLATE_OVERRIDE:-$ROOT/runs/codex-goal.j2}"
+  PROMPT_TEMPLATE="${PROMPT_TEMPLATE_OVERRIDE:-$SOURCE_ROOT/runs/codex-goal.j2}"
 fi
 
 python3 - "$STATE_DIR/run.json" "$RUN_ID" "$APP_NAME" "$TRAINING_APP_NAME" \
@@ -466,7 +548,8 @@ python3 - "$STATE_DIR/run.json" "$RUN_ID" "$APP_NAME" "$TRAINING_APP_NAME" \
   "$SANDBOX_TIMEOUT_SECONDS" "$DEPLOY_DEBOUNCE_SECONDS" "$HARBOR" \
   "$HARBOR_COMMIT" "$HARBOR_BRANCH" "$RESUMING" "$CPU_LAUNCH_ATTEMPT" \
   "$SUPERVISED_LAUNCH" "$STANDING_GPU" "$MODEL_API_HOST" \
-  "$PROMPT_TEMPLATE" "$ROOT/runs/ops/modal-image-warmup.json" "$ROOT" "$BATCH_ID" <<'PY'
+  "$PROMPT_TEMPLATE" "$WARMUP_MANIFEST_PATH" "$ROOT" "$BATCH_ID" \
+  "$SOURCE_ROOT" "$SPRINT_SOURCE_COMMIT" <<'PY'
 import datetime
 import fcntl
 import hashlib
@@ -478,11 +561,12 @@ import sys
 (path, run_id, app, training_app, verifier_app, volume, state, jobs, secrets, profile, agent_kind, model,
  endpoint, effort, codex_version, sandbox_timeout, debounce, harbor, commit,
  branch, resuming, cpu_attempt, supervised, standing_gpu_flag,
- model_api_host, prompt_template, warmup_manifest_path, root, batch_id) = sys.argv[1:]
+ model_api_host, prompt_template, warmup_manifest_path, root, batch_id, source_root,
+ sprint_source_commit) = sys.argv[1:]
 standing_gpu = standing_gpu_flag == "1"
 target = pathlib.Path(path)
 root_path = pathlib.Path(root)
-task_root = root_path / "challenge/g1-sprint-100m-lane"
+task_root = pathlib.Path(source_root) / "challenge/g1-sprint-100m-lane"
 prompt_path = pathlib.Path(prompt_template)
 warmup_manifest = json.loads(pathlib.Path(warmup_manifest_path).read_text())
 
@@ -522,6 +606,7 @@ base = {
     "harbor_path": harbor,
     "harbor_commit": commit,
     "harbor_branch": branch,
+    "sprint_source_commit": sprint_source_commit,
     "task_path": str(task_root),
     "evaluation_provenance": {
         "prompt_template_path": prompt_template,
@@ -656,6 +741,9 @@ if resuming == "1":
     payload.update({
         "jobs_root": jobs,
         "expected_job_path": str(pathlib.Path(jobs) / run_id),
+        "harbor_path": harbor,
+        "task_path": str(task_root),
+        "sprint_source_commit": sprint_source_commit,
         "cpu_launch_attempt": int(cpu_attempt),
         "cpu_launch_history": history,
         "cpu_supervised": supervised == "1",

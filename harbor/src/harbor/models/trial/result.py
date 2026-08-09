@@ -88,6 +88,7 @@ class ContinuousSubmission(BaseModel):
     verification_started_at: datetime | None = None
     verification_attempts: int = 0
     verification_retry_events: list[dict[str, Any]] = Field(default_factory=list)
+    verification_recovery_events: list[dict[str, Any]] = Field(default_factory=list)
     artifact_sha256: str | None = None
     evaluation_fingerprint: str | None = None
     cache_hit: bool = False
@@ -109,6 +110,9 @@ class ContinuousSubmission(BaseModel):
     )
     result_path: str | None = None
     error: str | None = None
+    error_type: str | None = None
+    error_message: str | None = None
+    retryable_infrastructure_error: bool = False
 
     @property
     def reward(self) -> float | None:

@@ -109,8 +109,7 @@ def functional_gpu_canary_ready() -> bool:
         and canary.get("schema_version") == 2
         and canary.get("completed")
         and canary.get("full_path_verified")
-        and canary.get("image_id")
-        == contexts.get("agent_training", {}).get("image_id")
+        and canary.get("image_id") == contexts.get("agent_training", {}).get("image_id")
         and canary.get("verifier_image_id")
         == contexts.get("verifier", {}).get("image_id")
     )
@@ -200,9 +199,7 @@ def provider_models(url: str, key: str) -> set[str]:
                 time.sleep(PROVIDER_DISCOVERY_RETRY_SECONDS * (2**attempt))
                 continue
             reason = getattr(exc, "reason", str(exc))
-            raise RuntimeError(
-                f"provider model-list request failed: {reason}"
-            ) from exc
+            raise RuntimeError(f"provider model-list request failed: {reason}") from exc
     if not isinstance(payload, dict):
         raise RuntimeError("provider model-list response was not an object")
     return {
@@ -261,9 +258,7 @@ def provider_inference_probe(
                 time.sleep(PROVIDER_INFERENCE_RETRY_SECONDS * (2**attempt))
                 continue
             reason = getattr(exc, "reason", str(exc))
-            raise RuntimeError(
-                f"provider inference request failed: {reason}"
-            ) from exc
+            raise RuntimeError(f"provider inference request failed: {reason}") from exc
     if not isinstance(result, dict) or not result.get("id"):
         raise RuntimeError("provider inference response lacked a request ID")
     usage = result.get("usage")
@@ -697,6 +692,24 @@ def shared_verifier_stall_alerts(
     ]
 
 
+def continuous_ledger_error_alerts(payload: dict[str, Any]) -> list[dict[str, str]]:
+    """Surface accepted policies that terminated without a trusted score."""
+    alerts: list[dict[str, str]] = []
+    for arm in payload.get("arms", []):
+        count = int(arm.get("ledger", {}).get("error", 0) or 0)
+        run_id = arm.get("run_id")
+        if count and isinstance(run_id, str):
+            alerts.append(
+                {
+                    "run_id": run_id,
+                    "kind": "continuous_ledger_error",
+                    "source": "continuous/ledger.jsonl",
+                    "count_in_tail": str(count),
+                }
+            )
+    return alerts
+
+
 def live_run_monitor_status(run_id: str) -> dict[str, Any] | None:
     """Read the independent run monitor instead of duplicating its work.
 
@@ -967,6 +980,15 @@ def monitor_cycle(batch_id: str, *, deploy: bool = True) -> dict[str, Any]:
             cycle_alerts.extend(log_alerts(run_id))
 
         cycle_alerts.extend(shared_verifier_stall_alerts(payload, now=now))
+        cycle_alerts.extend(continuous_ledger_error_alerts(payload))
+        for arm in payload["arms"]:
+            if int(arm.get("ledger", {}).get("error", 0) or 0) == 0:
+                resolve_alerts(
+                    payload,
+                    run_id=arm["run_id"],
+                    kind="continuous_ledger_error",
+                    resolution="all accepted submissions have trusted scores",
+                )
 
         known = {
             (item.get("run_id"), item.get("kind"), item.get("source"))
@@ -1096,9 +1118,7 @@ def stop_batch(batch_id: str) -> dict[str, Any]:
             arm.get("status") != "finalized"
             and (SCRIPT_DIR / arm["run_id"] / "run.json").is_file()
         ):
-            sprintctl.persist_stop_request(
-                arm["run_id"], reason="operator_batch_stop"
-            )
+            sprintctl.persist_stop_request(arm["run_id"], reason="operator_batch_stop")
             arm["stop_requested_at"] = arm.get("stop_requested_at") or utc_now()
             arm["status"] = "stopping"
             targets.append(arm)
@@ -1107,9 +1127,7 @@ def stop_batch(batch_id: str) -> dict[str, Any]:
 
     for arm in targets:
         try:
-            result = sprintctl.request_stop(
-                arm["run_id"], reason="operator_batch_stop"
-            )
+            result = sprintctl.request_stop(arm["run_id"], reason="operator_batch_stop")
             arm["stop_dispatch_status"] = result.get("status")
             arm.pop("stop_dispatch_error", None)
         except Exception as exc:  # noqa: BLE001

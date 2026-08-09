@@ -12,7 +12,7 @@ committed.
 - at most one active A10G training worker per model run, resumed from durable
   checksummed checkpoints after preemption;
 - blind asynchronous policy submissions through one shared verifier-GPU queue;
-- a host-frozen final policy after the agent exits;
+- the fastest valid submitted policy as the run's final score;
 - durable raw agent traces, ATIF trajectories, tool latency, tokens, model cost,
   resource telemetry, Modal allocation/cost reconciliation, and schema-v6
   unified timelines;
@@ -49,6 +49,14 @@ uv run --project harbor python challenge/g1-sprint-100m-lane/tests/adversarial_p
   --mode slam --out /tmp/sprint-warmup.pt
 uv run --project harbor python runs/ops/warm_modal_images.py \
   --policy /tmp/sprint-warmup.pt
+```
+
+When verifier behavior changes, prove the full nominal and fresh-process
+robustness path with any previously valid, untracked policy:
+
+```bash
+uv run --project harbor python runs/ops/verifier_robustness_canary.py \
+  --policy /absolute/path/to/valid-policy.pt
 ```
 
 ## Run the six-trial evaluation

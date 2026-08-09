@@ -188,21 +188,13 @@ class DurableOpsTests(unittest.TestCase):
                 )
             self.assertEqual(getter.call_count, 7)
             recovered = (
-                state
-                / "telemetry"
-                / "durable-by-job"
-                / "missing"
-                / "samples.jsonl"
+                state / "telemetry" / "durable-by-job" / "missing" / "samples.jsonl"
             )
             self.assertEqual(
                 recovered.read_text(), remote[f"{prefix}/by-job/missing/samples.jsonl"]
             )
-            stamp = json.loads(
-                (state / "telemetry" / "durable-sync.json").read_text()
-            )
-            self.assertIn(
-                f"{prefix}/by-job/missing/samples.jsonl", stamp["sources"]
-            )
+            stamp = json.loads((state / "telemetry" / "durable-sync.json").read_text())
+            self.assertIn(f"{prefix}/by-job/missing/samples.jsonl", stamp["sources"])
 
     def test_terra_usage_audit_requires_checksums_and_matching_atif_cost(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -318,7 +310,9 @@ class DurableOpsTests(unittest.TestCase):
 
             self.assertFalse(ready)
             self.assertIn("ATIF total cost differs from usage audit", details)
-            self.assertNotIn("usage audit trajectory snapshot checksum mismatch", details)
+            self.assertNotIn(
+                "usage audit trajectory snapshot checksum mismatch", details
+            )
 
     def test_unified_timeline_readiness_requires_current_schema(self) -> None:
         payload = {
@@ -912,6 +906,60 @@ while True:
             self.assertEqual(sprintctl.sha256_file(archive), digest)
             self.assertEqual(checksum.read_text().split()[0], digest)
             self.assertFalse(archive.stat().st_mode & stat.S_IWUSR)
+
+    def test_attempt_archive_refreshes_after_recovery_changes_result(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            attempt = root / "0001-policy.pt"
+            attempt.mkdir()
+            result = attempt / "result.json"
+            result.write_text('{"error":"transport loss"}\n')
+            first, first_digest, _ = sprintctl.tar_attempt_atomic(
+                attempt, root / "archives"
+            )
+            result.write_text('{"rewards":{"reward":1}}\n')
+            second, second_digest, _ = sprintctl.tar_attempt_atomic(
+                attempt, root / "archives", refresh=True
+            )
+            self.assertNotEqual(first, second)
+            self.assertNotEqual(first_digest, second_digest)
+            self.assertTrue(first.is_file())
+            self.assertTrue(second.is_file())
+
+    def test_completed_attempt_manifest_refreshes_when_ledger_row_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw) / "state"
+            trial = Path(raw) / "trial"
+            state.mkdir()
+            policy = write_policy(trial, 1, "policy.pt", b"policy")
+            attempt = policy.parents[3]
+            ledger = trial / "artifacts/continuous/ledger.jsonl"
+            first_row = {
+                **row(1, "policy.pt", 9.0),
+                "artifact_sha256": sprintctl.sha256_file(policy),
+            }
+            ledger.write_text(json.dumps(first_row) + "\n")
+            first = sprintctl.archive_completed_attempts(
+                state, {"run_id": "run"}, trial, upload=False
+            )
+            first_record = first["attempts"][attempt.name]
+
+            recovered_row = {
+                **first_row,
+                "verification_attempts": 2,
+                "verification_recovery_events": [{"resume_attempt": 2}],
+            }
+            ledger.write_text(json.dumps(recovered_row) + "\n")
+            (attempt / "result.json").write_text(json.dumps(recovered_row) + "\n")
+            second = sprintctl.archive_completed_attempts(
+                state, {"run_id": "run"}, trial, upload=False
+            )
+            second_record = second["attempts"][attempt.name]
+            self.assertNotEqual(
+                first_record["ledger_row_sha256"],
+                second_record["ledger_row_sha256"],
+            )
+            self.assertNotEqual(first_record["archive"], second_record["archive"])
 
     def test_malformed_partial_ledger_keeps_valid_rows(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

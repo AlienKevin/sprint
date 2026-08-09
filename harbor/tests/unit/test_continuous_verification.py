@@ -1,6 +1,7 @@
 """Continuous verification: submissions scored while the agent still runs."""
 
 import asyncio
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import logging
@@ -10,6 +11,7 @@ import pytest
 
 from harbor.environments.base import ExecResult
 from harbor.models.task.config import ContinuousVerificationConfig, TaskOS
+from harbor.models.trial.result import ContinuousSubmission
 from harbor.models.verifier.result import VerifierResult
 from harbor.trial.continuous import ContinuousVerificationService
 
@@ -221,6 +223,140 @@ async def test_retryable_verifier_loss_exhaustion_is_terminal(tmp_path):
     assert len(record.verification_retry_events) == 1
     assert record.verification_retry_events[0]["error"] == "provider lost sandbox"
     assert record.error == "RuntimeError: provider lost sandbox"
+
+
+def _write_recovery_record(
+    service: ContinuousVerificationService,
+    *,
+    name: str = "policy.pt",
+    error: str | None = (
+        "DownloadVerifierDirError: Failed to download verifier directory from "
+        "environment"
+    ),
+    attempts: int = 1,
+) -> ContinuousSubmission:
+    record = ContinuousSubmission(
+        name=name,
+        index=1,
+        submitted_at=datetime.now(timezone.utc),
+        started_at=datetime.now(timezone.utc),
+        finished_at=datetime.now(timezone.utc) if error else None,
+        verification_attempts=attempts,
+        artifact_path=(
+            f"continuous/attempts/0001-{name}/artifacts/app/submission/policy.pt"
+        ),
+        artifact_sha256=(
+            "7abbc513b25fa4fe3d50caf371b6c0a0cac93f9ddf05e6bf9c2b04776bab4f2d"
+        ),
+        error=error,
+    )
+    artifact = service._artifacts_dir / record.artifact_path
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_bytes(b"archived-policy")
+    service._ledger.parent.mkdir(parents=True, exist_ok=True)
+    service._ledger.write_text(record.model_dump_json() + "\n")
+    return record
+
+
+@pytest.mark.asyncio
+async def test_restart_resumes_retryable_row_from_exact_archived_bytes(tmp_path):
+    env = FakeAgentEnv(tmp_path / "env")
+    calls: list[tuple[str, bytes]] = []
+
+    async def run_verifier(key: str, paths) -> VerifierResult:
+        policy = paths.artifacts_dir / "app/submission/policy.pt"
+        calls.append((key, policy.read_bytes()))
+        return VerifierResult(rewards={"reward": 1.0})
+
+    service = _service(
+        tmp_path,
+        env,
+        run_verifier,
+        max_verifier_attempts=3,
+        verifier_retry_backoff_sec=0,
+        retryable_verifier_error=lambda _exc: True,
+    )
+    _write_recovery_record(service)
+    # A restarted service must not trust mutable queue bytes or create a second
+    # identity for the same filename.
+    (env.watch / "policy.pt").write_bytes(b"mutated-agent-copy")
+
+    async with service.running():
+        await _settle(service)
+
+    assert calls == [("continuous-0001-retry-2", b"archived-policy")]
+    assert len(service.summary.submissions) == 1
+    record = service.summary.submissions[0]
+    assert record.rewards == {"reward": 1.0}
+    assert record.error is None
+    assert record.verification_attempts == 2
+    assert record.verification_recovery_events[0]["resume_attempt"] == 2
+    assert record.verification_recovery_events[0]["artifact_sha256"] == (
+        record.artifact_sha256
+    )
+
+
+@pytest.mark.asyncio
+async def test_restart_resumes_interrupted_row_without_duplicate(tmp_path):
+    env = FakeAgentEnv(tmp_path / "env")
+    calls = 0
+
+    async def run_verifier(_key: str, _paths) -> VerifierResult:
+        nonlocal calls
+        calls += 1
+        return VerifierResult(rewards={"reward": 0.5})
+
+    service = _service(tmp_path, env, run_verifier, max_verifier_attempts=3)
+    _write_recovery_record(service, error=None, attempts=1)
+
+    async with service.running():
+        await _settle(service)
+
+    assert calls == 1
+    assert len(service.summary.submissions) == 1
+    assert service.summary.submissions[0].reward == 0.5
+
+
+@pytest.mark.asyncio
+async def test_restart_does_not_replay_deterministic_or_exhausted_rows(tmp_path):
+    env = FakeAgentEnv(tmp_path / "env")
+    calls = 0
+
+    async def run_verifier(_key: str, _paths) -> VerifierResult:
+        nonlocal calls
+        calls += 1
+        return VerifierResult(rewards={"reward": 1.0})
+
+    service = _service(tmp_path, env, run_verifier, max_verifier_attempts=3)
+    record = _write_recovery_record(
+        service, error="ValueError: invalid policy", attempts=1
+    )
+    async with service.running():
+        await _settle(service)
+    assert calls == 0
+    assert service.summary.submissions[0].error == record.error
+
+    exhausted = _service(
+        tmp_path / "exhausted", env, run_verifier, max_verifier_attempts=3
+    )
+    _write_recovery_record(exhausted, attempts=3)
+    async with exhausted.running():
+        await _settle(exhausted)
+    assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_restart_fails_closed_on_corrupt_archived_artifact(tmp_path):
+    env = FakeAgentEnv(tmp_path / "env")
+
+    async def run_verifier(_key: str, _paths) -> VerifierResult:
+        return VerifierResult(rewards={"reward": 1.0})
+
+    service = _service(tmp_path, env, run_verifier, max_verifier_attempts=3)
+    record = _write_recovery_record(service)
+    (service._artifacts_dir / record.artifact_path).write_bytes(b"tampered")
+    with pytest.raises(RuntimeError, match="checksum mismatch"):
+        await service.start()
 
 
 @pytest.mark.asyncio

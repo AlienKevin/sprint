@@ -65,6 +65,47 @@ def build_image(
     }
 
 
+def build_or_reuse_image(
+    image: modal.Image,
+    app: modal.App,
+    *,
+    context_name: str,
+    context_sha256: str,
+    previous_manifest: dict[str, Any] | None,
+) -> tuple[modal.Image, dict[str, Any]]:
+    """Reuse an exact immutable image when this context is byte-identical."""
+    previous = (
+        previous_manifest.get("contexts", {}).get(context_name, {})
+        if isinstance(previous_manifest, dict)
+        and previous_manifest.get("completed") is True
+        else {}
+    )
+    previous_id = previous.get("image_id")
+    if previous.get("sha256") == context_sha256 and isinstance(previous_id, str):
+        started = time.monotonic()
+        try:
+            reused = modal.Image.from_id(previous_id)
+            reused.build(app)
+        except Exception:  # noqa: BLE001
+            # Modal may have garbage-collected an old image. Fall back to the
+            # Dockerfile build rather than treating an expired cache as an
+            # evaluation failure.
+            pass
+        else:
+            elapsed = time.monotonic() - started
+            if reused.object_id != previous_id:
+                raise RuntimeError("reused Modal image ID changed unexpectedly")
+            return reused, {
+                "image_id": previous_id,
+                "first_build_s": 0.0,
+                "cached_build_s": round(elapsed, 3),
+                "reused_from_manifest": True,
+            }
+    built, metadata = build_image(image, app)
+    metadata["reused_from_manifest"] = False
+    return built, metadata
+
+
 def run_sandbox(
     *,
     app: modal.App,
@@ -150,6 +191,17 @@ def main() -> int:
     with volume.batch_upload(force=True) as upload:
         upload.put_file(policy, "/policy.pt", mode=0o444)
 
+    previous_manifest: dict[str, Any] | None = None
+    try:
+        candidate = json.loads(MANIFEST.read_text())
+    except (OSError, json.JSONDecodeError):
+        pass
+    else:
+        if isinstance(candidate, dict):
+            previous_manifest = candidate
+
+    agent_sha256 = context_digest(AGENT_CONTEXT)
+    verifier_sha256 = context_digest(VERIFIER_CONTEXT)
     agent_image = modal.Image.from_dockerfile(
         AGENT_CONTEXT / "Dockerfile", context_dir=AGENT_CONTEXT
     )
@@ -165,20 +217,32 @@ def main() -> int:
         "contexts": {
             "agent_training": {
                 "path": str(AGENT_CONTEXT),
-                "sha256": context_digest(AGENT_CONTEXT),
+                "sha256": agent_sha256,
             },
             "verifier": {
                 "path": str(VERIFIER_CONTEXT),
-                "sha256": context_digest(VERIFIER_CONTEXT),
+                "sha256": verifier_sha256,
             },
         },
         "policy_sha256": hashlib.sha256(policy.read_bytes()).hexdigest(),
     }
 
     with modal.enable_output():
-        agent_image, agent_build = build_image(agent_image, app)
+        agent_image, agent_build = build_or_reuse_image(
+            agent_image,
+            app,
+            context_name="agent_training",
+            context_sha256=agent_sha256,
+            previous_manifest=previous_manifest,
+        )
         payload["contexts"]["agent_training"].update(agent_build)
-        verifier_image, verifier_build = build_image(verifier_image, app)
+        verifier_image, verifier_build = build_or_reuse_image(
+            verifier_image,
+            app,
+            context_name="verifier",
+            context_sha256=verifier_sha256,
+            previous_manifest=previous_manifest,
+        )
         payload["contexts"]["verifier"].update(verifier_build)
 
         payload["cpu_agent_probe"] = run_sandbox(

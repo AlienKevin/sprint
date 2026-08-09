@@ -32,6 +32,7 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -166,10 +167,13 @@ class ContinuousVerificationService:
             )
 
         self._root.mkdir(parents=True, exist_ok=True)
+        recover = self._hydrate_ledger()
         directories = [self._quoted_watch_dir]
         if self._config.return_results_to_agent:
             directories.append(quote_shell_arg(self._config.results_dir, TaskOS.LINUX))
         await self._env.exec(f"mkdir -p {' '.join(directories)}")
+        for record in recover:
+            self._spawn(record.name, record=record)
         self._watcher = asyncio.create_task(self._watch())
         self._logger.debug(f"Continuous verification watching {self._config.watch_dir}")
 
@@ -277,10 +281,97 @@ class ContinuousVerificationService:
                 entries[name] = int(size)
         return entries
 
-    def _spawn(self, name: str) -> None:
-        task = asyncio.create_task(self._verify(name))
+    def _spawn(self, name: str, *, record: ContinuousSubmission | None = None) -> None:
+        task = asyncio.create_task(self._verify(name, record=record))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+
+    def _hydrate_ledger(self) -> list[ContinuousSubmission]:
+        """Restore durable queue identity and resume only safe unfinished work."""
+        if not self._ledger.is_file():
+            return []
+
+        records: list[ContinuousSubmission] = []
+        indices: set[int] = set()
+        names: set[str] = set()
+        for line_number, raw in enumerate(self._ledger.read_text().splitlines(), 1):
+            if not raw.strip():
+                continue
+            try:
+                record = ContinuousSubmission.model_validate_json(raw)
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeError(
+                    f"Invalid continuous ledger row {line_number}: {exc}"
+                ) from exc
+            if record.index in indices or record.name in names:
+                raise RuntimeError(
+                    "Continuous ledger contains duplicate submission identity: "
+                    f"index={record.index}, name={record.name!r}"
+                )
+            indices.add(record.index)
+            names.add(record.name)
+            records.append(record)
+
+        records.sort(key=lambda item: item.index)
+        self._summary = ContinuousVerificationSummary(submissions=records)
+        self._accepted = max(indices, default=0)
+        self._seen = set(names)
+
+        recover: list[ContinuousSubmission] = []
+        for record in records:
+            if record.rewards is not None:
+                continue
+            retryable = record.retryable_infrastructure_error or (
+                record.error_type == "DownloadVerifierDirError"
+                or (record.error or "").startswith("DownloadVerifierDirError:")
+            )
+            interrupted = record.error is None and record.finished_at is None
+            if not (retryable or interrupted):
+                continue
+            if record.verification_attempts >= self._config.max_verifier_attempts:
+                continue
+            self._validated_archived_artifact(record)
+            recover.append(record)
+        if recover:
+            self._logger.warning(
+                "Recovering %d interrupted continuous verification(s) from ledger",
+                len(recover),
+            )
+        return recover
+
+    def _validated_archived_artifact(self, record: ContinuousSubmission) -> Path:
+        if not record.artifact_path or not record.artifact_sha256:
+            raise RuntimeError(
+                f"Submission {record.index} cannot resume without an archived artifact"
+            )
+        local = (self._artifacts_dir / record.artifact_path).resolve()
+        root = self._artifacts_dir.resolve()
+        if not local.is_relative_to(root) or not local.is_file():
+            raise RuntimeError(
+                f"Submission {record.index} archived artifact is missing or out of scope"
+            )
+        actual = hashlib.sha256(local.read_bytes()).hexdigest()
+        if actual != record.artifact_sha256:
+            raise RuntimeError(
+                f"Submission {record.index} archived artifact checksum mismatch"
+            )
+        return local
+
+    def _rotate_verifier_output(self, paths: TrialPaths, attempt: int) -> str | None:
+        source = paths.verifier_dir
+        if not source.exists() or not any(source.iterdir()):
+            source.mkdir(parents=True, exist_ok=True)
+            return None
+        archive_root = paths.trial_dir / "verifier-attempts"
+        archive_root.mkdir(parents=True, exist_ok=True)
+        destination = archive_root / f"attempt-{attempt:03d}"
+        suffix = 1
+        while destination.exists():
+            suffix += 1
+            destination = archive_root / f"attempt-{attempt:03d}-{suffix}"
+        shutil.move(str(source), destination)
+        source.mkdir(parents=True, exist_ok=True)
+        return str(destination.relative_to(self._artifacts_dir))
 
     # -- verifying -----------------------------------------------------------
 
@@ -297,19 +388,24 @@ class ContinuousVerificationService:
         safe = "".join(c if c.isalnum() or c in "-._" else "_" for c in name)
         return TrialPaths(trial_dir=self._root / "attempts" / f"{index:04d}-{safe}")
 
-    async def _verify(self, name: str) -> None:
-        self._accepted += 1
-        index = self._accepted
-        record = ContinuousSubmission(
-            name=name,
-            index=index,
-            submitted_at=_now(),
-            queue_key=self._queue_key,
-        )
-        self._summary.submissions.append(record)
+    async def _verify(
+        self, name: str, *, record: ContinuousSubmission | None = None
+    ) -> None:
+        recovering = record is not None
+        if record is None:
+            self._accepted += 1
+            record = ContinuousSubmission(
+                name=name,
+                index=self._accepted,
+                submitted_at=_now(),
+                queue_key=self._queue_key,
+            )
+        index = record.index
 
         cap = self._config.max_submissions
         if cap is not None and index > cap:
+            self._summary.submissions.append(record)
+            self._summary.submissions.sort(key=lambda item: item.index)
             # Always retained in the trusted ledger. Feedback mode also hands
             # the rejection back; blind mode intentionally exposes no status.
             record.error = f"submission limit of {cap} reached"
@@ -318,6 +414,65 @@ class ContinuousVerificationService:
                 f"Continuous verification rejected {name}: {record.error}"
             )
             return
+
+        paths = self._attempt_paths(index, name)
+        paths.verifier_dir.mkdir(parents=True, exist_ok=True)
+        paths.artifacts_dir.mkdir(parents=True, exist_ok=True)
+        relative = PurePosixPath(self._config.submission_path).relative_to("/")
+        local = paths.artifacts_dir / Path(*relative.parts)
+        local.parent.mkdir(parents=True, exist_ok=True)
+
+        if recovering:
+            local = self._validated_archived_artifact(record)
+            previous_error = record.error
+            archived_output = self._rotate_verifier_output(
+                paths, record.verification_attempts
+            )
+            record.verification_recovery_events.append(
+                {
+                    "recovered_at": _now().isoformat(),
+                    "previous_error": previous_error,
+                    "resume_attempt": record.verification_attempts + 1,
+                    "artifact_sha256": record.artifact_sha256,
+                    "archived_verifier_output": archived_output,
+                }
+            )
+            record.finished_at = None
+            record.duration_sec = None
+            record.error = None
+            record.error_type = None
+            record.error_message = None
+            record.retryable_infrastructure_error = False
+            self._write_ledger()
+        else:
+            try:
+                # Archive before queueing for the shared verifier. The agent may
+                # overwrite its queue entry while earlier runs are being scored;
+                # only these immutable bytes define this accepted submission.
+                await self._env.download_file(f"{self._config.watch_dir}/{name}", local)
+                record.artifact_path = str(local.relative_to(self._artifacts_dir))
+                record.artifact_sha256 = hashlib.sha256(local.read_bytes()).hexdigest()
+                record.evaluation_fingerprint = hashlib.sha256(
+                    (
+                        self._verification_context + "\0" + record.artifact_sha256
+                    ).encode()
+                ).hexdigest()
+                self._summary.submissions.append(record)
+                self._summary.submissions.sort(key=lambda item: item.index)
+                self._logger.info(
+                    f"Continuous verification {index}: {name} "
+                    f"({local.stat().st_size} bytes)"
+                )
+                self._write_ledger()
+            except Exception as exc:  # noqa: BLE001
+                self._summary.submissions.append(record)
+                self._summary.submissions.sort(key=lambda item: item.index)
+                record.error = f"{type(exc).__name__}: {exc}"
+                record.error_type = type(exc).__name__
+                record.error_message = str(exc)
+                record.finished_at = _now()
+                await self._publish(name, record)
+                return
 
         try:
             await self._semaphore.acquire()
@@ -334,32 +489,10 @@ class ContinuousVerificationService:
             raise RuntimeError("continuous verification has no current asyncio task")
         self._running.add(current_task)
         try:
-            record.started_at = _now()
-            paths = self._attempt_paths(index, name)
-            # Not paths.mkdir(): an attempt has no agent of its own, and an
-            # empty agent/ dir in every archive is misleading.
-            paths.verifier_dir.mkdir(parents=True, exist_ok=True)
-            paths.artifacts_dir.mkdir(parents=True, exist_ok=True)
-            relative = PurePosixPath(self._config.submission_path).relative_to("/")
-            local = paths.artifacts_dir / Path(*relative.parts)
-            local.parent.mkdir(parents=True, exist_ok=True)
+            if record.started_at is None:
+                record.started_at = _now()
+            self._write_ledger()
             try:
-                # Pull the bytes out first.  The agent keeps working and may
-                # overwrite or delete its own file while this runs; the copy
-                # under artifacts is what gets scored and what gets archived, so
-                # the record and the score always describe the same bytes.
-                await self._env.download_file(f"{self._config.watch_dir}/{name}", local)
-                record.artifact_path = str(local.relative_to(self._artifacts_dir))
-                record.artifact_sha256 = hashlib.sha256(local.read_bytes()).hexdigest()
-                record.evaluation_fingerprint = hashlib.sha256(
-                    (
-                        self._verification_context + "\0" + record.artifact_sha256
-                    ).encode()
-                ).hexdigest()
-                self._logger.info(
-                    f"Continuous verification {index}: {name} "
-                    f"({local.stat().st_size} bytes)"
-                )
                 wait_started = _now()
                 async with self._shared_verifier_slot(record):
                     record.scheduler_acquired_at = _now()
@@ -373,6 +506,7 @@ class ContinuousVerificationService:
                         record.source_evaluation_id = cached["evaluation_id"]
                     else:
                         record.verification_started_at = _now()
+                        self._write_ledger()
                         result = await self._run_verifier_with_retries(
                             f"continuous-{index:04d}", paths, record
                         )
@@ -393,8 +527,16 @@ class ContinuousVerificationService:
                     if self._config.timeout_sec
                     else "verification timed out"
                 )
+                record.error_type = "TimeoutError"
+                record.error_message = record.error
             except Exception as exc:  # noqa: BLE001
                 record.error = f"{type(exc).__name__}: {exc}"
+                record.error_type = type(exc).__name__
+                record.error_message = str(exc)
+                record.retryable_infrastructure_error = bool(
+                    self._retryable_verifier_error
+                    and self._retryable_verifier_error(exc)
+                )
 
             record.finished_at = _now()
             record.duration_sec = round(
@@ -418,9 +560,11 @@ class ContinuousVerificationService:
     ) -> VerifierResult:
         """Retry only provider-classified loss, always in a fresh sandbox."""
         max_attempts = self._config.max_verifier_attempts
-        for attempt in range(1, max_attempts + 1):
+        first_attempt = record.verification_attempts + 1
+        for attempt in range(first_attempt, max_attempts + 1):
             record.verification_attempts = attempt
             attempt_key = key if attempt == 1 else f"{key}-retry-{attempt}"
+            self._write_ledger()
             try:
                 return await self._run_verifier(attempt_key, paths)
             except asyncio.CancelledError:
@@ -441,6 +585,11 @@ class ContinuousVerificationService:
                         "error": str(exc),
                     }
                 )
+                archived_output = self._rotate_verifier_output(paths, attempt)
+                if archived_output is not None:
+                    record.verification_retry_events[-1]["archived_verifier_output"] = (
+                        archived_output
+                    )
                 self._write_ledger()
                 self._logger.warning(
                     "Continuous verifier infrastructure loss for %s "
@@ -563,4 +712,20 @@ class ContinuousVerificationService:
     def _write_ledger(self) -> None:
         self._ledger.parent.mkdir(parents=True, exist_ok=True)
         lines = [s.model_dump_json() for s in self._summary.submissions]
-        self._ledger.write_text("\n".join(lines) + ("\n" if lines else ""))
+        payload = "\n".join(lines) + ("\n" if lines else "")
+        fd, raw = tempfile.mkstemp(
+            prefix=f".{self._ledger.name}.", dir=self._ledger.parent
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(raw, self._ledger)
+            directory_fd = os.open(self._ledger.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        finally:
+            Path(raw).unlink(missing_ok=True)

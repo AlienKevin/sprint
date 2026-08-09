@@ -67,7 +67,7 @@ def test_final_site_gate_ignores_unrelated_run_changes(
     unrelated = web / "data/timelines/other.json"
     for path in (batch_file, timeline, unrelated):
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f'{path.name}\n')
+        path.write_text(f"{path.name}\n")
     monkeypatch.setattr(batch_eval, "WEB", web)
     payload = {
         "batch_id": batch_id,
@@ -91,9 +91,7 @@ def test_batch_matrix_can_launch_three_deepseek_trials_only() -> None:
     assert len(rows) == 3
     assert {row["family"] for row in rows} == {"deepseek"}
     assert [row["trial"] for row in rows] == [1, 2, 3]
-    assert {row["model"] for row in rows} == {
-        "deepseek/deepseek-v4-flash"
-    }
+    assert {row["model"] for row in rows} == {"deepseek/deepseek-v4-flash"}
 
 
 def test_env_loader_reads_only_required_model_keys(tmp_path: Path) -> None:
@@ -202,9 +200,9 @@ def test_provider_model_discovery_retries_transport_timeouts(
     monkeypatch.setattr(batch_eval.urllib.request, "urlopen", flaky_urlopen)
     monkeypatch.setattr(batch_eval.time, "sleep", delays.append)
 
-    assert batch_eval.provider_models("https://api.example/models", "top-secret-key") == {
-        "gpt-test"
-    }
+    assert batch_eval.provider_models(
+        "https://api.example/models", "top-secret-key"
+    ) == {"gpt-test"}
     assert calls == 3
     assert delays == [1.0, 2.0]
 
@@ -368,10 +366,7 @@ def test_batch_stop_persists_all_intents_before_slow_dispatch(
     batch_id = "stop-all"
     monkeypatch.setattr(batch_eval, "SCRIPT_DIR", tmp_path / "ops")
     monkeypatch.setattr(batch_eval, "BATCH_ROOT", tmp_path / "batches")
-    arms = [
-        {"run_id": f"run-{index}", "status": "running"}
-        for index in range(1, 4)
-    ]
+    arms = [{"run_id": f"run-{index}", "status": "running"} for index in range(1, 4)]
     for arm in arms:
         run_dir = batch_eval.SCRIPT_DIR / arm["run_id"]
         run_dir.mkdir(parents=True)
@@ -441,6 +436,7 @@ def test_shared_verifier_stall_alert_requires_pending_work_and_old_progress(
     alerts = batch_eval.shared_verifier_stall_alerts(payload, now=now)
     assert len(alerts) == 1
     assert alerts[0]["kind"] == "shared_verifier_stalled"
+
     assert alerts[0]["pending_submissions"] == "2"
 
     events.write_text(
@@ -457,6 +453,23 @@ def test_shared_verifier_stall_alert_requires_pending_work_and_old_progress(
     payload["arms"][0]["ledger"] = {"queued": 0, "running": 0}
     events.write_text("")
     assert batch_eval.shared_verifier_stall_alerts(payload, now=now) == []
+
+
+def test_continuous_ledger_errors_are_explicit_batch_alerts() -> None:
+    payload = {
+        "arms": [
+            {"run_id": "clean", "ledger": {"error": 0}},
+            {"run_id": "lost", "ledger": {"error": 2}},
+        ]
+    }
+    assert batch_eval.continuous_ledger_error_alerts(payload) == [
+        {
+            "run_id": "lost",
+            "kind": "continuous_ledger_error",
+            "source": "continuous/ledger.jsonl",
+            "count_in_tail": "2",
+        }
+    ]
 
 
 def test_fresh_pending_submission_outranks_old_scheduler_history(
@@ -814,9 +827,7 @@ def test_partial_batch_launch_is_safely_rolled_back(
         for index in (1, 2)
     ]
     monkeypatch.setattr(batch_eval, "BATCH_ROOT", tmp_path / "batches")
-    monkeypatch.setattr(
-        batch_eval, "matrix", lambda _batch_id, **_kwargs: arms
-    )
+    monkeypatch.setattr(batch_eval, "matrix", lambda _batch_id, **_kwargs: arms)
     monkeypatch.setattr(
         batch_eval,
         "preflight",
@@ -915,9 +926,12 @@ def test_deployment_marker_is_durable_idempotent_and_gates_finalization(
     assert batch_eval.sprintctl.batch_site_deployed_ready(state_dir, run)
     policy_index.write_text('{"policies":[{"new":true}]}\n')
     assert batch_eval.sprintctl.batch_site_deployed_ready(state_dir, run)
-    snapshot = state_dir / json.loads(
-        (state_dir / "BATCH_SITE_DEPLOYED.json").read_text()
-    )["public_artifact_snapshot_path"]
+    snapshot = (
+        state_dir
+        / json.loads((state_dir / "BATCH_SITE_DEPLOYED.json").read_text())[
+            "public_artifact_snapshot_path"
+        ]
+    )
     snapshot.chmod(0o600)
     snapshot.write_text("tampered\n")
     assert not batch_eval.sprintctl.batch_site_deployed_ready(state_dir, run)

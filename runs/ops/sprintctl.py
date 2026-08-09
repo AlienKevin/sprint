@@ -416,19 +416,11 @@ def sync_durable_telemetry(
         }
     if force:
         for job_id, attempt in sorted(lifecycle_attempts):
-            remote = (
-                f"runs/{run['run_id']}/gpu-jobs/attempts/"
-                f"{job_id}/{attempt}.json"
-            )
+            remote = f"runs/{run['run_id']}/gpu-jobs/attempts/{job_id}/{attempt}.json"
             text = volume_get_text(run, remote)
             if text is None:
                 continue
-            local = (
-                out_dir
-                / "durable-gpu-attempts"
-                / job_id
-                / f"{attempt}.json"
-            )
+            local = out_dir / "durable-gpu-attempts" / job_id / f"{attempt}.json"
             atomic_write_text(local, text, mode=0o600)
             captured[remote] = {
                 "local": str(local.relative_to(state_dir)),
@@ -718,10 +710,12 @@ def snapshot_host_history(
     return written
 
 
-def tar_attempt_atomic(attempt: Path, archive_dir: Path) -> tuple[Path, str, Path]:
+def tar_attempt_atomic(
+    attempt: Path, archive_dir: Path, *, refresh: bool = False
+) -> tuple[Path, str, Path]:
     archive_dir.mkdir(parents=True, exist_ok=True)
     existing = sorted(archive_dir.glob(f"{attempt.name}.*.tar"))
-    if existing:
+    if existing and not refresh:
         archive = existing[0]
         digest = sha256_file(archive)
         checksum = archive.with_suffix(archive.suffix + ".sha256")
@@ -772,15 +766,22 @@ def archive_completed_attempts(
         if len(matches) != 1 or not matches[0].is_dir():
             continue
         attempt = matches[0]
-        if attempt.name in manifest["attempts"]:
+        row_digest = hashlib.sha256(
+            json.dumps(row, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        previous = manifest["attempts"].get(attempt.name)
+        if previous and previous.get("ledger_row_sha256") == row_digest:
             continue
-        archive, digest, checksum = tar_attempt_atomic(attempt, state_dir / "archives")
+        archive, digest, checksum = tar_attempt_atomic(
+            attempt, state_dir / "archives", refresh=previous is not None
+        )
         record = {
             "index": index,
             "attempt": attempt.name,
             "archive": str(archive),
             "sha256": digest,
             "bytes": archive.stat().st_size,
+            "ledger_row_sha256": row_digest,
             "archived_at": utc_now(),
             "uploaded": False,
         }

@@ -28,6 +28,7 @@ from harbor.models.trial.result import (
 from harbor.models.verifier.result import VerifierResult
 from harbor.trial.single_step import SingleStepTrial
 from harbor.trial.trial import Trial
+from harbor.verifier.verifier import DownloadVerifierDirError
 
 
 ModalNotFoundError = type(
@@ -53,6 +54,14 @@ def test_wrapped_modal_sandbox_loss_is_retryable():
         raise RuntimeError("download failed") from lost
     except RuntimeError as wrapped:
         assert SingleStepTrial._retryable_continuous_verifier_error(wrapped)
+
+
+def test_verifier_output_download_loss_is_retryable():
+    assert SingleStepTrial._retryable_continuous_verifier_error(
+        DownloadVerifierDirError(
+            "Failed to download verifier directory from environment"
+        )
+    )
 
 
 SUBMISSION = "/app/submission/policy.pt"
@@ -264,7 +273,9 @@ class TestContinuousVerificationWiring:
                 ),
                 paths=paths,
                 result=SimpleNamespace(
-                    continuous_verification=ContinuousVerificationSummary(submissions=[]),
+                    continuous_verification=ContinuousVerificationSummary(
+                        submissions=[]
+                    ),
                     verifier_reused_continuous_evaluation_id=None,
                 ),
             )
@@ -298,9 +309,7 @@ class TestContinuousVerificationWiring:
                 submission_path="/app/submission/policy.pt",
             )
             result = SimpleNamespace(
-                continuous_verification=ContinuousVerificationSummary(
-                    submissions=rows
-                ),
+                continuous_verification=ContinuousVerificationSummary(submissions=rows),
                 verifier_reused_continuous_evaluation_id=None,
             )
             trial = SimpleNamespace(
@@ -430,9 +439,7 @@ class TestContinuousVerificationWiring:
 
             async def spy(self, **kwargs):
                 calls.append(kwargs)
-                return VerifierResult(
-                    rewards={"reward": 1.0, "best_100m_s": 9.9}
-                )
+                return VerifierResult(rewards={"reward": 1.0, "best_100m_s": 9.9})
 
             with patch.object(Trial, "_run_separate_verifier", spy):
                 trial = await _run(
