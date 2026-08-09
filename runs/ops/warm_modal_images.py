@@ -20,6 +20,12 @@ VERIFIER_CONTEXT = ROOT / "challenge/g1-sprint-100m-lane/tests"
 MANIFEST = ROOT / "runs/ops/modal-image-warmup.json"
 APP_NAME = "sprint-image-warmup"
 VOLUME_NAME = "sprint-image-warmup-artifacts"
+FATAL_SANDBOX_OUTPUT = (
+    "Failed to resolve extension dependencies",
+    "Failed to startup python app",
+    "ModuleNotFoundError:",
+    "Traceback (most recent call last):",
+)
 
 
 def context_digest(root: Path) -> str:
@@ -70,6 +76,8 @@ def run_sandbox(
     timeout: int = 300,
     cpu: int = 8,
     memory: int = 32768,
+    required_output_substrings: tuple[str, ...] = (),
+    forbidden_output_substrings: tuple[str, ...] = FATAL_SANDBOX_OUTPUT,
 ) -> dict[str, Any]:
     sandbox: modal.Sandbox | None = None
     started = time.monotonic()
@@ -88,7 +96,11 @@ def run_sandbox(
         if volume:
             kwargs["volumes"] = {"/warm": volume}
         create_started = time.monotonic()
-        sandbox = modal.Sandbox.create("bash", "-lc", command, **kwargs)
+        # Kit has paths that log a fatal startup error to stderr and still
+        # return zero. Merge both streams and validate semantic success below.
+        sandbox = modal.Sandbox.create(
+            "bash", "-lc", f"exec 2>&1; {command}", **kwargs
+        )
         create_s = time.monotonic() - create_started
         output = sandbox.stdout.read()
         sandbox.wait(raise_on_termination=False)
@@ -96,6 +108,16 @@ def run_sandbox(
         elapsed_s = time.monotonic() - started
         if exit_code != 0:
             raise RuntimeError(f"{role} warmup exited {exit_code}: {output[-4000:]}")
+        forbidden = [item for item in forbidden_output_substrings if item in output]
+        if forbidden:
+            raise RuntimeError(
+                f"{role} warmup emitted fatal output {forbidden}: {output[-4000:]}"
+            )
+        missing = [item for item in required_output_substrings if item not in output]
+        if missing:
+            raise RuntimeError(
+                f"{role} warmup missed success markers {missing}: {output[-4000:]}"
+            )
         return {
             "sandbox_id": sandbox.object_id,
             "create_s": round(create_s, 3),
@@ -200,6 +222,7 @@ def main() -> int:
                 "assert p['cpu_requested_cores']==8.0; "
                 "assert p['mem_requested_kib']==33554432; assert p['mem_used_kib']>0\""
             ),
+            required_output_substrings=("LOCAL_G1=/opt/assets/", "LOCAL_DEBUG_MARKERS=ok"),
         )
 
         verifier_command = (

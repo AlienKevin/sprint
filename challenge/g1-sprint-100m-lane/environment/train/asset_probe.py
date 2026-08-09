@@ -14,6 +14,7 @@ app = AppLauncher(parser.parse_args()).app
 
 from isaaclab.markers.config import BLUE_ARROW_X_MARKER_CFG  # noqa: E402
 from isaaclab_assets import G1_CFG  # noqa: E402
+from sprint_assets import localize_asset_path  # noqa: E402
 
 
 def assert_local(path: str) -> None:
@@ -22,12 +23,16 @@ def assert_local(path: str) -> None:
 
 
 def main() -> int:
-    assert_local(G1_CFG.spawn.usd_path)
+    # Config singletons may have been constructed before the trusted runtime
+    # redirect was installed. Validate the exact path used at the spawn
+    # boundary rather than requiring the cached config object to be mutated.
+    local_g1 = localize_asset_path(G1_CFG.spawn.usd_path)
+    assert_local(local_g1)
     for marker in BLUE_ARROW_X_MARKER_CFG.markers.values():
         usd_path = getattr(marker, "usd_path", None)
         if usd_path:
-            assert_local(usd_path)
-    print(f"LOCAL_G1={G1_CFG.spawn.usd_path}")
+            assert_local(localize_asset_path(usd_path))
+    print(f"LOCAL_G1={local_g1}")
     print("LOCAL_DEBUG_MARKERS=ok")
     return 0
 

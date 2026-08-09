@@ -96,6 +96,7 @@ def main() -> int:
                 volume=volume,
                 command=command,
                 timeout=1200,
+                required_output_substrings=("[sprint] iter=3",),
             )
         report["completed"] = True
         report["completed_at_epoch_s"] = time.time()

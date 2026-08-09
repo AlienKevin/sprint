@@ -44,6 +44,14 @@ RUN git clone --depth 1 --branch v2.3.2 \
  && pip3 install --no-cache-dir --no-build-isolation -e /opt/IsaacLab/source/isaaclab_tasks \
  && pip3 install --no-cache-dir rsl-rl-lib==3.1.2
 
+# Isaac Lab 2.3.2's application manifest pins the URDF importer from a newer
+# extension cache than the Isaac Sim 5.1.0 wheel actually ships.  Online Kit
+# silently fetches it; sealed workers cannot, and Kit can still return zero
+# after dependency resolution fails.  Reconcile the manifest to the exact
+# extension bundled in this pinned image and fail the image build if either
+# side changes underneath us.
+RUN python3 -c 'from pathlib import Path; p=Path("/opt/IsaacLab/apps/isaaclab.python.kit"); s=p.read_text(); old="\"isaacsim.asset.importer.urdf\" = {version = \"2.4.31\", exact = true}"; new="\"isaacsim.asset.importer.urdf\" = {version = \"2.4.30\", exact = true}"; assert s.count(old) == 1, "unexpected Isaac Lab URDF requirement"; p.write_text(s.replace(old, new)); assert p.read_text().count(new) == 1'
+
 # Training is no-network, so stock Isaac configs must resolve against the same
 # sealed asset tree as the verifier. Include both the robot and auxiliary
 # marker/material assets used by common agent-authored locomotion configs.

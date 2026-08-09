@@ -68,6 +68,59 @@ def test_successful_sandbox_uses_returncode_after_wait(
     assert sandbox.terminated is True
 
 
+@pytest.mark.parametrize(
+    ("output", "required", "match"),
+    [
+        ("ordinary output\n", ("READY",), "missed success markers"),
+        (
+            "Failed to resolve extension dependencies\n",
+            (),
+            "emitted fatal output",
+        ),
+        ("Traceback (most recent call last):\n", (), "emitted fatal output"),
+    ],
+)
+def test_sandbox_fails_closed_on_semantic_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    output: str,
+    required: tuple[str, ...],
+    match: str,
+) -> None:
+    del tmp_path
+    warmer = load_script("warm_modal_images.py")
+
+    class Output:
+        @staticmethod
+        def read() -> str:
+            return output
+
+    class Sandbox:
+        object_id = "sb-semantic-failure"
+        stdout = Output()
+        returncode = 0
+
+        @staticmethod
+        def wait(*, raise_on_termination: bool) -> None:
+            assert raise_on_termination is False
+
+        @staticmethod
+        def terminate(*, wait: bool) -> None:
+            assert wait is True
+
+    monkeypatch.setattr(
+        warmer.modal.Sandbox, "create", lambda *args, **kwargs: Sandbox()
+    )
+    with pytest.raises(RuntimeError, match=match):
+        warmer.run_sandbox(
+            app=object(),
+            image=object(),
+            role="test",
+            command="true",
+            required_output_substrings=required,
+        )
+
+
 def test_checker_accepts_complete_current_manifest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
