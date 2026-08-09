@@ -232,7 +232,7 @@ os.replace(cli_temporary, cli_target)
 def fetch_agent_policy_artifact(
     run: dict[str, Any], job: dict[str, Any]
 ) -> tuple[dict[str, Any], str | None, bytes | None, dict[str, Any]]:
-    """Fetch a terminal policy into the trusted CPU-agent mirror.
+    """Fetch a worker-reported policy into the trusted CPU-agent mirror.
 
     GPU and CPU sandboxes mount point-in-time Volume views.  The host therefore
     copies only the policy explicitly named by the worker's progress record,
@@ -303,6 +303,7 @@ def fetch_agent_policy_artifact(
     payload.update(
         {
             "agent_policy_mirror_path": mirror_path,
+            "agent_policy_source_path": str(policy_path),
             "agent_policy_sha256": hashlib.sha256(content).hexdigest(),
             "agent_policy_size_bytes": len(content),
         }
@@ -316,6 +317,66 @@ def fetch_agent_policy_artifact(
             "policy_size_bytes": len(content),
         },
     )
+
+
+def refresh_live_policy_mirror(
+    run: dict[str, Any],
+    job: dict[str, Any],
+    heartbeat: dict[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Publish a newly committed intermediate policy without ending training.
+
+    A long-lived CPU sandbox has a point-in-time view of the Modal Volume, so
+    it cannot see policies written later by its GPU worker.  The trusted host
+    already reads the worker heartbeat on every dispatch cycle.  When that
+    heartbeat atomically names a new policy, copy the bounded run-scoped bytes
+    into the host-owned CPU mirror.  Repeated heartbeats for the same path are
+    idempotent and avoid another Volume download.
+    """
+    if not isinstance(heartbeat, dict):
+        return job, {"live_policy_mirror": "no_heartbeat"}
+    if int(heartbeat.get("attempt") or 0) != int(job.get("attempt") or 0) or str(
+        heartbeat.get("lease_id") or ""
+    ) != str(job.get("lease_id") or ""):
+        return job, {"live_policy_mirror": "stale_heartbeat"}
+    progress = heartbeat.get("progress")
+    if not isinstance(progress, dict):
+        return job, {"live_policy_mirror": "not_reported"}
+    raw_path = str(progress.get("policy_path") or "").strip()
+    if not raw_path:
+        return job, {"live_policy_mirror": "not_reported"}
+    progress_sha256 = hashlib.sha256(
+        json.dumps(progress, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+    payload = dict(job)
+    payload["progress"] = progress
+    if heartbeat.get("checkpoint"):
+        payload["checkpoint"] = heartbeat["checkpoint"]
+    if progress_sha256 == str(
+        payload.get("agent_policy_source_progress_sha256") or ""
+    ) and payload.get("agent_policy_mirror_path"):
+        return payload, {"live_policy_mirror": "already_mirrored"}
+
+    payload, artifact_name, artifact_content, detail = fetch_agent_policy_artifact(
+        run, payload
+    )
+    if artifact_name is None or artifact_content is None:
+        return payload, {"live_policy_mirror": detail.get("policy_mirror")}
+    payload["agent_policy_source_progress_sha256"] = progress_sha256
+    mirror_detail = mirror_agent_job(
+        run,
+        payload,
+        artifact_name=artifact_name,
+        artifact_content=artifact_content,
+    )
+    payload["agent_policy_mirrored_at"] = utc_now()
+    persist_job(run, payload)
+    return payload, {
+        "live_policy_mirror": "updated",
+        **detail,
+        **mirror_detail,
+    }
 
 
 def jobs_prefix(run_id: str) -> str:
@@ -1391,6 +1452,9 @@ def reconcile_job(
             job["started_at"] = attempt_record.get("started_at")
             job["started_at_epoch_s"] = attempt_record.get("started_at_epoch_s")
             persist_job(run, job)
+        job, live_policy_detail = refresh_live_policy_mirror(run, job, heartbeat)
+    else:
+        live_policy_detail = {"live_policy_mirror": "worker_not_running"}
 
     probe_state, exit_code, probe_error = probe_fn(job)
     decision = gpu_claim.assess_worker_liveness(
@@ -1411,6 +1475,7 @@ def reconcile_job(
         "exit_code": exit_code,
         "probe_error": probe_error,
         "heartbeat_epoch_s": gpu_claim.heartbeat_epoch(heartbeat),
+        **live_policy_detail,
     }
     if decision == "observe":
         observed = dict(job)

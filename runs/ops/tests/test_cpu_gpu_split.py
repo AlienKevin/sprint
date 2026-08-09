@@ -610,6 +610,76 @@ class ClaimSelectionTests(unittest.TestCase):
             payload["agent_policy_mirror_path"],
             "/run/sprint-gpu-mirror/artifacts/job-1/policy_7.pt",
         )
+        self.assertEqual(
+            payload["agent_policy_source_path"],
+            "/durable/runs/run-1/policies/policy_7.pt",
+        )
+
+    def test_live_heartbeat_policy_is_mirrored_once_while_training(self) -> None:
+        run = {"run_id": "run-1", "volume_name": "volume-1"}
+        job = {
+            "job_id": "job-1",
+            "status": "running",
+            "attempt": 1,
+            "lease_id": "lease-1",
+        }
+        progress = {
+            "iteration": 25,
+            "policy_path": (
+                "/durable/runs/run-1/gpu-jobs/checkpoints/job-1/policy_25.pt"
+            ),
+        }
+        heartbeat = {
+            "attempt": 1,
+            "lease_id": "lease-1",
+            "progress": progress,
+            "checkpoint": "/durable/runs/run-1/checkpoint.pt",
+        }
+        fetched = {
+            **job,
+            "progress": progress,
+            "checkpoint": heartbeat["checkpoint"],
+            "agent_policy_mirror_path": (
+                "/run/sprint-gpu-mirror/artifacts/job-1/policy_25.pt"
+            ),
+            "agent_policy_source_path": progress["policy_path"],
+            "agent_policy_sha256": "abc",
+            "agent_policy_size_bytes": 6,
+        }
+        with (
+            mock.patch.object(
+                gpu_worker,
+                "fetch_agent_policy_artifact",
+                return_value=(
+                    fetched,
+                    "policy_25.pt",
+                    b"policy",
+                    {"policy_mirror": "fetched"},
+                ),
+            ) as fetch,
+            mock.patch.object(
+                gpu_worker,
+                "mirror_agent_job",
+                return_value={"agent_mirror": "updated"},
+            ) as mirror,
+            mock.patch.object(
+                gpu_worker, "persist_job", side_effect=lambda _run, payload: payload
+            ) as persist,
+        ):
+            payload, detail = gpu_worker.refresh_live_policy_mirror(run, job, heartbeat)
+            repeated, repeated_detail = gpu_worker.refresh_live_policy_mirror(
+                run, payload, heartbeat
+            )
+
+        self.assertEqual(detail["live_policy_mirror"], "updated")
+        self.assertEqual(payload["progress"], progress)
+        self.assertEqual(payload["checkpoint"], heartbeat["checkpoint"])
+        self.assertIn("agent_policy_source_progress_sha256", payload)
+        self.assertEqual(repeated_detail["live_policy_mirror"], "already_mirrored")
+        self.assertEqual(repeated, payload)
+        fetch.assert_called_once()
+        mirror.assert_called_once()
+        persist.assert_called_once()
 
     def test_fetches_policy_from_its_job_checkpoint_directory(self) -> None:
         run = {"run_id": "run-1", "volume_name": "volume-1"}
