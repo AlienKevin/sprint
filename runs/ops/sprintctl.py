@@ -363,6 +363,78 @@ def sync_durable_telemetry(
             "bytes": len(text.encode()),
             "sha256": hashlib.sha256(text.encode()).hexdigest(),
         }
+
+    # The merged gpu-stream is convenient for live rendering, but Volume
+    # writers can race while several short-lived workers append to it.  Each
+    # worker also owns an append-only by-job stream.  Recover only jobs that
+    # have lifecycle evidence but no sample in the merged stream; this keeps
+    # live polling bounded while making finalization robust to merge races.
+    lifecycle_jobs: set[str] = set()
+    lifecycle_attempts: set[tuple[str, int]] = set()
+    lifecycle_paths = (
+        out_dir / "durable-gpu-timeline.jsonl",
+        out_dir / "gpu_timeline.jsonl",
+    )
+    for lifecycle_path in lifecycle_paths:
+        if not lifecycle_path.is_file():
+            continue
+        for raw in lifecycle_path.read_text(errors="replace").splitlines():
+            try:
+                row = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            job_id = row.get("job_id") if isinstance(row, dict) else None
+            if isinstance(job_id, str) and job_id:
+                lifecycle_jobs.add(job_id)
+                attempt = row.get("attempt")
+                if isinstance(attempt, int) and attempt > 0:
+                    lifecycle_attempts.add((job_id, attempt))
+    sampled_jobs: set[str] = set()
+    merged_path = out_dir / "durable-gpu-samples.jsonl"
+    if merged_path.is_file():
+        for raw in merged_path.read_text(errors="replace").splitlines():
+            try:
+                row = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            job_id = row.get("job_id") if isinstance(row, dict) else None
+            if isinstance(job_id, str) and job_id:
+                sampled_jobs.add(job_id)
+    by_job_dir = out_dir / "durable-by-job"
+    by_job_targets = lifecycle_jobs if force else lifecycle_jobs - sampled_jobs
+    for job_id in sorted(by_job_targets):
+        remote = f"{prefix}/by-job/{job_id}/samples.jsonl"
+        text = volume_get_text(run, remote)
+        if text is None:
+            continue
+        local = by_job_dir / job_id / "samples.jsonl"
+        atomic_write_text(local, text, mode=0o600)
+        captured[remote] = {
+            "local": str(local.relative_to(state_dir)),
+            "bytes": len(text.encode()),
+            "sha256": hashlib.sha256(text.encode()).hexdigest(),
+        }
+    if force:
+        for job_id, attempt in sorted(lifecycle_attempts):
+            remote = (
+                f"runs/{run['run_id']}/gpu-jobs/attempts/"
+                f"{job_id}/{attempt}.json"
+            )
+            text = volume_get_text(run, remote)
+            if text is None:
+                continue
+            local = (
+                out_dir
+                / "durable-gpu-attempts"
+                / job_id
+                / f"{attempt}.json"
+            )
+            atomic_write_text(local, text, mode=0o600)
+            captured[remote] = {
+                "local": str(local.relative_to(state_dir)),
+                "bytes": len(text.encode()),
+                "sha256": hashlib.sha256(text.encode()).hexdigest(),
+            }
     ok = bool(captured)
     atomic_write_json(
         stamp,
@@ -498,7 +570,10 @@ def discover_job_and_trial(
     return job, trial
 
 
-def request_stop(run_id: str, *, reason: str = "operator_stop") -> dict[str, Any]:
+def persist_stop_request(
+    run_id: str, *, reason: str = "operator_stop"
+) -> tuple[Path, dict[str, Any], dict[str, Any]]:
+    """Durably record stop intent without waiting on any Modal operation."""
     state_dir, run = load_run(run_id)
     kind = agent_kind(run)
     marker = state_dir / "STOP_REQUESTED.json"
@@ -515,6 +590,13 @@ def request_stop(run_id: str, *, reason: str = "operator_stop") -> dict[str, Any
             "reason": reason,
         }
         atomic_write_json(marker, payload, mode=0o600)
+    return state_dir, run, payload
+
+
+def request_stop(run_id: str, *, reason: str = "operator_stop") -> dict[str, Any]:
+    state_dir, run, payload = persist_stop_request(run_id, reason=reason)
+    kind = agent_kind(run)
+    marker = state_dir / "STOP_REQUESTED.json"
 
     # Fence GPU leases before signalling the CPU harness. The monitor also
     # sees STOP_REQUESTED and repeats this idempotently if this call is cut off.
@@ -1130,26 +1212,26 @@ def usage_audit_ready(trial: Path, run: dict[str, Any]) -> tuple[bool, list[str]
             details.append("Harbor result cost differs from usage audit")
 
     provenance = audit.get("provenance") or {}
-    if provenance.get("trajectory_sha256") != sha256_file(trajectory_path):
-        details.append("usage audit trajectory checksum mismatch")
-    source_name = provenance.get("source_session_file")
-    source_hash = provenance.get("source_session_sha256")
-    source_matches = []
-    if isinstance(source_name, str) and source_name:
-        source_matches.extend((trial / "agent" / "sessions").rglob(source_name))
-        source_matches.extend(
-            (trial / "agent" / "codex-state" / "sessions").rglob(source_name)
-        )
-        source_matches = list(
-            {path.resolve(): path for path in source_matches}.values()
-        )
-    # Harbor intentionally preserves the same Codex session in both
-    # agent/sessions and the restartable codex-state allowlist. Accept those
-    # duplicate paths only when every copy matches the signed provenance hash.
-    if not source_matches or any(
-        source_hash != sha256_file(path) for path in source_matches
-    ):
-        details.append("usage audit source session checksum mismatch")
+    agent_dir = (trial / "agent").resolve()
+
+    def signed_snapshot(path_key: str, hash_key: str, label: str) -> None:
+        relative = provenance.get(path_key)
+        if not isinstance(relative, str) or not relative:
+            details.append(f"usage audit {label} provenance path is missing")
+            return
+        candidate = (agent_dir / relative).resolve()
+        try:
+            candidate.relative_to(agent_dir)
+        except ValueError:
+            details.append(f"usage audit {label} provenance path escapes agent dir")
+            return
+        if not candidate.is_file() or provenance.get(hash_key) != sha256_file(
+            candidate
+        ):
+            details.append(f"usage audit {label} snapshot checksum mismatch")
+
+    signed_snapshot("trajectory_path", "trajectory_sha256", "trajectory")
+    signed_snapshot("source_session_path", "source_session_sha256", "source session")
     return not details, details
 
 

@@ -83,8 +83,8 @@ python3 runs/ops/sprintctl.py wait --run-id "$RUN_ID"
 ```
 
 `stop` is idempotent and preserves traces/artifacts; `wait` succeeds only after
-blind submissions drain, final verification completes, checksums reconcile,
-the timeline is ready, and Modal billing data is available. See
+all accepted blind submissions drain, checksums reconcile, the timeline is
+ready, and Modal billing data is available. See
 [`runs/ops/RUNBOOK.md`](runs/ops/RUNBOOK.md) for recovery and failure handling.
 
 Stop the entire batch safely with:

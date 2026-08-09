@@ -30,7 +30,7 @@ import sprintctl  # noqa: E402
 UV = Path(os.environ.get("UV", "/home/ubuntu/.local/bin/uv"))
 WEB = ROOT / "sprint-web"
 BATCH_ROOT = SCRIPT_DIR / "batches"
-HARBOR_REVISION = "03c5e328fa839052327fe2053a026b0a6d0e6ad8"
+HARBOR_REVISION = "5e5ddfcab7e40746d887b220e1280b2dae747a94"
 CODEX_VERSION = "0.147.0"
 TRIALS_PER_MODEL = 3
 DEFAULT_FAMILIES = ("deepseek", "luna")
@@ -839,16 +839,37 @@ def monitor_cycle(batch_id: str, *, deploy: bool = True) -> dict[str, Any]:
 
 def stop_batch(batch_id: str) -> dict[str, Any]:
     payload = read_batch(batch_id)
+    targets: list[dict[str, Any]] = []
+    # Persist every lane's stop intent first. Modal lease fencing can wait on a
+    # dispatch lock, so a controller interruption must not leave later arms
+    # running merely because the first arm was slow to stop.
     for arm in payload["arms"]:
         if (
             arm.get("status") != "finalized"
             and (SCRIPT_DIR / arm["run_id"] / "run.json").is_file()
         ):
-            sprintctl.request_stop(arm["run_id"], reason="operator_batch_stop")
+            sprintctl.persist_stop_request(
+                arm["run_id"], reason="operator_batch_stop"
+            )
             arm["stop_requested_at"] = arm.get("stop_requested_at") or utc_now()
             arm["status"] = "stopping"
+            targets.append(arm)
     payload["updated_at"] = utc_now()
     atomic_json(batch_path(batch_id), payload)
+
+    for arm in targets:
+        try:
+            result = sprintctl.request_stop(
+                arm["run_id"], reason="operator_batch_stop"
+            )
+            arm["stop_dispatch_status"] = result.get("status")
+            arm.pop("stop_dispatch_error", None)
+        except Exception as exc:  # noqa: BLE001
+            # The per-run monitor will retry from STOP_REQUESTED. Continue so
+            # one provider/API failure cannot block the remaining arms.
+            arm["stop_dispatch_error"] = f"{type(exc).__name__}: {exc}"
+        payload["updated_at"] = utc_now()
+        atomic_json(batch_path(batch_id), payload)
     return payload
 
 

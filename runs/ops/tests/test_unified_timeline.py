@@ -766,6 +766,160 @@ def test_scoring_ledger_is_a_gpu_lifecycle_source_without_training(
     assert coverage["ready"] is True
 
 
+def test_host_registry_closes_missing_training_terminal_event(tmp_path: Path) -> None:
+    state = fixture_run(tmp_path)
+    lifecycle_path = state / "telemetry" / "gpu_timeline.jsonl"
+    rows = [
+        row
+        for row in (
+            json.loads(line) for line in lifecycle_path.read_text().splitlines()
+        )
+        if row.get("event_id") != "d"
+    ]
+    write_jsonl(lifecycle_path, rows)
+    registry = state / "gpu-job-registry" / "job-1.json"
+    registry.parent.mkdir(parents=True)
+    registry.write_text(
+        json.dumps(
+            {
+                "job_id": "job-1",
+                "attempt": 2,
+                "status": "terminated",
+                "terminated_at": "2026-08-07T12:00:40Z",
+                "termination_reason": "operator_stop",
+            }
+        )
+    )
+
+    payload = unified_timeline.build_timeline(state)
+
+    recovered = [
+        event
+        for event in payload["events"]
+        if event.get("gpu_job_id") == "job-1"
+        and event.get("gpu_attempt") == 2
+        and event["kind"] == "gpu_released"
+    ]
+    assert len(recovered) == 1
+    assert recovered[0]["lifecycle_recovered"] is True
+    assert recovered[0]["lifecycle_recovery_source"] == "host_job_registry"
+    assert payload["coverage"]["requirements"]["training_gpu_lifecycle"] is True
+    assert payload["coverage"]["requirements"]["training_gpu_metrics"] is True
+
+
+def test_legacy_training_lifecycle_uses_worker_exit_and_durable_attempt(
+    tmp_path: Path,
+) -> None:
+    state = fixture_run(tmp_path)
+    lifecycle_path = state / "telemetry" / "gpu_timeline.jsonl"
+    rows = [
+        {
+            "event_id": "one-start",
+            "epoch_s": 1786104005,
+            "phase": "gpu_lifecycle",
+            "action": "instant",
+            "job_id": "job-one",
+            "attempt": 1,
+            "detail": {"event": "gpu_allocated"},
+        },
+        {
+            "event_id": "one-exit",
+            "epoch_s": 1786104020,
+            "phase": "gpu_active",
+            "action": "exit",
+            "job_id": "job-one",
+            "attempt": 1,
+            "detail": {},
+        },
+        {
+            "event_id": "two-start",
+            "epoch_s": 1786104022,
+            "phase": "gpu_lifecycle",
+            "action": "instant",
+            "job_id": "job-two",
+            "attempt": 1,
+            "detail": {"event": "gpu_allocated"},
+        },
+        {
+            "event_id": "three-start",
+            "epoch_s": 1786104040,
+            "phase": "gpu_lifecycle",
+            "action": "instant",
+            "job_id": "job-three",
+            "attempt": 1,
+            "detail": {"event": "gpu_allocated"},
+        },
+        {
+            "event_id": "three-end",
+            "epoch_s": 1786104050,
+            "phase": "gpu_lifecycle",
+            "action": "instant",
+            "job_id": "job-three",
+            "attempt": 1,
+            "detail": {"event": "gpu_released"},
+        },
+    ]
+    write_jsonl(lifecycle_path, rows)
+    attempt = (
+        state
+        / "telemetry"
+        / "durable-gpu-attempts"
+        / "job-two"
+        / "1.json"
+    )
+    attempt.parent.mkdir(parents=True)
+    attempt.write_text(
+        json.dumps(
+            {
+                "job_id": "job-two",
+                "attempt": 1,
+                "lease_id": "lease-two",
+                "status": "succeeded",
+                "exit_code": 0,
+                "finished_at": "2026-08-07T12:00:39Z",
+            }
+        )
+    )
+    by_job = state / "telemetry" / "durable-by-job"
+    for job, times in {
+        "job-one": (1786104010, 1786104019),
+        "job-two": (1786104025, 1786104039),
+        "job-three": (1786104042, 1786104049),
+    }.items():
+        write_jsonl(
+            by_job / job / "samples.jsonl",
+            [
+                {
+                    "epoch_s": epoch,
+                    "role": "training-gpu",
+                    "job_id": job,
+                    "attempt": 1,
+                    "sample_index": index,
+                    "gpus": [{"gpu_index": 0, "util_gpu_pct": 10}],
+                }
+                for index, epoch in enumerate(times)
+            ],
+        )
+
+    payload = unified_timeline.build_timeline(state)
+
+    releases = {
+        event.get("gpu_job_id"): event
+        for event in payload["events"]
+        if event["kind"] == "gpu_released"
+    }
+    assert releases["job-one"]["lifecycle_recovery_source"] == (
+        "worker_reported_active_exit"
+    )
+    assert releases["job-one"]["end_is_upper_bound"] is False
+    assert releases["job-two"]["lifecycle_recovery_source"] == (
+        "durable_worker_attempt"
+    )
+    training = payload["coverage"]["gpu_metric_coverage"]["training"]
+    assert len(training) == 3
+    assert all(item["covered"] for item in training)
+
+
 def test_training_gpu_samples_do_not_satisfy_verifier_coverage(tmp_path: Path) -> None:
     state = fixture_run(tmp_path)
     for path in state.rglob("verifier/telemetry/samples.jsonl"):

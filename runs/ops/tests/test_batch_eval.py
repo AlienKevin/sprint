@@ -6,6 +6,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -104,6 +105,57 @@ def test_public_batch_never_contains_secrets_or_host_paths() -> None:
 
 def test_batches_are_operator_stopped_without_a_fixed_deadline() -> None:
     assert batch_eval.RUN_HOURS is None
+
+
+def test_batch_stop_persists_all_intents_before_slow_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    batch_id = "stop-all"
+    monkeypatch.setattr(batch_eval, "SCRIPT_DIR", tmp_path / "ops")
+    monkeypatch.setattr(batch_eval, "BATCH_ROOT", tmp_path / "batches")
+    arms = [
+        {"run_id": f"run-{index}", "status": "running"}
+        for index in range(1, 4)
+    ]
+    for arm in arms:
+        run_dir = batch_eval.SCRIPT_DIR / arm["run_id"]
+        run_dir.mkdir(parents=True)
+        (run_dir / "run.json").write_text("{}\n")
+    batch_eval.atomic_json(
+        batch_eval.batch_path(batch_id),
+        {"batch_id": batch_id, "arms": arms, "alerts": []},
+    )
+    persisted: list[str] = []
+    dispatched: list[str] = []
+
+    def persist(run_id: str, *, reason: str):
+        assert reason == "operator_batch_stop"
+        persisted.append(run_id)
+        return tmp_path, {}, {}
+
+    def dispatch(run_id: str, *, reason: str):
+        assert persisted == ["run-1", "run-2", "run-3"]
+        dispatched.append(run_id)
+        if run_id == "run-1":
+            raise RuntimeError("provider unavailable")
+        return {"status": "requested"}
+
+    with (
+        mock.patch.object(batch_eval.sprintctl, "persist_stop_request", persist),
+        mock.patch.object(batch_eval.sprintctl, "request_stop", dispatch),
+    ):
+        result = batch_eval.stop_batch(batch_id)
+
+    assert dispatched == ["run-1", "run-2", "run-3"]
+    assert all(arm["status"] == "stopping" for arm in result["arms"])
+    assert result["arms"][0]["stop_dispatch_error"].startswith("RuntimeError:")
+    assert result["arms"][1]["stop_dispatch_status"] == "requested"
+    stored = json.loads(batch_eval.batch_path(batch_id).read_text())
+    assert [arm["status"] for arm in stored["arms"]] == [
+        "stopping",
+        "stopping",
+        "stopping",
+    ]
 
 
 def test_shared_verifier_stall_alert_requires_pending_work_and_old_progress(

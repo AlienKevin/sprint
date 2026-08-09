@@ -1,6 +1,9 @@
 import hashlib
 import json
+import os
 import shlex
+import shutil
+import tempfile
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, override
@@ -34,6 +37,28 @@ from harbor.models.trajectories import (
 from harbor.models.trial.paths import EnvironmentPaths
 from harbor.utils.env import parse_bool_env_value
 from harbor.utils.trajectory_utils import format_trajectory_json
+
+
+def _atomic_snapshot(source: Path, destination: Path) -> str:
+    """Copy a potentially large mutable artifact and return its SHA-256."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    fd, raw = tempfile.mkstemp(
+        prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
+    )
+    os.close(fd)
+    tmp = Path(raw)
+    try:
+        shutil.copyfile(source, tmp)
+        os.chmod(tmp, 0o600)
+        digest = hashlib.sha256()
+        with tmp.open("rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+            os.fsync(handle.fileno())
+        os.replace(tmp, destination)
+        return digest.hexdigest()
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 class Codex(BaseInstalledAgent):
@@ -1048,16 +1073,24 @@ class Codex(BaseInstalledAgent):
         source_path = getattr(self, "_last_usage_source_path", None)
         if isinstance(usage_audit, dict):
             provenance: dict[str, Any] = {}
+            provenance_dir = self.logs_dir / "usage-provenance"
+            provenance_dir.mkdir(parents=True, exist_ok=True)
             if isinstance(source_path, Path) and source_path.is_file():
-                provenance["source_session_file"] = source_path.name
-                provenance["source_session_sha256"] = hashlib.sha256(
-                    source_path.read_bytes()
-                ).hexdigest()
+                source_snapshot = provenance_dir / "source-session.jsonl"
+                provenance["source_session_path"] = str(
+                    source_snapshot.relative_to(self.logs_dir)
+                )
+                provenance["source_session_sha256"] = _atomic_snapshot(
+                    source_path, source_snapshot
+                )
             if trajectory_path.is_file():
-                provenance["trajectory_file"] = trajectory_path.name
-                provenance["trajectory_sha256"] = hashlib.sha256(
-                    trajectory_path.read_bytes()
-                ).hexdigest()
+                trajectory_snapshot = provenance_dir / "trajectory.json"
+                provenance["trajectory_path"] = str(
+                    trajectory_snapshot.relative_to(self.logs_dir)
+                )
+                provenance["trajectory_sha256"] = _atomic_snapshot(
+                    trajectory_path, trajectory_snapshot
+                )
             usage_audit["provenance"] = provenance
             audit_path = self.logs_dir / "usage-audit.json"
             try:

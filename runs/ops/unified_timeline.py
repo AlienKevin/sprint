@@ -267,6 +267,9 @@ class Builder:
             self.state_dir / "telemetry" / "durable-samples.jsonl",
             self.state_dir / "telemetry" / "durable-gpu-samples.jsonl",
         ]
+        paths.extend(
+            self.state_dir.glob("telemetry/durable-by-job/*/samples.jsonl")
+        )
         for trial in trials:
             root = trial / "artifacts" / "logs" / "artifacts" / "telemetry"
             paths.extend((root / "samples.jsonl", root / "host-samples.jsonl"))
@@ -517,6 +520,200 @@ class Builder:
                         "reason": detail.get("reason"),
                     },
                 )
+
+        self.add_gpu_attempt_lifecycle()
+        self.add_gpu_registry_lifecycle()
+        self.close_orphaned_gpu_lifecycle()
+
+    def add_gpu_attempt_lifecycle(self) -> None:
+        """Recover exact worker terminal boundaries from durable attempts."""
+        terminal_kinds = {"gpu_preempted", "gpu_released"}
+        existing = {
+            (event.get("gpu_job_id"), event.get("gpu_attempt"))
+            for event in self.events
+            if event["kind"] in terminal_kinds
+        }
+        root = self.state_dir / "telemetry" / "durable-gpu-attempts"
+        for path in sorted(root.glob("*/*.json")):
+            try:
+                payload = json.loads(path.read_text())
+            except (OSError, json.JSONDecodeError):
+                self.counts["malformed_gpu_attempt_record"] += 1
+                continue
+            job_id = payload.get("job_id")
+            attempt = payload.get("attempt")
+            finished_at = payload.get("finished_at")
+            if (
+                not isinstance(job_id, str)
+                or not job_id
+                or not isinstance(attempt, int)
+                or attempt <= 0
+                or not finished_at
+            ):
+                self.counts["malformed_gpu_attempt_record"] += 1
+                continue
+            key = (job_id, attempt)
+            if key in existing:
+                continue
+            status = str(payload.get("status") or "worker_terminal")
+            kind = (
+                "gpu_preempted"
+                if status in {"interrupted", "lost", "preempted", "fenced"}
+                else "gpu_released"
+            )
+            self.add_event(
+                epoch_ms=parse_epoch_ms(finished_at),
+                category="infrastructure",
+                kind=kind,
+                source=self.relative(path),
+                identity=f"attempt:{job_id}:{attempt}:{finished_at}:{kind}",
+                data={
+                    "gpu_job_id": job_id,
+                    "gpu_attempt": attempt,
+                    "lease_id": payload.get("lease_id"),
+                    "reason": status,
+                    "exit_code": payload.get("exit_code"),
+                    "lifecycle_recovered": True,
+                    "lifecycle_recovery_source": "durable_worker_attempt",
+                },
+            )
+            existing.add(key)
+            self.counts["gpu_attempt_terminal_events"] += 1
+
+    def add_gpu_registry_lifecycle(self) -> None:
+        """Close allocations from the append-only host-owned job registry.
+
+        The worker stream remains the primary lifecycle source.  The registry
+        is an independent host record that survives agent cleanup and abrupt
+        worker loss, so it is used only when the primary stream lacks a
+        terminal event for an allocated attempt.
+        """
+        terminal_kinds = {"gpu_preempted", "gpu_released"}
+        existing = {
+            (event.get("gpu_job_id"), event.get("gpu_attempt"))
+            for event in self.events
+            if event["kind"] in terminal_kinds
+        }
+        registry_root = self.state_dir / "gpu-job-registry"
+        for path in sorted(registry_root.glob("*.json")):
+            try:
+                payload = json.loads(path.read_text())
+            except (OSError, json.JSONDecodeError):
+                self.counts["malformed_gpu_job_registry"] += 1
+                continue
+            job_id = payload.get("job_id")
+            if not isinstance(job_id, str) or not job_id:
+                self.counts["malformed_gpu_job_registry"] += 1
+                continue
+            records = list(payload.get("attempt_history") or [])
+            records.append(payload)
+            for record in records:
+                if not isinstance(record, dict):
+                    continue
+                attempt = record.get("attempt")
+                finished_at = record.get("finished_at") or record.get(
+                    "terminated_at"
+                )
+                if not isinstance(attempt, int) or attempt <= 0 or not finished_at:
+                    continue
+                key = (job_id, attempt)
+                if key in existing:
+                    continue
+                reason = str(
+                    record.get("reason")
+                    or record.get("termination_reason")
+                    or record.get("status")
+                    or "registry_terminal"
+                )
+                kind = (
+                    "gpu_preempted"
+                    if reason
+                    in {
+                        "graceful_preemption",
+                        "worker_lost",
+                        "lost",
+                        "preempted",
+                    }
+                    else "gpu_released"
+                )
+                self.add_event(
+                    epoch_ms=parse_epoch_ms(finished_at),
+                    category="infrastructure",
+                    kind=kind,
+                    source=self.relative(path),
+                    identity=f"registry:{job_id}:{attempt}:{finished_at}:{kind}",
+                    data={
+                        "gpu_job_id": job_id,
+                        "gpu_attempt": attempt,
+                        "lease_id": record.get("lease_id"),
+                        "reason": reason,
+                        "lifecycle_recovered": True,
+                        "lifecycle_recovery_source": "host_job_registry",
+                    },
+                )
+                existing.add(key)
+                self.counts["gpu_registry_terminal_events"] += 1
+
+    def close_orphaned_gpu_lifecycle(self) -> None:
+        """Conservatively close legacy pre-registry allocation intervals.
+
+        Older workers could lose their canonical release record. A matching
+        worker-reported active exit is still an exact terminal boundary.
+        """
+        starts = sorted(
+            (
+                event
+                for event in self.events
+                if event["kind"] in {"gpu_allocated", "gpu_reallocated"}
+            ),
+            key=lambda event: event["epoch_ms"],
+        )
+        terminal_kinds = {"gpu_preempted", "gpu_released"}
+        terminal_keys = {
+            (event.get("gpu_job_id"), event.get("gpu_attempt"))
+            for event in self.events
+            if event["kind"] in terminal_kinds
+        }
+        active_exits: dict[tuple[Any, Any], list[dict[str, Any]]] = defaultdict(list)
+        for event in self.events:
+            if event["kind"] == "gpu_active_exit":
+                active_exits[
+                    (event.get("gpu_job_id"), event.get("gpu_attempt"))
+                ].append(event)
+        for start in starts:
+            key = (start.get("gpu_job_id"), start.get("gpu_attempt"))
+            if key in terminal_keys:
+                continue
+            exits = [
+                event
+                for event in active_exits.get(key, [])
+                if event["epoch_ms"] >= start["epoch_ms"]
+            ]
+            if exits:
+                end = min(exits, key=lambda event: event["epoch_ms"])
+                boundary = "worker_reported_active_exit"
+            else:
+                continue
+            self.add_event(
+                epoch_ms=end["epoch_ms"],
+                category="infrastructure",
+                kind="gpu_released",
+                source=end["source"],
+                identity=(
+                    f"recovered-release:{key[0]}:{key[1]}:"
+                    f"{end['epoch_ms']}:{boundary}"
+                ),
+                data={
+                    "gpu_job_id": key[0],
+                    "gpu_attempt": key[1],
+                    "reason": "legacy_lifecycle_recovery",
+                    "lifecycle_recovered": True,
+                    "lifecycle_recovery_source": boundary,
+                    "end_is_upper_bound": False,
+                },
+            )
+            terminal_keys.add(key)
+            self.counts["gpu_inferred_terminal_events"] += 1
 
     @staticmethod
     def _record_timestamp(record: dict[str, Any]) -> int | None:

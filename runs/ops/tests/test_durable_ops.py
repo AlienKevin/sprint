@@ -154,6 +154,56 @@ class DurableOpsTests(unittest.TestCase):
                 )
             self.assertEqual(getter.call_count, 6)
 
+    def test_final_sync_recovers_per_job_stream_missing_from_merge(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            run = {"run_id": "sync-run", "volume_name": "sync-volume"}
+            prefix = "runs/sync-run/telemetry"
+            remote = {
+                f"{prefix}/samples.jsonl": '{"role":"cpu-agent"}\n',
+                f"{prefix}/gpu-stream/samples.jsonl": (
+                    '{"role":"training-gpu","job_id":"present"}\n'
+                ),
+                f"{prefix}/gpu_timeline.jsonl": (
+                    '{"job_id":"present","attempt":1,"event_id":"a"}\n'
+                    '{"job_id":"missing","attempt":1,"event_id":"b"}\n'
+                ),
+                f"{prefix}/by-job/missing/samples.jsonl": (
+                    '{"role":"training-gpu","job_id":"missing"}\n'
+                ),
+                f"{prefix}/by-job/present/samples.jsonl": (
+                    '{"role":"training-gpu","job_id":"present","sample_index":1}\n'
+                ),
+                "runs/sync-run/gpu-jobs/attempts/missing/1.json": (
+                    '{"job_id":"missing","attempt":1,"status":"succeeded"}\n'
+                ),
+            }
+            with mock.patch.object(
+                sprintctl,
+                "volume_get_text",
+                side_effect=lambda _run, path: remote.get(path),
+            ) as getter:
+                self.assertTrue(
+                    sprintctl.sync_durable_telemetry(state, run, force=True)
+                )
+            self.assertEqual(getter.call_count, 7)
+            recovered = (
+                state
+                / "telemetry"
+                / "durable-by-job"
+                / "missing"
+                / "samples.jsonl"
+            )
+            self.assertEqual(
+                recovered.read_text(), remote[f"{prefix}/by-job/missing/samples.jsonl"]
+            )
+            stamp = json.loads(
+                (state / "telemetry" / "durable-sync.json").read_text()
+            )
+            self.assertIn(
+                f"{prefix}/by-job/missing/samples.jsonl", stamp["sources"]
+            )
+
     def test_terra_usage_audit_requires_checksums_and_matching_atif_cost(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             trial = Path(raw)
@@ -165,6 +215,12 @@ class DurableOpsTests(unittest.TestCase):
             trajectory.write_text(
                 json.dumps({"final_metrics": {"total_cost_usd": 0.25}})
             )
+            provenance = trial / "agent" / "usage-provenance"
+            provenance.mkdir()
+            source_snapshot = provenance / "source-session.jsonl"
+            trajectory_snapshot = provenance / "trajectory.json"
+            source_snapshot.write_bytes(source.read_bytes())
+            trajectory_snapshot.write_bytes(trajectory.read_bytes())
             (trial / "result.json").write_text(
                 json.dumps({"agent_result": {"cost_usd": 0.25}})
             )
@@ -190,9 +246,10 @@ class DurableOpsTests(unittest.TestCase):
                 "calculated_api_usage_usd": 0.25,
                 "selected_total_cost_usd": 0.25,
                 "provenance": {
-                    "source_session_file": source.name,
-                    "source_session_sha256": sprintctl.sha256_file(source),
-                    "trajectory_sha256": sprintctl.sha256_file(trajectory),
+                    "source_session_path": "usage-provenance/source-session.jsonl",
+                    "source_session_sha256": sprintctl.sha256_file(source_snapshot),
+                    "trajectory_path": "usage-provenance/trajectory.json",
+                    "trajectory_sha256": sprintctl.sha256_file(trajectory_snapshot),
                 },
             }
             (trial / "agent" / "usage-audit.json").write_text(json.dumps(audit))
@@ -223,6 +280,12 @@ class DurableOpsTests(unittest.TestCase):
                 json.dumps({"agent_result": {"cost_usd": 0.25}})
             )
             original_hash = sprintctl.sha256_file(trajectory)
+            provenance = trial / "agent" / "usage-provenance"
+            provenance.mkdir()
+            source_snapshot = provenance / "source-session.jsonl"
+            trajectory_snapshot = provenance / "trajectory.json"
+            source_snapshot.write_bytes(source.read_bytes())
+            trajectory_snapshot.write_bytes(trajectory.read_bytes())
             audit = {
                 "schema_version": 1,
                 "cost_reconstruction_complete": True,
@@ -238,8 +301,9 @@ class DurableOpsTests(unittest.TestCase):
                 "calculated_api_usage_usd": 0.25,
                 "selected_total_cost_usd": 0.25,
                 "provenance": {
-                    "source_session_file": source.name,
-                    "source_session_sha256": sprintctl.sha256_file(source),
+                    "source_session_path": "usage-provenance/source-session.jsonl",
+                    "source_session_sha256": sprintctl.sha256_file(source_snapshot),
+                    "trajectory_path": "usage-provenance/trajectory.json",
                     "trajectory_sha256": original_hash,
                 },
             }
@@ -254,7 +318,7 @@ class DurableOpsTests(unittest.TestCase):
 
             self.assertFalse(ready)
             self.assertIn("ATIF total cost differs from usage audit", details)
-            self.assertIn("usage audit trajectory checksum mismatch", details)
+            self.assertNotIn("usage audit trajectory snapshot checksum mismatch", details)
 
     def test_unified_timeline_readiness_requires_current_schema(self) -> None:
         payload = {

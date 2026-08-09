@@ -93,6 +93,11 @@ and completed sampler boundary under:
 These samples are tagged `verifier-gpu`, joined to exactly that evaluation by
 the attempt path, and never merged into the agent's training budget.
 
+At finalization the host re-imports every append-only training `by-job` stream
+and durable worker-attempt record, then verifies them against the merged GPU
+stream and host job registry. This prevents a concurrent Volume merge race or
+an abrupt worker exit from silently dropping samples or lifecycle boundaries.
+
 ### Host backup (monitor)
 
 ```

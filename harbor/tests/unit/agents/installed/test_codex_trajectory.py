@@ -1,5 +1,6 @@
 """Unit tests for Codex ATIF trajectory conversion."""
 
+import hashlib
 import json
 
 from harbor.agents.installed.codex import Codex
@@ -370,10 +371,24 @@ def test_populate_context_writes_checksummed_usage_audit(temp_dir):
 
     audit = json.loads((temp_dir / "usage-audit.json").read_text())
     assert audit["cost_reconstruction_complete"] is True
-    assert audit["provenance"]["source_session_file"] == "rollout.jsonl"
+    assert (
+        audit["provenance"]["source_session_path"]
+        == "usage-provenance/source-session.jsonl"
+    )
     assert len(audit["provenance"]["source_session_sha256"]) == 64
-    assert audit["provenance"]["trajectory_file"] == "trajectory.json"
+    assert (
+        audit["provenance"]["trajectory_path"]
+        == "usage-provenance/trajectory.json"
+    )
     assert len(audit["provenance"]["trajectory_sha256"]) == 64
+    source_path.write_text("later mutable session tail\n")
+    (temp_dir / "trajectory.json").write_text("later mutable trajectory\n")
+    assert hashlib.sha256(
+        (temp_dir / audit["provenance"]["source_session_path"]).read_bytes()
+    ).hexdigest() == audit["provenance"]["source_session_sha256"]
+    assert hashlib.sha256(
+        (temp_dir / audit["provenance"]["trajectory_path"]).read_bytes()
+    ).hexdigest() == audit["provenance"]["trajectory_sha256"]
     assert context.n_input_tokens == 1_300
     assert context.n_cache_tokens == 400
     assert context.n_output_tokens == 100

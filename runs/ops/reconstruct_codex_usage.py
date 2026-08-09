@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import hashlib
 import json
 import os
@@ -28,6 +29,136 @@ def atomic_text(path: Path, text: str) -> None:
     tmp.write_text(text)
     os.chmod(tmp, 0o600)
     os.replace(tmp, path)
+
+
+def atomic_bytes(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_bytes(data)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+
+
+def resolve_agent_provenance(agent_dir: Path, relative: Any) -> Path | None:
+    if not isinstance(relative, str) or not relative:
+        return None
+    candidate = (agent_dir / relative).resolve()
+    try:
+        candidate.relative_to(agent_dir.resolve())
+    except ValueError:
+        raise SystemExit("usage provenance path escapes the Harbor agent directory")
+    return candidate if candidate.is_file() else None
+
+
+def recover_harbor_provenance(
+    *, trial: Path, run: dict[str, Any], audit: dict[str, Any]
+) -> dict[str, Any]:
+    """Rebuild stale mutable-path provenance into immutable signed snapshots."""
+    agent_dir = trial / "agent"
+    provenance = audit.get("provenance") or {}
+    source_name = provenance.get("source_session_file")
+    if not isinstance(source_name, str) or not source_name:
+        raise SystemExit("Harbor usage audit has no recoverable source session name")
+    matches = list((agent_dir / "sessions").rglob(source_name))
+    matches.extend((agent_dir / "codex-state" / "sessions").rglob(source_name))
+    matches = [path.resolve() for path in matches if path.is_file()]
+    if not matches:
+        raise SystemExit("Harbor usage audit source session is missing")
+    actual_hashes = {sha256_file(path) for path in matches}
+    if len(actual_hashes) != 1:
+        raise SystemExit("Harbor final source session copies disagree")
+    source_path = matches[0]
+
+    kwargs: dict[str, Any] = {
+        "logs_dir": agent_dir,
+        "model_name": str(run["model"]),
+        "reasoning_effort": str(run["reasoning_effort"]),
+    }
+    if str(run["model"]).split("/", 1)[-1] in {
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+    }:
+        kwargs["service_tier"] = "default"
+    agent = Codex(**kwargs)
+    trajectory = agent._convert_events_to_trajectory(source_path.parent)
+    recovered = getattr(agent, "_last_usage_audit", None)
+    if trajectory is None or not isinstance(recovered, dict):
+        raise SystemExit("could not reconstruct Harbor final usage provenance")
+
+    def request_signature(payload: dict[str, Any]) -> list[tuple[Any, ...]]:
+        return [
+            (
+                row.get("api_call_id"),
+                row.get("input_tokens"),
+                row.get("cached_input_tokens"),
+                row.get("cache_write_input_tokens"),
+                row.get("output_tokens"),
+                row.get("calculated_cost_usd"),
+            )
+            for row in payload.get("requests") or []
+            if isinstance(row, dict)
+        ]
+
+    if request_signature(recovered) != request_signature(audit):
+        raise SystemExit("reconstructed Harbor request ledger differs from its audit")
+    recovered_cost = recovered.get("calculated_api_usage_usd")
+    if recovered_cost != audit.get("calculated_api_usage_usd"):
+        raise SystemExit("reconstructed Harbor cost differs from its audit")
+
+    trajectory_text = format_trajectory_json(trajectory.to_json_dict())
+    final_metrics = json.loads(trajectory_text).get("final_metrics") or {}
+    if final_metrics.get("total_cost_usd") != recovered_cost:
+        raise SystemExit("reconstructed Harbor ATIF cost differs from its audit")
+
+    provenance_dir = agent_dir / "usage-provenance"
+    source_snapshot = provenance_dir / "source-session.jsonl"
+    trajectory_snapshot = provenance_dir / "trajectory.json"
+    atomic_bytes(source_snapshot, source_path.read_bytes())
+    atomic_text(trajectory_snapshot, trajectory_text)
+
+    original_bytes = (agent_dir / "usage-audit.json").read_bytes()
+    original_sha = hashlib.sha256(original_bytes).hexdigest()
+    original_path = provenance_dir / f"original-usage-audit.{original_sha}.json"
+    if not original_path.exists():
+        atomic_bytes(original_path, original_bytes)
+    recovered["provider_reported_total_cost_usd"] = audit.get(
+        "provider_reported_total_cost_usd"
+    )
+    recovered["selected_total_cost_usd"] = audit.get(
+        "selected_total_cost_usd", recovered_cost
+    )
+    recovered["provenance"] = {
+        "source_session_path": str(source_snapshot.relative_to(agent_dir)),
+        "source_session_sha256": sha256_file(source_snapshot),
+        "trajectory_path": str(trajectory_snapshot.relative_to(agent_dir)),
+        "trajectory_sha256": sha256_file(trajectory_snapshot),
+    }
+    recovered_text = json.dumps(recovered, indent=2, sort_keys=True) + "\n"
+    recovered_sha = hashlib.sha256(recovered_text.encode()).hexdigest()
+    atomic_text(agent_dir / "usage-audit.json", recovered_text)
+    atomic_text(
+        provenance_dir / "recovery-attestation.json",
+        json.dumps(
+            {
+                "schema_version": 1,
+                "recovered_at": dt.datetime.now(dt.timezone.utc)
+                .isoformat()
+                .replace("+00:00", "Z"),
+                "method": "deterministic_codex_session_replay",
+                "original_usage_audit_path": str(original_path.relative_to(agent_dir)),
+                "original_usage_audit_sha256": original_sha,
+                "recovered_usage_audit_sha256": recovered_sha,
+                "request_count": len(recovered.get("requests") or []),
+                "calculated_api_usage_usd": recovered_cost,
+                "source_session_sha256": sha256_file(source_snapshot),
+                "trajectory_sha256": sha256_file(trajectory_snapshot),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+    )
+    return recovered
 
 
 def source_groups(state_dir: Path) -> list[tuple[int, str, list[Path]]]:
@@ -174,26 +305,37 @@ def harbor_final_source(
     except ValueError as exc:
         raise SystemExit("Harbor trial path escapes the run state directory") from exc
     audit_path = trial / "agent" / "usage-audit.json"
-    trajectory_path = trial / "agent" / "trajectory.json"
     try:
         audit = json.loads(audit_path.read_text())
     except (OSError, json.JSONDecodeError):
         return None
+    agent_dir = trial / "agent"
     provenance = audit.get("provenance") or {}
-    source_name = provenance.get("source_session_file")
+    session_path = resolve_agent_provenance(
+        agent_dir, provenance.get("source_session_path")
+    )
+    provenance_trajectory = resolve_agent_provenance(
+        agent_dir, provenance.get("trajectory_path")
+    )
     source_hash = provenance.get("source_session_sha256")
-    if not isinstance(source_name, str) or not source_name or not source_hash:
-        raise SystemExit("Harbor usage audit has incomplete source provenance")
-    matches = list((trial / "agent" / "sessions").rglob(source_name))
-    matches.extend((trial / "agent" / "codex-state" / "sessions").rglob(source_name))
-    matches = [path.resolve() for path in matches if path.is_file()]
-    if not matches or any(sha256_file(path) != source_hash for path in matches):
-        raise SystemExit("Harbor usage audit source session checksum mismatch")
-    session_path = matches[0]
-    if not trajectory_path.is_file() or provenance.get(
-        "trajectory_sha256"
-    ) != sha256_file(trajectory_path):
-        raise SystemExit("Harbor usage audit trajectory checksum mismatch")
+    if (
+        session_path is None
+        or provenance_trajectory is None
+        or source_hash != sha256_file(session_path)
+        or provenance.get("trajectory_sha256")
+        != sha256_file(provenance_trajectory)
+    ):
+        audit = recover_harbor_provenance(trial=trial, run=run, audit=audit)
+        provenance = audit["provenance"]
+        session_path = resolve_agent_provenance(
+            agent_dir, provenance["source_session_path"]
+        )
+        provenance_trajectory = resolve_agent_provenance(
+            agent_dir, provenance["trajectory_path"]
+        )
+        source_hash = provenance["source_session_sha256"]
+    if session_path is None or provenance_trajectory is None:
+        raise SystemExit("Harbor usage audit immutable provenance is missing")
     attempt = int(run.get("cpu_launch_attempt") or 1)
     session_id = str(audit.get("session_id") or source_hash[:20])
     requests = [
@@ -217,8 +359,8 @@ def harbor_final_source(
                 "bytes": session_path.stat().st_size,
             }
         ],
-        "trajectory_path": str(trajectory_path.relative_to(state_dir)),
-        "trajectory_sha256": sha256_file(trajectory_path),
+        "trajectory_path": str(provenance_trajectory.relative_to(state_dir)),
+        "trajectory_sha256": sha256_file(provenance_trajectory),
         "_session_path": str(session_path),
         "session_id": session_id,
         "request_count": len(requests),
@@ -234,7 +376,7 @@ def harbor_final_source(
 def prefer_complete_session(
     previous: dict[str, Any], candidate: dict[str, Any]
 ) -> dict[str, Any]:
-    """Choose a byte-identical copy or a verified append-only superset."""
+    """Choose a byte prefix or a request-ledger-verified semantic superset."""
     if previous["combined_session_sha256"] == candidate["combined_session_sha256"]:
         return max(
             (previous, candidate),
@@ -249,11 +391,38 @@ def prefer_complete_session(
         ((previous_bytes, previous), (candidate_bytes, candidate)),
         key=lambda item: len(item[0]),
     )
-    if not longer[0].startswith(shorter[0]):
+    if longer[0].startswith(shorter[0]):
+        return longer[1]
+
+    # Harbor scrubs secrets and run-specific paths from its final archive, so
+    # that trusted copy need not be byte-prefix comparable to the raw durable
+    # mirror.  Request IDs plus every billing field remain stable across that
+    # transformation.  Accept only a strict/equal request-ledger superset with
+    # byte-for-byte-equivalent shared request objects; any divergence still
+    # fails closed.
+    def request_map(source: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        return {
+            str(row["run_api_call_id"]): row
+            for row in source.get("requests") or []
+            if isinstance(row, dict) and row.get("run_api_call_id")
+        }
+
+    previous_requests = request_map(previous)
+    candidate_requests = request_map(candidate)
+    common = set(previous_requests) & set(candidate_requests)
+    if any(previous_requests[key] != candidate_requests[key] for key in common):
         raise SystemExit(
-            f"conflicting durable copies for Codex session {candidate.get('session_id')}"
+            f"conflicting request records for Codex session {candidate.get('session_id')}"
         )
-    return longer[1]
+    previous_ids = set(previous_requests)
+    candidate_ids = set(candidate_requests)
+    if previous_ids <= candidate_ids:
+        return candidate
+    if candidate_ids <= previous_ids:
+        return previous
+    raise SystemExit(
+        f"incomparable request ledgers for Codex session {candidate.get('session_id')}"
+    )
 
 
 def main() -> int:
