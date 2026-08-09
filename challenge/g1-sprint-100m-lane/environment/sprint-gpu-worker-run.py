@@ -213,13 +213,14 @@ def build_attempt_command(
         if shutil.which("python3"):
             command = ["python3", *command[1:]]
     resume_arg = str(job.get("resume_arg") or "")
-    if attempt > 1 and resume_arg:
+    if attempt > 1:
         if not checkpoint:
             raise RuntimeError(
                 "replacement attempt requires a valid resumable training-state "
                 "checkpoint; inference policies are not resumable"
             )
-        command.extend([resume_arg, checkpoint])
+        if resume_arg:
+            command.extend([resume_arg, checkpoint])
     if command and Path(command[0]).name.startswith("python"):
         script_index = 1
         while script_index < len(command) and command[script_index] in {
@@ -242,6 +243,56 @@ def build_attempt_command(
             ):
                 command.insert(script_index, str(isaac_bootstrap))
     return command
+
+
+def gpu_activity_stalled(
+    samples_path: Path,
+    *,
+    started_epoch_s: float,
+    now_epoch_s: float | None = None,
+    grace_seconds: float = 300.0,
+    minimum_samples: int = 12,
+    active_utilization_pct: float = 5.0,
+) -> bool:
+    """Return true when a live GPU job has made no sampled accelerator progress.
+
+    Isaac startup and short smoke tests can legitimately sample at zero percent,
+    so the guard needs both a five-minute grace period and a useful run of
+    successful ``nvidia-smi`` samples.  A job that exits inside the grace period
+    is never affected.  The worker records this as a deterministic failure;
+    it is not an infrastructure preemption and must not silently restart.
+    """
+    now = time.time() if now_epoch_s is None else now_epoch_s
+    if now - started_epoch_s < grace_seconds or not samples_path.is_file():
+        return False
+    rows: list[dict] = []
+    try:
+        for line in samples_path.read_text(errors="ignore").splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if float(row.get("epoch_s") or 0) >= started_epoch_s:
+                rows.append(row)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+    rows = [row for row in rows if row.get("nvidia_smi_ok") is True]
+    if len(rows) < minimum_samples:
+        return False
+    utilization: list[float] = []
+    memory: list[float] = []
+    for row in rows:
+        for gpu in row.get("gpus") or []:
+            try:
+                utilization.append(float(gpu.get("util_gpu_pct") or 0))
+                memory.append(float(gpu.get("mem_used_mib") or 0))
+            except (TypeError, ValueError):
+                continue
+    return bool(
+        utilization
+        and memory
+        and max(memory) >= 256.0
+        and max(utilization) <= active_utilization_pct
+    )
 
 
 def heartbeat_payload(
@@ -547,9 +598,11 @@ def main() -> int:
         error = f"{type(exc).__name__}: {exc}"
     else:
         error = None
+        activity_samples = Path("/logs/artifacts/telemetry/samples.jsonl")
+        activity_watchdog_fired = False
 
         def update_heartbeat(status: str) -> None:
-            nonlocal progress, checkpoint
+            nonlocal progress, checkpoint, error, activity_watchdog_fired
             progress, checkpoint = progress_snapshot(
                 progress_file,
                 checkpoint_dir,
@@ -585,6 +638,17 @@ def main() -> int:
                 )
                 write_status(attempt_path, attempt_record)
                 raise SystemExit(75)
+            if not activity_watchdog_fired and gpu_activity_stalled(
+                activity_samples,
+                started_epoch_s=started_epoch,
+            ):
+                activity_watchdog_fired = True
+                error = (
+                    "GPU activity watchdog: no sampled accelerator utilization "
+                    "above 5% during the five-minute startup/progress window"
+                )
+                print(error, flush=True)
+                stop_child(proc)
 
         exit_code, interrupted = supervise_child(
             proc,

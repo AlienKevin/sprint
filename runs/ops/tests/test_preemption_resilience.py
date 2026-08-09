@@ -1,4 +1,5 @@
 """CPU-only failure simulations for the preemptible GPU job contract."""
+
 from __future__ import annotations
 
 import importlib.util
@@ -89,9 +90,9 @@ class CheckpointStoreTests(unittest.TestCase):
             root = Path(raw)
             source = root / "model.pt"
             source.write_bytes(b"state")
-            checkpoint = resilience.CheckpointStore(
-                root / "checkpoints"
-            ).commit(source, sequence=12, replay_cursor="batch:12")
+            checkpoint = resilience.CheckpointStore(root / "checkpoints").commit(
+                source, sequence=12, replay_cursor="batch:12"
+            )
             env = worker_run.checkpoint_resume_metadata(str(checkpoint.path))
             self.assertEqual(env["SPRINT_GPU_RESUME_SEQUENCE"], "12")
             self.assertEqual(env["SPRINT_GPU_REPLAY_CURSOR"], "batch:12")
@@ -160,7 +161,9 @@ class CheckpointStoreTests(unittest.TestCase):
                 store.commit(source, sequence=99)
             self.assertIsNone(store.latest_valid())
 
-    def test_cleanup_keeps_requested_valid_generations_and_removes_partials(self) -> None:
+    def test_cleanup_keeps_requested_valid_generations_and_removes_partials(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             source = root / "model.pt"
@@ -179,6 +182,82 @@ class CheckpointStoreTests(unittest.TestCase):
                 [5, 4],
             )
             self.assertEqual(store.latest_valid().sequence, 5)  # type: ignore[union-attr]
+
+
+class WorkerAttemptGuardTests(unittest.TestCase):
+    def test_replacement_without_checkpoint_is_rejected_without_resume_arg(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(RuntimeError, "valid resumable training-state"):
+            worker_run.build_attempt_command(
+                {"command": ["python3", "train.py"], "resume_arg": ""},
+                2,
+                None,
+                isaac_bootstrap=Path("/nonexistent"),
+            )
+
+    def test_replacement_uses_environment_checkpoint_without_resume_arg(self) -> None:
+        command = worker_run.build_attempt_command(
+            {"command": ["python3", "train.py"], "resume_arg": ""},
+            2,
+            "/durable/checkpoint.pt",
+            isaac_bootstrap=Path("/nonexistent"),
+        )
+        self.assertEqual(command, ["python3", "train.py"])
+
+    def test_gpu_activity_watchdog_requires_full_grace_and_sample_window(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            samples = Path(raw) / "samples.jsonl"
+            rows = []
+            for index in range(12):
+                rows.append(
+                    json.dumps(
+                        {
+                            "epoch_s": 100 + index * 5,
+                            "nvidia_smi_ok": True,
+                            "gpus": [{"util_gpu_pct": 0, "mem_used_mib": 1024}],
+                        }
+                    )
+                )
+            samples.write_text("\n".join(rows) + "\n")
+            self.assertFalse(
+                worker_run.gpu_activity_stalled(
+                    samples, started_epoch_s=100, now_epoch_s=399
+                )
+            )
+            self.assertTrue(
+                worker_run.gpu_activity_stalled(
+                    samples, started_epoch_s=100, now_epoch_s=400
+                )
+            )
+
+    def test_gpu_activity_watchdog_accepts_any_sampled_accelerator_progress(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            samples = Path(raw) / "samples.jsonl"
+            rows = []
+            for index in range(12):
+                rows.append(
+                    json.dumps(
+                        {
+                            "epoch_s": 100 + index * 5,
+                            "nvidia_smi_ok": True,
+                            "gpus": [
+                                {
+                                    "util_gpu_pct": 35 if index == 7 else 0,
+                                    "mem_used_mib": 1024,
+                                }
+                            ],
+                        }
+                    )
+                )
+            samples.write_text("\n".join(rows) + "\n")
+            self.assertFalse(
+                worker_run.gpu_activity_stalled(
+                    samples, started_epoch_s=100, now_epoch_s=400
+                )
+            )
 
 
 class ReplayAndResumeTests(unittest.TestCase):
@@ -240,7 +319,9 @@ class ReplayAndResumeTests(unittest.TestCase):
                 for unit in range(len(completed), 6):
                     completed.append(unit)
                     source.write_text(json.dumps({"completed": completed}))
-                    store.commit(source, sequence=len(completed), replay_cursor=len(completed))
+                    store.commit(
+                        source, sequence=len(completed), replay_cursor=len(completed)
+                    )
                     if len(completed) == preempt_after.get(attempt):
                         break
                 else:
@@ -268,9 +349,7 @@ class InterruptionTests(unittest.TestCase):
             proc = subprocess.Popen(
                 [sys.executable, "-c", code], start_new_session=True
             )
-            timer = threading.Timer(
-                0.2, lambda: os.kill(os.getpid(), signal.SIGTERM)
-            )
+            timer = threading.Timer(0.2, lambda: os.kill(os.getpid(), signal.SIGTERM))
             timer.start()
             try:
                 exit_code, interrupted = worker_run.supervise_child(
@@ -311,7 +390,9 @@ class InterruptionTests(unittest.TestCase):
             "updated_at_epoch_s": 100,
         }
         with mock.patch.object(gpu_worker, "load_attempt_record", return_value=attempt):
-            with mock.patch.object(gpu_worker, "load_heartbeat", return_value=heartbeat):
+            with mock.patch.object(
+                gpu_worker, "load_heartbeat", return_value=heartbeat
+            ):
                 with mock.patch.object(gpu_worker, "schedule_retry") as retry:
                     retry.return_value = {"status": "retry_wait", "next_attempt": 2}
                     out, detail = gpu_worker.reconcile_job(
@@ -334,7 +415,9 @@ class RetryPolicyTests(unittest.TestCase):
         self.assertEqual(policy.delay_after(2), 3)
         self.assertEqual(policy.delay_after(20), 3)
 
-    def test_abrupt_worker_death_requires_stale_lease_and_two_observations(self) -> None:
+    def test_abrupt_worker_death_requires_stale_lease_and_two_observations(
+        self,
+    ) -> None:
         job = {
             "job_id": "job",
             "status": "running",
