@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -30,6 +31,13 @@ _worker_spec = importlib.util.spec_from_file_location(
 assert _worker_spec and _worker_spec.loader
 worker_run = importlib.util.module_from_spec(_worker_spec)
 _worker_spec.loader.exec_module(worker_run)
+
+_bootstrap_spec = importlib.util.spec_from_file_location(
+    "sprint_isaac_bootstrap_resilience", ENV / "sprint-isaac-bootstrap.py"
+)
+assert _bootstrap_spec and _bootstrap_spec.loader
+isaac_bootstrap = importlib.util.module_from_spec(_bootstrap_spec)
+_bootstrap_spec.loader.exec_module(isaac_bootstrap)
 
 
 class CheckpointStoreTests(unittest.TestCase):
@@ -201,6 +209,35 @@ class CheckpointStoreTests(unittest.TestCase):
 
 
 class WorkerAttemptGuardTests(unittest.TestCase):
+    def test_bootstrap_marks_zero_exit_during_app_launcher_initialization(self) -> None:
+        class FakeAppLauncher:
+            def __init__(self) -> None:
+                raise SystemExit(0)
+
+        isaaclab = types.ModuleType("isaaclab")
+        app = types.ModuleType("isaaclab.app")
+        app.AppLauncher = FakeAppLauncher  # type: ignore[attr-defined]
+        isaaclab.app = app  # type: ignore[attr-defined]
+        with tempfile.TemporaryDirectory() as raw:
+            marker = Path(raw) / "launcher.json"
+            with (
+                mock.patch.dict(
+                    sys.modules,
+                    {"isaaclab": isaaclab, "isaaclab.app": app},
+                ),
+                mock.patch.dict(
+                    os.environ,
+                    {isaac_bootstrap.APP_LAUNCHER_STATE_ENV: str(marker)},
+                ),
+            ):
+                isaac_bootstrap.install_app_launcher_hook()
+                with self.assertRaises(SystemExit):
+                    FakeAppLauncher()
+            self.assertEqual(
+                json.loads(marker.read_text()),
+                {"schema_version": 1, "state": "system_exit", "exit_code": 0},
+            )
+
     def test_gpu_activity_watchdog_cannot_be_reported_as_success(self) -> None:
         self.assertEqual(
             worker_run.final_attempt_outcome(
@@ -238,6 +275,63 @@ class WorkerAttemptGuardTests(unittest.TestCase):
             isaac_bootstrap=Path("/nonexistent"),
         )
         self.assertEqual(command, ["python3", "train.py"])
+
+    def test_app_launcher_prestart_retry_does_not_require_checkpoint(self) -> None:
+        command = worker_run.build_attempt_command(
+            {
+                "command": ["python3", "train.py"],
+                "resume_arg": "--checkpoint",
+                "retry_reason": "app_launcher_initialization_failed",
+                "last_progress": None,
+                "last_checkpoint": None,
+            },
+            2,
+            None,
+            isaac_bootstrap=Path("/nonexistent"),
+        )
+        self.assertEqual(command, ["python3", "train.py"])
+
+    def test_app_launcher_retry_still_requires_checkpoint_after_progress(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "valid resumable training-state"):
+            worker_run.build_attempt_command(
+                {
+                    "command": ["python3", "train.py"],
+                    "retry_reason": "app_launcher_initialization_failed",
+                    "last_progress": {"iteration": 1},
+                },
+                2,
+                None,
+                isaac_bootstrap=Path("/nonexistent"),
+            )
+
+    def test_zero_exit_during_app_launcher_start_is_retryable(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            marker = Path(raw) / "launcher.json"
+            marker.write_text(json.dumps({"state": "starting"}))
+            self.assertTrue(
+                worker_run.retryable_app_launcher_failure(marker, exit_code=0)
+            )
+            self.assertEqual(
+                worker_run.final_attempt_outcome(
+                    0,
+                    interrupted=False,
+                    activity_watchdog_fired=False,
+                    retryable_infrastructure_failure=True,
+                ),
+                (0, "interrupted"),
+            )
+
+    def test_completed_or_nonzero_app_launcher_is_not_provider_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            marker = Path(raw) / "launcher.json"
+            marker.write_text(json.dumps({"state": "completed"}))
+            self.assertFalse(
+                worker_run.retryable_app_launcher_failure(marker, exit_code=0)
+            )
+            marker.write_text(json.dumps({"state": "system_exit", "exit_code": 1}))
+            self.assertFalse(
+                worker_run.retryable_app_launcher_failure(marker, exit_code=1)
+            )
 
     def test_gpu_activity_watchdog_requires_full_grace_and_sample_window(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -484,6 +578,36 @@ class InterruptionTests(unittest.TestCase):
         self.assertEqual(out["status"], "retry_wait")
         self.assertEqual(detail["reason"], "graceful_preemption")
         retry.assert_called_once()
+
+    def test_host_preserves_app_launcher_retry_reason(self) -> None:
+        job = {
+            "job_id": "logical",
+            "run_id": "unit",
+            "status": "running",
+            "attempt": 1,
+            "max_attempts": 3,
+            "lease_id": "lease-1",
+            "sandbox_id": "sb",
+        }
+        attempt = {
+            "attempt": 1,
+            "lease_id": "lease-1",
+            "status": "interrupted",
+            "exit_code": 0,
+            "retry_reason": "app_launcher_initialization_failed",
+        }
+        with (
+            mock.patch.object(gpu_worker, "load_attempt_record", return_value=attempt),
+            mock.patch.object(gpu_worker, "load_heartbeat", return_value=None),
+            mock.patch.object(gpu_worker, "schedule_retry") as retry,
+        ):
+            retry.return_value = {"status": "retry_wait", "next_attempt": 2}
+            _out, detail = gpu_worker.reconcile_job({"run_id": "unit"}, job, now=101)
+        self.assertEqual(detail["reason"], "app_launcher_initialization_failed")
+        self.assertEqual(
+            retry.call_args.kwargs["reason"],
+            "app_launcher_initialization_failed",
+        )
 
 
 class RetryPolicyTests(unittest.TestCase):

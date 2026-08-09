@@ -1430,18 +1430,19 @@ def reconcile_job(
         }
 
     if owned_record and str(attempt_record.get("status") or "") == "interrupted":
+        retry_reason = str(attempt_record.get("retry_reason") or "graceful_preemption")
         retried = schedule_retry(
             run,
             job,
             heartbeat=heartbeat,
             exit_code=attempt_record.get("exit_code"),
-            reason="graceful_preemption",
+            reason=retry_reason,
             now=ref,
         )
         return retried, {
             "decision": "retry",
             "status": retried["status"],
-            "reason": "graceful_preemption",
+            "reason": retry_reason,
         }
 
     if owned_record and str(attempt_record.get("status") or "") == "running":

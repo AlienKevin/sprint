@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import runpy
 import sys
@@ -17,13 +18,42 @@ from sprint_assets import (
 )
 
 
+APP_LAUNCHER_STATE_ENV = "SPRINT_APP_LAUNCHER_STATE_FILE"
+
+
+def _write_app_launcher_state(state: str, **detail: object) -> None:
+    raw_path = os.environ.get(APP_LAUNCHER_STATE_ENV, "").strip()
+    if not raw_path:
+        return
+    path = Path(raw_path)
+    payload = {"schema_version": 1, "state": state, **detail}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        temporary.write_text(json.dumps(payload, sort_keys=True))
+        os.replace(temporary, path)
+    except OSError:
+        # This marker only improves provider recovery. Never mask the agent's
+        # actual launcher result because a best-effort /tmp write failed.
+        return
+
+
 def install_app_launcher_hook() -> None:
     from isaaclab.app import AppLauncher
 
     original = AppLauncher.__init__
 
     def local_asset_init(self, *args, **kwargs) -> None:
-        original(self, *args, **kwargs)
+        _write_app_launcher_state("starting")
+        try:
+            original(self, *args, **kwargs)
+        except SystemExit as exc:
+            _write_app_launcher_state("system_exit", exit_code=exc.code)
+            raise
+        except BaseException as exc:
+            _write_app_launcher_state("exception", error_type=type(exc).__name__)
+            raise
+        _write_app_launcher_state("completed")
         install_runtime_asset_redirect()
 
     AppLauncher.__init__ = local_asset_init
@@ -50,9 +80,7 @@ def main() -> int:
     # runpy does not add either location automatically, and agent-authored
     # scripts may import a sibling module (script directory) or a workspace
     # package such as ``train.robot`` (working directory).
-    import_roots = list(
-        dict.fromkeys((str(script.parent), str(Path.cwd().resolve())))
-    )
+    import_roots = list(dict.fromkeys((str(script.parent), str(Path.cwd().resolve()))))
     for path in reversed(import_roots):
         sys.path.insert(0, path)
     try:

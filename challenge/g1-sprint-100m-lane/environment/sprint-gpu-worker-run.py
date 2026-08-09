@@ -267,12 +267,19 @@ def build_attempt_command(
             command = ["python3", *command[1:]]
     resume_arg = str(job.get("resume_arg") or "")
     if attempt > 1:
-        if not checkpoint:
+        retry_without_checkpoint = bool(
+            not checkpoint
+            and str(job.get("retry_reason") or "")
+            == "app_launcher_initialization_failed"
+            and not job.get("last_progress")
+            and not job.get("last_checkpoint")
+        )
+        if not checkpoint and not retry_without_checkpoint:
             raise RuntimeError(
                 "replacement attempt requires a valid resumable training-state "
                 "checkpoint; inference policies are not resumable"
             )
-        if resume_arg:
+        if checkpoint and resume_arg:
             command.extend([resume_arg, checkpoint])
     if command and Path(command[0]).name.startswith("python"):
         script_index = 1
@@ -304,6 +311,27 @@ def build_attempt_command(
             ):
                 command.insert(script_index, str(isaac_bootstrap))
     return command
+
+
+def retryable_app_launcher_failure(path: Path, *, exit_code: int) -> bool:
+    """Detect a provider-side AppLauncher abort before initialization completes.
+
+    Some Modal GPU hosts make Isaac Kit terminate ``AppLauncher.__init__`` with
+    ``SystemExit(0)`` after Vulkan device discovery fails. Without the sidecar
+    marker this looks like a successful agent job. Normal Python exceptions,
+    non-zero exits, direct ``SimulationApp`` probes, and scripts that reached a
+    completed AppLauncher are deliberately excluded.
+    """
+    if exit_code != 0 or not path.is_file():
+        return False
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    state = str(payload.get("state") or "")
+    if state == "starting":
+        return True
+    return state == "system_exit" and payload.get("exit_code") in {None, 0}
 
 
 def gpu_activity_stalled(
@@ -411,6 +439,7 @@ def final_attempt_outcome(
     interrupted: bool,
     activity_watchdog_fired: bool,
     progress_watchdog_fired: bool = False,
+    retryable_infrastructure_failure: bool = False,
 ) -> tuple[int, str]:
     """Make watchdog termination a truthful deterministic failure.
 
@@ -418,7 +447,7 @@ def final_attempt_outcome(
     stopped because it never used the accelerator must not therefore become a
     successful attempt or enter the infrastructure-preemption retry path.
     """
-    if interrupted:
+    if interrupted or retryable_infrastructure_failure:
         return exit_code, "interrupted"
     if activity_watchdog_fired or progress_watchdog_fired:
         return (exit_code if exit_code != 0 else 1), "failed"
@@ -719,6 +748,10 @@ def main() -> int:
         return 2
 
     env = os.environ.copy()
+    app_launcher_state_file = Path(tempfile.gettempdir()) / (
+        f"sprint-app-launcher-{job_id}-{attempt}-{lease_id}.json"
+    )
+    app_launcher_state_file.unlink(missing_ok=True)
     env["PYTHONPATH"] = os.pathsep.join(
         part for part in ("/opt", env.get("PYTHONPATH", "")) if part
     )
@@ -732,8 +765,9 @@ def main() -> int:
             "SPRINT_GPU_STATUS_FILE": str(status_path),
             "SPRINT_GPU_CHECKPOINT_DIR": str(checkpoint_dir),
             "SPRINT_GPU_PROGRESS_FILE": str(progress_file),
-            "SPRINT_GPU_RESUME": "1" if attempt > 1 else "0",
+            "SPRINT_GPU_RESUME": "1" if checkpoint else "0",
             "SPRINT_GPU_RESUME_CHECKPOINT": checkpoint or "",
+            "SPRINT_APP_LAUNCHER_STATE_FILE": str(app_launcher_state_file),
         }
     )
     env.update(checkpoint_resume_metadata(checkpoint))
@@ -819,12 +853,9 @@ def main() -> int:
                 )
                 print(error, flush=True)
                 stop_child(proc)
-            if (
-                not progress_watchdog_fired
-                and progress_watchdog.observe(
-                    progress,
-                    now_epoch_s=time.time(),
-                )
+            if not progress_watchdog_fired and progress_watchdog.observe(
+                progress,
+                now_epoch_s=time.time(),
             ):
                 progress_watchdog_fired = True
                 error = (
@@ -851,11 +882,22 @@ def main() -> int:
             interrupted=interrupted,
         )
 
+    app_launcher_failure = retryable_app_launcher_failure(
+        app_launcher_state_file,
+        exit_code=exit_code,
+    )
+    if app_launcher_failure:
+        error = (
+            "Isaac AppLauncher initialization failed before the agent script "
+            "started; retrying on a fresh GPU sandbox"
+        )
+        print(error, flush=True)
     exit_code, final_status = final_attempt_outcome(
         exit_code,
         interrupted=interrupted,
         activity_watchdog_fired=activity_watchdog_fired,
         progress_watchdog_fired=progress_watchdog_fired,
+        retryable_infrastructure_failure=app_launcher_failure,
     )
     progress, checkpoint = progress_snapshot(progress_file, checkpoint_dir)
     finished = time.time()
@@ -871,6 +913,8 @@ def main() -> int:
     )
     if error:
         attempt_record["error"] = error
+    if app_launcher_failure:
+        attempt_record["retry_reason"] = "app_launcher_initialization_failed"
     write_status(attempt_path, attempt_record)
     write_status(
         heartbeat_path,
