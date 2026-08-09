@@ -82,7 +82,7 @@ def test_public_batch_never_contains_secrets_or_host_paths() -> None:
         "status": "running",
         "reasoning_effort": "max",
         "codex_version": "0.147.0",
-        "run_hours": 24,
+        "run_hours": None,
         "alerts": [],
         "arms": [
             {
@@ -100,6 +100,10 @@ def test_public_batch_never_contains_secrets_or_host_paths() -> None:
     encoded = json.dumps(batch_eval.public_batch(payload))
     assert "secret" not in encoded
     assert "/private" not in encoded
+
+
+def test_batches_are_operator_stopped_without_a_fixed_deadline() -> None:
+    assert batch_eval.RUN_HOURS is None
 
 
 def test_shared_verifier_stall_alert_requires_pending_work_and_old_progress(

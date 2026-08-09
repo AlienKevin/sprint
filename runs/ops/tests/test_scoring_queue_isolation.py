@@ -29,7 +29,7 @@ def test_launcher_records_central_blind_scheduler_and_per_run_provenance() -> No
     assert '"scoring_global_max_concurrent": 1' in launcher
     assert '"scoring_feedback_policy": "sealed_until_agent_exit"' in launcher
     assert (
-        '"evaluation_result_policy": "all_blind_submissions_by_deadline"'
+        '"evaluation_result_policy": "all_blind_submissions"'
         in launcher
     )
     assert '--ae "SPRINT_SCORING_QUEUE_KEY=$RUN_ID"' in launcher

@@ -1258,9 +1258,11 @@ def final_conditions(
     state_dir: Path, run: dict[str, Any]
 ) -> tuple[bool, dict[str, bool], list[str]]:
     job, trial = discover_job_and_trial(state_dir, run)
-    all_submissions = (
-        run.get("evaluation_result_policy") == "all_blind_submissions_by_deadline"
-    )
+    all_submissions = run.get("evaluation_result_policy") in {
+        "all_blind_submissions",
+        # Retained while the stopped 2026-08-08 batch finishes draining.
+        "all_blind_submissions_by_deadline",
+    }
     conditions: dict[str, bool] = {
         "stop_ack": (state_dir / "STOP_ACK.json").is_file(),
         "job_found": job is not None,

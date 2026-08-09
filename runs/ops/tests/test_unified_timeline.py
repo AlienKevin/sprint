@@ -622,14 +622,14 @@ def test_all_submission_result_set_has_no_privileged_primary(
     state = fixture_run(tmp_path)
     run_path = state / "run.json"
     run = json.loads(run_path.read_text())
-    run["evaluation_result_policy"] = "all_blind_submissions_by_deadline"
+    run["evaluation_result_policy"] = "all_blind_submissions"
     run_path.write_text(json.dumps(run))
 
     payload = unified_timeline.build_timeline(state)
 
     assert payload["comparison_summary"]["best_100m_s"] == 48.0
     assert payload["comparison_summary"]["evaluation_result_policy"] == (
-        "all_blind_submissions_by_deadline"
+        "all_blind_submissions"
     )
     assert "primary_score_policy" not in payload["comparison_summary"]
     assert "primary_final_100m_s" not in payload["comparison_summary"]

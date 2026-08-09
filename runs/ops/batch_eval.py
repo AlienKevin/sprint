@@ -35,12 +35,12 @@ CODEX_VERSION = "0.147.0"
 TRIALS_PER_MODEL = 3
 DEFAULT_FAMILIES = ("deepseek", "luna")
 REASONING_EFFORT = "max"
-RUN_HOURS = 24.0
+RUN_HOURS: float | None = None
 POLL_SECONDS = 30
 SHARED_VERIFIER_STALL_SECONDS = 15 * 60
 SHARED_VERIFIER_EVENTS = SCRIPT_DIR / "blind-verifier" / "scheduler-events.jsonl"
 # The production Vercel team is on Hobby. A 20-minute rolling publication
-# cadence caps this 24-hour batch at 72 live deployments, leaving headroom
+# cadence caps publication at 72 deployments per day, leaving headroom
 # below the 100/day Hobby allowance for warmups/manual releases. The final
 # completed site still bypasses this delay below.
 LIVE_SITE_DEPLOY_SECONDS = 20 * 60
@@ -401,8 +401,13 @@ def launch(
             arm["launch_output_sha256"] = hashlib.sha256(output.encode()).hexdigest()
             arm["launched_at"] = utc_now()
             arm["deadline_at"] = (
-                parse_time(arm["launched_at"]) + dt.timedelta(hours=RUN_HOURS)
-            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+                (
+                    parse_time(arm["launched_at"])
+                    + dt.timedelta(hours=RUN_HOURS)
+                ).strftime("%Y-%m-%dT%H:%M:%SZ")
+                if RUN_HOURS is not None
+                else None
+            )
             launched.append(arm)
             atomic_json(batch_path(batch_id), payload)
             time.sleep(2)

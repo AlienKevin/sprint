@@ -586,7 +586,7 @@ base = {
     "scoring_feedback_policy": "sealed_until_agent_exit",
     "scoring_drain_policy": "all_accepted_submissions",
     "scoring_deduplication_key": "task_fingerprint_plus_policy_sha256",
-    "evaluation_result_policy": "all_blind_submissions_by_deadline",
+    "evaluation_result_policy": "all_blind_submissions",
     "verifier_cost_attribution": "measurement_overhead_separate_from_agent_cost",
     "cpu_supervised": supervised == "1",
     "cpu_launch_attempt": int(cpu_attempt),

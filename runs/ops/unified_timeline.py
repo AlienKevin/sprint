@@ -1677,7 +1677,7 @@ class Builder:
         evaluation_result_policy = self.run.get("evaluation_result_policy") or (
             "frozen_final_artifact"
             if uses_frozen_final
-            else "all_blind_submissions_by_deadline"
+            else "all_blind_submissions"
         )
         primary_artifacts = (
             [artifact for artifact in self.artifacts if artifact.get("primary_final")]
