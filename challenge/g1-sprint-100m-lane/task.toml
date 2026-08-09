@@ -34,6 +34,8 @@ drain_pending_on_stop = true
 # Every accepted policy is part of the benchmark result set. There is no
 # privileged final artifact or separate post-agent verification.
 continuous_only = true
+max_verifier_attempts = 3
+verifier_retry_backoff_sec = 2.0
 submission_path = "/app/submission/policy.pt"
 poll_interval_sec = 20.0
 # All concurrent model runs contend for this one trusted host lease. Each policy

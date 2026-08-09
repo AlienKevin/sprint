@@ -318,6 +318,10 @@ def graded_policy_records(
                 "finished_at": row.get("finished_at"),
                 "cache_hit": bool(row.get("cache_hit")),
                 "source_evaluation_id": row.get("source_evaluation_id"),
+                "verification_attempts": int(row.get("verification_attempts") or 0),
+                "verification_retry_events": row.get("verification_retry_events")
+                if isinstance(row.get("verification_retry_events"), list)
+                else [],
             }
         )
     return sorted(records, key=lambda record: int(record["index"]))

@@ -1058,6 +1058,14 @@ class Builder:
                         "evaluation_fingerprint": row.get("evaluation_fingerprint"),
                         "cache_hit": bool(row.get("cache_hit")),
                         "source_evaluation_id": row.get("source_evaluation_id"),
+                        "verification_attempts": int(
+                            row.get("verification_attempts") or 0
+                        ),
+                        "verification_retry_events": row.get(
+                            "verification_retry_events"
+                        )
+                        if isinstance(row.get("verification_retry_events"), list)
+                        else [],
                         "submission_origin": "agent_blind_submit",
                         "rewards": row.get("rewards")
                         if isinstance(row.get("rewards"), dict)
@@ -1096,6 +1104,9 @@ class Builder:
                     "cache_hit": bool(row.get("cache_hit")),
                     "evaluation_fingerprint": row.get("evaluation_fingerprint"),
                     "source_evaluation_id": row.get("source_evaluation_id"),
+                    "verification_attempts": int(
+                        row.get("verification_attempts") or 0
+                    ),
                 }
                 if uses_frozen_final:
                     common["primary_final"] = primary_final
@@ -1140,6 +1151,30 @@ class Builder:
                         identity=f"{artifact_id}:{kind}:{row.get(key)}",
                         data=data,
                     )
+                retry_events = row.get("verification_retry_events")
+                if isinstance(retry_events, list):
+                    for retry in retry_events:
+                        if not isinstance(retry, dict):
+                            continue
+                        data = dict(common)
+                        data.update(
+                            {
+                                "failed_attempt": retry.get("attempt"),
+                                "error_type": retry.get("error_type"),
+                                "error": retry.get("error"),
+                            }
+                        )
+                        self.add_event(
+                            epoch_ms=parse_epoch_ms(retry.get("failed_at")),
+                            category="infrastructure",
+                            kind="evaluation_retry",
+                            source=self.relative(ledger),
+                            identity=(
+                                f"{artifact_id}:evaluation_retry:"
+                                f"{retry.get('attempt')}:{retry.get('failed_at')}"
+                            ),
+                            data=data,
+                        )
             if uses_frozen_final and final_policy_digest and primary_row is None:
                 artifact_id = hashlib.sha256(
                     f"{self.relative(trial)}:{attempt}:host-final:{final_policy_digest}".encode()

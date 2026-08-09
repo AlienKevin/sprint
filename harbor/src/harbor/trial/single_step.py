@@ -44,6 +44,36 @@ class SingleStepTrial(Trial):
         )
         self._are_artifacts_collected = False
 
+    @staticmethod
+    def _retryable_continuous_verifier_error(exc: BaseException) -> bool:
+        """Classify Modal control-plane loss without retrying verifier bugs."""
+        current: BaseException | None = exc
+        seen: set[int] = set()
+        transient_names = {
+            "ConnectionError",
+            "DataLossError",
+            "InternalError",
+            "SandboxTerminatedError",
+            "ServiceError",
+            "TimeoutError",
+        }
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            module = type(current).__module__
+            name = type(current).__name__
+            message = str(current).lower()
+            if module.startswith("modal."):
+                if name in transient_names:
+                    return True
+                if (
+                    name == "NotFoundError"
+                    and "sandbox" in message
+                    and ("not found" in message or "shut down" in message)
+                ):
+                    return True
+            current = current.__cause__ or current.__context__
+        return False
+
     @override
     async def _run(self) -> None:
         mode = resolve_task_verifier_mode(self.task.config)
@@ -129,6 +159,7 @@ class SingleStepTrial(Trial):
             verification_context=self.result.task_checksum,
             queue_key=self.config.trial_name,
             logger=self.logger,
+            retryable_verifier_error=self._retryable_continuous_verifier_error,
         )
         try:
             async with service.running():

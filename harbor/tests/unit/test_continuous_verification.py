@@ -88,6 +88,7 @@ class FakeAgentEnv:
 def _service(tmp_path: Path, env, run_verifier, drain: float = 30.0, **overrides):
     verification_context = overrides.pop("verification_context", "task-v1")
     queue_key = overrides.pop("queue_key", "model-run")
+    retryable_verifier_error = overrides.pop("retryable_verifier_error", None)
     config = ContinuousVerificationConfig(
         enabled=True,
         watch_dir=str(env.watch),
@@ -105,6 +106,7 @@ def _service(tmp_path: Path, env, run_verifier, drain: float = 30.0, **overrides
         verification_context=verification_context,
         queue_key=queue_key,
         logger=logging.getLogger("continuous-test"),
+        retryable_verifier_error=retryable_verifier_error,
     )
 
 
@@ -151,6 +153,103 @@ async def test_submission_is_scored_and_result_returned(tmp_path):
     returned = json.loads((env.results / "attempt-1.pt.json").read_text())
     assert returned["rewards"]["reward"] == 1.0
     assert env.uploads == [f"{env.results}/attempt-1.pt.json"]
+
+
+@pytest.mark.asyncio
+async def test_retryable_verifier_loss_uses_fresh_sandbox_key(tmp_path):
+    env = FakeAgentEnv(tmp_path / "env")
+    calls: list[str] = []
+
+    async def run_verifier(key: str, _paths) -> VerifierResult:
+        calls.append(key)
+        if len(calls) == 1:
+            raise RuntimeError("provider lost sandbox")
+        return VerifierResult(rewards={"reward": 1.0})
+
+    service = _service(
+        tmp_path,
+        env,
+        run_verifier,
+        max_verifier_attempts=3,
+        verifier_retry_backoff_sec=0,
+        retryable_verifier_error=lambda exc: "lost sandbox" in str(exc),
+    )
+    (env.watch / "policy.pt").write_bytes(b"weights")
+
+    async with service.running():
+        await _settle(service)
+
+    record = service.summary.submissions[0]
+    assert calls == ["continuous-0001", "continuous-0001-retry-2"]
+    assert record.reward == 1.0
+    assert record.verification_attempts == 2
+    assert len(record.verification_retry_events) == 1
+    assert record.verification_retry_events[0]["attempt"] == 1
+    assert record.verification_retry_events[0]["error_type"] == "RuntimeError"
+    assert record.verification_retry_events[0]["error"] == "provider lost sandbox"
+    assert record.verification_retry_events[0]["failed_at"]
+    assert record.error is None
+
+
+@pytest.mark.asyncio
+async def test_retryable_verifier_loss_exhaustion_is_terminal(tmp_path):
+    env = FakeAgentEnv(tmp_path / "env")
+    calls = 0
+
+    async def run_verifier(_key: str, _paths) -> VerifierResult:
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("provider lost sandbox")
+
+    service = _service(
+        tmp_path,
+        env,
+        run_verifier,
+        max_verifier_attempts=2,
+        verifier_retry_backoff_sec=0,
+        retryable_verifier_error=lambda _exc: True,
+    )
+    (env.watch / "policy.pt").write_bytes(b"weights")
+
+    async with service.running():
+        await _settle(service)
+
+    record = service.summary.submissions[0]
+    assert calls == 2
+    assert record.rewards is None
+    assert record.verification_attempts == 2
+    assert len(record.verification_retry_events) == 1
+    assert record.verification_retry_events[0]["error"] == "provider lost sandbox"
+    assert record.error == "RuntimeError: provider lost sandbox"
+
+
+@pytest.mark.asyncio
+async def test_non_retryable_verifier_error_runs_once(tmp_path):
+    env = FakeAgentEnv(tmp_path / "env")
+    calls = 0
+
+    async def run_verifier(_key: str, _paths) -> VerifierResult:
+        nonlocal calls
+        calls += 1
+        raise ValueError("bad verifier config")
+
+    service = _service(
+        tmp_path,
+        env,
+        run_verifier,
+        verifier_retry_backoff_sec=0,
+        retryable_verifier_error=lambda _exc: False,
+    )
+    (env.watch / "policy.pt").write_bytes(b"weights")
+
+    async with service.running():
+        await _settle(service)
+
+    record = service.summary.submissions[0]
+    assert calls == 1
+    assert record.verification_attempts == 1
+    assert record.verification_retry_events == []
+    assert record.error == "ValueError: bad verifier config"
 
 
 @pytest.mark.asyncio

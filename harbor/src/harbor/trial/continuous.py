@@ -54,6 +54,7 @@ if TYPE_CHECKING:
 # caller re-materializes it with the same artifact upload the final verifier
 # uses; ``paths.verifier_dir`` is where that verification writes its own output.
 RunVerifier = Callable[[str, TrialPaths], Awaitable[VerifierResult]]
+RetryableVerifierError = Callable[[BaseException], bool]
 
 
 def _now() -> datetime:
@@ -110,6 +111,7 @@ class ContinuousVerificationService:
         verification_context: str,
         queue_key: str,
         logger: logging.Logger,
+        retryable_verifier_error: RetryableVerifierError | None = None,
     ) -> None:
         self._config = config
         self._env = environment
@@ -121,6 +123,7 @@ class ContinuousVerificationService:
         self._verification_context = verification_context
         self._queue_key = queue_key
         self._logger = logger
+        self._retryable_verifier_error = retryable_verifier_error
 
         self._quoted_watch_dir = quote_shell_arg(config.watch_dir, TaskOS.LINUX)
         self._artifacts_dir = artifacts_dir
@@ -370,8 +373,8 @@ class ContinuousVerificationService:
                         record.source_evaluation_id = cached["evaluation_id"]
                     else:
                         record.verification_started_at = _now()
-                        result = await self._run_verifier(
-                            f"continuous-{index:04d}", paths
+                        result = await self._run_verifier_with_retries(
+                            f"continuous-{index:04d}", paths, record
                         )
                         record.rewards = result.rewards or {}
                         record.source_evaluation_id = self._evaluation_id(record)
@@ -406,6 +409,51 @@ class ContinuousVerificationService:
             f"Continuous verification {index}: {name} -> "
             + (record.error or f"reward {record.reward}")
         )
+
+    async def _run_verifier_with_retries(
+        self,
+        key: str,
+        paths: TrialPaths,
+        record: ContinuousSubmission,
+    ) -> VerifierResult:
+        """Retry only provider-classified loss, always in a fresh sandbox."""
+        max_attempts = self._config.max_verifier_attempts
+        for attempt in range(1, max_attempts + 1):
+            record.verification_attempts = attempt
+            attempt_key = key if attempt == 1 else f"{key}-retry-{attempt}"
+            try:
+                return await self._run_verifier(attempt_key, paths)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                retryable = bool(
+                    self._retryable_verifier_error
+                    and self._retryable_verifier_error(exc)
+                )
+                if not retryable or attempt >= max_attempts:
+                    raise
+                detail = f"{type(exc).__name__}: {exc}"
+                record.verification_retry_events.append(
+                    {
+                        "attempt": attempt,
+                        "failed_at": _now().isoformat(),
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    }
+                )
+                self._write_ledger()
+                self._logger.warning(
+                    "Continuous verifier infrastructure loss for %s "
+                    "(attempt %d/%d): %s; retrying in a fresh sandbox",
+                    record.name,
+                    attempt,
+                    max_attempts,
+                    detail,
+                )
+                delay = self._config.verifier_retry_backoff_sec * (2 ** (attempt - 1))
+                if delay:
+                    await asyncio.sleep(delay)
+        raise AssertionError("unreachable verifier retry loop")
 
     # -- reporting -----------------------------------------------------------
 

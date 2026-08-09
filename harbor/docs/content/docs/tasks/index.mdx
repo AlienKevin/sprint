@@ -342,6 +342,18 @@ import { TypeTable } from 'fumadocs-ui/components/type-table';
       default: "null",
       path: "verifier.continuous.timeout_sec"
     },
+    "verifier.continuous.max_verifier_attempts": {
+      description: "Maximum fresh verifier sandboxes for one immutable submission when the provider reports a retryable infrastructure loss. Deterministic verifier failures are not retried.",
+      type: "integer",
+      default: "3",
+      path: "verifier.continuous.max_verifier_attempts"
+    },
+    "verifier.continuous.verifier_retry_backoff_sec": {
+      description: "Base exponential backoff between retryable verifier infrastructure failures.",
+      type: "number",
+      default: "2.0",
+      path: "verifier.continuous.verifier_retry_backoff_sec"
+    },
     "verifier.continuous.artifact_name": {
       description: "Subdirectory of the trial's artifacts where every submission and result is archived, so the sequence of attempts survives the run.",
       type: "string",
@@ -711,6 +723,8 @@ max_concurrent = 1
 return_results_to_agent = false
 drain_pending_on_stop = true
 continuous_only = true
+max_verifier_attempts = 3
+verifier_retry_backoff_sec = 2.0
 shared_scheduler_lock_path = "/trusted/blind-verifier/lease.lock"
 shared_result_cache_dir = "/trusted/blind-verifier/result-cache"
 ```
@@ -725,7 +739,8 @@ Mechanics worth knowing when you write the task:
 - **Serialization.** `max_concurrent` defaults to 1. Raise it only when the measurement does not care about contention; two timed trials sharing a GPU measure each other.
 - **Cross-process serialization.** Trials configured with the same `shared_scheduler_lock_path` share one crash-safe host lease, even when they run in separate Harbor processes. Each policy still receives its own isolated verifier environment.
 - **Blind evaluation.** With `return_results_to_agent = false`, no score, error, queue progress, or completion timestamp is uploaded into the agent environment. The trusted ledger remains complete.
-- **Failures are results.** A verifier that crashes, times out or exceeds `max_submissions` produces an archived result with an `error` field. Feedback mode also returns it to the agent; blind mode does not.
+- **Infrastructure recovery.** A provider-reported sandbox loss retries the same immutable bytes in a fresh verifier sandbox, up to `max_verifier_attempts`. Attempt count and timestamped retry events are retained in the ledger. Deterministic verifier failures are never retried.
+- **Failures are results.** A verifier that still fails after its infrastructure retry limit, times out or exceeds `max_submissions` produces an archived result with an `error` field. Feedback mode also returns it to the agent; blind mode does not.
 - **Last-second submissions count.** When the agent phase ends, Harbor does a final sweep and then waits for verifications already in flight. A submission made a second before the deadline is scored like any other.
 - **Complete blind drain.** `drain_pending_on_stop = true` finishes every accepted item after the agent exits. This is suitable when results are blind and a complete retrospective trajectory matters more than finalization latency.
 - **Continuous result sets.** `continuous_only = true` makes the complete submission ledger the task result set and skips the ordinary post-agent verifier. Use it for trajectory or Pareto evaluations with no privileged final artifact.

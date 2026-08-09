@@ -685,6 +685,21 @@ class ContinuousVerificationConfig(BaseModel):
             "verifier's own timeout_sec."
         ),
     )
+    max_verifier_attempts: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        description=(
+            "Maximum fresh verifier sandboxes used for one immutable submission "
+            "when the provider reports a retryable infrastructure loss. "
+            "Deterministic verifier failures are never retried."
+        ),
+    )
+    verifier_retry_backoff_sec: float = Field(
+        default=2.0,
+        ge=0,
+        description="Base exponential backoff between verifier infrastructure retries.",
+    )
     artifact_name: str = Field(
         default="continuous",
         description=(

@@ -29,6 +29,32 @@ from harbor.models.verifier.result import VerifierResult
 from harbor.trial.single_step import SingleStepTrial
 from harbor.trial.trial import Trial
 
+
+ModalNotFoundError = type(
+    "NotFoundError",
+    (Exception,),
+    {"__module__": "modal.exception"},
+)
+
+
+def test_modal_sandbox_loss_is_retryable_but_verifier_errors_are_not():
+    lost = ModalNotFoundError(
+        "Modal Sandbox with container ID ta-x not found; Sandbox has shut down"
+    )
+    assert SingleStepTrial._retryable_continuous_verifier_error(lost)
+    assert not SingleStepTrial._retryable_continuous_verifier_error(
+        FileNotFoundError("verifier omitted reward.json")
+    )
+
+
+def test_wrapped_modal_sandbox_loss_is_retryable():
+    lost = ModalNotFoundError("Sandbox ta-x not found")
+    try:
+        raise RuntimeError("download failed") from lost
+    except RuntimeError as wrapped:
+        assert SingleStepTrial._retryable_continuous_verifier_error(wrapped)
+
+
 SUBMISSION = "/app/submission/policy.pt"
 
 

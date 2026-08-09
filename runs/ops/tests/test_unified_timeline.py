@@ -302,6 +302,17 @@ def fixture_run(
                 "artifact_path": relative,
                 "rewards": {"best_100m_s": 50 - index, "valid_run": 1},
                 "error": None,
+                "verification_attempts": 2 if index == 1 else 1,
+                "verification_retry_events": [
+                    {
+                        "attempt": 1,
+                        "failed_at": "2026-08-07T12:00:22.500Z",
+                        "error_type": "NotFoundError",
+                        "error": "Modal Sandbox ta-old not found",
+                    }
+                ]
+                if index == 1
+                else [],
             }
         )
     write_jsonl(trial / "artifacts" / "continuous" / "ledger.jsonl", ledger_rows)
@@ -420,6 +431,7 @@ def test_unified_timeline_is_joined_deduplicated_and_public_safe(
         "gpu_preempted",
         "gpu_reallocated",
         "artifact_submitted",
+        "evaluation_retry",
         "tool_call",
     }
     starts = [
@@ -433,6 +445,15 @@ def test_unified_timeline_is_joined_deduplicated_and_public_safe(
     assert payload["run"]["scoring_queue_scope"] == "per_run_model"
     assert len(payload["artifacts"]) == 2
     assert all(item["captured"] and item["sha256"] for item in payload["artifacts"])
+    assert payload["artifacts"][0]["verification_attempts"] == 2
+    assert payload["artifacts"][0]["verification_retry_events"][0][
+        "error_type"
+    ] == "NotFoundError"
+    retry = next(
+        event for event in payload["events"] if event["kind"] == "evaluation_retry"
+    )
+    assert retry["failed_attempt"] == 1
+    assert retry["error_type"] == "NotFoundError"
     assert payload["tool_call_buckets"]["buckets"][0]["by_tool"] == {
         "exec": 1,
         "exec_command": 1,
