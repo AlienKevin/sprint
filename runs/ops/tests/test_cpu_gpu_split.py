@@ -270,6 +270,31 @@ class ClaimSelectionTests(unittest.TestCase):
 
         self.assertEqual(command, ["python3", str(script)])
 
+    def test_worker_wraps_workspace_entrypoint_with_delegated_isaac_imports(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            script = root / "train" / "main.py"
+            script.parent.mkdir()
+            script.write_text("from train.environment import build_env\n")
+            bootstrap = root / "bootstrap.py"
+            bootstrap.write_text("# trusted bootstrap\n")
+            command = worker_run.build_attempt_command(
+                {
+                    "command": ["python3", "-u", str(script)],
+                    "workdir": str(root),
+                },
+                1,
+                None,
+                isaac_bootstrap=bootstrap,
+            )
+
+        self.assertEqual(
+            command,
+            ["python3", "-u", str(bootstrap), str(script)],
+        )
+
     def test_archives_terminal_modal_streams_to_agent_visible_log(self) -> None:
         uploaded: dict[str, object] = {}
 

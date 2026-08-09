@@ -289,10 +289,18 @@ def build_attempt_command(
                 source = script.read_text(errors="ignore")[:1_000_000]
             except OSError:
                 source = ""
+            try:
+                script_in_workspace = script.resolve().is_relative_to(
+                    Path(str(job.get("workdir") or "/app")).resolve()
+                )
+            except (OSError, RuntimeError):
+                script_in_workspace = False
             if (
                 isaac_bootstrap.is_file()
                 and script.suffix == ".py"
-                and ("isaaclab" in source or "isaacsim" in source)
+                and (
+                    script_in_workspace or "isaaclab" in source or "isaacsim" in source
+                )
             ):
                 command.insert(script_index, str(isaac_bootstrap))
     return command
