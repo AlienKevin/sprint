@@ -1035,6 +1035,17 @@ def monitor_once(
             state_dir, run = load_run(run_id)
         except Exception as exc:  # noqa: BLE001
             record_controller_error(run_id, exc)
+    # CPU-agent runs: claim sprint-gpu-train queue jobs and spawn A10G workers.
+    # Dispatch before telemetry: Modal Volume scans/uploads are intentionally
+    # best-effort and can take close to their one-minute timeout.  A dead lease
+    # must be fenced/retried without waiting behind observability I/O.
+    if run.get("cpu_agent_gpu_worker"):
+        try:
+            import gpu_worker
+
+            gpu_worker.dispatch_once(run_id)
+        except Exception as exc:  # noqa: BLE001
+            record_controller_error(run_id, exc)
     # Host-side GPU/CPU telemetry backup (agent + best-effort verifiers).
     # In-sandbox sidecar is primary; this persists even if the mount lags.
     try:
@@ -1043,14 +1054,6 @@ def monitor_once(
         telemetry_host.poll_once(run_id)
     except Exception as exc:  # noqa: BLE001
         record_controller_error(run_id, exc)
-    # CPU-agent runs: claim sprint-gpu-train queue jobs and spawn A10G workers.
-    if run.get("cpu_agent_gpu_worker"):
-        try:
-            import gpu_worker
-
-            gpu_worker.dispatch_once(run_id)
-        except Exception as exc:  # noqa: BLE001
-            record_controller_error(run_id, exc)
     job, trial = discover_job_and_trial(state_dir, run)
     if job and trial:
         snapshot_host_history(state_dir, run, job, trial, upload=upload)

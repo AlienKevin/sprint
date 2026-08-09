@@ -1108,6 +1108,40 @@ while True:
                 "stop-during-build", reason="operator_batch_stop"
             )
 
+    def test_monitor_dispatches_gpu_recovery_before_slow_telemetry(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state_dir = Path(raw)
+            run = {
+                "run_id": "dispatch-first",
+                "agent_kind": "codex",
+                "cpu_agent_gpu_worker": True,
+            }
+            order: list[str] = []
+            expected_status = {"run_id": "dispatch-first"}
+            with (
+                mock.patch.object(sprintctl, "load_run", return_value=(state_dir, run)),
+                mock.patch(
+                    "gpu_worker.dispatch_once",
+                    side_effect=lambda _run_id: order.append("dispatch"),
+                ),
+                mock.patch(
+                    "telemetry_host.poll_once",
+                    side_effect=lambda _run_id: order.append("telemetry"),
+                ),
+                mock.patch.object(
+                    sprintctl, "discover_job_and_trial", return_value=(None, None)
+                ),
+                mock.patch.object(
+                    sprintctl, "status_snapshot", return_value=expected_status
+                ),
+            ):
+                status = sprintctl.monitor_once(
+                    "dispatch-first", upload=False, include_remote=False
+                )
+
+            self.assertEqual(status, expected_status)
+            self.assertEqual(order, ["dispatch", "telemetry"])
+
     def test_status_reports_explicit_agent_kind(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             state_dir = Path(raw)
