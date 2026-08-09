@@ -1243,6 +1243,10 @@ class NetworkIsolationTests(unittest.TestCase):
         worker = (ROOT / "runs" / "ops" / "gpu_worker.py").read_text()
         self.assertGreaterEqual(worker.count("block_network=True"), 2)
 
+    def test_gpu_workers_force_headless_isaac_runtime(self) -> None:
+        worker = (ROOT / "runs" / "ops" / "gpu_worker.py").read_text()
+        self.assertGreaterEqual(worker.count('env={"HEADLESS": "1"}'), 2)
+
     def test_launcher_allows_only_one_audited_model_host(self) -> None:
         launcher = (ROOT / "runs" / "run-lane-durable.sh").read_text()
         self.assertIn('--allow-agent-host "$MODEL_API_HOST"', launcher)
