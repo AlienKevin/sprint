@@ -1355,6 +1355,28 @@ class GpuConcurrencyLimitTests(unittest.TestCase):
                 ["job-a", "job-b"],
             )
 
+    def test_hidden_cancel_markers_are_not_enumerated_as_jobs(self) -> None:
+        run = {"run_id": "unit", "state_dir": "/tmp/unit"}
+        with (
+            mock.patch.object(gpu_worker, "list_host_job_ids", return_value=[]),
+            mock.patch.object(
+                gpu_worker,
+                "volume_ls_json_names",
+                side_effect=[
+                    ["live.json", ".cancelled-dead.json"],
+                    ["live.json", ".cancelled-dead.json"],
+                ],
+            ),
+        ):
+            self.assertEqual(gpu_worker.list_job_ids(run), ["live"])
+
+        with mock.patch.object(
+            gpu_worker,
+            "volume_ls_json_names",
+            return_value=["live.json", ".cancelled-dead.json"],
+        ):
+            self.assertEqual(gpu_worker.list_pending_job_ids(run), ["live"])
+
     def test_agent_cancel_marker_does_not_terminate_allocated_worker(self) -> None:
         job = {
             "job_id": "running",

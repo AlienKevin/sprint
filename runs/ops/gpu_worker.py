@@ -1430,6 +1430,7 @@ def list_pending_job_ids(run: dict[str, Any]) -> list[str]:
         Path(name).stem
         for name in volume_ls_json_names(run, f"{prefix}/queue")
         if name.endswith(".json")
+        and re.fullmatch(r"[A-Za-z0-9_-]+", Path(name).stem)
     ]
 
 
@@ -1496,7 +1497,12 @@ def list_job_ids(run: dict[str, Any]) -> list[str]:
     names = {f"{job_id}.json" for job_id in list_host_job_ids(run)}
     names.update(volume_ls_json_names(run, f"{prefix}/queue"))
     names.update(volume_ls_json_names(run, f"{prefix}/status"))
-    return sorted(Path(name).stem for name in names if name.endswith(".json"))
+    return sorted(
+        Path(name).stem
+        for name in names
+        if name.endswith(".json")
+        and re.fullmatch(r"[A-Za-z0-9_-]+", Path(name).stem)
+    )
 
 
 def active_training_job_ids(run: dict[str, Any]) -> list[str]:
