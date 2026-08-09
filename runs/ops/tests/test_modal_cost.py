@@ -170,14 +170,59 @@ def test_continuous_verifier_result_does_not_end_running_cpu_billing(
     assert stopped == dt.datetime(2026, 8, 8, 4, 40, tzinfo=dt.timezone.utc)
 
 
+def test_stop_ack_does_not_end_billing_while_harbor_can_still_drain(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "cost-run"
+    state.mkdir()
+    (state / "STOP_ACK.json").write_text(
+        json.dumps({"acknowledged_at": "2026-08-08T04:50:00Z"})
+    )
+    _, stopped = modal_cost.run_bounds(state, run_payload())
+    assert stopped is None
+
+
+def test_completed_report_is_reopened_when_final_allocation_hour_moves(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "cost-run"
+    job = state / "job"
+    job.mkdir(parents=True)
+    run = run_payload()
+    run["job_path"] = str(job)
+    (state / "run.json").write_text(json.dumps(run))
+    (job / "result.json").write_text(
+        json.dumps({"finished_at": "2026-08-08T05:10:00Z"})
+    )
+    telemetry = state / "telemetry"
+    telemetry.mkdir()
+    (telemetry / "modal-cost.json").write_text(
+        json.dumps(
+            {
+                "provider_complete": True,
+                "query_end": "2026-08-08T05:00:00Z",
+                "provider_cost_precredits_usd": 1.0,
+            }
+        )
+    )
+
+    payload = modal_cost.collect_provider_billing(
+        state, now=dt.datetime(2026, 8, 8, 6, 4, tzinfo=dt.timezone.utc)
+    )
+    assert payload["provider_complete"] is False
+    assert payload["status"] == "pending"
+    assert payload["query_end"] == "2026-08-08T06:00:00Z"
+    assert payload["eligible_at"] == "2026-08-08T06:05:00Z"
+
+
 def test_collection_waits_for_complete_hour_then_persists_provider_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = tmp_path / "cost-run"
     state.mkdir()
     (state / "run.json").write_text(json.dumps(run_payload()))
-    (state / "STOP_ACK.json").write_text(
-        json.dumps({"acknowledged_at": "2026-08-08T04:50:00Z"})
+    (state / "FINALIZED.json").write_text(
+        json.dumps({"finalized_at": "2026-08-08T04:50:00Z"})
     )
 
     pending = modal_cost.collect_provider_billing(
@@ -270,8 +315,8 @@ def test_collection_waits_when_expected_role_is_missing(tmp_path: Path) -> None:
     state = tmp_path / "cost-run"
     (state / "telemetry").mkdir(parents=True)
     (state / "run.json").write_text(json.dumps(run_payload()))
-    (state / "STOP_ACK.json").write_text(
-        json.dumps({"acknowledged_at": "2026-08-08T04:50:00Z"})
+    (state / "FINALIZED.json").write_text(
+        json.dumps({"finalized_at": "2026-08-08T04:50:00Z"})
     )
     (state / "telemetry" / "unified-timeline.json").write_text(
         json.dumps(
@@ -344,8 +389,8 @@ def test_collection_waits_for_volume_storage_snapshot(tmp_path: Path) -> None:
     state = tmp_path / "cost-run"
     state.mkdir()
     (state / "run.json").write_text(json.dumps(run_payload()))
-    (state / "STOP_ACK.json").write_text(
-        json.dumps({"acknowledged_at": "2026-08-08T04:50:00Z"})
+    (state / "FINALIZED.json").write_text(
+        json.dumps({"finalized_at": "2026-08-08T04:50:00Z"})
     )
     rows = [
         {

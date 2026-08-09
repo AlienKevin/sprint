@@ -318,8 +318,10 @@ def run_bounds(
     if start is None:
         raise ValueError("run.json is missing a valid created_at")
     end_candidates: list[dt.datetime] = []
+    # STOP_ACK ends the agent process, not the run-owned Modal allocations:
+    # Harbor and sealed verifiers can remain alive while accepted submissions
+    # drain. Billing must extend through job/finalization completion.
     for path, keys in (
-        (state_dir / "STOP_ACK.json", ("acknowledged_at",)),
         (state_dir / "FINALIZED.json", ("finalized_at", "checked_at")),
     ):
         payload = _read_json(path)
@@ -366,12 +368,14 @@ def collect_provider_billing(
     """Collect a complete full-hour Modal billing report for one stopped run."""
     output_path = state_dir / "telemetry" / "modal-cost.json"
     existing = _read_json(output_path)
-    if existing.get("provider_complete") is True:
-        return existing
     run = _read_json(state_dir / "run.json")
     if not run:
         raise ValueError(f"missing run.json under {state_dir}")
     start, stopped_at = run_bounds(state_dir, run)
+    if stopped_at is not None and existing.get("provider_complete") is True:
+        expected_query_end = iso_z(ceil_hour(stopped_at))
+        if existing.get("query_end") == expected_query_end:
+            return existing
     current = (now or utc_now()).astimezone(dt.timezone.utc)
     query_start = floor_hour(start)
     expected_roles = _expected_billed_roles(state_dir)
