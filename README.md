@@ -55,9 +55,11 @@ uv run --project harbor python runs/ops/warm_modal_images.py \
 
 The batch controller fixes the comparison contract to three independent
 DeepSeek V4 Flash 0731 trials and three independent GPT-5.6 Luna trials, all
-through Codex 0.147.0 at max reasoning. It enforces a 24-hour agent deadline,
-starts a restartable host monitor, publishes verifier-native success and failure
-replays without an extra GPU, and centralizes website deployments.
+through Codex 0.147.0 at max reasoning. The evaluation has no fixed deadline;
+the 24-hour value is only the maximum lifetime of one Modal CPU sandbox, which
+the host supervisor can replace from durable state. The controller starts a
+restartable host monitor, publishes verifier-native success and failure replays
+without an extra GPU, and centralizes website deployments.
 
 ```bash
 BATCH_ID="sprint-$(date -u +%Y%m%d)"
