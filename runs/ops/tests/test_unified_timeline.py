@@ -524,6 +524,38 @@ def test_unified_timeline_is_joined_deduplicated_and_public_safe(
     assert index["runs"][0]["comparison_summary"]["best_100m_s"] == 48.0
 
 
+def test_public_timeline_index_keeps_only_six_newest_runs(tmp_path: Path) -> None:
+    web = tmp_path / "web"
+    index_path = web / "data" / "timelines" / "index.json"
+    index_path.parent.mkdir(parents=True)
+    index_path.write_text(
+        json.dumps(
+            {
+                "schema_version": unified_timeline.SCHEMA_VERSION,
+                "runs": [
+                    {
+                        "run_id": f"old-{index}",
+                        "created_at": f"2026-08-0{index}T00:00:00Z",
+                    }
+                    for index in range(1, 8)
+                ],
+            }
+        )
+    )
+    state = fixture_run(tmp_path)
+    unified_timeline.build_timeline(state, web_dir=web)
+    index = json.loads(index_path.read_text())
+    assert len(index["runs"]) == unified_timeline.PUBLIC_RUN_LIMIT
+    assert [row["run_id"] for row in index["runs"]] == [
+        "timeline-fixture",
+        "old-7",
+        "old-6",
+        "old-5",
+        "old-4",
+        "old-3",
+    ]
+
+
 def test_durable_gpu_lifecycle_copy_is_deduplicated_by_event_id(
     tmp_path: Path,
 ) -> None:

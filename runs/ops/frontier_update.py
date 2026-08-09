@@ -28,6 +28,7 @@ HQ_PATH = ROOT / "runs/g1_hq.json"
 PROJECT_ID = "prj_dgvTovRNwdSDcefYmo6oXfju9M3p"
 ORG_ID = "team_SNgoAcFfHYXYdUIXhj16bGek"
 VERCEL_SCOPE = "alienkevins-projects"
+PUBLIC_RUN_LIMIT = 6
 TIME_TOLERANCE_SECONDS = 0.001
 DEPLOY_DEBOUNCE_SECONDS = 300
 CAPTURE_MAX_ATTEMPTS = 3
@@ -973,7 +974,8 @@ def write_web_policy_indexes(
             "runs": sorted(
                 entries.values(),
                 key=lambda item: (item.get("created_at") or "", item["run_id"]),
-            ),
+                reverse=True,
+            )[:PUBLIC_RUN_LIMIT],
         },
     )
 

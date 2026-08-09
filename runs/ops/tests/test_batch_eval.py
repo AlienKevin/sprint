@@ -583,6 +583,48 @@ def test_dq_replay_is_queued_and_public_index_is_path_safe(tmp_path: Path) -> No
     assert public["policies"][0]["replay_url"].startswith("/replay/frontier-")
 
 
+def test_public_policy_index_keeps_only_six_newest_runs(tmp_path: Path) -> None:
+    web = tmp_path / "web"
+    index_path = web / "data" / "policies" / "index.json"
+    index_path.parent.mkdir(parents=True)
+    index_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "runs": [
+                    {
+                        "run_id": f"old-{index}",
+                        "created_at": f"2026-08-0{index}T00:00:00Z",
+                    }
+                    for index in range(1, 8)
+                ],
+            }
+        )
+    )
+    state_path = tmp_path / "current" / "frontier-state.json"
+    state_path.parent.mkdir()
+    (state_path.parent / "run.json").write_text(
+        json.dumps(
+            {
+                "run_id": "current",
+                "created_at": "2026-08-09T00:00:00Z",
+                "model": "openai/gpt-5.6-luna",
+            }
+        )
+    )
+    frontier_update.write_web_policy_indexes(state_path, {"policies": {}}, web)
+    index = json.loads(index_path.read_text())
+    assert len(index["runs"]) == frontier_update.PUBLIC_RUN_LIMIT
+    assert [row["run_id"] for row in index["runs"]] == [
+        "current",
+        "old-7",
+        "old-6",
+        "old-5",
+        "old-4",
+        "old-3",
+    ]
+
+
 def test_replay_renderer_exposes_complete_cli() -> None:
     completed = subprocess.run(
         [sys.executable, str(ROOT / "runs/build_lane_3d.py"), "--help"],

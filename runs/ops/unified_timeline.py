@@ -22,6 +22,7 @@ import modal_cost
 
 SCHEMA_VERSION = 6
 DEFAULT_BUCKET_SECONDS = 60
+PUBLIC_RUN_LIMIT = 6
 DEFAULT_GPU_MAX_GAP_SECONDS = 45
 ISO_KEYS = ("timestamp", "ts_utc", "created_at", "at", "submitted_at")
 RESOURCE_ROLES = {"cpu-agent", "training-gpu", "verifier-gpu", "host-controller"}
@@ -2220,7 +2221,7 @@ def build_timeline(
                 entries.values(),
                 key=lambda item: (item.get("created_at") or "", item["run_id"]),
                 reverse=True,
-            ),
+            )[:PUBLIC_RUN_LIMIT],
         }
         atomic_json(index_path, index, mode=0o644)
     return payload
