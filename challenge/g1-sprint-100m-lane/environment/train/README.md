@@ -50,10 +50,11 @@ the completed iteration/cursor. Do not commit an exported TorchScript policy as
 a recovery checkpoint; policies are inference/submission artifacts and cannot
 resume optimization. A replacement attempt with `--resume-arg` fails closed if
 no valid trainer-state checkpoint exists, so it never silently restarts work.
-When a job finishes, the host mirrors the policy named by `progress.json` into
-the CPU sandbox and reports its fresh path as `agent_policy_mirror_path` in
-`sprint-gpu-train status`; submit that path even if the long-lived `/durable`
-mount has not refreshed yet.
+Atomically update `progress.json` with `{"policy_path": "/durable/.../policy.pt"}`
+after each complete export. The host mirrors every new reported policy into the
+CPU sandbox, including while training continues, and reports its fresh path as
+`agent_policy_mirror_path` in `sprint-gpu-train status`; submit that path even
+if the long-lived `/durable` mount has not refreshed yet.
 
 The sandbox has no general internet or cloud credentials. PyTorch, Isaac Lab,
 and required assets are preinstalled. The trusted worker redirects stock Isaac

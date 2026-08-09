@@ -712,6 +712,31 @@ class ClaimSelectionTests(unittest.TestCase):
             "/run/sprint-gpu-mirror/artifacts/job-1/policy_2.pt",
         )
 
+    def test_fetches_policy_alias_from_progress_record(self) -> None:
+        run = {"run_id": "run-1", "volume_name": "volume-1"}
+        job = {
+            "job_id": "job-1",
+            "progress": {
+                "policy": "/durable/runs/run-1/gpu-jobs/checkpoints/job-1/policy.pt"
+            },
+        }
+
+        def fake_get(command, **_kwargs):
+            Path(command[-1]).write_bytes(b"aliased policy")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with mock.patch.object(
+            gpu_worker.sprintctl, "run_command", side_effect=fake_get
+        ):
+            payload, name, content, detail = gpu_worker.fetch_agent_policy_artifact(
+                run, job
+            )
+
+        self.assertEqual(name, "policy.pt")
+        self.assertEqual(content, b"aliased policy")
+        self.assertEqual(detail["policy_mirror"], "fetched")
+        self.assertEqual(payload["agent_policy_source_path"], job["progress"]["policy"])
+
     def test_fetches_policy_from_custom_run_gpu_job_directory(self) -> None:
         run = {"run_id": "run-1", "volume_name": "volume-1"}
         job = {

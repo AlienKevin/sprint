@@ -243,7 +243,7 @@ def fetch_agent_policy_artifact(
     progress = payload.get("progress")
     if not isinstance(progress, dict):
         return payload, None, None, {"policy_mirror": "not_reported"}
-    raw_path = str(progress.get("policy_path") or "").strip()
+    raw_path = str(progress.get("policy_path") or progress.get("policy") or "").strip()
     if not raw_path:
         return payload, None, None, {"policy_mirror": "not_reported"}
     policy_path = Path(raw_path)
@@ -342,7 +342,7 @@ def refresh_live_policy_mirror(
     progress = heartbeat.get("progress")
     if not isinstance(progress, dict):
         return job, {"live_policy_mirror": "not_reported"}
-    raw_path = str(progress.get("policy_path") or "").strip()
+    raw_path = str(progress.get("policy_path") or progress.get("policy") or "").strip()
     if not raw_path:
         return job, {"live_policy_mirror": "not_reported"}
     progress_sha256 = hashlib.sha256(
