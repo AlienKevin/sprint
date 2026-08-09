@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import contextlib
 import importlib.util
+import io
 import json
 import subprocess
 import sys
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -105,6 +107,83 @@ def test_env_loader_reads_only_required_model_keys(tmp_path: Path) -> None:
         "OPENAI_API_KEY": "openai-secret",
         "DEEPSEEK_API_KEY": "deepseek-secret",
     }
+
+
+def test_provider_inference_probe_records_usage_without_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_urlopen(request, timeout):
+        captured["request"] = request
+        captured["timeout"] = timeout
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "id": "resp_test",
+                    "model": "gpt-5.6-luna",
+                    "status": "completed",
+                    "service_tier": "default",
+                    "usage": {"input_tokens": 8, "output_tokens": 1},
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(batch_eval.urllib.request, "urlopen", fake_urlopen)
+    result = batch_eval.provider_inference_probe(
+        "https://api.openai.com/v1/responses",
+        "top-secret-key",
+        {"model": "gpt-5.6-luna", "input": "Return OK."},
+    )
+
+    request = captured["request"]
+    assert captured["timeout"] == 120
+    assert json.loads(request.data) == {
+        "model": "gpt-5.6-luna",
+        "input": "Return OK.",
+    }
+    assert request.get_header("Authorization") == "Bearer top-secret-key"
+    assert result["request_id"] == "resp_test"
+    assert result["usage"] == {"input_tokens": 8, "output_tokens": 1}
+    assert "top-secret-key" not in json.dumps(result)
+
+
+def test_provider_inference_probe_preserves_sanitized_spend_limit_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    body = io.BytesIO(
+        json.dumps(
+            {
+                "error": {
+                    "type": "usage_limit_reached",
+                    "message": "Project reached its enforced spend limit.\nUpdate billing.",
+                }
+            }
+        ).encode()
+    )
+
+    def fail_urlopen(_request, timeout):
+        assert timeout == 120
+        raise urllib.error.HTTPError(
+            "https://api.openai.com/v1/responses",
+            400,
+            "Bad Request",
+            {},
+            body,
+        )
+
+    monkeypatch.setattr(batch_eval.urllib.request, "urlopen", fail_urlopen)
+    with pytest.raises(RuntimeError) as caught:
+        batch_eval.provider_inference_probe(
+            "https://api.openai.com/v1/responses",
+            "top-secret-key",
+            {"model": "gpt-5.6-luna", "input": "Return OK."},
+        )
+    message = str(caught.value)
+    assert "HTTP 400" in message
+    assert "enforced spend limit" in message
+    assert "\n" not in message
+    assert "top-secret-key" not in message
 
 
 def test_vercel_project_link_accepts_cli_metadata(

@@ -68,6 +68,12 @@ python3 runs/ops/batch_eval.py launch --batch-id "$BATCH_ID" --confirm
 python3 runs/ops/batch_eval.py status --batch-id "$BATCH_ID"
 ```
 
+Preflight makes one tiny paid max-effort inference on each exact provider model,
+in addition to checking model visibility. This prevents a quota, spend-limit,
+authentication, or effort-compatibility failure from allocating six Modal CPU
+sandboxes; its non-secret request IDs and token usage are retained as shared
+pre-launch overhead rather than attributed to a model arm.
+
 To use a secrets file outside the clone, add `--env-file /absolute/path/.env`.
 
 The systemd batch monitor survives shell disconnects and continuously checks

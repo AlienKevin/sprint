@@ -50,7 +50,7 @@ ALERT_PATTERNS = {
         r"\b(?:429|rate.?limit|too many requests)\b", re.I
     ),
     "provider_quota": re.compile(
-        r"\b(?:insufficient_quota|quota exceeded|billing limit)\b", re.I
+        r"\b(?:insufficient_quota|quota exceeded|billing limit|spend limit)\b", re.I
     ),
     "provider_auth": re.compile(
         r"\b(?:401|403|invalid api key|authentication failed)\b", re.I
@@ -167,6 +167,56 @@ def provider_models(url: str, key: str) -> set[str]:
     }
 
 
+def provider_inference_probe(
+    url: str,
+    key: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Make a tiny paid request and retain only non-secret serving evidence."""
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode(),
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            result = json.load(response)
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            error_payload = json.loads(exc.read(4096))
+            error = error_payload.get("error", error_payload)
+            if isinstance(error, dict):
+                parts = [error.get("code"), error.get("type"), error.get("message")]
+                detail = ": ".join(str(part) for part in parts if part)
+        except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
+            pass
+        detail = " ".join(detail.split())[:500]
+        suffix = f": {detail}" if detail else ""
+        raise RuntimeError(
+            f"provider inference request failed: HTTP {exc.code}{suffix}"
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"provider inference request failed: {exc.reason}") from exc
+    if not isinstance(result, dict) or not result.get("id"):
+        raise RuntimeError("provider inference response lacked a request ID")
+    usage = result.get("usage")
+    return {
+        "checked_at": utc_now(),
+        "endpoint": url,
+        "request_id": str(result["id"]),
+        "response_model": str(result.get("model", "")),
+        "status": str(result.get("status", result.get("object", ""))),
+        "service_tier": result.get("service_tier"),
+        "usage": usage if isinstance(usage, dict) else {},
+    }
+
+
 def run_checked(command: list[str], *, env: dict[str, str] | None = None) -> str:
     completed = subprocess.run(
         command,
@@ -199,6 +249,8 @@ def preflight(
     families: tuple[str, ...] = DEFAULT_FAMILIES,
 ) -> dict[str, Any]:
     checks: dict[str, Any] = {}
+    provider_probes: dict[str, Any] = {}
+    provider_errors: dict[str, str] = {}
     keys = load_env(env_file)
     required_keys = {
         "deepseek": "DEEPSEEK_API_KEY",
@@ -259,15 +311,50 @@ def preflight(
             "https://api.openai.com/v1/models", keys["OPENAI_API_KEY"]
         )
         checks["openai_luna_visible"] = "gpt-5.6-luna" in models
+        try:
+            provider_probes["openai_luna"] = provider_inference_probe(
+                "https://api.openai.com/v1/responses",
+                keys["OPENAI_API_KEY"],
+                {
+                    "model": "gpt-5.6-luna",
+                    "input": "Return OK.",
+                    "reasoning": {"effort": REASONING_EFFORT},
+                    "max_output_tokens": 16,
+                    "store": False,
+                },
+            )
+            checks["openai_luna_inference"] = True
+        except RuntimeError as exc:
+            checks["openai_luna_inference"] = False
+            provider_errors["openai_luna"] = str(exc)
     elif "luna" in families:
         checks["openai_luna_visible"] = not check_providers
+        checks["openai_luna_inference"] = not check_providers
     if "deepseek" in families and check_providers and checks["secret_deepseek_api_key"]:
         models = provider_models(
             "https://api.deepseek.com/models", keys["DEEPSEEK_API_KEY"]
         )
         checks["deepseek_v4_flash_visible"] = "deepseek-v4-flash" in models
+        try:
+            provider_probes["deepseek_v4_flash"] = provider_inference_probe(
+                "https://api.deepseek.com/chat/completions",
+                keys["DEEPSEEK_API_KEY"],
+                {
+                    "model": "deepseek-v4-flash",
+                    "messages": [{"role": "user", "content": "Return OK."}],
+                    "thinking": {"type": "enabled"},
+                    "reasoning_effort": REASONING_EFFORT,
+                    "max_tokens": 16,
+                    "stream": False,
+                },
+            )
+            checks["deepseek_v4_flash_inference"] = True
+        except RuntimeError as exc:
+            checks["deepseek_v4_flash_inference"] = False
+            provider_errors["deepseek_v4_flash"] = str(exc)
     elif "deepseek" in families:
         checks["deepseek_v4_flash_visible"] = not check_providers
+        checks["deepseek_v4_flash_inference"] = not check_providers
     planned = matrix(batch_id, families=families)
     checks["unique_runs"] = len({arm["run_id"] for arm in planned}) == len(planned)
     checks["fresh_run_ids"] = not any(
@@ -284,6 +371,8 @@ def preflight(
         "families": list(families),
         "env_file": str(env_file),
         "checks": checks,
+        "provider_probes": provider_probes,
+        "provider_errors": provider_errors,
         "ready": ready,
     }
 
