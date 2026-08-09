@@ -1185,6 +1185,70 @@ def active_training_job_ids(run: dict[str, Any]) -> list[str]:
     return active
 
 
+def cleanup_orphaned_training_sandboxes(run: dict[str, Any]) -> list[dict[str, Any]]:
+    """Terminate live training sandboxes absent from every host job record.
+
+    This is a provider-specific safety net behind the provider-neutral job
+    registry.  It handles the narrow crash window where Modal accepted a
+    Sandbox but the controller never durably published its ID.  The caller
+    holds the per-run dispatch lock, so an unknown sandbox cannot be a
+    concurrently-created legitimate worker.
+    """
+    app_name = str(run.get("training_app_name") or "").strip()
+    if not app_name:
+        return []
+    expected: set[str] = set()
+    for job_id in list_job_ids(run):
+        job = load_job(run, job_id)
+        if not job:
+            continue
+        for key in ("sandbox_id", "last_sandbox_id"):
+            sandbox_id = str(job.get(key) or "")
+            if sandbox_id.startswith("sb-"):
+                expected.add(sandbox_id)
+    if standing_enabled(run):
+        path = _standing_state_path(run)
+        if path.is_file():
+            try:
+                standing_id = str(json.loads(path.read_text()).get("sandbox_id") or "")
+            except (OSError, json.JSONDecodeError):
+                standing_id = ""
+            if standing_id.startswith("sb-"):
+                expected.add(standing_id)
+
+    try:
+        import modal
+
+        app = modal.App.lookup(app_name, create_if_missing=False)
+        sandboxes = list(modal.Sandbox.list(app_id=str(app.app_id)))
+    except Exception as exc:  # noqa: BLE001
+        return [
+            {"action": "orphan_audit_error", "error": f"{type(exc).__name__}: {exc}"}
+        ]
+
+    actions: list[dict[str, Any]] = []
+    for sandbox in sandboxes:
+        sandbox_id = str(sandbox.object_id)
+        if sandbox_id in expected:
+            continue
+        error = ModalSandboxProvider(run).terminate(
+            ProviderHandle(
+                provider=ModalSandboxProvider.name,
+                attempt_id=sandbox_id,
+            )
+        )
+        actions.append(
+            {
+                "action": "orphan_terminated"
+                if error is None
+                else "orphan_terminate_error",
+                "sandbox_id": sandbox_id,
+                "error": error,
+            }
+        )
+    return actions
+
+
 def operator_stop_requested(state_dir: Path) -> bool:
     if (state_dir / "STOP").is_file() or (state_dir / "STOP_REQUESTED.json").is_file():
         return True
@@ -1354,6 +1418,7 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
             )
             return result
 
+        actions.extend(cleanup_orphaned_training_sandboxes(run))
         now = time.time()
         for job_id in list_job_ids(run):
             job = load_job(run, job_id)

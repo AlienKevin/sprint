@@ -441,9 +441,7 @@ class HostJobRegistryTests(unittest.TestCase):
             run = {"run_id": "run-1", "state_dir": raw}
             path = Path(raw) / "gpu-job-registry" / "job-1.json"
             path.parent.mkdir()
-            path.write_text(
-                json.dumps({"job_id": "job-1", "status": "retry_wait"})
-            )
+            path.write_text(json.dumps({"job_id": "job-1", "status": "retry_wait"}))
             with mock.patch.object(
                 gpu_worker.sprintctl,
                 "volume_get_text",
@@ -459,9 +457,7 @@ class HostJobRegistryTests(unittest.TestCase):
             path = Path(raw) / "gpu-job-registry" / "job-1.json"
             path.parent.mkdir()
             path.write_text(json.dumps({"job_id": "job-1", "status": "running"}))
-            with mock.patch.object(
-                gpu_worker, "volume_ls_json_names", return_value=[]
-            ):
+            with mock.patch.object(gpu_worker, "volume_ls_json_names", return_value=[]):
                 self.assertEqual(gpu_worker.list_job_ids(run), ["job-1"])
 
 
@@ -901,6 +897,50 @@ class TryClaimPersistenceTests(unittest.TestCase):
 
 
 class GpuConcurrencyLimitTests(unittest.TestCase):
+    def test_orphan_audit_keeps_registered_and_terminates_unknown_sandbox(self) -> None:
+        run = {"run_id": "unit", "training_app_name": "unit-training"}
+        jobs = {
+            "known": {
+                "job_id": "known",
+                "status": "running",
+                "sandbox_id": "sb-known",
+            }
+        }
+        known = mock.Mock(object_id="sb-known")
+        orphan = mock.Mock(object_id="sb-orphan")
+        app = mock.Mock(app_id="ap-unit")
+        with (
+            mock.patch.object(gpu_worker, "list_job_ids", return_value=["known"]),
+            mock.patch.object(
+                gpu_worker, "load_job", side_effect=lambda _run, job_id: jobs[job_id]
+            ),
+            mock.patch("modal.App.lookup", return_value=app) as lookup,
+            mock.patch("modal.Sandbox.list", return_value=iter([known, orphan])),
+            mock.patch.object(
+                gpu_worker.ModalSandboxProvider, "terminate", return_value=None
+            ) as terminate,
+        ):
+            actions = gpu_worker.cleanup_orphaned_training_sandboxes(run)
+
+        lookup.assert_called_once_with("unit-training", create_if_missing=False)
+        self.assertEqual(
+            actions,
+            [
+                {
+                    "action": "orphan_terminated",
+                    "sandbox_id": "sb-orphan",
+                    "error": None,
+                }
+            ],
+        )
+        self.assertEqual(terminate.call_count, 1)
+        self.assertEqual(terminate.call_args.args[0].attempt_id, "sb-orphan")
+
+    def test_orphan_audit_is_skipped_without_separate_training_app(self) -> None:
+        self.assertEqual(
+            gpu_worker.cleanup_orphaned_training_sandboxes({"run_id": "unit"}), []
+        )
+
     def test_running_job_keeps_second_job_queued(self) -> None:
         jobs = {
             "active": {
