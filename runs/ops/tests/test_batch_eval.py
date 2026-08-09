@@ -709,6 +709,37 @@ def test_batch_monitor_reads_live_lane_status_without_duplicate_poll(
     assert batch_eval.live_run_monitor_status(run_id) == expected
 
 
+def test_resolved_website_alert_leaves_active_list_but_preserves_history() -> None:
+    payload = {
+        "alerts": [
+            {
+                "run_id": "batch",
+                "kind": "website_deploy",
+                "source": "FileNotFoundError",
+                "first_seen_at": "2026-08-09T08:40:21Z",
+            },
+            {"run_id": "run-1", "kind": "provider_auth", "source": "agent.log"},
+        ]
+    }
+
+    batch_eval.resolve_alerts(
+        payload,
+        run_id="batch",
+        kind="website_deploy",
+        resolution="subsequent_site_snapshot_succeeded",
+    )
+
+    assert payload["alerts"] == [
+        {"run_id": "run-1", "kind": "provider_auth", "source": "agent.log"}
+    ]
+    assert payload["resolved_alerts"][0]["source"] == "FileNotFoundError"
+    assert payload["resolved_alerts"][0]["resolved_at"]
+    assert (
+        payload["resolved_alerts"][0]["resolution"]
+        == "subsequent_site_snapshot_succeeded"
+    )
+
+
 def test_website_javascript_parses_and_has_no_legacy_opus_copy() -> None:
     source = (ROOT / "sprint-web/app.js").read_text()
     assert "DeepSeek V4 Flash 0731" in source

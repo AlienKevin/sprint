@@ -726,6 +726,23 @@ def public_batch(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def resolve_alerts(
+    payload: dict[str, Any], *, run_id: str, kind: str, resolution: str
+) -> None:
+    """Move a recovered active alert to durable history."""
+    active: list[dict[str, Any]] = []
+    resolved = payload.setdefault("resolved_alerts", [])
+    for alert in payload.get("alerts", []):
+        if alert.get("run_id") != run_id or alert.get("kind") != kind:
+            active.append(alert)
+            continue
+        archived = dict(alert)
+        archived["resolved_at"] = utc_now()
+        archived["resolution"] = resolution
+        resolved.append(archived)
+    payload["alerts"] = active
+
+
 def deployment_debounce_seconds(payload: dict[str, Any]) -> int:
     """Publish immediately after every lane has reached a terminal state."""
     return (
@@ -944,6 +961,12 @@ def monitor_cycle(batch_id: str, *, deploy: bool = True) -> dict[str, Any]:
                     # remaining external gate. Do not make an empty or
                     # no-submission lane wait through the live-update cadence.
                     debounce_seconds=deployment_debounce_seconds(payload),
+                )
+                resolve_alerts(
+                    payload,
+                    run_id="batch",
+                    kind="website_deploy",
+                    resolution="subsequent_site_snapshot_succeeded",
                 )
             except Exception as exc:
                 deploy_state["site_status"] = "error"

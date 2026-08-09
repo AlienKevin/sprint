@@ -371,32 +371,52 @@ def compute_frontier(candidates: Sequence[Candidate]) -> tuple[list[Candidate], 
 
 
 def site_tree_hash(web: Path) -> str:
-    digest = hashlib.sha256()
-    if not web.is_dir():
-        return digest.hexdigest()
-    for path in sorted(item for item in web.rglob("*") if item.is_file()):
-        relative = path.relative_to(web)
-        if any(part in {".vercel", ".git", "node_modules"} for part in relative.parts):
-            continue
-        digest.update(relative.as_posix().encode())
-        digest.update(b"\0")
-        digest.update(sha256_file(path).encode())
-        digest.update(b"\0")
-    return digest.hexdigest()
+    for attempt in range(3):
+        try:
+            digest = hashlib.sha256()
+            if not web.is_dir():
+                return digest.hexdigest()
+            for path in sorted(item for item in web.rglob("*") if item.is_file()):
+                relative = path.relative_to(web)
+                if any(
+                    part in {".vercel", ".git", "node_modules"}
+                    for part in relative.parts
+                ):
+                    continue
+                digest.update(relative.as_posix().encode())
+                digest.update(b"\0")
+                digest.update(sha256_file(path).encode())
+                digest.update(b"\0")
+            return digest.hexdigest()
+        except FileNotFoundError:
+            # Timeline/policy writers publish with atomic replacements while the
+            # observer hashes the live tree.  Retry the entire snapshot rather
+            # than preserving a digest assembled from two filesystem states.
+            if attempt == 2:
+                raise
+            time.sleep(0.02 * (attempt + 1))
+    raise AssertionError("unreachable")
 
 
 def public_artifact_hashes(web: Path) -> dict[str, str]:
     """Snapshot hashes for the per-run artifacts used as deployment proofs."""
-    paths = [
-        *web.glob("data/batches/*.json"),
-        *web.glob("data/policies/*.json"),
-        *web.glob("data/timelines/*.json"),
-    ]
-    return {
-        path.relative_to(web).as_posix(): sha256_file(path)
-        for path in sorted(paths)
-        if path.is_file()
-    }
+    for attempt in range(3):
+        try:
+            paths = [
+                *web.glob("data/batches/*.json"),
+                *web.glob("data/policies/*.json"),
+                *web.glob("data/timelines/*.json"),
+            ]
+            return {
+                path.relative_to(web).as_posix(): sha256_file(path)
+                for path in sorted(paths)
+                if path.is_file()
+            }
+        except FileNotFoundError:
+            if attempt == 2:
+                raise
+            time.sleep(0.02 * (attempt + 1))
+    raise AssertionError("unreachable")
 
 
 def initial_state(job: Path, trial: Path, web: Path) -> dict[str, Any]:

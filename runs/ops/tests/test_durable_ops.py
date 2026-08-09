@@ -1140,6 +1140,61 @@ while True:
             self.assertEqual(message, "no site file changes")
             self.assertEqual(state["site_status"], "noop")
 
+    def test_site_hash_retries_live_atomic_replacement_race(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            web = Path(raw)
+            (web / "index.html").write_text("stable")
+            real_sha256_file = frontier_update.sha256_file
+            calls = 0
+
+            def transient_missing(path: Path) -> str:
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise FileNotFoundError(path)
+                return real_sha256_file(path)
+
+            with (
+                mock.patch.object(
+                    frontier_update, "sha256_file", side_effect=transient_missing
+                ),
+                mock.patch.object(frontier_update.time, "sleep"),
+            ):
+                digest = frontier_update.site_tree_hash(web)
+
+            self.assertEqual(digest, frontier_update.site_tree_hash(web))
+            self.assertGreaterEqual(calls, 2)
+
+    def test_public_artifact_hashes_retries_live_replacement_race(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            web = Path(raw)
+            artifact = web / "data/policies/run.json"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text('{"policies": []}\n')
+            real_sha256_file = frontier_update.sha256_file
+            calls = 0
+
+            def transient_missing(path: Path) -> str:
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise FileNotFoundError(path)
+                return real_sha256_file(path)
+
+            with (
+                mock.patch.object(
+                    frontier_update, "sha256_file", side_effect=transient_missing
+                ),
+                mock.patch.object(frontier_update.time, "sleep"),
+            ):
+                hashes = frontier_update.public_artifact_hashes(web)
+
+            self.assertEqual(
+                hashes,
+                {"data/policies/run.json": real_sha256_file(artifact)},
+            )
+            self.assertGreaterEqual(calls, 2)
+
     def test_vercel_debounce_does_not_starve_on_continuous_site_changes(
         self,
     ) -> None:

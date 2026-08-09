@@ -483,14 +483,39 @@ class ClaimSelectionTests(unittest.TestCase):
             "/run/sprint-gpu-mirror/artifacts/job-1/policy_2.pt",
         )
 
-    def test_rejects_policy_from_another_job_checkpoint_directory(self) -> None:
+    def test_fetches_policy_from_custom_run_gpu_job_directory(self) -> None:
+        run = {"run_id": "run-1", "volume_name": "volume-1"}
+        job = {
+            "job_id": "job-1",
+            "progress": {
+                "policy_path": "/durable/runs/run-1/gpu-jobs/sprint-long/policy.pt"
+            },
+        }
+
+        def fake_get(command, **_kwargs):
+            Path(command[-1]).write_bytes(b"custom job policy")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with mock.patch.object(
+            gpu_worker.sprintctl, "run_command", side_effect=fake_get
+        ):
+            payload, name, content, detail = gpu_worker.fetch_agent_policy_artifact(
+                run, job
+            )
+
+        self.assertEqual(name, "policy.pt")
+        self.assertEqual(content, b"custom job policy")
+        self.assertEqual(detail["policy_mirror"], "fetched")
+        self.assertIn("agent_policy_mirror_path", payload)
+
+    def test_rejects_policy_outside_run_gpu_job_and_policy_directories(self) -> None:
         payload, name, content, detail = gpu_worker.fetch_agent_policy_artifact(
             {"run_id": "run-1", "volume_name": "volume-1"},
             {
                 "job_id": "job-1",
                 "progress": {
                     "policy_path": (
-                        "/durable/runs/run-1/gpu-jobs/checkpoints/job-2/policy.pt"
+                        "/durable/runs/run-1/private/checkpoints/policy.pt"
                     )
                 },
             },

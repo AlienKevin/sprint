@@ -246,7 +246,7 @@ def fetch_agent_policy_artifact(
     run_root = Path("/durable") / "runs" / str(run["run_id"])
     allowed_roots = (
         run_root / "policies",
-        run_root / "gpu-jobs" / "checkpoints" / str(job["job_id"]),
+        run_root / "gpu-jobs",
     )
     relative: Path | None = None
     for expected in allowed_roots:
