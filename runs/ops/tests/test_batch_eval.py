@@ -228,9 +228,52 @@ def test_provider_model_discovery_does_not_retry_auth_failure(
     assert calls == 1
 
 
+def test_provider_inference_probe_retries_transient_server_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+    delays: list[float] = []
+
+    def flaky_urlopen(_request, timeout):
+        nonlocal calls
+        calls += 1
+        assert timeout == 120
+        if calls < 3:
+            raise urllib.error.HTTPError(
+                "https://api.openai.com/v1/responses",
+                500,
+                "Server Error",
+                {},
+                io.BytesIO(b'{"error":{"type":"server_error"}}'),
+            )
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "id": "resp_retry",
+                    "model": "gpt-5.6-luna",
+                    "status": "completed",
+                    "usage": {"total_tokens": 10},
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(batch_eval.urllib.request, "urlopen", flaky_urlopen)
+    monkeypatch.setattr(batch_eval.time, "sleep", delays.append)
+
+    result = batch_eval.provider_inference_probe(
+        "https://api.openai.com/v1/responses",
+        "top-secret-key",
+        {"model": "gpt-5.6-luna", "input": "Return OK."},
+    )
+    assert result["request_id"] == "resp_retry"
+    assert calls == 3
+    assert delays == [1.0, 2.0]
+
+
 def test_provider_inference_probe_preserves_sanitized_spend_limit_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    calls = 0
     body = io.BytesIO(
         json.dumps(
             {
@@ -243,6 +286,8 @@ def test_provider_inference_probe_preserves_sanitized_spend_limit_error(
     )
 
     def fail_urlopen(_request, timeout):
+        nonlocal calls
+        calls += 1
         assert timeout == 120
         raise urllib.error.HTTPError(
             "https://api.openai.com/v1/responses",
@@ -264,6 +309,7 @@ def test_provider_inference_probe_preserves_sanitized_spend_limit_error(
     assert "enforced spend limit" in message
     assert "\n" not in message
     assert "top-secret-key" not in message
+    assert calls == 1
 
 
 def test_vercel_project_link_accepts_cli_metadata(

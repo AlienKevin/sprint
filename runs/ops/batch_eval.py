@@ -52,6 +52,8 @@ SHARED_VERIFIER_EVENTS = SCRIPT_DIR / "blind-verifier" / "scheduler-events.jsonl
 LIVE_SITE_DEPLOY_SECONDS = 20 * 60
 PROVIDER_DISCOVERY_ATTEMPTS = 3
 PROVIDER_DISCOVERY_RETRY_SECONDS = 1.0
+PROVIDER_INFERENCE_ATTEMPTS = 3
+PROVIDER_INFERENCE_RETRY_SECONDS = 1.0
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,48}$")
 ALERT_PATTERNS = {
     "provider_rate_limit": re.compile(
@@ -226,26 +228,42 @@ def provider_inference_probe(
             "Content-Type": "application/json",
         },
     )
-    try:
-        with urllib.request.urlopen(request, timeout=120) as response:
-            result = json.load(response)
-    except urllib.error.HTTPError as exc:
-        detail = ""
+    result: Any = None
+    for attempt in range(PROVIDER_INFERENCE_ATTEMPTS):
         try:
-            error_payload = json.loads(exc.read(4096))
-            error = error_payload.get("error", error_payload)
-            if isinstance(error, dict):
-                parts = [error.get("code"), error.get("type"), error.get("message")]
-                detail = ": ".join(str(part) for part in parts if part)
-        except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
-            pass
-        detail = " ".join(detail.split())[:500]
-        suffix = f": {detail}" if detail else ""
-        raise RuntimeError(
-            f"provider inference request failed: HTTP {exc.code}{suffix}"
-        ) from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"provider inference request failed: {exc.reason}") from exc
+            with urllib.request.urlopen(request, timeout=120) as response:
+                result = json.load(response)
+            break
+        except urllib.error.HTTPError as exc:
+            if 500 <= exc.code < 600 and attempt + 1 < PROVIDER_INFERENCE_ATTEMPTS:
+                time.sleep(PROVIDER_INFERENCE_RETRY_SECONDS * (2**attempt))
+                continue
+            detail = ""
+            try:
+                error_payload = json.loads(exc.read(4096))
+                error = error_payload.get("error", error_payload)
+                if isinstance(error, dict):
+                    parts = [
+                        error.get("code"),
+                        error.get("type"),
+                        error.get("message"),
+                    ]
+                    detail = ": ".join(str(part) for part in parts if part)
+            except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
+                pass
+            detail = " ".join(detail.split())[:500]
+            suffix = f": {detail}" if detail else ""
+            raise RuntimeError(
+                f"provider inference request failed: HTTP {exc.code}{suffix}"
+            ) from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            if attempt + 1 < PROVIDER_INFERENCE_ATTEMPTS:
+                time.sleep(PROVIDER_INFERENCE_RETRY_SECONDS * (2**attempt))
+                continue
+            reason = getattr(exc, "reason", str(exc))
+            raise RuntimeError(
+                f"provider inference request failed: {reason}"
+            ) from exc
     if not isinstance(result, dict) or not result.get("id"):
         raise RuntimeError("provider inference response lacked a request ID")
     usage = result.get("usage")
