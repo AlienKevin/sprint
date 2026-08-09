@@ -325,10 +325,16 @@ class ClaimSelectionTests(unittest.TestCase):
                     {"agent_container_id": "ta-agent"},
                     job,
                     log_content=b"complete child output\n",
+                    artifact_name="policy.pt",
+                    artifact_content=b"policy bytes",
                 )
 
             self.assertEqual(detail["agent_mirror"], "updated")
-            self.assertEqual(detail["agent_mirror_files"], 2)
+            self.assertEqual(
+                (mirror / "artifacts" / "job-1" / "policy.pt").read_bytes(),
+                b"policy bytes",
+            )
+            self.assertEqual(detail["agent_mirror_files"], 3)
             self.assertEqual(
                 hashlib.sha256(cli_path.read_bytes()).hexdigest(),
                 detail["agent_cli_sha256"],
@@ -341,6 +347,47 @@ class ClaimSelectionTests(unittest.TestCase):
                 (mirror / "out" / "job-1" / "attempt-2" / "worker.log").read_bytes(),
                 b"complete child output\n",
             )
+
+    def test_fetches_only_reported_scoped_policy_for_agent_mirror(self) -> None:
+        run = {"run_id": "run-1", "volume_name": "volume-1"}
+        job = {
+            "job_id": "job-1",
+            "progress": {"policy_path": "/durable/runs/run-1/policies/policy_7.pt"},
+        }
+
+        def fake_get(command, **_kwargs):
+            self.assertIn("runs/run-1/policies/policy_7.pt", command)
+            Path(command[-1]).write_bytes(b"trusted policy")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with mock.patch.object(
+            gpu_worker.sprintctl, "run_command", side_effect=fake_get
+        ):
+            payload, name, content, detail = gpu_worker.fetch_agent_policy_artifact(
+                run, job
+            )
+
+        self.assertEqual(name, "policy_7.pt")
+        self.assertEqual(content, b"trusted policy")
+        self.assertEqual(detail["policy_mirror"], "fetched")
+        self.assertEqual(
+            payload["agent_policy_mirror_path"],
+            "/run/sprint-gpu-mirror/artifacts/job-1/policy_7.pt",
+        )
+
+    def test_rejects_policy_outside_run_policy_directory(self) -> None:
+        payload, name, content, detail = gpu_worker.fetch_agent_policy_artifact(
+            {"run_id": "run-1", "volume_name": "volume-1"},
+            {
+                "job_id": "job-1",
+                "progress": {"policy_path": "/durable/runs/other/secrets.pt"},
+            },
+        )
+
+        self.assertIsNone(name)
+        self.assertIsNone(content)
+        self.assertEqual(detail["policy_mirror"], "rejected_scope")
+        self.assertNotIn("agent_policy_mirror_path", payload)
 
     def test_agent_cli_prefers_host_mirror_over_stale_volume_mount(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -855,6 +902,47 @@ class GpuConcurrencyLimitTests(unittest.TestCase):
         ):
             self.assertEqual(gpu_worker.active_training_job_ids(run), [])
 
+    def test_retry_backoff_reserves_slot_ahead_of_new_job(self) -> None:
+        jobs = {
+            "recovering": {
+                "job_id": "recovering",
+                "status": "retry_wait",
+                "attempt": 1,
+                "retry_not_before_epoch_s": time.time() + 60,
+            },
+            "new": {
+                "job_id": "new",
+                "status": "pending",
+                "attempt": 0,
+                "created_at_epoch_s": 2,
+            },
+        }
+        with tempfile.TemporaryDirectory() as raw:
+            run = {
+                "run_id": "unit",
+                "state_dir": raw,
+                "cpu_agent_gpu_worker": True,
+            }
+            with (
+                mock.patch.object(
+                    gpu_worker.sprintctl,
+                    "load_run",
+                    return_value=(Path(raw), run),
+                ),
+                mock.patch.object(gpu_worker, "list_job_ids", return_value=list(jobs)),
+                mock.patch.object(
+                    gpu_worker,
+                    "load_job",
+                    side_effect=lambda _run, job_id: dict(jobs[job_id]),
+                ),
+                mock.patch.object(gpu_worker.ModalSandboxProvider, "start") as start,
+            ):
+                result = gpu_worker.dispatch_once("unit")
+
+        self.assertEqual(result["reason"], "retry_backoff_reserved")
+        self.assertEqual(result["pending"], [])
+        start.assert_not_called()
+
 
 class AgentCredentialBoundaryTests(unittest.TestCase):
     def test_agent_env_allows_only_model_auth_and_endpoint_metadata(self) -> None:
@@ -1247,6 +1335,40 @@ class CheckpointContinuationTests(unittest.TestCase):
         self.assertEqual(state, {"step": 7})
         self.assertEqual(latest, str(checkpoint.path))
         self.assertEqual(command[-2:], ["--checkpoint", str(checkpoint.path)])
+
+    def test_inference_policy_is_not_selected_over_training_state(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            trainer = root / "model_7.pt"
+            policy = root / "policy_8.pt"
+            trainer.write_bytes(b"optimizer and model")
+            policy.write_bytes(b"torchscript")
+            store = resilience.CheckpointStore(root)
+            expected = store.commit(
+                trainer,
+                sequence=7,
+                metadata={"kind": "training_state"},
+            )
+            store.commit(
+                policy,
+                sequence=8,
+                metadata={"kind": "torchscript_policy"},
+            )
+
+            latest = worker_run.latest_checkpoint(root)
+
+        self.assertEqual(latest, str(expected.path))
+
+    def test_replacement_fails_closed_without_resumable_checkpoint(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "resumable training-state"):
+            worker_run.build_attempt_command(
+                {
+                    "command": ["python3", "train.py"],
+                    "resume_arg": "--checkpoint",
+                },
+                2,
+                None,
+            )
 
 
 class LauncherWiringTests(unittest.TestCase):

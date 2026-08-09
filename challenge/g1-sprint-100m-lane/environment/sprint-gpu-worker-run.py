@@ -3,6 +3,7 @@
 
 Starts durable GPU telemetry, emits timeline phases, runs the job command.
 """
+
 from __future__ import annotations
 
 import json
@@ -51,9 +52,7 @@ def write_status(path: Path, payload: dict) -> None:
         pass
 
 
-def start_telemetry(
-    run_id: str, job_id: str, attempt: int, lease_id: str
-) -> None:
+def start_telemetry(run_id: str, job_id: str, attempt: int, lease_id: str) -> None:
     Path("/run").mkdir(parents=True, exist_ok=True)
     Path("/run/sprint-role").write_text("training-gpu\n")
     Path("/run/sprint-run-id").write_text(run_id + "\n")
@@ -144,13 +143,28 @@ def lease_owned(path: Path, attempt: int, lease_id: str) -> bool:
     }
 
 
-def latest_checkpoint(
-    checkpoint_dir: Path, *, verify_hash: bool = True
-) -> str | None:
-    committed = CheckpointStore(checkpoint_dir).latest_valid(
-        verify_hash=verify_hash
-    )
-    return str(committed.path) if committed is not None else None
+def latest_checkpoint(checkpoint_dir: Path, *, verify_hash: bool = True) -> str | None:
+    # The recovery store is for trainer state, not exported inference policies.
+    # A TorchScript policy can be perfectly valid for SCORE while being
+    # impossible for an optimizer/runner to resume.  Keep older trainer-state
+    # generations eligible when a newer policy artifact was committed by
+    # mistake, and never feed a known inference-only artifact to --resume.
+    non_resumable_kinds = {
+        "inference_policy",
+        "policy",
+        "submission_policy",
+        "torchscript_policy",
+    }
+    store = CheckpointStore(checkpoint_dir)
+    for committed in store.iter_valid(verify_hash=verify_hash):
+        metadata = committed.metadata if isinstance(committed.metadata, dict) else {}
+        resumable = metadata.get("resumable")
+        kind = str(metadata.get("kind") or metadata.get("artifact_role") or "")
+        kind = kind.strip().lower().replace("-", "_")
+        if resumable is False or kind in non_resumable_kinds:
+            continue
+        return str(committed.path)
+    return None
 
 
 def progress_snapshot(
@@ -168,9 +182,7 @@ def progress_snapshot(
                 progress = progress_file.read_text()[-1000:]
             except OSError:
                 progress = None
-    return progress, latest_checkpoint(
-        checkpoint_dir, verify_hash=verify_checkpoint
-    )
+    return progress, latest_checkpoint(checkpoint_dir, verify_hash=verify_checkpoint)
 
 
 def checkpoint_resume_metadata(checkpoint: str | None) -> dict[str, str]:
@@ -201,7 +213,12 @@ def build_attempt_command(
         if shutil.which("python3"):
             command = ["python3", *command[1:]]
     resume_arg = str(job.get("resume_arg") or "")
-    if attempt > 1 and resume_arg and checkpoint:
+    if attempt > 1 and resume_arg:
+        if not checkpoint:
+            raise RuntimeError(
+                "replacement attempt requires a valid resumable training-state "
+                "checkpoint; inference policies are not resumable"
+            )
         command.extend([resume_arg, checkpoint])
     if command and Path(command[0]).name.startswith("python"):
         script_index = 1
@@ -361,10 +378,7 @@ def main() -> int:
 
     job = read_json(status_path)
     checkpoint_dir = Path(
-        str(
-            job.get("checkpoint_dir")
-            or prefix / "checkpoints" / job_id
-        )
+        str(job.get("checkpoint_dir") or prefix / "checkpoints" / job_id)
     )
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     progress_file = Path(
@@ -373,9 +387,7 @@ def main() -> int:
     progress, checkpoint = progress_snapshot(progress_file, checkpoint_dir)
     lease_seconds = int(job.get("heartbeat_timeout_sec") or 45)
     heartbeat_interval = max(2, int(job.get("heartbeat_interval_sec") or 5))
-    interruption_grace_sec = max(
-        0, float(job.get("interruption_grace_sec") or 20)
-    )
+    interruption_grace_sec = max(0, float(job.get("interruption_grace_sec") or 20))
     started_epoch = time.time()
     attempt_record = {
         "schema_version": 2,
@@ -409,9 +421,7 @@ def main() -> int:
         f"gpu-worker start job={job_id} attempt={attempt} "
         f"host={os.uname().nodename} ts={utc_now()}"
     )
-    emit(
-        run_id, job_id, attempt, lease_id, "gpu_queue_wait", "exit", where="worker"
-    )
+    emit(run_id, job_id, attempt, lease_id, "gpu_queue_wait", "exit", where="worker")
     emit(
         run_id,
         job_id,
@@ -447,7 +457,35 @@ def main() -> int:
             Path("/app").mkdir(parents=True, exist_ok=True)
             subprocess.run(["cp", "-a", f"{app_src}/.", "/app/"], check=True)
 
-    command = build_attempt_command(job, attempt, checkpoint)
+    try:
+        command = build_attempt_command(job, attempt, checkpoint)
+    except RuntimeError as exc:
+        finished = time.time()
+        attempt_record.update(
+            {
+                "status": "failed",
+                "error": str(exc),
+                "exit_code": 2,
+                "finished_at": utc_now(),
+                "finished_at_epoch_s": finished,
+            }
+        )
+        write_status(attempt_path, attempt_record)
+        write_status(
+            heartbeat_path,
+            heartbeat_payload(
+                run_id=run_id,
+                job_id=job_id,
+                attempt=attempt,
+                lease_id=lease_id,
+                status="failed",
+                progress=progress,
+                checkpoint=checkpoint,
+                lease_seconds=lease_seconds,
+            ),
+        )
+        print(f"resume rejected: {exc}", flush=True)
+        return 2
     workdir = str(job.get("workdir") or "/app")
     if not command:
         attempt_record.update(
@@ -509,6 +547,7 @@ def main() -> int:
         error = f"{type(exc).__name__}: {exc}"
     else:
         error = None
+
         def update_heartbeat(status: str) -> None:
             nonlocal progress, checkpoint
             progress, checkpoint = progress_snapshot(
@@ -574,7 +613,9 @@ def main() -> int:
             "status": (
                 "interrupted"
                 if interrupted
-                else "succeeded" if exit_code == 0 else "failed"
+                else "succeeded"
+                if exit_code == 0
+                else "failed"
             ),
             "progress": progress,
             "checkpoint": checkpoint,

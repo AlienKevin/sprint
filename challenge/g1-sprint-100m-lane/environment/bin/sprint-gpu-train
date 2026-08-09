@@ -14,6 +14,7 @@ Jobs land under $SPRINT_GPU_JOBS_ROOT (default
 /durable/runs/$SPRINT_RUN_ID/gpu-jobs/). The host monitor claims pending jobs and
 starts an A10G sandbox with the same image + volume.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -64,9 +65,8 @@ def jobs_root() -> Path:
 
 
 def run_id_from_env(root: Path) -> str:
-    env_id = (
-        os.environ.get("SPRINT_RUN_ID", "").strip()
-        or _read_run_file("/run/sprint-run-id")
+    env_id = os.environ.get("SPRINT_RUN_ID", "").strip() or _read_run_file(
+        "/run/sprint-run-id"
     )
     if env_id:
         return env_id
@@ -167,12 +167,8 @@ def cmd_submit(args: argparse.Namespace) -> int:
     work_rel = f"runs/{run_id}/gpu-jobs/work/{job_id}/app.tar.gz"
     archive = Path("/durable") / work_rel
     included = pack_sync_dirs(archive, sync_dirs)
-    checkpoint_dir = Path(
-        args.checkpoint_dir or root / "checkpoints" / job_id
-    )
-    progress_file = Path(
-        args.progress_file or checkpoint_dir / "progress.json"
-    )
+    checkpoint_dir = Path(args.checkpoint_dir or root / "checkpoints" / job_id)
+    progress_file = Path(args.progress_file or checkpoint_dir / "progress.json")
 
     job = {
         "schema_version": 3,
@@ -267,8 +263,7 @@ def cmd_logs(args: argparse.Namespace) -> int:
         raise SystemExit("no gpu jobs yet")
     log_root = root / "out" / job_id
     logs_by_attempt = {
-        path.parent.name: path
-        for path in log_root.glob("attempt-*/worker.log")
+        path.parent.name: path for path in log_root.glob("attempt-*/worker.log")
     }
     mirror_log_root = AGENT_MIRROR_ROOT / "out" / job_id
     logs_by_attempt.update(
@@ -296,6 +291,22 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
         metadata = json.loads(args.metadata) if args.metadata else {}
         if not isinstance(metadata, dict):
             raise SystemExit("--metadata must decode to a JSON object")
+        metadata.setdefault("kind", "training_state")
+        kind = str(metadata.get("kind") or "").strip().lower().replace("-", "_")
+        if (
+            kind
+            in {
+                "inference_policy",
+                "policy",
+                "submission_policy",
+                "torchscript_policy",
+            }
+            or metadata.get("resumable") is False
+        ):
+            raise SystemExit(
+                "checkpoint save requires resumable trainer state; keep "
+                "TorchScript/submission policies outside the recovery store"
+            )
         checkpoint = store.commit(
             args.source,
             sequence=args.sequence,
@@ -303,7 +314,13 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
             idempotency_key=args.idempotency_key or None,
             metadata=metadata,
         )
-        print(json.dumps({**checkpoint.to_manifest(), "payload_path": str(checkpoint.path)}, indent=2, sort_keys=True))
+        print(
+            json.dumps(
+                {**checkpoint.to_manifest(), "payload_path": str(checkpoint.path)},
+                indent=2,
+                sort_keys=True,
+            )
+        )
         return 0
     if args.checkpoint_action == "latest":
         checkpoint = store.latest_valid()
@@ -312,7 +329,13 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
         if args.path_only:
             print(checkpoint.path)
         else:
-            print(json.dumps({**checkpoint.to_manifest(), "payload_path": str(checkpoint.path)}, indent=2, sort_keys=True))
+            print(
+                json.dumps(
+                    {**checkpoint.to_manifest(), "payload_path": str(checkpoint.path)},
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
         return 0
     if args.checkpoint_action == "list":
         rows = [
@@ -322,7 +345,11 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
         print(json.dumps(rows, indent=2, sort_keys=True))
         return 0
     if args.checkpoint_action == "cleanup":
-        print(json.dumps({"removed": store.cleanup(keep=args.keep)}, indent=2, sort_keys=True))
+        print(
+            json.dumps(
+                {"removed": store.cleanup(keep=args.keep)}, indent=2, sort_keys=True
+            )
+        )
         return 0
     if args.checkpoint_action == "completed":
         payload = CompletionJournal(store).get(args.key)
@@ -380,7 +407,10 @@ def main() -> int:
     )
     checkpoint_sub = checkpoint.add_subparsers(dest="checkpoint_action")
     checkpoint_save = checkpoint_sub.add_parser("save")
-    checkpoint_save.add_argument("source")
+    checkpoint_save.add_argument(
+        "source",
+        help="Full resumable trainer state (model, optimizer, and iteration)",
+    )
     checkpoint_save.add_argument("--sequence", type=int, required=True)
     checkpoint_save.add_argument("--cursor", default=None)
     checkpoint_save.add_argument("--idempotency-key", default="")

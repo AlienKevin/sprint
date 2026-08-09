@@ -60,6 +60,7 @@ DEAD_GRACE_SEC = int(
 )
 AGENT_GPU_MIRROR_ROOT = "/run/sprint-gpu-mirror"
 AGENT_GPU_MIRROR_LOG_BYTES = 768 * 1024
+AGENT_GPU_MIRROR_ARTIFACT_BYTES = 32 * 1024 * 1024
 AGENT_GPU_CLI_PATH = "/usr/local/bin/sprint-gpu-train"
 
 
@@ -68,6 +69,8 @@ def mirror_agent_job(
     job: dict[str, Any],
     *,
     log_content: bytes | None = None,
+    artifact_name: str | None = None,
+    artifact_content: bytes | None = None,
 ) -> dict[str, Any]:
     """Push canonical GPU state into the long-lived CPU container.
 
@@ -100,6 +103,14 @@ def mirror_agent_job(
                 )
                 log_content = marker + log_content[-AGENT_GPU_MIRROR_LOG_BYTES:]
             files[f"out/{job_id}/attempt-{attempt}/worker.log"] = log_content
+    if artifact_name and artifact_content is not None:
+        safe_name = Path(artifact_name).name
+        if safe_name != artifact_name:
+            return {
+                "agent_mirror": "error",
+                "agent_mirror_error": "invalid artifact name",
+            }
+        files[f"artifacts/{job_id}/{safe_name}"] = artifact_content
 
     cli_content = (ENV_DIR / "bin" / "sprint-gpu-train").read_bytes()
     cli_sha256 = hashlib.sha256(cli_content).hexdigest()
@@ -167,6 +178,82 @@ os.replace(cli_temporary, cli_target)
         "agent_mirror_log_truncated": log_truncated,
         "agent_cli_sha256": cli_sha256,
     }
+
+
+def fetch_agent_policy_artifact(
+    run: dict[str, Any], job: dict[str, Any]
+) -> tuple[dict[str, Any], str | None, bytes | None, dict[str, Any]]:
+    """Fetch a terminal policy into the trusted CPU-agent mirror.
+
+    GPU and CPU sandboxes mount point-in-time Volume views.  The host therefore
+    copies only the policy explicitly named by the worker's progress record,
+    verifies its scope and size, and exposes it under /run.  The agent receives
+    neither Modal credentials nor a general Volume refresh primitive.
+    """
+    payload = dict(job)
+    progress = payload.get("progress")
+    if not isinstance(progress, dict):
+        return payload, None, None, {"policy_mirror": "not_reported"}
+    raw_path = str(progress.get("policy_path") or "").strip()
+    if not raw_path:
+        return payload, None, None, {"policy_mirror": "not_reported"}
+    policy_path = Path(raw_path)
+    expected = Path("/durable") / "runs" / str(run["run_id"]) / "policies"
+    try:
+        relative = policy_path.relative_to(expected)
+    except ValueError:
+        return payload, None, None, {"policy_mirror": "rejected_scope"}
+    if len(relative.parts) != 1 or policy_path.suffix not in {".pt", ".pth"}:
+        return payload, None, None, {"policy_mirror": "rejected_scope"}
+    remote = str(policy_path.relative_to("/durable"))
+    with tempfile.TemporaryDirectory() as raw:
+        destination = Path(raw) / policy_path.name
+        result = sprintctl.run_command(
+            sprintctl.modal_command(
+                "volume",
+                "get",
+                "--force",
+                str(run["volume_name"]),
+                remote,
+                str(destination),
+            ),
+            run=run,
+            check=False,
+            timeout=120,
+        )
+        if result.returncode != 0 or not destination.is_file():
+            return payload, None, None, {"policy_mirror": "fetch_retry"}
+        size = destination.stat().st_size
+        if size <= 0 or size > AGENT_GPU_MIRROR_ARTIFACT_BYTES:
+            return (
+                payload,
+                None,
+                None,
+                {
+                    "policy_mirror": "rejected_size",
+                    "policy_size_bytes": size,
+                },
+            )
+        content = destination.read_bytes()
+    mirror_path = (
+        f"{AGENT_GPU_MIRROR_ROOT}/artifacts/{job['job_id']}/{policy_path.name}"
+    )
+    payload.update(
+        {
+            "agent_policy_mirror_path": mirror_path,
+            "agent_policy_sha256": hashlib.sha256(content).hexdigest(),
+            "agent_policy_size_bytes": len(content),
+        }
+    )
+    return (
+        payload,
+        policy_path.name,
+        content,
+        {
+            "policy_mirror": "fetched",
+            "policy_size_bytes": len(content),
+        },
+    )
 
 
 def jobs_prefix(run_id: str) -> str:
@@ -583,12 +670,20 @@ def audit_archived_provider_logs(
     _stdout, separator, stderr = text.partition("== Modal stderr ==\n")
     terminal_error = provider_terminal_error(stderr if separator else text)
     payload = apply_provider_terminal_error(job, terminal_error)
+    payload, artifact_name, artifact_content, policy_detail = (
+        fetch_agent_policy_artifact(run, payload)
+    )
     mirror_detail = mirror_agent_job(
-        run, payload, log_content=text.encode("utf-8", errors="replace")
+        run,
+        payload,
+        log_content=text.encode("utf-8", errors="replace"),
+        artifact_name=artifact_name,
+        artifact_content=artifact_content,
     )
     return payload, {
         "provider_logs": "audited",
         "provider_terminal_error": terminal_error,
+        **policy_detail,
         **mirror_detail,
     }
 
@@ -663,11 +758,21 @@ def archive_provider_logs(
     )
     terminal_error = provider_terminal_error(stderr)
     payload = apply_provider_terminal_error(payload, terminal_error)
-    mirror_detail = mirror_agent_job(run, payload, log_content=encoded)
+    payload, artifact_name, artifact_content, policy_detail = (
+        fetch_agent_policy_artifact(run, payload)
+    )
+    mirror_detail = mirror_agent_job(
+        run,
+        payload,
+        log_content=encoded,
+        artifact_name=artifact_name,
+        artifact_content=artifact_content,
+    )
     return payload, {
         "provider_logs": "archived",
         "provider_logs_size_bytes": len(encoded),
         "provider_terminal_error": terminal_error,
+        **policy_detail,
         **mirror_detail,
     }
 
@@ -1247,6 +1352,18 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
             )
 
         pending = _candidate_job_ids(run, now=now)
+        # A preempted logical job owns this run's single training slot through
+        # its short retry backoff.  Otherwise a newly submitted job can jump
+        # ahead during that window and turn transparent recovery into an
+        # unbounded wait behind unrelated work from the same agent.
+        retry_reservations: list[str] = []
+        for job_id in list_job_ids(run):
+            job = load_job(run, job_id)
+            if job and str(job.get("status") or "") == "retry_wait":
+                retry_reservations.append(job_id)
+        if retry_reservations:
+            reserved = set(retry_reservations)
+            pending = [job_id for job_id in pending if job_id in reserved]
         active = active_training_job_ids(run)
         for job_id in pending:
             if len(active) >= MAX_ACTIVE_TRAINING_JOBS_PER_RUN:
@@ -1379,6 +1496,8 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
     }
     if active and not actions:
         result["reason"] = "training_concurrency_limit"
+    elif retry_reservations and not pending and not actions:
+        result["reason"] = "retry_backoff_reserved"
     sprintctl.atomic_write_json(state_dir / "gpu-dispatch.json", result, mode=0o600)
     return result
 

@@ -43,7 +43,16 @@ One training job is active per run; additional jobs queue. Workers may be
 preempted and replaced. Write checkpoints under `$SPRINT_GPU_CHECKPOINT_DIR`
 and inspect `$SPRINT_GPU_RESUME` and `$SPRINT_GPU_RESUME_CHECKPOINT` on startup.
 For atomic publication, use `sprint-gpu-train checkpoint save` or the
-`CheckpointStore` in `/opt/sprint_resilience.py`.
+`CheckpointStore` in `/opt/sprint_resilience.py`. A recovery checkpoint must be
+full trainer state: model, optimizer, scheduler or scaler state when used, and
+the completed iteration/cursor. Do not commit an exported TorchScript policy as
+a recovery checkpoint; policies are inference/submission artifacts and cannot
+resume optimization. A replacement attempt with `--resume-arg` fails closed if
+no valid trainer-state checkpoint exists, so it never silently restarts work.
+When a job finishes, the host mirrors the policy named by `progress.json` into
+the CPU sandbox and reports its fresh path as `agent_policy_mirror_path` in
+`sprint-gpu-train status`; submit that path even if the long-lived `/durable`
+mount has not refreshed yet.
 
 The sandbox has no general internet or cloud credentials. PyTorch, Isaac Lab,
 and required assets are preinstalled. The trusted worker redirects stock Isaac
