@@ -57,6 +57,7 @@ DEAD_GRACE_SEC = int(
 )
 AGENT_GPU_MIRROR_ROOT = "/run/sprint-gpu-mirror"
 AGENT_GPU_MIRROR_LOG_BYTES = 768 * 1024
+AGENT_GPU_CLI_PATH = "/usr/local/bin/sprint-gpu-train"
 
 
 def mirror_agent_job(
@@ -97,17 +98,21 @@ def mirror_agent_job(
                 log_content = marker + log_content[-AGENT_GPU_MIRROR_LOG_BYTES:]
             files[f"out/{job_id}/attempt-{attempt}/worker.log"] = log_content
 
+    cli_content = (ENV_DIR / "bin" / "sprint-gpu-train").read_bytes()
+    cli_sha256 = hashlib.sha256(cli_content).hexdigest()
     envelope = {
         "files": {
             relative: base64.b64encode(content).decode("ascii")
             for relative, content in files.items()
-        }
+        },
+        "agent_cli": base64.b64encode(cli_content).decode("ascii"),
+        "agent_cli_sha256": cli_sha256,
     }
     encoded = base64.b64encode(
         gzip.compress(json.dumps(envelope, separators=(",", ":")).encode())
     ).decode("ascii")
     install = """
-import base64, gzip, json, os, pathlib, sys
+import base64, gzip, hashlib, json, os, pathlib, sys
 root = pathlib.Path(sys.argv[1]).resolve()
 payload = json.loads(gzip.decompress(base64.b64decode(sys.argv[2])))
 for relative, content in payload["files"].items():
@@ -119,6 +124,14 @@ for relative, content in payload["files"].items():
     temporary.write_bytes(base64.b64decode(content))
     os.chmod(temporary, 0o600)
     os.replace(temporary, target)
+cli = base64.b64decode(payload["agent_cli"])
+if hashlib.sha256(cli).hexdigest() != payload["agent_cli_sha256"]:
+    raise SystemExit("agent CLI checksum mismatch")
+cli_target = pathlib.Path(sys.argv[3])
+cli_temporary = cli_target.with_name(f".{cli_target.name}.{os.getpid()}.tmp")
+cli_temporary.write_bytes(cli)
+os.chmod(cli_temporary, 0o755)
+os.replace(cli_temporary, cli_target)
 """.strip()
     try:
         result = sprintctl.exec_container(
@@ -131,6 +144,7 @@ for relative, content in payload["files"].items():
                     shlex.quote(install),
                     shlex.quote(AGENT_GPU_MIRROR_ROOT),
                     shlex.quote(encoded),
+                    shlex.quote(AGENT_GPU_CLI_PATH),
                 ]
             ),
             check=False,
@@ -148,6 +162,7 @@ for relative, content in payload["files"].items():
         "agent_mirror": "updated",
         "agent_mirror_files": len(files),
         "agent_mirror_log_truncated": log_truncated,
+        "agent_cli_sha256": cli_sha256,
     }
 
 

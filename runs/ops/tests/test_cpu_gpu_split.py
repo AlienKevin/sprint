@@ -274,9 +274,14 @@ class ClaimSelectionTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             mirror = Path(tmp) / "mirror"
+            cli_path = Path(tmp) / "bin" / "sprint-gpu-train"
+            cli_path.parent.mkdir()
             with (
                 mock.patch.object(
                     gpu_worker, "AGENT_GPU_MIRROR_ROOT", str(mirror)
+                ),
+                mock.patch.object(
+                    gpu_worker, "AGENT_GPU_CLI_PATH", str(cli_path)
                 ),
                 mock.patch.object(
                     gpu_worker.sprintctl,
@@ -292,6 +297,10 @@ class ClaimSelectionTests(unittest.TestCase):
 
             self.assertEqual(detail["agent_mirror"], "updated")
             self.assertEqual(detail["agent_mirror_files"], 2)
+            self.assertEqual(
+                hashlib.sha256(cli_path.read_bytes()).hexdigest(),
+                detail["agent_cli_sha256"],
+            )
             self.assertEqual(
                 json.loads((mirror / "status" / "job-1.json").read_text()),
                 job,
