@@ -336,7 +336,16 @@ def gpu_activity_stalled(
                 rows.append(row)
     except (OSError, ValueError, json.JSONDecodeError):
         return False
-    rows = [row for row in rows if row.get("nvidia_smi_ok") is True]
+    # A job may train successfully and then hang in a later framework call.
+    # Judge the most recent grace-sized window rather than letting one old
+    # burst of GPU work exempt the process forever.
+    recent_cutoff = max(started_epoch_s, now - grace_seconds)
+    rows = [
+        row
+        for row in rows
+        if row.get("nvidia_smi_ok") is True
+        and float(row.get("epoch_s") or 0) >= recent_cutoff
+    ]
     if len(rows) < minimum_samples:
         return False
     utilization: list[float] = []

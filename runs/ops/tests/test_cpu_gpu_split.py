@@ -406,11 +406,20 @@ class ClaimSelectionTests(unittest.TestCase):
         self.assertEqual(audited["failure_reason"], "worker_reported_error")
         self.assertEqual(audited["worker_reported_status"], "succeeded")
 
-    def test_recoverable_isaac_gpu_warning_does_not_override_success(self) -> None:
+    def test_recoverable_isaac_gpu_warning_requires_later_scene_start(self) -> None:
         self.assertIsNone(
             gpu_worker.provider_terminal_error(
-                "[Error] [gpu.foundation.plugin] No device could be created"
+                "[Error] [gpu.foundation.plugin] No device could be created\n"
+                "[INFO]: Time taken for scene creation : 0.42 seconds\n"
+                "[INFO]: Starting the simulation. This may take a few seconds."
             )
+        )
+        self.assertEqual(
+            gpu_worker.provider_terminal_error(
+                "[Error] [gpu.foundation.plugin] No device could be created\n"
+                "[Error] [gpu.foundation.plugin] Invalid getDeviceInfo parameters."
+            ),
+            "Isaac GPU startup ended before scene creation",
         )
 
     def test_physx_software_fallback_overrides_false_zero_exit(self) -> None:

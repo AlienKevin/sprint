@@ -903,6 +903,17 @@ def provider_terminal_error(stream_text: str) -> str | None:
             "unhandled Python exception",
         )
         return final[-1000:]
+    # Modal's gVisor sandboxes do not expose Vulkan, so a
+    # ``gpu.foundation.plugin`` diagnostic is expected even when headless CUDA
+    # physics subsequently starts.  Kit can also stop at that exact point and
+    # still return zero, however.  Only classify the diagnostic as terminal
+    # when the provider stream contains no later Isaac scene/simulation marker.
+    if (
+        "[gpu.foundation.plugin] No device could be created" in stream_text
+        and "[INFO]: Starting the simulation" not in stream_text
+        and "[INFO]: Time taken for scene creation" not in stream_text
+    ):
+        return "Isaac GPU startup ended before scene creation"
     for marker in (
         "Failed to resolve extension dependencies",
         "Failed to startup python app",
@@ -959,8 +970,7 @@ def audit_archived_provider_logs(
     text = sprintctl.volume_get_text(run, path)
     if text is None:
         return job, {"provider_logs": "audit_retry", "provider_logs_path": path}
-    _stdout, separator, stderr = text.partition("== Modal stderr ==\n")
-    terminal_error = provider_terminal_error(stderr if separator else text)
+    terminal_error = provider_terminal_error(text)
     payload = apply_provider_terminal_error(job, terminal_error)
     payload, artifact_name, artifact_content, policy_detail = (
         fetch_agent_policy_artifact(run, payload)
@@ -1048,7 +1058,7 @@ def archive_provider_logs(
             "provider_logs_source": "modal-sandbox-streams",
         }
     )
-    terminal_error = provider_terminal_error(stderr)
+    terminal_error = provider_terminal_error(content)
     payload = apply_provider_terminal_error(payload, terminal_error)
     payload, artifact_name, artifact_content, policy_detail = (
         fetch_agent_policy_artifact(run, payload)

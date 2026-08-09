@@ -277,6 +277,32 @@ class WorkerAttemptGuardTests(unittest.TestCase):
                 )
             )
 
+    def test_gpu_activity_watchdog_does_not_accept_stale_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            samples = Path(raw) / "samples.jsonl"
+            rows = []
+            for index in range(72):
+                rows.append(
+                    json.dumps(
+                        {
+                            "epoch_s": 100 + index * 5,
+                            "nvidia_smi_ok": True,
+                            "gpus": [
+                                {
+                                    "util_gpu_pct": 35 if index == 7 else 0,
+                                    "mem_used_mib": 1024,
+                                }
+                            ],
+                        }
+                    )
+                )
+            samples.write_text("\n".join(rows) + "\n")
+            self.assertTrue(
+                worker_run.gpu_activity_stalled(
+                    samples, started_epoch_s=100, now_epoch_s=500
+                )
+            )
+
 
 class ReplayAndResumeTests(unittest.TestCase):
     def test_completion_journal_skips_replayed_work(self) -> None:
