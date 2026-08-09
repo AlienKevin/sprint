@@ -39,7 +39,10 @@ DEFAULT_FAMILIES = ("deepseek", "luna")
 REASONING_EFFORT = "max"
 RUN_HOURS: float | None = None
 POLL_SECONDS = 30
-SHARED_VERIFIER_STALL_SECONDS = 15 * 60
+# The task permits 15 minutes for one sealed verification. Leave five minutes
+# for sandbox startup, result archival, and scheduler release before declaring
+# the shared slot stuck; otherwise a legitimate timeout can race the watchdog.
+SHARED_VERIFIER_STALL_SECONDS = 20 * 60
 SHARED_VERIFIER_EVENTS = SCRIPT_DIR / "blind-verifier" / "scheduler-events.jsonl"
 # The production Vercel team is on Hobby. A 20-minute rolling publication
 # cadence caps publication at 72 deployments per day, leaving headroom

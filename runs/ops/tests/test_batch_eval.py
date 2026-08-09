@@ -384,7 +384,7 @@ def test_shared_verifier_stall_alert_requires_pending_work_and_old_progress(
     events.write_text(
         json.dumps(
             {
-                "at": "2026-08-08T12:04:59Z",
+                "at": "2026-08-08T11:59:59Z",
                 "event": "acquired",
                 "queue_key": "eval-luna-1",
             }
@@ -400,7 +400,7 @@ def test_shared_verifier_stall_alert_requires_pending_work_and_old_progress(
     events.write_text(
         json.dumps(
             {
-                "at": "2026-08-08T12:05:01Z",
+                "at": "2026-08-08T12:00:01Z",
                 "event": "released",
                 "queue_key": "eval-luna-1",
             }
@@ -453,7 +453,7 @@ def test_fresh_pending_submission_outranks_old_scheduler_history(
     ledger.write_text(
         json.dumps(
             {
-                "submitted_at": "2026-08-08T12:00:00Z",
+                "submitted_at": "2026-08-08T11:59:59Z",
                 "finished_at": None,
                 "error": None,
             }
@@ -463,7 +463,7 @@ def test_fresh_pending_submission_outranks_old_scheduler_history(
     )
     alerts = batch_eval.shared_verifier_stall_alerts(payload, now=now)
     assert len(alerts) == 1
-    assert alerts[0]["last_progress_at"] == "2026-08-08T12:00:00+00:00"
+    assert alerts[0]["last_progress_at"] == "2026-08-08T11:59:59+00:00"
 
 
 def test_dq_replay_is_queued_and_public_index_is_path_safe(tmp_path: Path) -> None:
