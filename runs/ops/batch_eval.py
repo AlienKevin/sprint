@@ -447,6 +447,7 @@ def preflight(
         "checks": checks,
         "provider_probes": provider_probes,
         "provider_errors": provider_errors,
+        "training_gpu_fleet_probe": fleet_probe,
         "ready": ready,
     }
 

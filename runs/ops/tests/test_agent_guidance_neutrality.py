@@ -15,7 +15,10 @@ GUIDANCE = (
     TASK / "environment/train/README.md",
     TASK / "environment/train/robot.py",
     TASK / "environment/train/spec.py",
+    TASK / "environment/bin/sprint-submit",
+    TASK / "environment/bin/sprint-board",
     TASK / "environment/bin/sprint-check",
+    TASK / "environment/bin/sprint-gpu-train",
     ROOT / "runs/codex-goal.j2",
     ROOT / "runs/codex-goal-slash.j2",
 )

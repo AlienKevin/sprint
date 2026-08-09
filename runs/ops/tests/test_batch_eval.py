@@ -163,6 +163,69 @@ def test_functional_gpu_canary_must_match_both_warmed_images(
     assert not batch_eval.functional_gpu_canary_ready()
 
 
+def test_training_gpu_fleet_probe_requires_every_exact_worker_and_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    warmup = tmp_path / "warmup.json"
+    warmup.write_text(
+        json.dumps(
+            {
+                "completed": True,
+                "contexts": {"agent_training": {"image_id": "im-exact"}},
+            }
+        )
+    )
+    monkeypatch.setattr(batch_eval, "WARMUP_MANIFEST", warmup)
+    monkeypatch.setattr(
+        batch_eval.tempfile,
+        "TemporaryDirectory",
+        lambda **_kwargs: contextlib.nullcontext(str(tmp_path)),
+    )
+
+    def successful_run(command, **_kwargs):
+        report = Path(command[command.index("--report") + 1])
+        worker_ids = [
+            command[index + 1]
+            for index, value in enumerate(command)
+            if value == "--worker-id"
+        ]
+        report.write_text(
+            json.dumps(
+                {
+                    "completed": True,
+                    "image_id": "im-exact",
+                    "worker_ids": worker_ids,
+                    "workers": [
+                        {"worker_id": worker_id, "ready": True}
+                        for worker_id in worker_ids
+                    ],
+                }
+            )
+        )
+        return subprocess.CompletedProcess(command, 0, stdout="ok")
+
+    monkeypatch.setattr(batch_eval.subprocess, "run", successful_run)
+    ready, report = batch_eval.training_gpu_fleet_probe(
+        batch_id="eval", modal_profile="test", worker_ids=["eval-1", "eval-2"]
+    )
+    assert ready
+    assert [row["worker_id"] for row in report["workers"]] == ["eval-1", "eval-2"]
+
+    def incomplete_run(command, **kwargs):
+        result = successful_run(command, **kwargs)
+        report = Path(command[command.index("--report") + 1])
+        payload = json.loads(report.read_text())
+        payload["workers"].pop()
+        report.write_text(json.dumps(payload))
+        return result
+
+    monkeypatch.setattr(batch_eval.subprocess, "run", incomplete_run)
+    ready, _ = batch_eval.training_gpu_fleet_probe(
+        batch_id="eval", modal_profile="test", worker_ids=["eval-1", "eval-2"]
+    )
+    assert not ready
+
+
 def test_provider_inference_probe_records_usage_without_secret(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -912,11 +975,13 @@ def test_partial_batch_launch_is_safely_rolled_back(
     ]
     monkeypatch.setattr(batch_eval, "BATCH_ROOT", tmp_path / "batches")
     monkeypatch.setattr(batch_eval, "matrix", lambda _batch_id, **_kwargs: arms)
-    monkeypatch.setattr(
-        batch_eval,
-        "preflight",
-        lambda **_kwargs: {"ready": True, "checks": {}},
-    )
+    preflight_calls: list[dict[str, object]] = []
+
+    def fake_preflight(**kwargs):
+        preflight_calls.append(kwargs)
+        return {"ready": True, "checks": {}}
+
+    monkeypatch.setattr(batch_eval, "preflight", fake_preflight)
     monkeypatch.setattr(batch_eval, "load_env", lambda _path: {})
     monkeypatch.setattr(batch_eval.time, "sleep", lambda _seconds: None)
     calls = 0
@@ -941,6 +1006,7 @@ def test_partial_batch_launch_is_safely_rolled_back(
     assert state["status"] == "launch_error"
     assert state["arms"][0]["status"] == "stopping_after_launch_rollback"
     assert stopped == [("eval-luna-1", "partial_batch_launch_rollback")]
+    assert preflight_calls[0]["probe_training_fleet"] is True
 
 
 def test_deployment_marker_is_durable_idempotent_and_gates_finalization(

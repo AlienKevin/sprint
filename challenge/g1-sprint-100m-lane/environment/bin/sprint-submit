@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Submit a policy for asynchronous scoring. Returns immediately.
 
-    sprint-submit mypolicy.pt --note "wider hips, 3k iters"
+    sprint-submit mypolicy.pt --note "candidate-a"
 
 Prints a request id and exits. Scoring runs on the real course in a sealed
 container. Use sprint-board to see whether the trusted host accepted the
