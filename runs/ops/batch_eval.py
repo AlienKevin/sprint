@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -113,6 +114,62 @@ def functional_gpu_canary_ready() -> bool:
         and canary.get("verifier_image_id")
         == contexts.get("verifier", {}).get("image_id")
     )
+
+
+def training_gpu_fleet_probe(
+    *, batch_id: str, modal_profile: str, worker_ids: list[str]
+) -> tuple[bool, dict[str, Any]]:
+    """Require one concurrent AppLauncher success per planned trial lane."""
+    if not worker_ids or len(set(worker_ids)) != len(worker_ids):
+        return False, {"error": "worker IDs must be non-empty and unique"}
+    with tempfile.TemporaryDirectory(prefix="sprint-fleet-probe-") as temporary:
+        report_path = Path(temporary) / "report.json"
+        command = [
+            str(HARBOR_PYTHON),
+            str(SCRIPT_DIR / "training_gpu_fleet_probe.py"),
+            "--report",
+            str(report_path),
+            "--batch-id",
+            batch_id,
+        ]
+        for worker_id in worker_ids:
+            command.extend(("--worker-id", worker_id))
+        env = dict(os.environ)
+        env["MODAL_PROFILE"] = modal_profile
+        completed = subprocess.run(
+            command,
+            cwd=ROOT,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        try:
+            report = json.loads(report_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            report = {
+                "error": "fleet probe did not write a valid report",
+                "controller_output_tail": completed.stdout[-4000:],
+            }
+        expected_image_id = None
+        try:
+            expected_image_id = json.loads(WARMUP_MANIFEST.read_text())["contexts"][
+                "agent_training"
+            ]["image_id"]
+        except (OSError, json.JSONDecodeError, KeyError, TypeError):
+            pass
+        ready = bool(
+            completed.returncode == 0
+            and report.get("completed") is True
+            and report.get("worker_ids") == worker_ids
+            and len(report.get("workers", [])) == len(worker_ids)
+            and all(row.get("ready") is True for row in report.get("workers", []))
+            and report.get("image_id") == expected_image_id
+        )
+        if not ready and "controller_output_tail" not in report:
+            report["controller_output_tail"] = completed.stdout[-4000:]
+        return ready, report
 
 
 def matrix(
@@ -306,6 +363,7 @@ def preflight(
     check_providers: bool = True,
     families: tuple[str, ...] = DEFAULT_FAMILIES,
     trials_per_model: int = TRIALS_PER_MODEL,
+    probe_training_fleet: bool = False,
 ) -> dict[str, Any]:
     checks: dict[str, Any] = {}
     provider_probes: dict[str, Any] = {}
@@ -433,6 +491,13 @@ def preflight(
     checks["fresh_run_ids"] = not any(
         (SCRIPT_DIR / arm["run_id"]).exists() for arm in planned
     )
+    fleet_probe: dict[str, Any] | None = None
+    if probe_training_fleet:
+        checks["training_gpu_fleet"], fleet_probe = training_gpu_fleet_probe(
+            batch_id=batch_id,
+            modal_profile=modal_profile,
+            worker_ids=[arm["run_id"] for arm in planned],
+        )
     if require_fresh:
         checks["fresh_batch_id"] = not batch_path(batch_id).exists()
     ready = all(bool(value) for value in checks.values())
@@ -512,6 +577,7 @@ def launch(
         modal_profile=modal_profile,
         families=families,
         trials_per_model=trials_per_model,
+        probe_training_fleet=True,
     )
     if not report["ready"]:
         failed = [name for name, passed in report["checks"].items() if not passed]
@@ -1179,6 +1245,7 @@ def main() -> int:
             modal_profile=args.modal_profile,
             families=tuple(args.families),
             trials_per_model=args.trials_per_model,
+            probe_training_fleet=True,
         )
     elif args.command == "launch":
         if not args.confirm:
