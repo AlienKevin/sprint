@@ -33,7 +33,9 @@ ACTIVATIONS = {
 class _Normalized(nn.Module):
     """An actor with RSL-RL's empirical observation normalisation in front."""
 
-    def __init__(self, actor: nn.Module, mean: torch.Tensor, var: torch.Tensor, eps: float = 1e-8):
+    def __init__(
+        self, actor: nn.Module, mean: torch.Tensor, var: torch.Tensor, eps: float = 1e-8
+    ):
         super().__init__()
         self.actor = actor
         self.register_buffer("mean", mean)
@@ -61,7 +63,9 @@ def _build_mlp(state: dict[str, torch.Tensor], activation: str) -> nn.Module:
     return model
 
 
-def load_policy(path: str, obs_dim: int, act_dim: int, device: str, activation: str = "elu"):
+def load_policy(
+    path: str, obs_dim: int, act_dim: int, device: str, activation: str = "elu"
+):
     """Return a callable ``obs -> action`` on ``device``.
 
     Raises if the checkpoint's input or output width does not match the
@@ -78,17 +82,20 @@ def load_policy(path: str, obs_dim: int, act_dim: int, device: str, activation: 
         return lambda obs: zeros.expand(obs.shape[0], act_dim)
 
     try:
-        module = torch.jit.load(path, map_location=device)
+        # The shipped ABI checker is CPU based. Traced graphs can bake CPU
+        # tensor constructors into the graph, so keep TorchScript inference on
+        # CPU and transfer only the small observation/action batches.
+        module = torch.jit.load(path, map_location="cpu")
         module.eval()
-        _assert_shapes(module, obs_dim, act_dim, device, path)
-        return lambda obs: module(obs)
+        _assert_shapes(module, obs_dim, act_dim, "cpu", path)
+        return lambda obs: module(obs.to("cpu")).to(obs.device)
     except (RuntimeError, ValueError):
         pass  # not TorchScript, so fall through to the state-dict path
 
     blob = torch.load(path, map_location=device, weights_only=False)
     state = blob.get("model_state_dict", blob) if isinstance(blob, dict) else blob
 
-    actor = {k[len("actor."):]: v for k, v in state.items() if k.startswith("actor.")}
+    actor = {k[len("actor.") :]: v for k, v in state.items() if k.startswith("actor.")}
     if not actor:
         actor = {k: v for k, v in state.items() if k[0].isdigit()}
     if not actor:
@@ -96,8 +103,12 @@ def load_policy(path: str, obs_dim: int, act_dim: int, device: str, activation: 
 
     model: nn.Module = _build_mlp(actor, activation)
 
-    norm_mean = state.get("actor_obs_normalizer.running_mean", state.get("obs_normalizer.running_mean"))
-    norm_var = state.get("actor_obs_normalizer.running_var", state.get("obs_normalizer.running_var"))
+    norm_mean = state.get(
+        "actor_obs_normalizer.running_mean", state.get("obs_normalizer.running_mean")
+    )
+    norm_var = state.get(
+        "actor_obs_normalizer.running_var", state.get("obs_normalizer.running_var")
+    )
     if norm_mean is not None and norm_var is not None:
         model = _Normalized(model, norm_mean, norm_var)
 
