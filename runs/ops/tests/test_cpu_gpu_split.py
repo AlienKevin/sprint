@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import sys
 import tempfile
@@ -101,6 +102,65 @@ class ClaimSelectionTests(unittest.TestCase):
     def test_does_not_rewrite_other_isaaclab_actions(self) -> None:
         job = {"command": ["/opt/IsaacLab/isaaclab.sh", "-s"]}
         self.assertIs(gpu_worker.normalize_job_command(job), job)
+
+    def test_archives_terminal_modal_streams_to_agent_visible_log(self) -> None:
+        uploaded: dict[str, object] = {}
+
+        def upload(_run: dict, source: Path, remote: str) -> None:
+            uploaded["remote"] = remote
+            uploaded["content"] = source.read_bytes()
+
+        job = {
+            "run_id": "run-1",
+            "job_id": "job-1",
+            "attempt": 2,
+            "status": "failed",
+            "sandbox_id": "sb-1",
+        }
+        with mock.patch.object(gpu_worker.sprintctl, "volume_upload", side_effect=upload):
+            archived, detail = gpu_worker.archive_provider_logs(
+                {"run_id": "run-1"},
+                job,
+                read_output=lambda _sandbox_id: ("stdout line\n", "stderr line\n"),
+            )
+
+        expected = (
+            b"== Modal stdout ==\nstdout line\n"
+            b"== Modal stderr ==\nstderr line\n"
+        )
+        self.assertEqual(
+            uploaded["remote"],
+            "runs/run-1/gpu-jobs/out/job-1/attempt-2/worker.log",
+        )
+        self.assertEqual(uploaded["content"], expected)
+        self.assertEqual(detail["provider_logs"], "archived")
+        self.assertEqual(archived["provider_logs_size_bytes"], len(expected))
+        self.assertEqual(
+            archived["provider_logs_sha256"], hashlib.sha256(expected).hexdigest()
+        )
+
+    def test_provider_log_archive_failure_is_retryable(self) -> None:
+        job = {
+            "run_id": "run-1",
+            "job_id": "job-1",
+            "attempt": 1,
+            "status": "failed",
+            "sandbox_id": "sb-1",
+        }
+
+        def fail(_sandbox_id: str) -> tuple[str, str]:
+            raise RuntimeError("not readable yet")
+
+        archived, detail = gpu_worker.archive_provider_logs(
+            {"run_id": "run-1"}, job, read_output=fail
+        )
+        self.assertNotIn("provider_logs_archived_at", archived)
+        self.assertEqual(detail["provider_logs"], "error")
+        self.assertIn("not readable yet", archived["provider_logs_archive_error"])
+        self.assertEqual(archived["provider_logs_archive_attempts"], 1)
+        self.assertGreater(
+            archived["provider_logs_archive_retry_after_epoch_s"], time.time()
+        )
 
 
 class LeaseLivenessTests(unittest.TestCase):

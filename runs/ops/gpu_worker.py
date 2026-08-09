@@ -8,6 +8,7 @@ CPU (gpus=0) so GPU preemption cannot kill the harness.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shlex
@@ -396,6 +397,92 @@ class ModalSandboxProvider:
         return None
 
 
+def read_modal_sandbox_output(sandbox_id: str) -> tuple[str, str]:
+    """Read complete stdout/stderr after a Modal Sandbox has exited."""
+    import modal
+
+    sandbox = modal.Sandbox.from_id(sandbox_id)
+    if sandbox.poll() is None:
+        raise RuntimeError(f"sandbox {sandbox_id} is still running")
+    return str(sandbox.stdout.read() or ""), str(sandbox.stderr.read() or "")
+
+
+def archive_provider_logs(
+    run: dict[str, Any],
+    job: dict[str, Any],
+    *,
+    read_output=read_modal_sandbox_output,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Copy terminal provider streams into the agent-visible durable log.
+
+    Older worker images tee Python wrapper messages but child processes inherit
+    the container file descriptors directly.  Modal therefore retains their
+    output while ``sprint-gpu-train logs`` sees only the wrapper.  This host-side
+    fallback archives both streams after exit and also preserves them for the
+    final artifact bundle.  Newer images may tee the child directly; replacing
+    the log with the complete provider streams is idempotent in either case.
+    """
+    if job.get("provider_logs_archived_at"):
+        return job, {"provider_logs": "already_archived"}
+    sandbox_id = str(job.get("sandbox_id") or job.get("last_sandbox_id") or "")
+    attempt = int(job.get("attempt") or 0)
+    job_id = str(job.get("job_id") or "")
+    if not sandbox_id or attempt <= 0 or not job_id:
+        return job, {"provider_logs": "unavailable"}
+    try:
+        stdout, stderr = read_output(sandbox_id)
+        content = (
+            "== Modal stdout ==\n"
+            + stdout
+            + ("\n" if stdout and not stdout.endswith("\n") else "")
+            + "== Modal stderr ==\n"
+            + stderr
+            + ("\n" if stderr and not stderr.endswith("\n") else "")
+        )
+        encoded = content.encode("utf-8", errors="replace")
+        with tempfile.NamedTemporaryFile(
+            "wb", suffix=".log", delete=False
+        ) as handle:
+            handle.write(encoded)
+            tmp = Path(handle.name)
+        try:
+            remote_path = (
+                f"{jobs_prefix(str(run['run_id']))}/out/{job_id}/"
+                f"attempt-{attempt}/worker.log"
+            )
+            sprintctl.volume_upload(run, tmp, remote_path)
+        finally:
+            tmp.unlink(missing_ok=True)
+    except Exception as exc:  # noqa: BLE001
+        payload = dict(job)
+        attempts = int(payload.get("provider_logs_archive_attempts") or 0) + 1
+        payload["provider_logs_archive_error"] = f"{type(exc).__name__}: {exc}"
+        payload["provider_logs_archive_attempts"] = attempts
+        payload["provider_logs_archive_retry_after_epoch_s"] = time.time() + min(
+            15 * 60, 30 * (2 ** min(attempts - 1, 5))
+        )
+        return payload, {
+            "provider_logs": "error",
+            "provider_logs_error": payload["provider_logs_archive_error"],
+        }
+    payload = dict(job)
+    payload.pop("provider_logs_archive_error", None)
+    payload.pop("provider_logs_archive_retry_after_epoch_s", None)
+    payload.update(
+        {
+            "provider_logs_archived_at": utc_now(),
+            "provider_logs_path": remote_path,
+            "provider_logs_sha256": hashlib.sha256(encoded).hexdigest(),
+            "provider_logs_size_bytes": len(encoded),
+            "provider_logs_source": "modal-sandbox-streams",
+        }
+    )
+    return payload, {
+        "provider_logs": "archived",
+        "provider_logs_size_bytes": len(encoded),
+    }
+
+
 def persist_job(run: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]:
     """Write canonical status/ and mirror into queue/."""
     prefix = jobs_prefix(str(run["run_id"]))
@@ -654,6 +741,7 @@ def reconcile_job(
         terminal["attempt_record"] = attempt_path(
             str(run["run_id"]), str(job["job_id"]), int(job["attempt"])
         )
+        terminal, log_detail = archive_provider_logs(run, terminal)
         persist_job(run, terminal)
         _timeline_event(
             run,
@@ -664,7 +752,11 @@ def reconcile_job(
             event="gpu_released",
             reason=str(terminal.get("status") or "terminal"),
         )
-        return terminal, {"decision": "terminal", "status": terminal["status"]}
+        return terminal, {
+            "decision": "terminal",
+            "status": terminal["status"],
+            **log_detail,
+        }
 
     if owned_record and str(attempt_record.get("status") or "") == "interrupted":
         retried = schedule_retry(
@@ -883,6 +975,7 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
     actions: list[dict[str, Any]] = []
     reconciled: list[dict[str, Any]] = []
     pending: list[str] = []
+    log_backfill: dict[str, Any] | None = None
     with gpu_claim.dispatch_lock(state_dir) as got_lock:
         if not got_lock:
             result = {
@@ -924,7 +1017,23 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
         now = time.time()
         for job_id in list_job_ids(run):
             job = load_job(run, job_id)
-            if not job or str(job.get("status") or "") not in gpu_claim.OWNED:
+            if not job:
+                continue
+            if (
+                str(job.get("status") or "") in gpu_claim.TERMINAL
+                and not job.get("provider_logs_archived_at")
+                and int(job.get("attempt") or 0) > 0
+                and bool(job.get("sandbox_id") or job.get("last_sandbox_id"))
+                and float(job.get("provider_logs_archive_retry_after_epoch_s") or 0)
+                <= now
+            ):
+                # Do not make new training work wait behind a historical log
+                # backlog. Dispatch first, then archive at most one old attempt
+                # per monitor cycle.
+                if log_backfill is None:
+                    log_backfill = job
+                continue
+            if str(job.get("status") or "") not in gpu_claim.OWNED:
                 continue
             updated, detail = reconcile_job(run, job, now=now)
             reconciled.append(
@@ -999,6 +1108,7 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
                     }
                 )
                 break
+
             except Exception as exc:  # noqa: BLE001
                 current = load_job(run, job_id) or claimed
                 error = f"{type(exc).__name__}: {exc}"
@@ -1019,6 +1129,20 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
                     }
                 )
                 break
+
+        if log_backfill is not None:
+            archived, detail = archive_provider_logs(run, log_backfill)
+            if archived != log_backfill:
+                persist_job(run, archived)
+            reconciled.append(
+                {
+                    "job_id": archived.get("job_id"),
+                    "attempt": archived.get("attempt"),
+                    "status": archived.get("status"),
+                    "decision": "terminal_log_backfill",
+                    **detail,
+                }
+            )
 
     result = {
         "run_id": run_id,
