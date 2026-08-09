@@ -597,6 +597,43 @@ def public_batch(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def deployment_debounce_seconds(payload: dict[str, Any]) -> int:
+    """Publish immediately after every lane has reached a terminal state."""
+    return (
+        0
+        if all(
+            arm.get("harbor_alive") is False or arm.get("stop_ack")
+            for arm in payload["arms"]
+        )
+        else LIVE_SITE_DEPLOY_SECONDS
+    )
+
+
+def deployed_batch_current(payload: dict[str, Any]) -> bool:
+    """Check only this batch's public files against the deployed manifest."""
+    deploy_state = payload.get("deploy") or {}
+    manifest = deploy_state.get("last_deployed_public_artifacts")
+    if deploy_state.get("site_status") not in {"deployed", "noop"} or not isinstance(
+        manifest, dict
+    ):
+        return False
+    paths = [WEB / "data" / "batches" / f"{payload['batch_id']}.json"]
+    for arm in payload["arms"]:
+        run_id = arm["run_id"]
+        policy = WEB / "data" / "policies" / f"{run_id}.json"
+        paths.append(
+            policy
+            if policy.is_file()
+            else WEB / "data" / "timelines" / f"{run_id}.json"
+        )
+    return all(
+        path.is_file()
+        and manifest.get(path.relative_to(WEB).as_posix())
+        == frontier_update.sha256_file(path)
+        for path in paths
+    )
+
+
 def _frontier_ready_for_publish(state: dict[str, Any]) -> bool:
     if any(
         item.get("status") in {"queued", "running"}
@@ -612,30 +649,47 @@ def _frontier_ready_for_publish(state: dict[str, Any]) -> bool:
 
 
 def mark_deployed_runs(payload: dict[str, Any]) -> list[dict[str, str]]:
-    """Persist durable per-run proof that its current policy index was deployed."""
+    """Persist durable proof that each run's current public artifact was deployed."""
     alerts: list[dict[str, str]] = []
     deploy_state = payload.get("deploy") or {}
-    current_hash = frontier_update.site_tree_hash(WEB)
-    if (
-        deploy_state.get("site_status") not in {"deployed", "noop"}
-        or deploy_state.get("last_deployed_site_hash") != current_hash
+    deployed_artifacts = deploy_state.get("last_deployed_public_artifacts")
+    if deploy_state.get("site_status") not in {"deployed", "noop"} or not isinstance(
+        deployed_artifacts, dict
     ):
         return alerts
     for arm in payload["arms"]:
         state_dir = SCRIPT_DIR / arm["run_id"]
         frontier_path = state_dir / "frontier-state.json"
         index_path = WEB / "data" / "policies" / f"{arm['run_id']}.json"
+        timeline_path = WEB / "data" / "timelines" / f"{arm['run_id']}.json"
         try:
             frontier = json.loads(frontier_path.read_text())
-            if not index_path.is_file() or not _frontier_ready_for_publish(frontier):
+            if not _frontier_ready_for_publish(frontier):
                 continue
+            public_artifact = index_path if index_path.is_file() else timeline_path
+            if not public_artifact.is_file():
+                continue
+            relative_artifact = public_artifact.relative_to(WEB).as_posix()
+            deployed_hash = deployed_artifacts.get(relative_artifact)
+            if deployed_hash != frontier_update.sha256_file(public_artifact):
+                continue
+            artifact_snapshot = (
+                state_dir / "deployment-provenance" / f"{deployed_hash}.json"
+            )
+            frontier_update.atomic_write_text(
+                artifact_snapshot, public_artifact.read_text(), mode=0o444
+            )
             marker = {
-                "schema_version": 1,
+                "schema_version": 2,
                 "run_id": arm["run_id"],
                 "batch_id": payload["batch_id"],
                 "deployed_at": deploy_state.get("last_deployed_at") or utc_now(),
-                "deployment_site_sha256": current_hash,
-                "policy_index_sha256": frontier_update.sha256_file(index_path),
+                "deployment_site_sha256": deploy_state["last_deployed_site_hash"],
+                "public_artifact_path": relative_artifact,
+                "public_artifact_sha256": deployed_hash,
+                "public_artifact_snapshot_path": str(
+                    artifact_snapshot.relative_to(state_dir)
+                ),
                 "production_alias": "https://g1-sprint.vercel.app",
             }
             local_marker = state_dir / "BATCH_SITE_DEPLOYED.json"
@@ -645,13 +699,28 @@ def mark_deployed_runs(payload: dict[str, Any]) -> list[dict[str, str]]:
                 existing = {}
             if (
                 existing.get("batch_id") == marker["batch_id"]
-                and existing.get("policy_index_sha256") == marker["policy_index_sha256"]
+                and existing.get("public_artifact_path")
+                == marker["public_artifact_path"]
+                and existing.get("public_artifact_sha256")
+                == marker["public_artifact_sha256"]
+                and existing.get("public_artifact_snapshot_path")
+                == marker["public_artifact_snapshot_path"]
+                and artifact_snapshot.is_file()
+                and frontier_update.sha256_file(artifact_snapshot) == deployed_hash
             ):
                 continue
             temp = batch_dir(payload["batch_id"]) / f".{arm['run_id']}-site.json"
             try:
                 atomic_json(temp, marker)
                 _, run = sprintctl.load_run(arm["run_id"])
+                sprintctl.volume_upload(
+                    run,
+                    artifact_snapshot,
+                    (
+                        f"runs/{arm['run_id']}/state/deployment-provenance/"
+                        f"{deployed_hash}.json"
+                    ),
+                )
                 sprintctl.volume_upload(
                     run,
                     temp,
@@ -742,7 +811,10 @@ def monitor_cycle(batch_id: str, *, deploy: bool = True) -> dict[str, Any]:
                 frontier_update.deploy_if_needed(
                     deploy_state,
                     web=WEB,
-                    debounce_seconds=LIVE_SITE_DEPLOY_SECONDS,
+                    # Once every lane is terminal, publication is the only
+                    # remaining external gate. Do not make an empty or
+                    # no-submission lane wait through the live-update cadence.
+                    debounce_seconds=deployment_debounce_seconds(payload),
                 )
             except Exception as exc:
                 deploy_state["site_status"] = "error"
@@ -811,14 +883,7 @@ def monitor_cycle(batch_id: str, *, deploy: bool = True) -> dict[str, Any]:
                         "count_in_tail": "1",
                     }
                 )
-        deployed_current = bool(
-            not deploy
-            or (
-                payload.get("deploy", {}).get("site_status") in {"deployed", "noop"}
-                and payload.get("deploy", {}).get("last_deployed_site_hash")
-                == frontier_update.site_tree_hash(WEB)
-            )
-        )
+        deployed_current = not deploy or deployed_batch_current(payload)
         if all_finalized and not deployed_current:
             payload["status"] = "finalizing_site"
             payload["updated_at"] = utc_now()

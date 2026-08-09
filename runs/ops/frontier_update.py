@@ -385,6 +385,20 @@ def site_tree_hash(web: Path) -> str:
     return digest.hexdigest()
 
 
+def public_artifact_hashes(web: Path) -> dict[str, str]:
+    """Snapshot hashes for the per-run artifacts used as deployment proofs."""
+    paths = [
+        *web.glob("data/batches/*.json"),
+        *web.glob("data/policies/*.json"),
+        *web.glob("data/timelines/*.json"),
+    ]
+    return {
+        path.relative_to(web).as_posix(): sha256_file(path)
+        for path in sorted(paths)
+        if path.is_file()
+    }
+
+
 def initial_state(job: Path, trial: Path, web: Path) -> dict[str, Any]:
     baseline = site_tree_hash(web)
     return {
@@ -977,6 +991,7 @@ def deploy_if_needed(
                 "site_change_first_seen_at": None,
                 "site_status": "noop",
                 "last_site_check_at": utc_now(),
+                "last_deployed_public_artifacts": public_artifact_hashes(web),
             }
         )
         return False, "no site file changes"
@@ -1026,6 +1041,7 @@ def deploy_if_needed(
     state.update(
         {
             "last_deployed_site_hash": current_hash,
+            "last_deployed_public_artifacts": public_artifact_hashes(web),
             "pending_site_hash": None,
             "site_change_first_seen_at": None,
             "site_status": "deployed",

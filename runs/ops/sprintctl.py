@@ -1316,28 +1316,39 @@ def final_policy_frozen_ready(trial: Path) -> bool:
 
 
 def batch_site_deployed_ready(state_dir: Path, run: dict[str, Any]) -> bool:
-    """Require proof that this run's latest public index reached production."""
+    """Require proof that this run's latest public artifact reached production."""
     batch_id = run.get("batch_id")
     if not batch_id:
         return True
     marker_path = state_dir / "BATCH_SITE_DEPLOYED.json"
-    policy_index = (
-        Path(str(run.get("site_dir", WEB_DEFAULT)))
-        / "data"
-        / "policies"
-        / f"{run['run_id']}.json"
-    )
+    allowed = {
+        f"data/policies/{run['run_id']}.json",
+        f"data/timelines/{run['run_id']}.json",
+    }
     try:
         marker = json.loads(marker_path.read_text())
+        relative = marker.get("public_artifact_path")
+        if relative not in allowed:
+            return False
+        snapshot_relative = marker.get("public_artifact_snapshot_path")
+        if not isinstance(snapshot_relative, str) or not snapshot_relative.startswith(
+            "deployment-provenance/"
+        ):
+            return False
+        snapshot = (state_dir / snapshot_relative).resolve()
+        snapshot.relative_to(state_dir.resolve())
+        artifact_hash = marker.get("public_artifact_sha256")
         return bool(
-            marker.get("schema_version") == 1
+            marker.get("schema_version") == 2
             and marker.get("run_id") == run.get("run_id")
             and marker.get("batch_id") == batch_id
             and marker.get("production_alias") == "https://g1-sprint.vercel.app"
-            and policy_index.is_file()
-            and marker.get("policy_index_sha256") == sha256_file(policy_index)
+            and isinstance(artifact_hash, str)
+            and len(artifact_hash) == 64
+            and snapshot.is_file()
+            and artifact_hash == sha256_file(snapshot)
         )
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError, json.JSONDecodeError):
         return False
 
 

@@ -34,6 +34,56 @@ def test_batch_matrix_is_exact_six_arm_max_effort_contract() -> None:
     assert batch_eval.LIVE_SITE_DEPLOY_SECONDS == 20 * 60
 
 
+def test_terminal_batch_bypasses_live_deploy_debounce() -> None:
+    assert (
+        batch_eval.deployment_debounce_seconds(
+            {
+                "arms": [
+                    {"harbor_alive": False},
+                    {"stop_ack": {"acknowledged_at": "now"}},
+                ]
+            }
+        )
+        == 0
+    )
+    assert (
+        batch_eval.deployment_debounce_seconds(
+            {"arms": [{"harbor_alive": False}, {"harbor_alive": True}]}
+        )
+        == batch_eval.LIVE_SITE_DEPLOY_SECONDS
+    )
+
+
+def test_final_site_gate_ignores_unrelated_run_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    web = tmp_path / "web"
+    batch_id = "eval"
+    run_id = "eval-1"
+    batch_file = web / f"data/batches/{batch_id}.json"
+    timeline = web / f"data/timelines/{run_id}.json"
+    unrelated = web / "data/timelines/other.json"
+    for path in (batch_file, timeline, unrelated):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f'{path.name}\n')
+    monkeypatch.setattr(batch_eval, "WEB", web)
+    payload = {
+        "batch_id": batch_id,
+        "arms": [{"run_id": run_id}],
+        "deploy": {
+            "site_status": "deployed",
+            "last_deployed_public_artifacts": frontier_update.public_artifact_hashes(
+                web
+            ),
+        },
+    }
+    assert batch_eval.deployed_batch_current(payload)
+    unrelated.write_text("changed elsewhere\n")
+    assert batch_eval.deployed_batch_current(payload)
+    timeline.write_text("changed in this run\n")
+    assert not batch_eval.deployed_batch_current(payload)
+
+
 def test_batch_matrix_can_launch_three_deepseek_trials_only() -> None:
     rows = batch_eval.matrix("eval-deepseek", families=("deepseek",))
     assert len(rows) == 3
@@ -600,19 +650,25 @@ def test_deployment_marker_is_durable_idempotent_and_gates_finalization(
         lambda _run, _source, destination: uploads.append(destination),
     )
     site_hash = frontier_update.site_tree_hash(web)
+    artifact_hashes = frontier_update.public_artifact_hashes(web)
     payload = {
         "batch_id": "eval",
         "deploy": {
             "site_status": "deployed",
             "last_deployed_site_hash": site_hash,
+            "last_deployed_public_artifacts": artifact_hashes,
             "last_deployed_at": "2026-08-08T00:00:00Z",
         },
         "arms": [{"run_id": run_id}],
     }
     assert batch_eval.mark_deployed_runs(payload) == []
-    assert uploads == [f"runs/{run_id}/state/BATCH_SITE_DEPLOYED.json"]
+    assert uploads == [
+        f"runs/{run_id}/state/deployment-provenance/"
+        f"{frontier_update.sha256_file(policy_index)}.json",
+        f"runs/{run_id}/state/BATCH_SITE_DEPLOYED.json",
+    ]
     assert batch_eval.mark_deployed_runs(payload) == []
-    assert len(uploads) == 1
+    assert len(uploads) == 2
 
     run = {
         "run_id": run_id,
@@ -621,4 +677,64 @@ def test_deployment_marker_is_durable_idempotent_and_gates_finalization(
     }
     assert batch_eval.sprintctl.batch_site_deployed_ready(state_dir, run)
     policy_index.write_text('{"policies":[{"new":true}]}\n')
+    assert batch_eval.sprintctl.batch_site_deployed_ready(state_dir, run)
+    snapshot = state_dir / json.loads(
+        (state_dir / "BATCH_SITE_DEPLOYED.json").read_text()
+    )["public_artifact_snapshot_path"]
+    snapshot.chmod(0o600)
+    snapshot.write_text("tampered\n")
+    assert not batch_eval.sprintctl.batch_site_deployed_ready(state_dir, run)
+
+
+def test_deployment_marker_uses_timeline_when_run_has_no_submissions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    web = tmp_path / "web"
+    ops = tmp_path / "ops"
+    batches = tmp_path / "batches"
+    run_id = "eval-empty"
+    state_dir = ops / run_id
+    timeline = web / f"data/timelines/{run_id}.json"
+    timeline.parent.mkdir(parents=True)
+    timeline.write_text('{"coverage":{"ready":true}}\n')
+    state_dir.mkdir(parents=True)
+    (batches / "eval").mkdir(parents=True)
+    (state_dir / "frontier-state.json").write_text(
+        json.dumps({"capture_queue": [], "policies": {}, "captures": {}})
+    )
+    monkeypatch.setattr(batch_eval, "WEB", web)
+    monkeypatch.setattr(batch_eval, "SCRIPT_DIR", ops)
+    monkeypatch.setattr(batch_eval, "BATCH_ROOT", batches)
+    monkeypatch.setattr(
+        batch_eval.sprintctl,
+        "load_run",
+        lambda _run_id: (state_dir, {"run_id": run_id}),
+    )
+    monkeypatch.setattr(
+        batch_eval.sprintctl, "volume_upload", lambda *_args, **_kwargs: None
+    )
+    payload = {
+        "batch_id": "eval",
+        "deploy": {
+            "site_status": "deployed",
+            "last_deployed_site_hash": frontier_update.site_tree_hash(web),
+            "last_deployed_public_artifacts": frontier_update.public_artifact_hashes(
+                web
+            ),
+            "last_deployed_at": "2026-08-09T00:00:00Z",
+        },
+        "arms": [{"run_id": run_id}],
+    }
+
+    assert batch_eval.mark_deployed_runs(payload) == []
+    marker = json.loads((state_dir / "BATCH_SITE_DEPLOYED.json").read_text())
+    assert marker["schema_version"] == 2
+    assert marker["public_artifact_path"] == f"data/timelines/{run_id}.json"
+    run = {"run_id": run_id, "batch_id": "eval", "site_dir": str(web)}
+    assert batch_eval.sprintctl.batch_site_deployed_ready(state_dir, run)
+    timeline.write_text('{"coverage":{"ready":false}}\n')
+    assert batch_eval.sprintctl.batch_site_deployed_ready(state_dir, run)
+    snapshot = state_dir / marker["public_artifact_snapshot_path"]
+    snapshot.chmod(0o600)
+    snapshot.write_text("tampered\n")
     assert not batch_eval.sprintctl.batch_site_deployed_ready(state_dir, run)
