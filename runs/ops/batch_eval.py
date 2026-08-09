@@ -28,6 +28,7 @@ import sprintctl  # noqa: E402
 
 
 UV = Path(os.environ.get("UV", "/home/ubuntu/.local/bin/uv"))
+HARBOR_PYTHON = ROOT / "harbor/.venv/bin/python3"
 WEB = ROOT / "sprint-web"
 BATCH_ROOT = SCRIPT_DIR / "batches"
 WARMUP_MANIFEST = SCRIPT_DIR / "modal-image-warmup.json"
@@ -318,6 +319,17 @@ def preflight(
     )
     checks["functional_gpu_canary"] = functional_gpu_canary_ready()
     checks["vercel_project_link"] = vercel_project_link_ready()
+    checks["controller_runtime"] = (
+        HARBOR_PYTHON.is_file()
+        and os.access(HARBOR_PYTHON, os.X_OK)
+        and subprocess.run(
+            [str(HARBOR_PYTHON), "-c", "import modal"],
+            cwd=ROOT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode
+        == 0
+    )
     command_env = dict(os.environ)
     command_env["MODAL_PROFILE"] = modal_profile
     checks["modal_auth"] = False
@@ -325,10 +337,8 @@ def preflight(
         json.loads(
             run_checked(
                 [
-                    str(UV),
-                    "run",
-                    "--project",
-                    str(ROOT / "harbor"),
+                    str(HARBOR_PYTHON),
+                    "-m",
                     "modal",
                     "app",
                     "list",
@@ -427,7 +437,7 @@ def start_monitor_service(batch_id: str, env_file: Path, modal_profile: str) -> 
     service_path = os.pathsep.join(
         dict.fromkeys(
             [
-                str(Path(sys.executable).resolve().parent),
+                str(HARBOR_PYTHON.parent),
                 str(UV.resolve().parent),
                 str(Path(vercel).resolve().parent),
                 *os.environ.get("PATH", "").split(os.pathsep),
@@ -452,7 +462,7 @@ def start_monitor_service(batch_id: str, env_file: Path, modal_profile: str) -> 
             f"--setenv=PATH={service_path}",
             f"--setenv=UV={UV.resolve()}",
             f"--setenv=MODAL_PROFILE={modal_profile}",
-            sys.executable,
+            str(HARBOR_PYTHON),
             str(Path(__file__).resolve()),
             "monitor",
             "--batch-id",

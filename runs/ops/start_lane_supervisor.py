@@ -58,7 +58,13 @@ def main() -> int:
     if not Path(uv).is_file() or not os.access(uv, os.X_OK):
         parser.error("UV must name an executable absolute path")
     uv = str(Path(uv).resolve())
-    tool_dirs = [str(Path(uv).parent)]
+    harbor_python = ROOT / "harbor/.venv/bin/python3"
+    if not harbor_python.is_file() or not os.access(harbor_python, os.X_OK):
+        parser.error(f"missing executable controller runtime: {harbor_python}")
+    # Keep the venv entrypoint path. Resolving its symlink to uv's base Python
+    # discards pyvenv.cfg discovery and therefore the installed Modal package.
+    harbor_python = harbor_python.absolute()
+    tool_dirs = [str(harbor_python.parent), str(Path(uv).parent)]
     vercel = shutil.which("vercel")
     if vercel:
         tool_dirs.append(str(Path(vercel).resolve().parent))
@@ -70,7 +76,7 @@ def main() -> int:
     state_dir = OPS / args.run_id
     log_path = Path(f"/data/sprint-launch-{args.run_id}.log")
     supervisor_argv = [
-        "python3",
+        str(harbor_python),
         "-u",
         str(OPS / "supervise_lane.py"),
         "--run-id",
@@ -95,6 +101,7 @@ def main() -> int:
         "process_manager_restart": "on-failure",
         "restart_prevent_exit_status": [75, 78],
         "uv": uv,
+        "controller_python": str(harbor_python),
         "path": service_path,
     }
     atomic_write(state_dir / "supervisor.json", metadata)

@@ -1814,7 +1814,10 @@ class LauncherWiringTests(unittest.TestCase):
             self.assertIn("--property=RestartPreventExitStatus=75 78", command)
             self.assertIn("--setenv=OPENAI_API_KEY", command)
             self.assertIn("--setenv=UV=/test/bin/uv", command)
-            self.assertIn("--setenv=PATH=/test/bin:/usr/bin", command)
+            self.assertIn(
+                f"--setenv=PATH={ROOT / 'harbor/.venv/bin'}:/test/bin:/usr/bin",
+                command,
+            )
             self.assertIn("--setenv=SPRINT_BATCH_ID=eval-batch", command)
             self.assertNotIn("secret-value", command)
             metadata = json.loads(
@@ -1822,6 +1825,10 @@ class LauncherWiringTests(unittest.TestCase):
             )
             self.assertEqual(metadata["launch_argv"], launch)
             self.assertEqual(metadata["batch_id"], "eval-batch")
+            self.assertEqual(
+                metadata["controller_python"],
+                str(ROOT / "harbor/.venv/bin/python3"),
+            )
 
     def test_goal_templates_are_launchable_and_synced(self) -> None:
         smoke = (ROOT / "runs" / "codex-recovery-smoke-goal.j2").read_text()

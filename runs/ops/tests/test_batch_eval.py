@@ -682,7 +682,8 @@ def test_batch_monitor_service_carries_absolute_uv_vercel_and_modal_profile(
     assert "--setenv=MODAL_PROFILE=profile-a" in command
     path_arg = next(item for item in command if item.startswith("--setenv=PATH="))
     assert "/tools" in path_arg
-    assert str(Path(sys.executable).resolve().parent) in path_arg
+    assert str(batch_eval.HARBOR_PYTHON.parent) in path_arg
+    assert str(batch_eval.HARBOR_PYTHON) in command
 
 
 def test_batch_monitor_reads_live_lane_status_without_duplicate_poll(
