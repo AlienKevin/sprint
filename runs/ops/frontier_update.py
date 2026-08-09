@@ -1047,8 +1047,13 @@ def run_worker(
     deploy: bool,
     debounce_seconds: int,
 ) -> dict[str, Any]:
-    with file_lock(PIPELINE_LOCK, blocking=False) as acquired:
-        if not acquired:
+    # A worker is already detached from the run monitor, and each run launches
+    # at most one while its PID is alive.  Wait for the shared renderer instead
+    # of losing a short lock race and leaving this run's replay queued until its
+    # next (potentially multi-minute) telemetry/monitor cycle.  flock remains
+    # crash-safe, so a dead renderer cannot strand the lease.
+    with file_lock(PIPELINE_LOCK, blocking=True) as acquired:
+        if not acquired:  # Defensive: blocking acquisition normally always succeeds.
             return {"status": "busy"}
         state = scan_frontier(job=job, trial=trial, state_path=state_path, web=web)
         while True:

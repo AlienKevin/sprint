@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import json
 import subprocess
@@ -348,6 +349,38 @@ def test_capture_retries_are_bounded_and_renderer_versioned(
     assert len(replacement) == 1
     assert replacement[0]["status"] == "queued"
     assert replacement[0]["attempts"] == 0
+
+
+def test_replay_worker_waits_for_shared_renderer_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: list[bool] = []
+
+    @contextlib.contextmanager
+    def recording_lock(_path: Path, *, blocking: bool = True):
+        observed.append(blocking)
+        yield True
+
+    state = {"capture_queue": [], "policies": {}, "captures": {}}
+    monkeypatch.setattr(frontier_update, "file_lock", recording_lock)
+    monkeypatch.setattr(frontier_update, "scan_frontier", lambda **_kwargs: state)
+    monkeypatch.setattr(
+        frontier_update, "write_web_policy_indexes", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        frontier_update, "atomic_write_json", lambda *_args, **_kwargs: None
+    )
+
+    result = frontier_update.run_worker(
+        job=tmp_path / "job",
+        trial=tmp_path / "trial",
+        state_path=tmp_path / "state.json",
+        web=tmp_path / "web",
+        deploy=False,
+        debounce_seconds=0,
+    )
+    assert result is state
+    assert observed == [True]
 
 
 def test_run_checked_preserves_failure_output() -> None:
