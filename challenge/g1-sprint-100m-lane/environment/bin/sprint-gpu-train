@@ -32,6 +32,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sprint_resilience import CheckpointStore, CompletionJournal
 
+AGENT_MIRROR_ROOT = Path("/run/sprint-gpu-mirror")
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -100,16 +102,21 @@ def flush_durable(root: Path) -> None:
 
 
 def latest_job_id(root: Path) -> str | None:
-    status_dir = root / "status"
-    if not status_dir.is_dir():
-        return None
-    files = sorted(status_dir.glob("*.json"), key=lambda p: p.stat().st_mtime)
+    files = []
+    for status_dir in (root / "status", AGENT_MIRROR_ROOT / "status"):
+        if status_dir.is_dir():
+            files.extend(status_dir.glob("*.json"))
+    files = sorted(files, key=lambda p: p.stat().st_mtime)
     return files[-1].stem if files else None
 
 
 def read_status(root: Path, job_id: str) -> dict:
-    path = root / "status" / f"{job_id}.json"
-    if not path.is_file():
+    paths = (
+        AGENT_MIRROR_ROOT / "status" / f"{job_id}.json",
+        root / "status" / f"{job_id}.json",
+    )
+    path = next((candidate for candidate in paths if candidate.is_file()), None)
+    if path is None:
         raise SystemExit(f"unknown job: {job_id}")
     return json.loads(path.read_text())
 
@@ -259,7 +266,18 @@ def cmd_logs(args: argparse.Namespace) -> int:
     if not job_id:
         raise SystemExit("no gpu jobs yet")
     log_root = root / "out" / job_id
-    logs = sorted(log_root.glob("attempt-*/worker.log"))
+    logs_by_attempt = {
+        path.parent.name: path
+        for path in log_root.glob("attempt-*/worker.log")
+    }
+    mirror_log_root = AGENT_MIRROR_ROOT / "out" / job_id
+    logs_by_attempt.update(
+        {
+            path.parent.name: path
+            for path in mirror_log_root.glob("attempt-*/worker.log")
+        }
+    )
+    logs = [logs_by_attempt[key] for key in sorted(logs_by_attempt)]
     if not logs:
         raise SystemExit(f"no logs yet for {job_id}: {log_root}")
     for path in logs:

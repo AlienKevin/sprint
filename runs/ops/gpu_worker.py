@@ -8,6 +8,8 @@ CPU (gpus=0) so GPU preemption cannot kill the harness.
 """
 from __future__ import annotations
 
+import base64
+import gzip
 import hashlib
 import json
 import os
@@ -53,6 +55,100 @@ STARTUP_GRACE_SEC = int(
 DEAD_GRACE_SEC = int(
     os.environ.get("SPRINT_GPU_DEAD_GRACE_SEC", str(gpu_claim.DEFAULT_DEAD_GRACE_SEC))
 )
+AGENT_GPU_MIRROR_ROOT = "/run/sprint-gpu-mirror"
+AGENT_GPU_MIRROR_LOG_BYTES = 768 * 1024
+
+
+def mirror_agent_job(
+    run: dict[str, Any],
+    job: dict[str, Any],
+    *,
+    log_content: bytes | None = None,
+) -> dict[str, Any]:
+    """Push canonical GPU state into the long-lived CPU container.
+
+    Modal Volume mounts are snapshots: a long-lived CPU container does not see
+    host uploads until its mount is reloaded.  Reloading the whole mount is a
+    poor fit here because the agent and snapshot loop may have open files.  A
+    small host-owned mirror under /run gives the agent fresh status and a
+    diagnostic log tail without weakening the no-control-plane-credentials
+    boundary.  The complete log remains on the durable Volume.
+    """
+    container_id = str(run.get("agent_container_id") or "")
+    job_id = str(job.get("job_id") or "")
+    if not container_id.startswith("ta-") or not job_id:
+        return {"agent_mirror": "unavailable"}
+
+    files = {
+        f"status/{job_id}.json": (
+            json.dumps(job, indent=2, sort_keys=True) + "\n"
+        ).encode(),
+    }
+    log_truncated = False
+    if log_content is not None:
+        attempt = int(job.get("attempt") or 0)
+        if attempt > 0:
+            if len(log_content) > AGENT_GPU_MIRROR_LOG_BYTES:
+                log_truncated = True
+                marker = (
+                    b"[agent mirror truncated to the final 768 KiB; "
+                    b"the complete checksummed log is retained on /durable]\n"
+                )
+                log_content = marker + log_content[-AGENT_GPU_MIRROR_LOG_BYTES:]
+            files[f"out/{job_id}/attempt-{attempt}/worker.log"] = log_content
+
+    envelope = {
+        "files": {
+            relative: base64.b64encode(content).decode("ascii")
+            for relative, content in files.items()
+        }
+    }
+    encoded = base64.b64encode(
+        gzip.compress(json.dumps(envelope, separators=(",", ":")).encode())
+    ).decode("ascii")
+    install = """
+import base64, gzip, json, os, pathlib, sys
+root = pathlib.Path(sys.argv[1]).resolve()
+payload = json.loads(gzip.decompress(base64.b64decode(sys.argv[2])))
+for relative, content in payload["files"].items():
+    target = (root / relative).resolve()
+    if root != target and root not in target.parents:
+        raise SystemExit("invalid mirror path")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    temporary.write_bytes(base64.b64decode(content))
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, target)
+""".strip()
+    try:
+        result = sprintctl.exec_container(
+            run,
+            container_id,
+            " ".join(
+                [
+                    "python3",
+                    "-c",
+                    shlex.quote(install),
+                    shlex.quote(AGENT_GPU_MIRROR_ROOT),
+                    shlex.quote(encoded),
+                ]
+            ),
+            check=False,
+            timeout=20,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "agent_mirror": "error",
+            "agent_mirror_error": f"{type(exc).__name__}: {exc}",
+        }
+    if result.returncode != 0:
+        error = (result.stderr or result.stdout or "container exec failed").strip()
+        return {"agent_mirror": "error", "agent_mirror_error": error[-1000:]}
+    return {
+        "agent_mirror": "updated",
+        "agent_mirror_files": len(files),
+        "agent_mirror_log_truncated": log_truncated,
+    }
 
 
 def jobs_prefix(run_id: str) -> str:
@@ -407,6 +503,65 @@ def read_modal_sandbox_output(sandbox_id: str) -> tuple[str, str]:
     return str(sandbox.stdout.read() or ""), str(sandbox.stderr.read() or "")
 
 
+def provider_terminal_error(stream_text: str) -> str | None:
+    """Return a definitive child failure marker hidden by a zero wrapper exit.
+
+    Isaac/Kit can occasionally finish its outer application with status zero
+    after Python emitted an unhandled exception.  Generic ``[Error]`` lines are
+    not sufficient because headless Vulkan initialization emits recoverable
+    diagnostics, but an unhandled Python traceback is terminal.
+    """
+    if "Traceback (most recent call last):" in stream_text:
+        tail = stream_text[
+            stream_text.rfind("Traceback (most recent call last):") :
+        ]
+        final = next(
+            (line.strip() for line in reversed(tail.splitlines()) if line.strip()),
+            "unhandled Python exception",
+        )
+        return final[-1000:]
+    return None
+
+
+def apply_provider_terminal_error(
+    job: dict[str, Any], terminal_error: str | None
+) -> dict[str, Any]:
+    payload = dict(job)
+    payload["provider_terminal_error_checked_at"] = utc_now()
+    payload["provider_terminal_error_detected"] = bool(terminal_error)
+    if terminal_error and str(payload.get("status") or "") == "succeeded":
+        payload["provider_reported_status"] = "succeeded"
+        payload["provider_reported_exit_code"] = payload.get("exit_code")
+        payload["status"] = "failed"
+        payload["exit_code"] = 1
+        payload["error"] = terminal_error
+        payload["failure_reason"] = "provider_stream_unhandled_exception"
+    return payload
+
+
+def audit_archived_provider_logs(
+    run: dict[str, Any], job: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Classify logs archived before terminal-stream auditing was enabled."""
+    path = str(job.get("provider_logs_path") or "")
+    if not path:
+        return job, {"provider_logs": "audit_unavailable"}
+    text = sprintctl.volume_get_text(run, path)
+    if text is None:
+        return job, {"provider_logs": "audit_retry", "provider_logs_path": path}
+    _stdout, separator, stderr = text.partition("== Modal stderr ==\n")
+    terminal_error = provider_terminal_error(stderr if separator else text)
+    payload = apply_provider_terminal_error(job, terminal_error)
+    mirror_detail = mirror_agent_job(
+        run, payload, log_content=text.encode("utf-8", errors="replace")
+    )
+    return payload, {
+        "provider_logs": "audited",
+        "provider_terminal_error": terminal_error,
+        **mirror_detail,
+    }
+
+
 def archive_provider_logs(
     run: dict[str, Any],
     job: dict[str, Any],
@@ -477,9 +632,14 @@ def archive_provider_logs(
             "provider_logs_source": "modal-sandbox-streams",
         }
     )
+    terminal_error = provider_terminal_error(stderr)
+    payload = apply_provider_terminal_error(payload, terminal_error)
+    mirror_detail = mirror_agent_job(run, payload, log_content=encoded)
     return payload, {
         "provider_logs": "archived",
         "provider_logs_size_bytes": len(encoded),
+        "provider_terminal_error": terminal_error,
+        **mirror_detail,
     }
 
 
@@ -489,6 +649,7 @@ def persist_job(run: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]:
     job_id = str(job["job_id"])
     put_json(run, f"{prefix}/status/{job_id}.json", job)
     put_json(run, f"{prefix}/queue/{job_id}.json", job)
+    mirror_agent_job(run, job)
     return job
 
 
@@ -1033,6 +1194,14 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
                 if log_backfill is None:
                     log_backfill = job
                 continue
+            if (
+                str(job.get("status") or "") in gpu_claim.TERMINAL
+                and job.get("provider_logs_archived_at")
+                and not job.get("provider_terminal_error_checked_at")
+            ):
+                if log_backfill is None:
+                    log_backfill = job
+                continue
             if str(job.get("status") or "") not in gpu_claim.OWNED:
                 continue
             updated, detail = reconcile_job(run, job, now=now)
@@ -1131,7 +1300,12 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
                 break
 
         if log_backfill is not None:
-            archived, detail = archive_provider_logs(run, log_backfill)
+            if log_backfill.get("provider_logs_archived_at"):
+                archived, detail = audit_archived_provider_logs(
+                    run, log_backfill
+                )
+            else:
+                archived, detail = archive_provider_logs(run, log_backfill)
             if archived != log_backfill:
                 persist_job(run, archived)
             reconciled.append(

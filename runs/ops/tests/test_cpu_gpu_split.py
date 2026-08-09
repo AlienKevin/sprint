@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import importlib.machinery
 import importlib.util
 import hashlib
 import json
+import subprocess
 import sys
 import tempfile
 import time
@@ -39,6 +41,16 @@ _worker_spec = importlib.util.spec_from_file_location(
 assert _worker_spec and _worker_spec.loader
 worker_run = importlib.util.module_from_spec(_worker_spec)
 _worker_spec.loader.exec_module(worker_run)
+
+_train_spec = importlib.util.spec_from_loader(
+    "sprint_gpu_train",
+    importlib.machinery.SourceFileLoader(
+        "sprint_gpu_train", str(ENV / "bin" / "sprint-gpu-train")
+    ),
+)
+assert _train_spec and _train_spec.loader
+train_cli = importlib.util.module_from_spec(_train_spec)
+_train_spec.loader.exec_module(train_cli)
 
 
 class ClaimSelectionTests(unittest.TestCase):
@@ -161,6 +173,159 @@ class ClaimSelectionTests(unittest.TestCase):
         self.assertGreater(
             archived["provider_logs_archive_retry_after_epoch_s"], time.time()
         )
+
+    def test_provider_traceback_overrides_false_zero_exit(self) -> None:
+        uploaded: dict[str, bytes] = {}
+        job = {
+            "run_id": "run-1",
+            "job_id": "job-1",
+            "attempt": 1,
+            "status": "succeeded",
+            "exit_code": 0,
+            "sandbox_id": "sb-1",
+        }
+        stderr = (
+            "recoverable warning\nTraceback (most recent call last):\n"
+            "  File 'train.py', line 1\nFileNotFoundError: robot.usd\n"
+        )
+
+        def upload(_run: dict, source: Path, _remote: str) -> None:
+            uploaded["content"] = source.read_bytes()
+
+        with mock.patch.object(
+            gpu_worker.sprintctl, "volume_upload", side_effect=upload
+        ):
+            archived, detail = gpu_worker.archive_provider_logs(
+                {"run_id": "run-1"},
+                job,
+                read_output=lambda _sandbox_id: ("stdout\n", stderr),
+            )
+
+        self.assertIn(b"FileNotFoundError", uploaded["content"])
+        self.assertEqual(archived["status"], "failed")
+        self.assertEqual(archived["exit_code"], 1)
+        self.assertEqual(archived["provider_reported_exit_code"], 0)
+        self.assertEqual(
+            archived["failure_reason"],
+            "provider_stream_unhandled_exception",
+        )
+        self.assertEqual(detail["provider_terminal_error"], "FileNotFoundError: robot.usd")
+
+    def test_recoverable_isaac_gpu_warning_does_not_override_success(self) -> None:
+        self.assertIsNone(
+            gpu_worker.provider_terminal_error(
+                "[Error] [gpu.foundation.plugin] No device could be created"
+            )
+        )
+
+    def test_audits_preexisting_archived_log_and_repairs_status(self) -> None:
+        job = {
+            "run_id": "run-1",
+            "job_id": "job-1",
+            "attempt": 1,
+            "status": "succeeded",
+            "exit_code": 0,
+            "provider_logs_archived_at": "earlier",
+            "provider_logs_path": "runs/run-1/gpu-jobs/out/job-1/worker.log",
+        }
+        text = (
+            "== Modal stderr ==\nTraceback (most recent call last):\n"
+            "FileNotFoundError: robot.usd\n"
+        )
+        with (
+            mock.patch.object(
+                gpu_worker.sprintctl, "volume_get_text", return_value=text
+            ),
+            mock.patch.object(
+                gpu_worker, "mirror_agent_job", return_value={"agent_mirror": "updated"}
+            ),
+        ):
+            audited, detail = gpu_worker.audit_archived_provider_logs(
+                {"run_id": "run-1"}, job
+            )
+
+        self.assertEqual(audited["status"], "failed")
+        self.assertTrue(audited["provider_terminal_error_detected"])
+        self.assertEqual(detail["provider_logs"], "audited")
+
+    def test_pushes_fresh_status_and_log_to_cpu_agent_mirror(self) -> None:
+        job = {
+            "run_id": "run-1",
+            "job_id": "job-1",
+            "attempt": 2,
+            "status": "failed",
+        }
+
+        def local_exec(
+            _run: dict,
+            container_id: str,
+            shell_command: str,
+            **_kwargs: object,
+        ) -> subprocess.CompletedProcess[str]:
+            self.assertEqual(container_id, "ta-agent")
+            return subprocess.run(
+                shell_command,
+                shell=True,
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mirror = Path(tmp) / "mirror"
+            with (
+                mock.patch.object(
+                    gpu_worker, "AGENT_GPU_MIRROR_ROOT", str(mirror)
+                ),
+                mock.patch.object(
+                    gpu_worker.sprintctl,
+                    "exec_container",
+                    side_effect=local_exec,
+                ),
+            ):
+                detail = gpu_worker.mirror_agent_job(
+                    {"agent_container_id": "ta-agent"},
+                    job,
+                    log_content=b"complete child output\n",
+                )
+
+            self.assertEqual(detail["agent_mirror"], "updated")
+            self.assertEqual(detail["agent_mirror_files"], 2)
+            self.assertEqual(
+                json.loads((mirror / "status" / "job-1.json").read_text()),
+                job,
+            )
+            self.assertEqual(
+                (
+                    mirror
+                    / "out"
+                    / "job-1"
+                    / "attempt-2"
+                    / "worker.log"
+                ).read_bytes(),
+                b"complete child output\n",
+            )
+
+    def test_agent_cli_prefers_host_mirror_over_stale_volume_mount(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "durable" / "gpu-jobs"
+            mirror = Path(tmp) / "mirror"
+            (root / "status").mkdir(parents=True)
+            (mirror / "status").mkdir(parents=True)
+            (root / "status" / "job-1.json").write_text(
+                json.dumps({"job_id": "job-1", "status": "pending"})
+            )
+            (mirror / "status" / "job-1.json").write_text(
+                json.dumps({"job_id": "job-1", "status": "succeeded"})
+            )
+
+            with mock.patch.object(train_cli, "AGENT_MIRROR_ROOT", mirror):
+                status = train_cli.read_status(root, "job-1")
+                latest = train_cli.latest_job_id(root)
+
+            self.assertEqual(status["status"], "succeeded")
+            self.assertEqual(latest, "job-1")
 
 
 class LeaseLivenessTests(unittest.TestCase):
