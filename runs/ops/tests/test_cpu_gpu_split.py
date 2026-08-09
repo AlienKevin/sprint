@@ -514,6 +514,33 @@ class ClaimSelectionTests(unittest.TestCase):
         self.assertEqual(detail["policy_mirror"], "fetched")
         self.assertIn("agent_policy_mirror_path", payload)
 
+    def test_fetches_policy_from_run_candidate_directory(self) -> None:
+        run = {"run_id": "run-1", "volume_name": "volume-1"}
+        job = {
+            "job_id": "job-1",
+            "progress": {"policy_path": "/durable/runs/run-1/candidates/policy_599.pt"},
+        }
+
+        def fake_get(command, **_kwargs):
+            self.assertIn("runs/run-1/candidates/policy_599.pt", command)
+            Path(command[-1]).write_bytes(b"candidate policy")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with mock.patch.object(
+            gpu_worker.sprintctl, "run_command", side_effect=fake_get
+        ):
+            payload, name, content, detail = gpu_worker.fetch_agent_policy_artifact(
+                run, job
+            )
+
+        self.assertEqual(name, "policy_599.pt")
+        self.assertEqual(content, b"candidate policy")
+        self.assertEqual(detail["policy_mirror"], "fetched")
+        self.assertEqual(
+            payload["agent_policy_mirror_path"],
+            "/run/sprint-gpu-mirror/artifacts/job-1/policy_599.pt",
+        )
+
     def test_rejects_policy_outside_run_gpu_job_and_policy_directories(self) -> None:
         payload, name, content, detail = gpu_worker.fetch_agent_policy_artifact(
             {"run_id": "run-1", "volume_name": "volume-1"},
