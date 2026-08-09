@@ -94,6 +94,16 @@ def fixture_run(
                     "util_mem_pct": 51,
                     "mem_used_mib": 8192,
                     "mem_total_mib": 24576,
+                    "pipeline_metrics_source": "cupti-pm-sampling",
+                    "pipeline_metrics_status": "ok",
+                    "pipeline_metrics_window_ms": 1000,
+                    "pipeline_metrics_sample_count": 10,
+                    "sm_active_pct": 60.0,
+                    "sm_occupancy_pct": 40.0,
+                    "tensor_pipe_active_pct": 20.0,
+                    "fp32_fma_pipe_active_pct": 30.0,
+                    "fp16_instruction_pct_of_peak_active": 10.0,
+                    "dram_throughput_pct": 50.0,
                 }
             ],
         },
@@ -111,6 +121,16 @@ def fixture_run(
                     "util_gpu_pct": 80,
                     "mem_used_mib": 8000,
                     "mem_total_mib": 24576,
+                    "pipeline_metrics_source": "cupti-pm-sampling",
+                    "pipeline_metrics_status": "ok",
+                    "pipeline_metrics_window_ms": 1000,
+                    "pipeline_metrics_sample_count": 10,
+                    "sm_active_pct": 80.0,
+                    "sm_occupancy_pct": 60.0,
+                    "tensor_pipe_active_pct": 40.0,
+                    "fp32_fma_pipe_active_pct": 50.0,
+                    "fp16_instruction_pct_of_peak_active": 30.0,
+                    "dram_throughput_pct": 70.0,
                 }
             ],
         },
@@ -446,9 +466,10 @@ def test_unified_timeline_is_joined_deduplicated_and_public_safe(
     assert len(payload["artifacts"]) == 2
     assert all(item["captured"] and item["sha256"] for item in payload["artifacts"])
     assert payload["artifacts"][0]["verification_attempts"] == 2
-    assert payload["artifacts"][0]["verification_retry_events"][0][
-        "error_type"
-    ] == "NotFoundError"
+    assert (
+        payload["artifacts"][0]["verification_retry_events"][0]["error_type"]
+        == "NotFoundError"
+    )
     retry = next(
         event for event in payload["events"] if event["kind"] == "evaluation_retry"
     )
@@ -501,6 +522,26 @@ def test_unified_timeline_is_joined_deduplicated_and_public_safe(
     assert payload["comparison_summary"]["valid_submission_count"] == 2
     assert payload["comparison_summary"]["tool_call_count"] == 4
     assert payload["resource_usage_summary"]["training_gpu"]["allocation_count"] == 2
+    training_pipeline = payload["resource_usage_summary"]["gpu_pipeline"][
+        "training_gpu"
+    ]
+    assert training_pipeline["collector"] == "cupti-pm-sampling"
+    assert training_pipeline["metrics"]["sm_active_pct"] == {
+        "sample_count": 2,
+        "window_weighted_mean_pct": 70.0,
+        "p50_pct": 60.0,
+        "p95_pct": 80.0,
+        "max_pct": 80.0,
+    }
+    resource_event = next(
+        event
+        for event in payload["events"]
+        if event["kind"] == "resource_sample"
+        and event.get("role") == "training-gpu"
+        and (event.get("metrics") or {}).get("gpus", [{}])[0].get("sm_active_pct")
+        == 60.0
+    )
+    assert resource_event["metrics"]["gpus"][0]["tensor_pipe_active_pct"] == 20.0
     assert (
         payload["resource_usage_summary"]["modal_estimate"]["estimated_cost_usd"]
         == 0.04640232
@@ -530,21 +571,13 @@ def test_unified_timeline_is_joined_deduplicated_and_public_safe(
             ),
             "rewards": {
                 "valid_run": (artifact.get("rewards") or {}).get("valid_run"),
-                "best_100m_s": (artifact.get("rewards") or {}).get(
-                    "best_100m_s"
-                ),
-                "gate_finished": (artifact.get("rewards") or {}).get(
-                    "gate_finished"
-                ),
-                "gate_in_lane": (artifact.get("rewards") or {}).get(
-                    "gate_in_lane"
-                ),
+                "best_100m_s": (artifact.get("rewards") or {}).get("best_100m_s"),
+                "gate_finished": (artifact.get("rewards") or {}).get("gate_finished"),
+                "gate_in_lane": (artifact.get("rewards") or {}).get("gate_in_lane"),
                 "gate_self_collision": (artifact.get("rewards") or {}).get(
                     "gate_self_collision"
                 ),
-                "peak_speed_mps": (artifact.get("rewards") or {}).get(
-                    "peak_speed_mps"
-                ),
+                "peak_speed_mps": (artifact.get("rewards") or {}).get("peak_speed_mps"),
             },
             "cost_at_result": artifact.get("cost_at_result"),
         }
@@ -980,13 +1013,7 @@ def test_legacy_training_lifecycle_uses_worker_exit_and_durable_attempt(
         },
     ]
     write_jsonl(lifecycle_path, rows)
-    attempt = (
-        state
-        / "telemetry"
-        / "durable-gpu-attempts"
-        / "job-two"
-        / "1.json"
-    )
+    attempt = state / "telemetry" / "durable-gpu-attempts" / "job-two" / "1.json"
     attempt.parent.mkdir(parents=True)
     attempt.write_text(
         json.dumps(

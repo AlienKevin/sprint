@@ -50,11 +50,10 @@ Measured and reported, but not disqualifying:
   feet_leave_ground, foot_clearance, steady_progress, energy_accounted,
   returned_to_standing; plus a held-out robustness sweep.
 
-Blind verification:
-  sprint-submit returns only a durable local receipt. Official scores, DQ
-  reasons, queue state, and completion timing stay sealed until the agent run
-  ends. sprint-check only validates the TorchScript interface on CPU — it does
-  not run the course. Every policy accepted by sprint-submit is graded.
+Trusted verification:
+  sprint-submit returns immediately. sprint-board reports acceptance and the
+  official score/gates when the sealed verifier finishes. sprint-check only
+  validates the TorchScript interface on CPU — it does not run the course.
 
 Training tip: /app/train has a G1 PhysX spawn helper matching the verifier
   (full G1_CFG, self-collisions on); stock Isaac Lab G1 leaves them off.

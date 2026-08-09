@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Durably sample one sealed verifier GPU on the experiment UTC clock."""
+
 from __future__ import annotations
 
 import argparse
@@ -13,8 +14,10 @@ import subprocess
 import time
 from typing import Any
 
+from sprint_gpu_pipeline import collect_pipeline_metrics
+
 STOP = False
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def utc_now() -> str:
@@ -115,9 +118,9 @@ def cgroup_v1_sample(mount: pathlib.Path) -> dict[str, Any]:
     elapsed_usec = max(1.0, (time.monotonic_ns() - started_ns) / 1000)
     used_cores = max(0, usage1 - usage0) / 1000 / elapsed_usec
     requested_cores = float(os.environ.get("SPRINT_REQUESTED_CPU_CORES", "8"))
-    requested_memory_kib = int(
-        os.environ.get("SPRINT_REQUESTED_MEMORY_MIB", "32768")
-    ) * 1024
+    requested_memory_kib = (
+        int(os.environ.get("SPRINT_REQUESTED_MEMORY_MIB", "32768")) * 1024
+    )
     memory_limit = scalar(memory / "memory.limit_in_bytes")
     if memory_limit is not None and memory_limit >= 1 << 60:
         memory_limit = None
@@ -157,9 +160,7 @@ def cgroup_v1_sample(mount: pathlib.Path) -> dict[str, Any]:
         ),
         "cpu_nr_throttled": cpu_stat.get("nr_throttled"),
         "cpu_throttled_usec": (
-            cpu_stat["throttled_time"] // 1000
-            if "throttled_time" in cpu_stat
-            else None
+            cpu_stat["throttled_time"] // 1000 if "throttled_time" in cpu_stat else None
         ),
         "cpu_util_pct": round(100.0 * used_cores / requested_cores, 2),
         "mem_requested_kib": requested_memory_kib,
@@ -185,9 +186,9 @@ def cgroup_sample(root: pathlib.Path | None = None) -> dict[str, Any]:
     elapsed_usec = max(1.0, (time.monotonic_ns() - started_ns) / 1000)
     used_cores = max(0, cpu1.get("usage_usec", 0) - cpu0["usage_usec"]) / elapsed_usec
     requested_cores = float(os.environ.get("SPRINT_REQUESTED_CPU_CORES", "8"))
-    requested_memory_kib = int(
-        os.environ.get("SPRINT_REQUESTED_MEMORY_MIB", "32768")
-    ) * 1024
+    requested_memory_kib = (
+        int(os.environ.get("SPRINT_REQUESTED_MEMORY_MIB", "32768")) * 1024
+    )
     memory_limit = scalar(root / "memory.max")
     memory_limit_kib = memory_limit // 1024 if memory_limit is not None else None
     memory_total_kib = requested_memory_kib or memory_limit_kib
@@ -224,9 +225,7 @@ def sample(index: int) -> dict[str, Any]:
         delta = max(1, total1 - total0)
         cgroup = {
             "resource_accounting_scope": "host-proc-fallback",
-            "cpu_util_pct": round(
-                100.0 * (delta - (idle1 - idle0)) / delta, 2
-            ),
+            "cpu_util_pct": round(100.0 * (delta - (idle1 - idle0)) / delta, 2),
         }
     payload: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -239,9 +238,17 @@ def sample(index: int) -> dict[str, Any]:
         "gpus": [],
     }
     query = [
-        "index", "name", "utilization.gpu", "utilization.memory",
-        "memory.used", "memory.total", "power.draw", "power.limit",
-        "temperature.gpu", "clocks.sm", "clocks.mem",
+        "index",
+        "name",
+        "utilization.gpu",
+        "utilization.memory",
+        "memory.used",
+        "memory.total",
+        "power.draw",
+        "power.limit",
+        "temperature.gpu",
+        "clocks.sm",
+        "clocks.mem",
     ]
     binary = shutil.which("nvidia-smi")
     try:
@@ -266,9 +273,17 @@ def sample(index: int) -> dict[str, Any]:
     payload["nvidia_smi_ok"] = bool(result and result.returncode == 0)
     if payload["nvidia_smi_ok"] and result is not None:
         keys = [
-            "gpu_index", "gpu_name", "util_gpu_pct", "util_mem_pct",
-            "mem_used_mib", "mem_total_mib", "power_draw_w", "power_limit_w",
-            "temp_gpu_c", "clock_sm_mhz", "clock_mem_mhz",
+            "gpu_index",
+            "gpu_name",
+            "util_gpu_pct",
+            "util_mem_pct",
+            "mem_used_mib",
+            "mem_total_mib",
+            "power_draw_w",
+            "power_limit_w",
+            "temp_gpu_c",
+            "clock_sm_mhz",
+            "clock_mem_mhz",
         ]
         for line in result.stdout.splitlines():
             values = [item.strip() for item in line.split(",")]
@@ -278,10 +293,10 @@ def sample(index: int) -> dict[str, Any]:
                 "gpu_index": int(number(values[0]) or 0),
                 "gpu_name": values[1],
             }
-            gpu.update(
-                {key: number(value) for key, value in zip(keys[2:], values[2:])}
-            )
+            gpu.update({key: number(value) for key, value in zip(keys[2:], values[2:])})
             payload["gpus"].append(gpu)
+    if payload["gpus"]:
+        payload["gpus"][0].update(collect_pipeline_metrics())
     payload["gpu_count"] = len(payload["gpus"])
     return payload
 

@@ -79,6 +79,9 @@ class ContinuousSubmission(BaseModel):
     name: str
     index: int
     submitted_at: datetime
+    accepted: bool = True
+    accepted_at: datetime | None = None
+    retry_after_sec: float | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
     duration_sec: float | None = None

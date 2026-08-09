@@ -306,6 +306,18 @@ import { TypeTable } from 'fumadocs-ui/components/type-table';
       default: "null",
       path: "verifier.continuous.max_submissions"
     },
+    "verifier.continuous.minimum_submission_interval_sec": {
+      description: "Minimum trusted-host time between accepted submissions in one trial. A new request containing duplicate bytes is still subject to the interval; replaying the same request name is idempotent.",
+      type: "number",
+      default: "0.0",
+      path: "verifier.continuous.minimum_submission_interval_sec"
+    },
+    "verifier.continuous.max_outstanding_submissions": {
+      description: "Maximum accepted submissions in one trial that may still be queued or running. Rejected requests remain in the trusted ledger but do not consume the allowance.",
+      type: "integer | null",
+      default: "null",
+      path: "verifier.continuous.max_outstanding_submissions"
+    },
     "verifier.continuous.drain_pending_on_stop": {
       description: "Finish every accepted submission after the agent phase ends instead of applying the bounded feedback-mode drain.",
       type: "boolean",
@@ -720,6 +732,8 @@ watch_dir = "/app/submissions/queue"
 results_dir = "/app/submissions/results"
 submission_path = "/app/submission/policy.pt"
 max_concurrent = 1
+minimum_submission_interval_sec = 300
+max_outstanding_submissions = 1
 return_results_to_agent = false
 drain_pending_on_stop = true
 continuous_only = true
@@ -737,6 +751,7 @@ Mechanics worth knowing when you write the task:
 
 - **Partial writes.** A submission is picked up only once its size has stopped changing between polls, so an agent writing a large checkpoint is not scored half-formed. Files whose names begin with `.` are skipped entirely, which makes write-to-a-dotfile-then-rename the airtight version of the same idea; it is what the CLI a task ships should do.
 - **Serialization.** `max_concurrent` defaults to 1. Raise it only when the measurement does not care about contention; two timed trials sharing a GPU measure each other.
+- **Trusted admission control.** `minimum_submission_interval_sec` and `max_outstanding_submissions` are enforced by Harbor, not by an agent-side helper. A new request name with duplicate bytes consumes the same allowance; replaying one already-seen request name is idempotent. Provider retries remain part of the original accepted submission and consume no new allowance.
 - **Cross-process serialization.** Trials configured with the same `shared_scheduler_lock_path` share one crash-safe host lease, even when they run in separate Harbor processes. Each policy still receives its own isolated verifier environment.
 - **Blind evaluation.** With `return_results_to_agent = false`, no score, error, queue progress, or completion timestamp is uploaded into the agent environment. The trusted ledger remains complete.
 - **Infrastructure recovery.** A provider-reported sandbox loss retries the same immutable bytes in a fresh verifier sandbox, up to `max_verifier_attempts`. Attempt count and timestamped retry events are retained in the ledger. Deterministic verifier failures are never retried.

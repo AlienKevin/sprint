@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>G1 Sprint · Unified experiment timeline</title>
   <style>
-    :root{color-scheme:dark;--bg:#07090d;--panel:#0e131b;--line:#263142;--muted:#91a0b5;--text:#edf3fb;--cpu:#4fc3f7;--training-gpu:#9ccc65;--training-mem:#ffb74d;--verifier-gpu:#b388ff;--verifier-mem:#f06292;--tool:#80cbc4;--trace:#78909c;--danger:#ff5d5d;--ok:#43d17b}
+    :root{color-scheme:dark;--bg:#07090d;--panel:#0e131b;--line:#263142;--muted:#91a0b5;--text:#edf3fb;--cpu:#4fc3f7;--training-gpu:#9ccc65;--training-mem:#ffb74d;--verifier-gpu:#b388ff;--verifier-mem:#f06292;--sm:#00e5ff;--occupancy:#ffee58;--tensor:#e040fb;--fp32:#69f0ae;--fp16:#ff9100;--dram:#448aff;--tool:#80cbc4;--trace:#78909c;--danger:#ff5d5d;--ok:#43d17b}
     *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}main{max-width:1500px;margin:auto;padding:28px}h1{font:700 25px/1.2 system-ui,sans-serif;margin:0 0 8px}.lede{color:var(--muted);max-width:980px;margin:0 0 22px}.controls{display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:var(--panel);border:1px solid var(--line);padding:12px;border-radius:9px}select,button{background:#151c27;color:var(--text);border:1px solid #344258;border-radius:6px;padding:7px 10px;font:inherit}button{cursor:pointer}.checks{display:flex;gap:12px;flex-wrap:wrap;color:var(--muted)}label{white-space:nowrap}.status{margin-left:auto;color:var(--muted)}.stage{position:relative;margin-top:14px;border:1px solid var(--line);border-radius:9px;background:var(--panel);overflow:hidden}canvas{display:block;width:100%;height:850px;cursor:crosshair}.tooltip{display:none;position:absolute;z-index:2;max-width:430px;pointer-events:none;background:#05070bef;border:1px solid #41516a;border-radius:7px;padding:9px 11px;white-space:pre-wrap;box-shadow:0 8px 28px #000b}.legend{display:flex;gap:18px;flex-wrap:wrap;padding:12px;color:var(--muted);border-top:1px solid var(--line)}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px}.help{color:var(--muted);margin-top:10px}.warning{color:#ffca6b}.ready{color:var(--ok)}.not-ready{color:var(--danger)}
   </style>
 </head>
@@ -21,6 +21,7 @@
       <label><input type="checkbox" data-layer="trainingMem" checked> training memory</label>
       <label><input type="checkbox" data-layer="verifierGpu" checked> verifier GPU</label>
       <label><input type="checkbox" data-layer="verifierMem" checked> verifier memory</label>
+      <label><input type="checkbox" data-layer="pipeline" checked> hardware pipelines</label>
       <label><input type="checkbox" data-layer="tools" checked> tool calls</label>
       <label><input type="checkbox" data-layer="trace" checked> trace</label>
       <label><input type="checkbox" data-layer="infra" checked> allocations</label>
@@ -35,6 +36,12 @@
       <span><i class="dot" style="background:var(--training-mem)"></i>training GPU memory</span>
       <span><i class="dot" style="background:var(--verifier-gpu)"></i>verifier GPU utilization</span>
       <span><i class="dot" style="background:var(--verifier-mem)"></i>verifier GPU memory</span>
+      <span><i class="dot" style="background:var(--sm)"></i>SM active</span>
+      <span><i class="dot" style="background:var(--occupancy)"></i>SM occupancy</span>
+      <span><i class="dot" style="background:var(--tensor)"></i>tensor pipe</span>
+      <span><i class="dot" style="background:var(--fp32)"></i>FP32 FMA pipe</span>
+      <span><i class="dot" style="background:var(--fp16)"></i>FP16 issue</span>
+      <span><i class="dot" style="background:var(--dram)"></i>DRAM throughput</span>
       <span><i class="dot" style="background:var(--tool)"></i>tool calls / minute</span>
       <span><i class="dot" style="background:var(--danger)"></i>preempted</span>
       <span><i class="dot" style="background:var(--ok)"></i>allocated / resumed</span>

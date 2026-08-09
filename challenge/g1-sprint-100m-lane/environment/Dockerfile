@@ -97,6 +97,10 @@ COPY sprint-snapshot-loop.sh /opt/sprint-snapshot-loop.sh
 COPY sprint-trace-mirror.py /opt/sprint-trace-mirror.py
 COPY sprint-telemetry.sh /opt/sprint-telemetry.sh
 COPY sprint-telemetry.py /opt/sprint-telemetry.py
+COPY sprint_gpu_pipeline.py /opt/sprint_gpu_pipeline.py
+RUN python3 /opt/sprint_gpu_pipeline.py \
+      --build /usr/local/cuda/extras/CUPTI/samples/pm_sampling \
+      --output /opt/sprint-pm-sampling
 COPY sprint-codex-exec-wrapper.sh /opt/sprint-codex-exec-wrapper.sh
 COPY sprint-apply-deepseek-codex-config.sh /opt/sprint-apply-deepseek-codex-config.sh
 COPY codex-deepseek-models.json /opt/sprint-codex-deepseek-models.json
@@ -111,6 +115,7 @@ RUN chmod 0755 /opt/sprint-snapshot-loop.sh /opt/sprint-telemetry.sh \
     /opt/sprint-gpu-worker-run.py /opt/sprint-isaac-bootstrap.py \
     /opt/sprint-gpu-timeline.py \
     && chmod 0644 /opt/sprint-agent-shell-env.sh /opt/sprint-telemetry.py \
+      /opt/sprint_gpu_pipeline.py \
        /opt/sprint_resilience.py /opt/sprint_assets.py \
        /opt/sprint-codex-deepseek-models.json
 

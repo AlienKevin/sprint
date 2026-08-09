@@ -132,16 +132,19 @@ def row_terminal(row: dict[str, Any]) -> bool:
 
 def ledger_counts(read: LedgerRead) -> dict[str, int]:
     rows = read.rows
+    accepted = [row for row in rows if row.get("accepted", True) is not False]
     return {
         "submitted": len(rows),
+        "accepted": len(accepted),
+        "rejected": len(rows) - len(accepted),
         "queued": sum(
-            not row.get("started_at") and not row_terminal(row) for row in rows
+            not row.get("started_at") and not row_terminal(row) for row in accepted
         ),
         "running": sum(
-            bool(row.get("started_at")) and not row_terminal(row) for row in rows
+            bool(row.get("started_at")) and not row_terminal(row) for row in accepted
         ),
-        "scored": sum(row.get("rewards") is not None for row in rows),
-        "error": sum(bool(row.get("error")) for row in rows),
+        "scored": sum(row.get("rewards") is not None for row in accepted),
+        "error": sum(bool(row.get("error")) for row in accepted),
         "terminal": sum(row_terminal(row) for row in rows),
         "malformed": len(read.errors),
     }
@@ -862,7 +865,7 @@ def capture_and_render(
                 "--title",
                 f"G1 Sprint attempt #{policy['index']} - {headline}",
                 "--eyebrow",
-                f"Unitree G1 · blind submission #{policy['index']}",
+                f"Unitree G1 · submission #{policy['index']}",
                 "--headline",
                 headline,
                 "--lede",

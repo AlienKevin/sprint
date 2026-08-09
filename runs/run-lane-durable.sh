@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="${SPRINT_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"
 SOURCE_ROOT="$ROOT"
 HARBOR="${HARBOR_PATH:-$SOURCE_ROOT/harbor}"
-HARBOR_COMMIT=c3d43b321250fb121a28912fcd0ea45be658e76f
+HARBOR_COMMIT=89394fca3fbc3e3dcd4d45e1d766ed2b5ad46202
 HARBOR_BRANCH=continuous-verification
 UV="${UV:-$(command -v uv || true)}"
 if [[ -z "$UV" && -x /home/ubuntu/.local/bin/uv ]]; then
@@ -177,7 +177,7 @@ fi
   echo "uv is required (set UV to its absolute executable path)" >&2
   exit 1
 }
-export SPRINT_SHARED_STATE_DIR="$ROOT/runs/ops/blind-verifier"
+export SPRINT_SHARED_STATE_DIR="$ROOT/runs/ops/feedback-verifier"
 
 if [[ "$AGENT_KIND" == "claude-code" ]]; then
   if [[ -n "$ENDPOINT" ]]; then
@@ -430,6 +430,7 @@ payload = {
         "gpus": 0,
     },
     "cgroup_telemetry_required": True,
+    "gpu_pipeline_telemetry_required": True,
     "agent_network_policy": "model-api-only",
     "agent_allowed_host": model_api_host,
     "hosted_model_tools_policy": "disabled" if agent_kind == "codex" else None,
@@ -667,6 +668,7 @@ base = {
     "unified_timeline_required": True,
     "modal_billing_required": True,
     "cgroup_telemetry_required": True,
+    "gpu_pipeline_telemetry_required": True,
     # OpenAI cost is accepted only from Harbor's per-request, checksummed usage
     # audit. Aggregate cached/uncached counters cannot recover long-context or
     # cache-write pricing correctly.
@@ -675,18 +677,20 @@ base = {
     "timeline_bucket_seconds": 60,
     "telemetry_cpu_max_gap_seconds": 45,
     "telemetry_gpu_max_gap_seconds": 45,
+    "telemetry_gpu_pipeline_max_gap_seconds": 45,
     "telemetry_resource_roles": ["cpu-agent", "training-gpu", "verifier-gpu"],
-    # Per-run immutable queues feed one cross-process trusted verifier lease.
-    # No verifier state is returned to an agent, so shared queue latency cannot
-    # influence policy development.
-    "scoring_queue_scope": "central_blind_per_run_queues",
+    # Each run has its own trusted acceptance gate and verifier lane. Accepted
+    # cache misses use fresh ephemeral sandboxes; no cross-run lease exists.
+    "scoring_queue_scope": "independent_feedback_per_trial_queue",
     "scoring_queue_key": run_id,
-    "scoring_max_concurrent": 1,
-    "scoring_global_max_concurrent": 1,
-    "scoring_feedback_policy": "sealed_until_agent_exit",
+    "scoring_max_concurrent_per_trial": 1,
+    "scoring_cross_trial_lease": False,
+    "scoring_minimum_submission_interval_sec": 300,
+    "scoring_max_outstanding_submissions_per_trial": 1,
+    "scoring_feedback_policy": "score_and_gates_when_ready",
     "scoring_drain_policy": "all_accepted_submissions",
     "scoring_deduplication_key": "task_fingerprint_plus_policy_sha256",
-    "evaluation_result_policy": "all_blind_submissions",
+    "evaluation_result_policy": "all_feedback_submissions",
     "verifier_cost_attribution": "measurement_overhead_separate_from_agent_cost",
     "cpu_supervised": supervised == "1",
     "cpu_launch_attempt": int(cpu_attempt),
@@ -758,8 +762,10 @@ if resuming == "1":
         "verifier_network_policy": "no-network",
         "modal_billing_required": True,
         "cgroup_telemetry_required": True,
+        "gpu_pipeline_telemetry_required": True,
         "resource_contract": base["resource_contract"],
         "telemetry_gpu_max_gap_seconds": 45,
+        "telemetry_gpu_pipeline_max_gap_seconds": 45,
         "telemetry_cpu_max_gap_seconds": 45,
         "telemetry_resource_roles": ["cpu-agent", "training-gpu", "verifier-gpu"],
     })

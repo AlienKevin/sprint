@@ -1,7 +1,7 @@
 """Continuous verification: submissions scored while the agent still runs."""
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import logging
@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock  # noqa: F401
 
 import pytest
 
+import harbor.trial.continuous as continuous_module
 from harbor.environments.base import ExecResult
 from harbor.models.task.config import ContinuousVerificationConfig, TaskOS
 from harbor.models.trial.result import ContinuousSubmission
@@ -537,9 +538,142 @@ async def test_submissions_past_the_cap_are_rejected_with_a_reason(tmp_path):
 
     assert len(scored) == 2
     rejected = service.summary.submissions[2]
+    assert rejected.accepted is False
     assert rejected.rewards is None
     assert "limit of 2" in rejected.error
     assert json.loads((env.results / "a2.pt.json").read_text())["error"]
+
+
+@pytest.mark.asyncio
+async def test_one_outstanding_submission_is_enforced_by_trusted_host(tmp_path):
+    env = FakeAgentEnv(tmp_path / "env")
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    calls: list[str] = []
+
+    async def run_verifier(key: str, paths) -> VerifierResult:
+        calls.append(key)
+        first_started.set()
+        await release_first.wait()
+        return VerifierResult(rewards={"reward": 1.0})
+
+    service = _service(
+        tmp_path,
+        env,
+        run_verifier,
+        max_outstanding_submissions=1,
+        minimum_submission_interval_sec=300,
+    )
+    async with service.running():
+        (env.watch / "first.pt").write_bytes(b"one")
+        await asyncio.wait_for(first_started.wait(), timeout=1)
+        (env.watch / "second.pt").write_bytes(b"two")
+        await asyncio.sleep(0.1)
+        release_first.set()
+        await _settle(service)
+
+    assert calls == ["continuous-0001"]
+    first, second = service.summary.submissions
+    assert first.accepted is True
+    assert first.rewards == {"reward": 1.0}
+    assert second.accepted is False
+    assert second.rewards is None
+    assert "outstanding" in (second.error or "")
+    assert json.loads((env.results / "second.pt.json").read_text())["accepted"] is False
+
+
+@pytest.mark.asyncio
+async def test_duplicate_bytes_are_new_requests_and_consume_cooldown(
+    tmp_path, monkeypatch
+):
+    env = FakeAgentEnv(tmp_path / "env")
+    now = [datetime(2026, 8, 9, 12, 0, tzinfo=timezone.utc)]
+    monkeypatch.setattr(continuous_module, "_now", lambda: now[0])
+    calls = 0
+
+    async def run_verifier(key: str, paths) -> VerifierResult:
+        nonlocal calls
+        calls += 1
+        return VerifierResult(rewards={"reward": 1.0})
+
+    service = _service(
+        tmp_path,
+        env,
+        run_verifier,
+        minimum_submission_interval_sec=300,
+        max_outstanding_submissions=1,
+        shared_result_cache_dir=str(tmp_path / "trusted-cache"),
+    )
+    async with service.running():
+        (env.watch / "request-a.pt").write_bytes(b"same-policy")
+        await _settle(service)
+
+        now[0] += timedelta(seconds=299)
+        (env.watch / "request-b.pt").write_bytes(b"same-policy")
+        await _settle(service)
+
+        now[0] += timedelta(seconds=1)
+        (env.watch / "request-c.pt").write_bytes(b"same-policy")
+        await _settle(service)
+
+    first, rejected, third = service.summary.submissions
+    assert first.accepted is True
+    assert rejected.accepted is False
+    assert rejected.retry_after_sec == 1
+    assert "cooldown" in (rejected.error or "")
+    assert third.accepted is True
+    assert third.cache_hit is True
+    assert first.artifact_sha256 == rejected.artifact_sha256 == third.artifact_sha256
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_request_id_replay_and_cooldown_survive_service_restart(
+    tmp_path, monkeypatch
+):
+    env = FakeAgentEnv(tmp_path / "env")
+    now = [datetime(2026, 8, 9, 12, 0, tzinfo=timezone.utc)]
+    monkeypatch.setattr(continuous_module, "_now", lambda: now[0])
+    calls = 0
+
+    async def run_verifier(key: str, paths) -> VerifierResult:
+        nonlocal calls
+        calls += 1
+        return VerifierResult(rewards={"reward": 1.0})
+
+    first = _service(
+        tmp_path,
+        env,
+        run_verifier,
+        minimum_submission_interval_sec=300,
+        max_outstanding_submissions=1,
+    )
+    (env.watch / "stable-request.pt").write_bytes(b"policy")
+    async with first.running():
+        await _settle(first)
+
+    now[0] += timedelta(seconds=100)
+    restarted = _service(
+        tmp_path,
+        env,
+        run_verifier,
+        minimum_submission_interval_sec=300,
+        max_outstanding_submissions=1,
+    )
+    async with restarted.running():
+        # The original filename remains in the queue and is idempotently seen.
+        await asyncio.sleep(0.05)
+        (env.watch / "new-request.pt").write_bytes(b"new-policy")
+        await _settle(restarted)
+
+    assert calls == 1
+    assert [row.name for row in restarted.summary.submissions] == [
+        "stable-request.pt",
+        "new-request.pt",
+    ]
+    assert restarted.summary.submissions[0].accepted is True
+    assert restarted.summary.submissions[1].accepted is False
+    assert restarted.summary.submissions[1].retry_after_sec == 200
 
 
 @pytest.mark.asyncio
@@ -777,6 +911,48 @@ async def test_shared_scheduler_serializes_independent_model_queues(tmp_path):
         "acquired",
         "released",
     ]
+
+
+@pytest.mark.asyncio
+async def test_independent_trial_lanes_do_not_block_each_other(tmp_path):
+    concurrent = 0
+    peak = 0
+
+    async def run_verifier(key: str, paths) -> VerifierResult:
+        nonlocal concurrent, peak
+        concurrent += 1
+        peak = max(peak, concurrent)
+        await asyncio.sleep(0.05)
+        concurrent -= 1
+        return VerifierResult(rewards={"reward": 1.0})
+
+    env_a = FakeAgentEnv(tmp_path / "env-a")
+    env_b = FakeAgentEnv(tmp_path / "env-b")
+    service_a = _service(
+        tmp_path / "a",
+        env_a,
+        run_verifier,
+        queue_key="trial-a",
+        minimum_submission_interval_sec=300,
+        max_outstanding_submissions=1,
+    )
+    service_b = _service(
+        tmp_path / "b",
+        env_b,
+        run_verifier,
+        queue_key="trial-b",
+        minimum_submission_interval_sec=300,
+        max_outstanding_submissions=1,
+    )
+    (env_a.watch / "a.pt").write_bytes(b"a")
+    (env_b.watch / "b.pt").write_bytes(b"b")
+
+    async with service_a.running(), service_b.running():
+        await asyncio.sleep(0.3)
+
+    assert peak == 2
+    assert service_a.summary.submissions[0].queue_key == "trial-a"
+    assert service_b.summary.submissions[0].queue_key == "trial-b"
 
 
 @pytest.mark.asyncio

@@ -21,15 +21,15 @@ timeout_sec = 900
 # agent's container would import physics the agent could have edited.
 environment_mode = "separate"
 
-# The agent submits whenever it likes and keeps training. Harbor archives and
-# scores the immutable file without returning any score, failure, queue state,
-# or completion timing to the agent. Results become visible only after the
-# agent phase is closed, removing verifier feedback as an optimization channel.
+# Harbor is the trusted acceptance boundary. Each trial may have one accepted
+# policy outstanding and may accept another no sooner than five minutes after
+# the previous acceptance. Replaying one request ID is idempotent; a new ID with
+# identical bytes is a new submission and is subject to the same limiter.
 [verifier.continuous]
 enabled = true
 watch_dir = "/app/submissions/queue"
 results_dir = "/app/submissions/results"
-return_results_to_agent = false
+return_results_to_agent = true
 drain_pending_on_stop = true
 # Every accepted policy is part of the benchmark result set. There is no
 # privileged final artifact or separate post-agent verification.
@@ -38,11 +38,12 @@ max_verifier_attempts = 3
 verifier_retry_backoff_sec = 2.0
 submission_path = "/app/submission/policy.pt"
 poll_interval_sec = 20.0
-# All concurrent model runs contend for this one trusted host lease. Each policy
-# still executes in a fresh, sealed Modal sandbox, but at most one canonical
-# verifier uses the GPU at a time across Harbor processes. Queue latency cannot
-# influence an agent because no verifier state is returned during its run.
-shared_scheduler_lock_path = "$SPRINT_SHARED_STATE_DIR/verifier.lock"
+minimum_submission_interval_sec = 300.0
+max_outstanding_submissions = 1
+# There is deliberately no cross-trial scheduler lock. Each run owns an
+# independent one-at-a-time queue and every accepted cache miss gets a fresh,
+# ephemeral sealed Modal verifier sandbox. One trial therefore cannot delay
+# another trial's scoring except through ordinary provider GPU availability.
 # Replayed bytes under the exact same task/verifier fingerprint reuse the
 # checksummed trusted result. A verifier/task change creates a different key.
 shared_result_cache_dir = "$SPRINT_SHARED_STATE_DIR/result-cache"

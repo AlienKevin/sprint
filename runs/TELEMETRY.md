@@ -8,6 +8,31 @@ Every future durable (and open-runner) Harbor trial starts an in-sandbox sampler
 that records GPU and sandbox-local resource usage on a 15–30s interval (default
 **20s**).
 
+GPU workers additionally run NVIDIA CUPTI PM sampling against the sandbox GPU.
+This is device-scoped, so it observes the separate agent training or sealed
+verifier process without changing that process. The collector rotates three
+single-hardware-pass counter groups: replaying an arbitrary training workload
+to satisfy a multi-pass profile would distort the benchmark. Training and
+sealed-verifier samplers run every 5s, so each rotated counter is normally
+refreshed at least every 15s.
+
+The primary hardware-pipeline fields are:
+
+- `sm_active_pct` — SM active cycles divided by elapsed cycles;
+- `sm_occupancy_pct` — active warps divided by peak active warps;
+- `tensor_pipe_active_pct` — tensor-pipe active cycles divided by elapsed cycles;
+- `fp32_fma_pipe_active_pct` — Ampere FMA-heavy pipe activity (the recorded
+  FP32 proxy, named as such rather than presented as total FLOP utilization);
+- `fp16_instruction_pct_of_peak_active` — issued FP16 FMA instructions relative
+  to the active-cycle peak;
+- `dram_throughput_pct` — DRAM throughput relative to sustained peak.
+
+Each point retains collector source, counter group, capture window, completed
+sample count, and an explicit status/error. The documented CUPTI first-sample
+timestamp outlier is discarded. Unsupported or denied counters fail open for
+the workload but fail the future-run timeline readiness gate; ordinary NVML
+utilization, power, VRAM, and clocks remain as fallback evidence.
+
 CPU and memory fields come from the sandbox's cgroup controller: Modal's
 cgroup-v1 mounts (`cpuacct.usage`, `cpu.cfs_*`, and `memory.*_in_bytes`) or
 cgroup v2 (`cpu.stat`, `cpu.max`, `memory.current`, `memory.max`,
@@ -167,6 +192,15 @@ Per-GPU fields (repeated when multiple GPUs):
 `clock_mem_mhz`, `clock_max_*`, `pcie_link_gen`, `pcie_link_width`,
 `ecc_mode`, `ecc_corrected_volatile`, `ecc_uncorrected_volatile`,
 `driver_version`
+
+CUPTI pipeline fields (rotated single-pass groups):
+
+`pipeline_metrics_source`, `pipeline_metrics_group`,
+`pipeline_metrics_status`, `pipeline_metrics_sample_count`,
+`pipeline_metrics_window_ms`, `pipeline_metrics_error`, `sm_active_pct`,
+`sm_occupancy_pct`, `tensor_pipe_active_pct`,
+`fp32_fma_pipe_active_pct`, `fp16_instruction_pct_of_peak_active`,
+`dram_throughput_pct`
 
 `samples.jsonl` keeps nested `gpus[]` and `gpu_processes[]`. Process records
 store `pid`, redacted `process_name`, and `used_memory_mib` only — never

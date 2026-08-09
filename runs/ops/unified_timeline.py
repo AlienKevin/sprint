@@ -26,6 +26,14 @@ PUBLIC_RUN_LIMIT = 6
 DEFAULT_GPU_MAX_GAP_SECONDS = 45
 ISO_KEYS = ("timestamp", "ts_utc", "created_at", "at", "submitted_at")
 RESOURCE_ROLES = {"cpu-agent", "training-gpu", "verifier-gpu", "host-controller"}
+GPU_PIPELINE_FIELDS = (
+    "sm_active_pct",
+    "sm_occupancy_pct",
+    "tensor_pipe_active_pct",
+    "fp32_fma_pipe_active_pct",
+    "fp16_instruction_pct_of_peak_active",
+    "dram_throughput_pct",
+)
 
 
 def parse_epoch_ms(value: Any) -> int | None:
@@ -268,9 +276,7 @@ class Builder:
             self.state_dir / "telemetry" / "durable-samples.jsonl",
             self.state_dir / "telemetry" / "durable-gpu-samples.jsonl",
         ]
-        paths.extend(
-            self.state_dir.glob("telemetry/durable-by-job/*/samples.jsonl")
-        )
+        paths.extend(self.state_dir.glob("telemetry/durable-by-job/*/samples.jsonl"))
         for trial in trials:
             root = trial / "artifacts" / "logs" / "artifacts" / "telemetry"
             paths.extend((root / "samples.jsonl", root / "host-samples.jsonl"))
@@ -390,6 +396,13 @@ class Builder:
                                 "temp_gpu_c",
                                 "clock_sm_mhz",
                                 "clock_mem_mhz",
+                                "pipeline_metrics_source",
+                                "pipeline_metrics_group",
+                                "pipeline_metrics_status",
+                                "pipeline_metrics_sample_count",
+                                "pipeline_metrics_window_ms",
+                                "pipeline_metrics_error",
+                                *GPU_PIPELINE_FIELDS,
                             )
                             if gpu.get(name) is not None
                         }
@@ -612,9 +625,7 @@ class Builder:
                 if not isinstance(record, dict):
                     continue
                 attempt = record.get("attempt")
-                finished_at = record.get("finished_at") or record.get(
-                    "terminated_at"
-                )
+                finished_at = record.get("finished_at") or record.get("terminated_at")
                 if not isinstance(attempt, int) or attempt <= 0 or not finished_at:
                     continue
                 key = (job_id, attempt)
@@ -701,8 +712,7 @@ class Builder:
                 kind="gpu_released",
                 source=end["source"],
                 identity=(
-                    f"recovered-release:{key[0]}:{key[1]}:"
-                    f"{end['epoch_ms']}:{boundary}"
+                    f"recovered-release:{key[0]}:{key[1]}:{end['epoch_ms']}:{boundary}"
                 ),
                 data={
                     "gpu_job_id": key[0],
@@ -1067,7 +1077,7 @@ class Builder:
                         )
                         if isinstance(row.get("verification_retry_events"), list)
                         else [],
-                        "submission_origin": "agent_blind_submit",
+                        "submission_origin": "agent_feedback_submit",
                         "rewards": row.get("rewards")
                         if isinstance(row.get("rewards"), dict)
                         else {},
@@ -1105,9 +1115,7 @@ class Builder:
                     "cache_hit": bool(row.get("cache_hit")),
                     "evaluation_fingerprint": row.get("evaluation_fingerprint"),
                     "source_evaluation_id": row.get("source_evaluation_id"),
-                    "verification_attempts": int(
-                        row.get("verification_attempts") or 0
-                    ),
+                    "verification_attempts": int(row.get("verification_attempts") or 0),
                 }
                 if uses_frozen_final:
                     common["primary_final"] = primary_final
@@ -1632,6 +1640,44 @@ class Builder:
             max_gap_ms=max_gap_ms,
             match_fields=("evaluation_id",),
         )
+        pipeline_max_gap_ms = (
+            int(self.run.get("telemetry_gpu_pipeline_max_gap_seconds") or 45) * 1000
+        )
+
+        def pipeline_coverage(
+            intervals: list[dict[str, Any]],
+            samples: list[dict[str, Any]],
+            *,
+            match_fields: tuple[str, ...],
+        ) -> dict[str, list[dict[str, Any]]]:
+            return {
+                field: self._metric_coverage(
+                    intervals,
+                    [
+                        sample
+                        for sample in samples
+                        if any(
+                            gpu.get(field) is not None
+                            for gpu in ((sample.get("metrics") or {}).get("gpus") or [])
+                            if isinstance(gpu, dict)
+                        )
+                    ],
+                    max_gap_ms=pipeline_max_gap_ms,
+                    match_fields=match_fields,
+                )
+                for field in GPU_PIPELINE_FIELDS
+            }
+
+        training_pipeline_coverage = pipeline_coverage(
+            training_intervals,
+            training_samples,
+            match_fields=("gpu_job_id", "gpu_attempt"),
+        )
+        verifier_pipeline_coverage = pipeline_coverage(
+            verifier_intervals,
+            verifier_samples,
+            match_fields=("evaluation_id",),
+        )
         training_expected = bool(training_intervals)
         verifier_expected = bool(verifier_evaluation_intervals)
         verifier_evaluation_ids = {
@@ -1720,6 +1766,23 @@ class Builder:
                 else True
             ),
         }
+        if self.run.get("gpu_pipeline_telemetry_required"):
+            requirements["training_gpu_pipeline_metrics"] = (
+                all(
+                    all(item["covered"] for item in field_coverage)
+                    for field_coverage in training_pipeline_coverage.values()
+                )
+                if training_expected
+                else True
+            )
+            requirements["verifier_gpu_pipeline_metrics"] = (
+                all(
+                    all(item["covered"] for item in field_coverage)
+                    for field_coverage in verifier_pipeline_coverage.values()
+                )
+                if verifier_expected
+                else True
+            )
         cgroup_samples = list(cpu_samples)
         if training_expected:
             cgroup_samples.extend(training_samples)
@@ -1771,6 +1834,11 @@ class Builder:
                 "max_gap_ms": max_gap_ms,
                 "training": training_coverage,
                 "verifier": verifier_coverage,
+            },
+            "gpu_pipeline_metric_coverage": {
+                "max_gap_ms": pipeline_max_gap_ms,
+                "training": training_pipeline_coverage,
+                "verifier": verifier_pipeline_coverage,
             },
             "cpu_metric_coverage": {
                 "max_gap_ms": cpu_max_gap_ms,
@@ -1884,6 +1952,55 @@ class Builder:
         else:
             selected_agent_modal_cost = estimated_agent_modal_cost
             selected_verifier_cost = estimated_verifier_cost
+
+        def pipeline_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
+            summary: dict[str, Any] = {}
+            for field in GPU_PIPELINE_FIELDS:
+                weighted: list[tuple[float, float]] = []
+                for sample in samples:
+                    for gpu in (sample.get("metrics") or {}).get("gpus") or []:
+                        if not isinstance(gpu, dict):
+                            continue
+                        value = gpu.get(field)
+                        if not isinstance(value, (int, float)) or isinstance(
+                            value, bool
+                        ):
+                            continue
+                        weight = gpu.get("pipeline_metrics_window_ms")
+                        weighted.append(
+                            (
+                                float(value),
+                                float(weight)
+                                if isinstance(weight, (int, float)) and weight > 0
+                                else 1.0,
+                            )
+                        )
+                if not weighted:
+                    summary[field] = {
+                        "sample_count": 0,
+                        "window_weighted_mean_pct": None,
+                        "p50_pct": None,
+                        "p95_pct": None,
+                        "max_pct": None,
+                    }
+                    continue
+                values = sorted(value for value, _ in weighted)
+                summary[field] = {
+                    "sample_count": len(values),
+                    "window_weighted_mean_pct": round(
+                        sum(value * weight for value, weight in weighted)
+                        / sum(weight for _, weight in weighted),
+                        4,
+                    ),
+                    "p50_pct": round(values[round((len(values) - 1) * 0.50)], 4),
+                    "p95_pct": round(values[round((len(values) - 1) * 0.95)], 4),
+                    "max_pct": round(max(values), 4),
+                }
+            return {
+                "collector": "cupti-pm-sampling",
+                "metrics": summary,
+            }
+
         resource_usage_summary = {
             "cpu_agent": {
                 "allocation_count": len(cpu_intervals),
@@ -1896,6 +2013,10 @@ class Builder:
             "verifier_gpu": {
                 "allocation_count": len(verifier_intervals),
                 "allocated_ms": allocated_by_role["verifier_gpu"],
+            },
+            "gpu_pipeline": {
+                "training_gpu": pipeline_summary(training_samples),
+                "verifier_gpu": pipeline_summary(verifier_samples),
             },
             "resource_contract": self.run.get("resource_contract"),
             "modal_estimate": modal_estimate,
@@ -1936,9 +2057,7 @@ class Builder:
             self.run.get("primary_score_policy") == "frozen_final_artifact"
         )
         evaluation_result_policy = self.run.get("evaluation_result_policy") or (
-            "frozen_final_artifact"
-            if uses_frozen_final
-            else "all_blind_submissions"
+            "frozen_final_artifact" if uses_frozen_final else "all_feedback_submissions"
         )
         primary_artifacts = (
             [artifact for artifact in self.artifacts if artifact.get("primary_final")]
@@ -2099,9 +2218,7 @@ class Builder:
                         else None
                     ),
                     "verifier_measurement_overhead_at_primary_submission_estimated_usd": (
-                        primary_cost.get(
-                            "verifier_measurement_overhead_estimated_usd"
-                        )
+                        primary_cost.get("verifier_measurement_overhead_estimated_usd")
                         if primary_cost is not None
                         else None
                     ),
@@ -2218,9 +2335,7 @@ def build_timeline(
                     "submission_index": artifact.get("submission_index"),
                     "finished_epoch_ms": parse_epoch_ms(artifact.get("finished_at")),
                     "rewards": {
-                        "valid_run": (artifact.get("rewards") or {}).get(
-                            "valid_run"
-                        ),
+                        "valid_run": (artifact.get("rewards") or {}).get("valid_run"),
                         "best_100m_s": (artifact.get("rewards") or {}).get(
                             "best_100m_s"
                         ),
@@ -2230,9 +2345,9 @@ def build_timeline(
                         "gate_in_lane": (artifact.get("rewards") or {}).get(
                             "gate_in_lane"
                         ),
-                        "gate_self_collision": (
-                            artifact.get("rewards") or {}
-                        ).get("gate_self_collision"),
+                        "gate_self_collision": (artifact.get("rewards") or {}).get(
+                            "gate_self_collision"
+                        ),
                         "peak_speed_mps": (artifact.get("rewards") or {}).get(
                             "peak_speed_mps"
                         ),

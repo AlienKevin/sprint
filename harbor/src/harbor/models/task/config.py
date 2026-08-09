@@ -629,12 +629,31 @@ class ContinuousVerificationConfig(BaseModel):
             "why, rather than silently dropped."
         ),
     )
+    minimum_submission_interval_sec: float = Field(
+        default=0.0,
+        ge=0,
+        description=(
+            "Minimum trusted-host time between accepted submissions in one "
+            "trial. A differently named request containing duplicate bytes is "
+            "still a new submission and is subject to this interval. Replaying "
+            "the same request name remains idempotent."
+        ),
+    )
+    max_outstanding_submissions: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Maximum accepted submissions in this trial that may still be "
+            "queued or running. Rejected requests are retained in the trusted "
+            "ledger but do not consume this allowance."
+        ),
+    )
     drain_pending_on_stop: bool = Field(
         default=False,
         description=(
             "Finish every accepted submission after the agent phase ends. This is "
-            "appropriate for blind evaluation, where verifier latency cannot affect "
-            "the agent and the complete retrospective trajectory is required."
+            "appropriate when the complete trajectory is required, including a "
+            "bounded feedback queue with at most one outstanding submission."
         ),
     )
     continuous_only: bool = Field(
@@ -721,9 +740,7 @@ class ContinuousVerificationConfig(BaseModel):
                 continue
             expanded = os.path.expanduser(os.path.expandvars(value))
             if "$" in expanded or not Path(expanded).is_absolute():
-                raise ValueError(
-                    f"{field_name} must resolve to an absolute host path"
-                )
+                raise ValueError(f"{field_name} must resolve to an absolute host path")
             setattr(self, field_name, expanded)
         return self
 

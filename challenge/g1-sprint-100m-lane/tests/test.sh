@@ -18,7 +18,7 @@ TELEMETRY_DIR="$LOGS_DIR/telemetry"
 SPRINT_REQUESTED_CPU_CORES=8 SPRINT_REQUESTED_MEMORY_MIB=32768 \
   python3 /tests/verifier_telemetry.py \
     --out-dir "$TELEMETRY_DIR" \
-    --interval-seconds "${SPRINT_VERIFIER_TELEMETRY_INTERVAL_S:-10}" &
+    --interval-seconds "${SPRINT_VERIFIER_TELEMETRY_INTERVAL_S:-5}" &
 TELEMETRY_PID=$!
 stop_telemetry() {
     kill -TERM "$TELEMETRY_PID" 2>/dev/null || true

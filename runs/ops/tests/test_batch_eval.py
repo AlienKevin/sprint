@@ -408,11 +408,27 @@ def test_batch_stop_persists_all_intents_before_slow_dispatch(
     ]
 
 
-def test_shared_verifier_stall_alert_requires_pending_work_and_old_progress(
+def test_verifier_lane_stall_alert_is_scoped_to_one_trial(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    events = tmp_path / "scheduler-events.jsonl"
-    monkeypatch.setattr(batch_eval, "SHARED_VERIFIER_EVENTS", events)
+    monkeypatch.setattr(batch_eval, "SCRIPT_DIR", tmp_path)
+    ledger = (
+        tmp_path
+        / "eval-luna-1/harbor-jobs/job/task__trial/artifacts/continuous/ledger.jsonl"
+    )
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(
+        json.dumps(
+            {
+                "submitted_at": "2026-08-08T11:59:59Z",
+                "accepted_at": "2026-08-08T11:59:59Z",
+                "accepted": True,
+                "finished_at": None,
+                "error": None,
+            }
+        )
+        + "\n"
+    )
     payload = {
         "arms": [
             {
@@ -422,37 +438,28 @@ def test_shared_verifier_stall_alert_requires_pending_work_and_old_progress(
         ]
     }
     now = batch_eval.parse_time("2026-08-08T12:20:00Z")
-    events.write_text(
-        json.dumps(
-            {
-                "at": "2026-08-08T11:59:59Z",
-                "event": "acquired",
-                "queue_key": "eval-luna-1",
-            }
-        )
-        + "\n"
-    )
-
-    alerts = batch_eval.shared_verifier_stall_alerts(payload, now=now)
+    alerts = batch_eval.verifier_lane_stall_alerts(payload, now=now)
     assert len(alerts) == 1
-    assert alerts[0]["kind"] == "shared_verifier_stalled"
-
+    assert alerts[0]["run_id"] == "eval-luna-1"
+    assert alerts[0]["kind"] == "verifier_lane_stalled"
     assert alerts[0]["pending_submissions"] == "2"
 
-    events.write_text(
+    ledger.write_text(
         json.dumps(
             {
-                "at": "2026-08-08T12:00:01Z",
-                "event": "released",
-                "queue_key": "eval-luna-1",
+                "submitted_at": "2026-08-08T11:59:59Z",
+                "accepted_at": "2026-08-08T11:59:59Z",
+                "verification_started_at": "2026-08-08T12:00:01Z",
+                "accepted": True,
+                "finished_at": None,
+                "error": None,
             }
         )
         + "\n"
     )
-    assert batch_eval.shared_verifier_stall_alerts(payload, now=now) == []
+    assert batch_eval.verifier_lane_stall_alerts(payload, now=now) == []
     payload["arms"][0]["ledger"] = {"queued": 0, "running": 0}
-    events.write_text("")
-    assert batch_eval.shared_verifier_stall_alerts(payload, now=now) == []
+    assert batch_eval.verifier_lane_stall_alerts(payload, now=now) == []
 
 
 def test_continuous_ledger_errors_are_explicit_batch_alerts() -> None:
@@ -472,15 +479,10 @@ def test_continuous_ledger_errors_are_explicit_batch_alerts() -> None:
     ]
 
 
-def test_fresh_pending_submission_outranks_old_scheduler_history(
+def test_rejected_submission_cannot_mask_an_old_stuck_verifier_lane(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ops = tmp_path / "ops"
-    events = ops / "blind-verifier" / "scheduler-events.jsonl"
-    events.parent.mkdir(parents=True)
-    events.write_text(
-        json.dumps({"at": "2026-08-08T10:00:00Z", "event": "released"}) + "\n"
-    )
     ledger = (
         ops
         / "eval-deepseek-1/harbor-jobs/job/task__trial/artifacts/continuous/ledger.jsonl"
@@ -489,15 +491,25 @@ def test_fresh_pending_submission_outranks_old_scheduler_history(
     ledger.write_text(
         json.dumps(
             {
-                "submitted_at": "2026-08-08T12:19:00Z",
+                "submitted_at": "2026-08-08T11:50:00Z",
+                "accepted_at": "2026-08-08T11:50:00Z",
+                "accepted": True,
                 "finished_at": None,
                 "error": None,
             }
         )
         + "\n"
+        + json.dumps(
+            {
+                "submitted_at": "2026-08-08T12:19:00Z",
+                "accepted": False,
+                "finished_at": "2026-08-08T12:19:00Z",
+                "error": "submission cooldown active",
+            }
+        )
+        + "\n"
     )
     monkeypatch.setattr(batch_eval, "SCRIPT_DIR", ops)
-    monkeypatch.setattr(batch_eval, "SHARED_VERIFIER_EVENTS", events)
     payload = {
         "arms": [
             {
@@ -507,7 +519,9 @@ def test_fresh_pending_submission_outranks_old_scheduler_history(
         ]
     }
     now = batch_eval.parse_time("2026-08-08T12:20:00Z")
-    assert batch_eval.shared_verifier_stall_alerts(payload, now=now) == []
+    alerts = batch_eval.verifier_lane_stall_alerts(payload, now=now)
+    assert len(alerts) == 1
+    assert alerts[0]["run_id"] == "eval-deepseek-1"
 
     ledger.write_text(
         json.dumps(
@@ -520,7 +534,7 @@ def test_fresh_pending_submission_outranks_old_scheduler_history(
         + "\n"
         + ledger.read_text()
     )
-    alerts = batch_eval.shared_verifier_stall_alerts(payload, now=now)
+    alerts = batch_eval.verifier_lane_stall_alerts(payload, now=now)
     assert len(alerts) == 1
     assert alerts[0]["last_progress_at"] == "2026-08-08T11:59:59+00:00"
 

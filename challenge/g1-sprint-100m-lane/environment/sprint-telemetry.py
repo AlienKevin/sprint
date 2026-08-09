@@ -23,7 +23,9 @@ import sys
 import time
 from typing import Any
 
-SCHEMA_VERSION = 2
+from sprint_gpu_pipeline import collector_capability, collect_pipeline_metrics
+
+SCHEMA_VERSION = 3
 DEFAULT_INTERVAL = 20
 SECRET_NAME_RE = re.compile(
     r"(api[_-]?key|oauth|token|password|secret|authorization|bearer)",
@@ -45,7 +47,7 @@ GPU_QUERY = (
     "driver_version"
 )
 
-GPU_CSV_FIELDS = [
+GPU_QUERY_FIELDS = [
     "gpu_index",
     "gpu_name",
     "gpu_uuid",
@@ -69,6 +71,21 @@ GPU_CSV_FIELDS = [
     "ecc_corrected_volatile",
     "ecc_uncorrected_volatile",
     "driver_version",
+]
+
+GPU_CSV_FIELDS = GPU_QUERY_FIELDS + [
+    "pipeline_metrics_source",
+    "pipeline_metrics_group",
+    "pipeline_metrics_status",
+    "pipeline_metrics_sample_count",
+    "pipeline_metrics_window_ms",
+    "pipeline_metrics_error",
+    "sm_active_pct",
+    "sm_occupancy_pct",
+    "tensor_pipe_active_pct",
+    "fp32_fma_pipe_active_pct",
+    "fp16_instruction_pct_of_peak_active",
+    "dram_throughput_pct",
 ]
 
 SAMPLE_BASE_FIELDS = [
@@ -317,9 +334,7 @@ def read_cgroup_v2(
         cpu_limit = None
     memory_limit_bytes = _read_int(root / "memory.max")
     memory_limit_kib = (
-        memory_limit_bytes // 1024
-        if memory_limit_bytes is not None
-        else None
+        memory_limit_bytes // 1024 if memory_limit_bytes is not None else None
     )
     memory_total_kib = requested_memory_kib or memory_limit_kib
     memory_current_kib = memory_current // 1024
@@ -405,9 +420,7 @@ def read_cgroup_v1(
     if memory_limit_bytes is not None and memory_limit_bytes >= 1 << 60:
         memory_limit_bytes = None
     memory_limit_kib = (
-        memory_limit_bytes // 1024
-        if memory_limit_bytes is not None
-        else None
+        memory_limit_bytes // 1024 if memory_limit_bytes is not None else None
     )
     memory_total_kib = requested_memory_kib or memory_limit_kib
     memory_current_kib = memory_current // 1024
@@ -440,9 +453,7 @@ def read_cgroup_v1(
         ),
         "cpu_nr_throttled": cpu_stat.get("nr_throttled"),
         "cpu_throttled_usec": (
-            cpu_stat["throttled_time"] // 1000
-            if "throttled_time" in cpu_stat
-            else None
+            cpu_stat["throttled_time"] // 1000 if "throttled_time" in cpu_stat else None
         ),
         "mem_requested_kib": requested_memory_kib,
         "mem_limit_kib": memory_limit_kib,
@@ -619,6 +630,7 @@ def snapshot_gpu_static() -> dict[str, Any]:
         "driver_version": None,
         "cuda_version": None,
         "gpus": [],
+        "gpu_pipeline": collector_capability(),
         "notes": [],
     }
     if not nvidia_available():
@@ -639,9 +651,9 @@ def snapshot_gpu_static() -> dict[str, Any]:
     gpus = []
     for line in q.stdout.splitlines():
         cols = [c.strip() for c in line.split(",")]
-        if len(cols) < len(GPU_CSV_FIELDS):
+        if len(cols) < len(GPU_QUERY_FIELDS):
             continue
-        row = {field: parse_num(cols[i]) for i, field in enumerate(GPU_CSV_FIELDS)}
+        row = {field: parse_num(cols[i]) for i, field in enumerate(GPU_QUERY_FIELDS)}
         gpus.append(row)
         if payload["driver_version"] is None:
             payload["driver_version"] = row.get("driver_version")
@@ -682,13 +694,18 @@ def sample_gpus() -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str,
         extras["nvidia_smi_ok"] = True
         for line in q.stdout.splitlines():
             cols = [c.strip() for c in line.split(",")]
-            if len(cols) < len(GPU_CSV_FIELDS):
+            if len(cols) < len(GPU_QUERY_FIELDS):
                 continue
             gpus.append(
-                {field: parse_num(cols[i]) for i, field in enumerate(GPU_CSV_FIELDS)}
+                {field: parse_num(cols[i]) for i, field in enumerate(GPU_QUERY_FIELDS)}
             )
     else:
         notes.append(f"nvidia-smi_query_rc={q.returncode}")
+
+    if gpus:
+        # Fairness contracts permit one GPU per worker.  CUPTI PM sampling is
+        # device scoped and observes the separate training/verifier process.
+        gpus[0].update(collect_pipeline_metrics())
 
     p = run_cmd(
         [

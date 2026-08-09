@@ -34,7 +34,7 @@ def configure_paths(module, tmp_path: Path) -> None:
     module.LOCK = str(tmp_path / "submissions" / "submit.lock")
 
 
-def test_submit_returns_blind_receipt_without_designating_final(
+def test_submit_returns_async_receipt_without_designating_final(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
     submit = load_script("sprint-submit")
@@ -56,9 +56,9 @@ def test_submit_returns_blind_receipt_without_designating_final(
 
     assert submit.main() == 0
     output = capsys.readouterr().out
-    assert "accepted" in output
-    assert "sealed until this run ends" in output
-    assert "score" not in output.lower()
+    assert "queued" in output
+    assert "300 seconds" in output
+    assert "sprint-board" in output
     receipts = list(Path(submit.RECEIPTS).glob("*.json"))
     assert len(receipts) == 1
     receipt = json.loads(receipts[0].read_text())
@@ -104,18 +104,21 @@ def test_submission_accepts_after_sixty_prior_receipts(
     monkeypatch.setattr(sys, "argv", ["sprint-submit", str(policy)])
 
     assert submit.main() == 0
-    assert "accepted" in capsys.readouterr().out
+    assert "queued" in capsys.readouterr().out
     assert len(list(Path(submit.RECEIPTS).glob("*.json"))) == 61
     assert len(list(Path(submit.QUEUE).glob("*.pt"))) == 1
 
 
-def test_board_exposes_receipts_but_no_verifier_status(
+def test_board_exposes_pending_and_completed_verifier_feedback(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
     board = load_script("sprint-board")
     receipts = tmp_path / "receipts"
+    results = tmp_path / "results"
     receipts.mkdir()
+    results.mkdir()
     board.RECEIPTS = str(receipts)
+    board.RESULTS = str(results)
     (receipts / "one.json").write_text(
         json.dumps(
             {
@@ -128,11 +131,70 @@ def test_board_exposes_receipts_but_no_verifier_status(
 
     assert board.main() == 0
     output = capsys.readouterr().out
-    assert "one  chosen" in output
-    assert "FINAL" not in output
-    assert "results are sealed" in output
-    for forbidden in ("score", "queued", "running", "finished", "dq", "100 m"):
-        assert forbidden not in output.lower()
+    assert "one  chosen  pending host acceptance/result" in output
+
+    (results / "one.pt.json").write_text(
+        json.dumps(
+            {
+                "accepted": True,
+                "rewards": {
+                    "valid_run": 0.0,
+                    "best_100m_s": 0.0,
+                    "gate_finished": 1.0,
+                    "gate_in_lane": 0.0,
+                    "gate_self_collision": 1.0,
+                },
+            }
+        )
+    )
+    assert board.main() == 0
+    output = capsys.readouterr().out
+    assert "one  chosen  DQ  failed gates: in_lane" in output
+
+
+def test_board_exposes_valid_score_and_rate_rejection(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    board = load_script("sprint-board")
+    receipts = tmp_path / "receipts"
+    results = tmp_path / "results"
+    receipts.mkdir()
+    results.mkdir()
+    board.RECEIPTS = str(receipts)
+    board.RESULTS = str(results)
+    for submission_id in ("valid", "limited"):
+        (receipts / f"{submission_id}.json").write_text(
+            json.dumps({"submission_id": submission_id, "note": ""})
+        )
+    (results / "valid.pt.json").write_text(
+        json.dumps(
+            {
+                "accepted": True,
+                "rewards": {
+                    "valid_run": 1.0,
+                    "best_100m_s": 8.948,
+                    "gate_finished": 1.0,
+                    "gate_in_lane": 1.0,
+                    "gate_self_collision": 1.0,
+                },
+            }
+        )
+    )
+    (results / "limited.pt.json").write_text(
+        json.dumps(
+            {
+                "accepted": False,
+                "error": "submission cooldown active",
+                "retry_after_sec": 173,
+            }
+        )
+    )
+    monkeypatch.setattr(sys, "argv", ["sprint-board"])
+
+    assert board.main() == 0
+    output = capsys.readouterr().out
+    assert "valid  8.948s  valid" in output
+    assert "limited  rejected: submission cooldown active; retry after 173s" in output
 
 
 def test_finalization_requires_nonempty_host_frozen_policy(tmp_path: Path) -> None:

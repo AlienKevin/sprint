@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Submit a policy for blind scoring. Returns immediately.
+"""Submit a policy for asynchronous scoring. Returns immediately.
 
     sprint-submit mypolicy.pt --note "wider hips, 3k iters"
 
-Prints an acceptance id and exits. Scoring runs on the real course in a sealed
-container, but no score, failure, queue state, or completion timing is exposed
-until the agent run has ended. Every accepted policy is retained in the final
-trajectory and Pareto analysis.
+Prints a request id and exits. Scoring runs on the real course in a sealed
+container. Use sprint-board to see whether the trusted host accepted the
+request and to read completed score and gate feedback. Every accepted policy
+is retained in the final trajectory and Pareto analysis.
 """
 
 import argparse
@@ -38,7 +38,7 @@ def atomic_json(path: str, payload: dict) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("policy", help="TorchScript policy to score blindly")
+    parser.add_argument("policy", help="TorchScript policy to score")
     parser.add_argument("--note", default="", help="local receipt annotation")
     args = parser.parse_args()
     policy = args.policy
@@ -97,8 +97,11 @@ def main() -> int:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         os.close(lock_fd)
 
-    print(f"accepted {job_id}" + (f"  ({note})" if note else ""))
-    print("blind verification is asynchronous; results are sealed until this run ends.")
+    print(f"queued {job_id}" + (f"  ({note})" if note else ""))
+    print(
+        "Harbor accepts at most one outstanding policy and one every 300 seconds; "
+        "run sprint-board for acceptance and score feedback."
+    )
     return 0
 
 

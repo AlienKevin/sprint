@@ -8,6 +8,6 @@ mkdir -p /app/submissions/queue /app/submissions/notes \
 
 # No reference policy, no copy of the course, no copy of the scorer. The agent
 # trains against whatever it likes, using the Isaac Lab install at /opt/IsaacLab
-# or anything else, and submits immutable candidates for blind retrospective
+# or anything else, and submits immutable candidates for trusted asynchronous
 # scoring. Optional PhysX spawn helper for the scored-course G1 lands at
 # /app/train via the Dockerfile.

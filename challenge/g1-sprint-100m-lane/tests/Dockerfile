@@ -57,7 +57,10 @@ RUN git clone --depth 1 --branch v2.3.2 \
 # --- verifier only, below this line -----------------------------------------
 # Separate-mode verifiers skip the tests upload, so the image owns /tests.
 COPY . /tests/
-RUN chmod +x /tests/test.sh /tests/verifier_telemetry.py
+RUN chmod +x /tests/test.sh /tests/verifier_telemetry.py \
+ && python3 /tests/sprint_gpu_pipeline.py \
+      --build /usr/local/cuda/extras/CUPTI/samples/pm_sampling \
+      --output /opt/sprint-pm-sampling
 
 # The robot's USD lives on NVIDIA's asset bucket and Isaac streams it at spawn
 # time, caching nothing.  The verifier has no network, so the asset is copied

@@ -11,7 +11,7 @@ committed.
 - one durable CPU agent sandbox (4 physical cores, 16 GiB, no GPU);
 - at most one active A10G training worker per model run, resumed from durable
   checksummed checkpoints after preemption;
-- blind asynchronous policy submissions through one shared verifier-GPU queue;
+- asynchronous score feedback through one independent verifier lane per trial;
 - the fastest valid submitted policy as the run's final score;
 - durable raw agent traces, ATIF trajectories, tool latency, tokens, model cost,
   resource telemetry, Modal allocation/cost reconciliation, and schema-v6
@@ -19,8 +19,10 @@ committed.
 - no general agent internet access and no cloud control-plane credentials.
 
 Concurrent model runs have independent CPU sandboxes, volumes, training queues,
-and ledgers. They contend only for the intentionally shared verifier lease and
-Modal GPU availability. Training and verifier GPU costs remain separate.
+verifier queues, and ledgers. A trusted five-minute acceptance cooldown and a
+one-outstanding-policy limit apply separately to each trial. Trials share no
+verifier lease; their only remaining coupling is Modal GPU availability.
+Training and verifier GPU costs remain separate.
 
 ## One-time setup
 
@@ -97,7 +99,7 @@ python3 runs/ops/sprintctl.py wait --run-id "$RUN_ID"
 ```
 
 `stop` is idempotent and preserves traces/artifacts; `wait` succeeds only after
-all accepted blind submissions drain, checksums reconcile, the timeline is
+all accepted submissions drain, checksums reconcile, the timeline is
 ready, and Modal billing data is available. See
 [`runs/ops/RUNBOOK.md`](runs/ops/RUNBOOK.md) for recovery and failure handling.
 

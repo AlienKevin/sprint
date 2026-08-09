@@ -31,6 +31,7 @@ import fcntl
 import hashlib
 import json
 import logging
+import math
 import os
 import shutil
 import tempfile
@@ -117,9 +118,8 @@ class ContinuousVerificationService:
         self._config = config
         self._env = environment
         self._run_verifier = run_verifier
-        # Legacy feedback mode bounds the drain to one verification's worth.
-        # Blind mode can instead drain every accepted submission after the
-        # agent exits because queue latency cannot influence agent behavior.
+        # The bounded mode waits for one verification's worth. Tasks that need
+        # a complete trajectory can instead drain every accepted submission.
         self._verification_timeout_sec = verification_timeout_sec
         self._verification_context = verification_context
         self._queue_key = queue_key
@@ -135,6 +135,10 @@ class ContinuousVerificationService:
         self._seen: set[str] = set()
         self._sizes: dict[str, int] = {}
         self._accepted = 0
+        self._accepted_count = 0
+        self._last_accepted_at: datetime | None = None
+        self._outstanding_names: set[str] = set()
+        self._admission_lock = asyncio.Lock()
         self._semaphore = asyncio.Semaphore(config.max_concurrent)
         self._tasks: set[asyncio.Task[Any]] = set()
         self._running: set[asyncio.Task[Any]] = set()
@@ -188,9 +192,8 @@ class ContinuousVerificationService:
         agent that writes its whole queue at the end would otherwise stall the
         run rather than lose a result.
 
-        Blind evaluation drains all accepted submissions for a complete
-        retrospective trajectory. Feedback mode retains the bounded legacy
-        drain, recording any unscored queue entries explicitly.
+        Tasks that require a complete trajectory drain all accepted submissions.
+        Otherwise the bounded legacy drain records any unscored queue entries.
         """
         if self._watcher is not None:
             self._watcher.cancel()
@@ -282,9 +285,12 @@ class ContinuousVerificationService:
         return entries
 
     def _spawn(self, name: str, *, record: ContinuousSubmission | None = None) -> None:
+        if record is not None and record.accepted:
+            self._outstanding_names.add(name)
         task = asyncio.create_task(self._verify(name, record=record))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+        task.add_done_callback(lambda _task: self._outstanding_names.discard(name))
 
     def _hydrate_ledger(self) -> list[ContinuousSubmission]:
         """Restore durable queue identity and resume only safe unfinished work."""
@@ -315,6 +321,12 @@ class ContinuousVerificationService:
         records.sort(key=lambda item: item.index)
         self._summary = ContinuousVerificationSummary(submissions=records)
         self._accepted = max(indices, default=0)
+        accepted_records = [record for record in records if record.accepted]
+        self._accepted_count = len(accepted_records)
+        accepted_times = [
+            record.accepted_at or record.submitted_at for record in accepted_records
+        ]
+        self._last_accepted_at = max(accepted_times, default=None)
         self._seen = set(names)
 
         recover: list[ContinuousSubmission] = []
@@ -357,6 +369,27 @@ class ContinuousVerificationService:
             )
         return local
 
+    def _admission_rejection(self, now: datetime) -> tuple[str, float | None] | None:
+        """Return a host-trusted rejection and retry hint, or admit the request."""
+        cap = self._config.max_submissions
+        if cap is not None and self._accepted_count >= cap:
+            return f"submission limit of {cap} reached", None
+
+        maximum = self._config.max_outstanding_submissions
+        if maximum is not None and len(self._outstanding_names) >= maximum:
+            return f"maximum of {maximum} outstanding submission(s) reached", None
+
+        interval = self._config.minimum_submission_interval_sec
+        if interval and self._last_accepted_at is not None:
+            elapsed = (now - self._last_accepted_at).total_seconds()
+            remaining = interval - elapsed
+            if remaining > 0:
+                return (
+                    f"submission cooldown active ({interval:g} s minimum interval)",
+                    float(math.ceil(remaining)),
+                )
+        return None
+
     def _rotate_verifier_output(self, paths: TrialPaths, attempt: int) -> str | None:
         source = paths.verifier_dir
         if not source.exists() or not any(source.iterdir()):
@@ -393,27 +426,28 @@ class ContinuousVerificationService:
     ) -> None:
         recovering = record is not None
         if record is None:
-            self._accepted += 1
-            record = ContinuousSubmission(
-                name=name,
-                index=self._accepted,
-                submitted_at=_now(),
-                queue_key=self._queue_key,
-            )
+            async with self._admission_lock:
+                observed_at = _now()
+                self._accepted += 1
+                rejection = self._admission_rejection(observed_at)
+                record = ContinuousSubmission(
+                    name=name,
+                    index=self._accepted,
+                    submitted_at=observed_at,
+                    accepted=rejection is None,
+                    accepted_at=observed_at if rejection is None else None,
+                    retry_after_sec=rejection[1] if rejection is not None else None,
+                    queue_key=self._queue_key,
+                    error=rejection[0] if rejection is not None else None,
+                )
+                self._summary.submissions.append(record)
+                self._summary.submissions.sort(key=lambda item: item.index)
+                if rejection is None:
+                    self._accepted_count += 1
+                    self._last_accepted_at = observed_at
+                    self._outstanding_names.add(name)
+                self._write_ledger()
         index = record.index
-
-        cap = self._config.max_submissions
-        if cap is not None and index > cap:
-            self._summary.submissions.append(record)
-            self._summary.submissions.sort(key=lambda item: item.index)
-            # Always retained in the trusted ledger. Feedback mode also hands
-            # the rejection back; blind mode intentionally exposes no status.
-            record.error = f"submission limit of {cap} reached"
-            await self._publish(name, record)
-            self._logger.info(
-                f"Continuous verification rejected {name}: {record.error}"
-            )
-            return
 
         paths = self._attempt_paths(index, name)
         paths.verifier_dir.mkdir(parents=True, exist_ok=True)
@@ -446,7 +480,7 @@ class ContinuousVerificationService:
             self._write_ledger()
         else:
             try:
-                # Archive before queueing for the shared verifier. The agent may
+                # Archive before queueing for the verifier. The agent may
                 # overwrite its queue entry while earlier runs are being scored;
                 # only these immutable bytes define this accepted submission.
                 await self._env.download_file(f"{self._config.watch_dir}/{name}", local)
@@ -457,21 +491,26 @@ class ContinuousVerificationService:
                         self._verification_context + "\0" + record.artifact_sha256
                     ).encode()
                 ).hexdigest()
-                self._summary.submissions.append(record)
-                self._summary.submissions.sort(key=lambda item: item.index)
                 self._logger.info(
                     f"Continuous verification {index}: {name} "
                     f"({local.stat().st_size} bytes)"
                 )
                 self._write_ledger()
             except Exception as exc:  # noqa: BLE001
-                self._summary.submissions.append(record)
-                self._summary.submissions.sort(key=lambda item: item.index)
                 record.error = f"{type(exc).__name__}: {exc}"
                 record.error_type = type(exc).__name__
                 record.error_message = str(exc)
                 record.finished_at = _now()
                 await self._publish(name, record)
+                return
+
+            if not record.accepted:
+                record.finished_at = _now()
+                record.duration_sec = 0.0
+                await self._publish(name, record)
+                self._logger.info(
+                    f"Continuous verification rejected {name}: {record.error}"
+                )
                 return
 
         try:

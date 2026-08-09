@@ -77,7 +77,10 @@ def build_or_reuse_image(
     previous = (
         previous_manifest.get("contexts", {}).get(context_name, {})
         if isinstance(previous_manifest, dict)
-        and previous_manifest.get("completed") is True
+        and (
+            previous_manifest.get("completed") is True
+            or previous_manifest.get("images_built") is True
+        )
         else {}
     )
     previous_id = previous.get("image_id")
@@ -139,9 +142,7 @@ def run_sandbox(
         create_started = time.monotonic()
         # Kit has paths that log a fatal startup error to stderr and still
         # return zero. Merge both streams and validate semantic success below.
-        sandbox = modal.Sandbox.create(
-            "bash", "-lc", f"exec 2>&1; {command}", **kwargs
-        )
+        sandbox = modal.Sandbox.create("bash", "-lc", f"exec 2>&1; {command}", **kwargs)
         create_s = time.monotonic() - create_started
         output = sandbox.stdout.read()
         sandbox.wait(raise_on_termination=False)
@@ -244,6 +245,11 @@ def main() -> int:
             previous_manifest=previous_manifest,
         )
         payload["contexts"]["verifier"].update(verifier_build)
+        # Image construction is the expensive, resumable phase. Persist exact
+        # immutable IDs before disposable probes so a failed assertion can be
+        # fixed and rerun without rebuilding ~20 GiB of unchanged dependencies.
+        payload["images_built"] = True
+        atomic_write(payload)
 
         payload["cpu_agent_probe"] = run_sandbox(
             app=app,
@@ -273,9 +279,6 @@ def main() -> int:
             command=(
                 'python3 -c "import torch; assert torch.cuda.is_available(); '
                 'print(torch.cuda.get_device_name(0))" && '
-                "timeout --signal=TERM --kill-after=10 120 "
-                "python3 /opt/sprint-isaac-bootstrap.py "
-                "/app/train/asset_probe.py --headless --device cuda:0 && "
                 "mkdir -p /tmp/training-telemetry && "
                 "SPRINT_REQUESTED_CPU_CORES=8 SPRINT_REQUESTED_MEMORY_MIB=32768 "
                 "python3 /opt/sprint-telemetry.py --once --role training-gpu "
@@ -284,22 +287,37 @@ def main() -> int:
                 "python3 -c \"import json; p=json.load(open('/tmp/training-telemetry/latest.json')); "
                 "assert p['resource_accounting_scope'] in ('cgroup-v1','cgroup-v2'); "
                 "assert p['cpu_requested_cores']==8.0; "
-                "assert p['mem_requested_kib']==33554432; assert p['mem_used_kib']>0\""
+                "assert p['mem_requested_kib']==33554432; assert p['mem_used_kib']>0; "
+                "g=p['gpus'][0]; assert g['pipeline_metrics_status']=='ok'; "
+                "assert g['pipeline_metrics_sample_count']>0; "
+                "assert g['pipeline_metrics_group'] in (0,1,2); "
+                "assert isinstance(g['dram_throughput_pct'], float)\" && "
+                "timeout --signal=TERM --kill-after=10 120 "
+                "python3 /opt/sprint-isaac-bootstrap.py "
+                "/app/train/asset_probe.py --headless --device cuda:0"
             ),
-            required_output_substrings=("LOCAL_G1=/opt/assets/", "LOCAL_DEBUG_MARKERS=ok"),
+            required_output_substrings=(
+                "LOCAL_G1=/opt/assets/",
+                "LOCAL_DEBUG_MARKERS=ok",
+            ),
         )
 
         verifier_command = (
             "mkdir -p /tmp/verifier-warm && "
             "mkdir -p /tmp/verifier-telemetry && "
             "SPRINT_REQUESTED_CPU_CORES=8 SPRINT_REQUESTED_MEMORY_MIB=32768 "
-            "timeout --preserve-status --signal=TERM --kill-after=5 2 "
+            "timeout --preserve-status --signal=TERM --kill-after=5 5 "
             "python3 /tests/verifier_telemetry.py "
             "--out-dir /tmp/verifier-telemetry --interval-seconds 0.5 && "
             "python3 -c \"import json; p=json.load(open('/tmp/verifier-telemetry/latest.json')); "
             "assert p['resource_accounting_scope'] in ('cgroup-v1','cgroup-v2'); "
             "assert p['cpu_requested_cores']==8.0; "
-            "assert p['mem_requested_kib']==33554432; assert p['mem_used_kib']>0\" && "
+            "assert p['mem_requested_kib']==33554432; assert p['mem_used_kib']>0; "
+            "rows=[json.loads(x) for x in open('/tmp/verifier-telemetry/samples.jsonl')]; "
+            "gs=[g for r in rows for g in r['gpus'] if g.get('pipeline_metrics_status')=='ok']; "
+            "assert gs; assert all(g['pipeline_metrics_sample_count']>0 for g in gs); "
+            "assert {g['pipeline_metrics_group'] for g in gs} <= {0,1,2}; "
+            "assert all(isinstance(g['dram_throughput_pct'], float) for g in gs)\" && "
             "timeout --signal=TERM --kill-after=30 180 "
             "python3 /tests/verify.py --policy /warm/policy.pt "
             "--logs /tmp/verifier-warm --tests /tests --runs 1 "

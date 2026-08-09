@@ -20,6 +20,10 @@ KEEPALIVE_PY = ROOT / "runs/ops/telemetry_keepalive.py"
 VERIFIER_TELEMETRY_PY = (
     ROOT / "challenge/g1-sprint-100m-lane/tests/verifier_telemetry.py"
 )
+PIPELINE_PY = ROOT / "challenge/g1-sprint-100m-lane/environment/sprint_gpu_pipeline.py"
+VERIFIER_PIPELINE_PY = (
+    ROOT / "challenge/g1-sprint-100m-lane/tests/sprint_gpu_pipeline.py"
+)
 OPS = ROOT / "runs/ops"
 sys.path.insert(0, str(OPS))
 
@@ -64,8 +68,9 @@ class TelemetrySamplerTests(unittest.TestCase):
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
             snapshot = json.loads((out / "snapshot.json").read_text())
-            self.assertEqual(snapshot["schema_version"], 2)
+            self.assertEqual(snapshot["schema_version"], 3)
             self.assertIn("nvidia_smi", snapshot)
+            self.assertIn("gpu_pipeline", snapshot)
             latest = json.loads((out / "latest.json").read_text())
             self.assertEqual(latest["role"], "host-controller")
             self.assertEqual(latest["run_id"], "unit-telem")
@@ -108,6 +113,100 @@ class TelemetrySamplerTests(unittest.TestCase):
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
             self.assertTrue((out / "latest.json").exists())
+
+    def test_pipeline_collector_rotates_and_discards_first_sample(self) -> None:
+        pipeline = load_module("sprint_gpu_pipeline", PIPELINE_PY)
+        raw_metrics = [raw for _, raw in pipeline.PIPELINE_METRIC_GROUPS[0]]
+        stdout = "\n".join(
+            [
+                f"{raw_metrics[0]} 999.0",
+                f"{raw_metrics[1]} 999.0",
+                f"{raw_metrics[2]} 999.0",
+                f"{raw_metrics[0]} 40.0",
+                f"{raw_metrics[1]} 20.0",
+                f"{raw_metrics[2]} 10.0",
+                f"{raw_metrics[0]} 60.0",
+                f"{raw_metrics[1]} 30.0",
+                f"{raw_metrics[2]} 20.0",
+            ]
+        )
+        completed = subprocess.CompletedProcess([], 0, stdout=stdout, stderr="")
+        with (
+            mock.patch.object(Path, "is_file", return_value=True),
+            mock.patch.object(os, "access", return_value=True),
+            mock.patch.object(
+                pipeline.subprocess, "run", return_value=completed
+            ) as run_mock,
+        ):
+            pipeline._group_cursor = 0
+            result = pipeline.collect_pipeline_metrics()
+        self.assertEqual(result["pipeline_metrics_status"], "ok")
+        self.assertEqual(result["pipeline_metrics_group"], 0)
+        self.assertEqual(result["pipeline_metrics_sample_count"], 2)
+        self.assertEqual(result["sm_active_pct"], 50.0)
+        self.assertEqual(result["fp32_fma_pipe_active_pct"], 25.0)
+        self.assertEqual(result["dram_throughput_pct"], 15.0)
+        argv = run_mock.call_args.args[0]
+        self.assertIn("--metrics", argv)
+        self.assertEqual(
+            set(argv[argv.index("--metrics") + 1].split(",")), set(raw_metrics)
+        )
+
+    def test_pipeline_modules_are_identical_across_image_contexts(self) -> None:
+        self.assertEqual(PIPELINE_PY.read_bytes(), VERIFIER_PIPELINE_PY.read_bytes())
+
+    def test_gpu_query_parsing_is_independent_of_pipeline_csv_columns(self) -> None:
+        sampler = load_module("sprint_telemetry_query_fields", TELEMETRY_PY)
+        values = [
+            "0",
+            "NVIDIA A10",
+            "GPU-test",
+            "53",
+            "12",
+            "2749",
+            "23028",
+            "20279",
+            "64.47",
+            "150",
+            "42",
+            "1230",
+            "1230",
+            "5001",
+            "1710",
+            "1710",
+            "6251",
+            "4",
+            "16",
+            "Disabled",
+            "0",
+            "0",
+            "580.65.06",
+        ]
+        self.assertEqual(len(values), len(sampler.GPU_QUERY_FIELDS))
+        self.assertGreater(len(sampler.GPU_CSV_FIELDS), len(sampler.GPU_QUERY_FIELDS))
+
+        def fake_run(argv, **_kwargs):
+            joined = " ".join(argv)
+            if "--query-gpu=" in joined:
+                return subprocess.CompletedProcess(argv, 0, ", ".join(values), "")
+            if "--query-compute-apps=" in joined:
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        with (
+            mock.patch.object(sampler, "nvidia_available", return_value=True),
+            mock.patch.object(sampler, "run_cmd", side_effect=fake_run),
+            mock.patch.object(
+                sampler,
+                "collect_pipeline_metrics",
+                return_value={"pipeline_metrics_status": "ok"},
+            ),
+        ):
+            gpus, _, _ = sampler.sample_gpus()
+        self.assertEqual(len(gpus), 1)
+        self.assertEqual(gpus[0]["gpu_name"], "NVIDIA A10")
+        self.assertEqual(gpus[0]["util_gpu_pct"], 53)
+        self.assertEqual(gpus[0]["pipeline_metrics_status"], "ok")
 
     def test_cgroup_v2_metrics_are_container_scoped(self) -> None:
         sampler = load_module("sprint_telemetry", TELEMETRY_PY)
@@ -493,7 +592,7 @@ class TelemetrySamplerTests(unittest.TestCase):
             latest = json.loads((out / "latest.json").read_text())
             lifecycle = json.loads((out / "lifecycle.json").read_text())
             self.assertEqual(latest["role"], "verifier-gpu")
-            self.assertEqual(latest["schema_version"], 2)
+            self.assertEqual(latest["schema_version"], 3)
             self.assertIn(
                 latest["resource_accounting_scope"],
                 {"cgroup-v1", "cgroup-v2", "host-proc-fallback"},
