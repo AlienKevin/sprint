@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import signal
@@ -61,6 +62,40 @@ def row(index: int, name: str, best: float | None) -> dict:
 
 
 class DurableOpsTests(unittest.TestCase):
+    def test_monitor_loop_self_registers_and_cleans_own_pid(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            observed: list[str] = []
+
+            @contextlib.contextmanager
+            def owned_lock(_path: Path, *, blocking: bool = True):
+                self.assertFalse(blocking)
+                yield True
+
+            def observe_monitor(_run_id: str) -> dict:
+                observed.append((state / "monitor.pid").read_text().strip())
+                return {"run_id": "monitor-run", "agent_kind": "codex"}
+
+            with (
+                mock.patch.object(
+                    sprintctl,
+                    "load_run",
+                    return_value=(
+                        state,
+                        {"run_id": "monitor-run", "agent_kind": "codex"},
+                    ),
+                ),
+                mock.patch.object(sprintctl, "file_lock", side_effect=owned_lock),
+                mock.patch.object(
+                    sprintctl, "monitor_once", side_effect=observe_monitor
+                ),
+                mock.patch.object(sprintctl, "finalize", return_value=(True, {})),
+            ):
+                self.assertEqual(sprintctl.monitor_loop("monitor-run", 10), 0)
+
+            self.assertEqual(observed, [str(os.getpid())])
+            self.assertFalse((state / "monitor.pid").exists())
+
     def test_final_sync_imports_authoritative_durable_gpu_telemetry_once(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             state = Path(raw)

@@ -1536,23 +1536,36 @@ def monitor_loop(run_id: str, poll_seconds: int) -> int:
         if not acquired:
             print(f"monitor already running for {run_id}", file=sys.stderr)
             return 2
-        while True:
+        pid_path = state_dir / "monitor.pid"
+        own_pid = os.getpid()
+        atomic_write_text(pid_path, f"{own_pid}\n", 0o600)
+        try:
+            while True:
+                try:
+                    status = monitor_once(run_id)
+                    complete, _ = finalize(run_id)
+                except Exception as exc:  # noqa: BLE001
+                    record_controller_error(run_id, exc)
+                    status = {
+                        "run_id": run_id,
+                        "agent_kind": kind,
+                        "updated_at": utc_now(),
+                        "transient_error": str(exc),
+                    }
+                    complete = False
+                print(json.dumps(status, sort_keys=True), flush=True)
+                if complete:
+                    return 0
+                time.sleep(poll_seconds)
+        finally:
+            # Do not erase a replacement monitor's registration if systemd or
+            # an operator started it while this process was unwinding.
             try:
-                status = monitor_once(run_id)
-                complete, _ = finalize(run_id)
-            except Exception as exc:  # noqa: BLE001
-                record_controller_error(run_id, exc)
-                status = {
-                    "run_id": run_id,
-                    "agent_kind": kind,
-                    "updated_at": utc_now(),
-                    "transient_error": str(exc),
-                }
-                complete = False
-            print(json.dumps(status, sort_keys=True), flush=True)
-            if complete:
-                return 0
-            time.sleep(poll_seconds)
+                registered = int(pid_path.read_text().strip())
+            except (OSError, ValueError):
+                registered = None
+            if registered == own_pid:
+                pid_path.unlink(missing_ok=True)
 
 
 def download_run_volume(
