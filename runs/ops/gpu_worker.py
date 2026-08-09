@@ -740,6 +740,9 @@ def provider_terminal_error(stream_text: str) -> str | None:
         "Failed to resolve extension dependencies",
         "Failed to startup python app",
         "ModuleNotFoundError:",
+        "GPU solver pipeline failed",
+        "GPU Bp pipeline failed",
+        "switching to software",
     ):
         if marker not in stream_text:
             continue

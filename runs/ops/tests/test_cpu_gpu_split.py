@@ -254,6 +254,12 @@ class ClaimSelectionTests(unittest.TestCase):
             )
         )
 
+    def test_physx_software_fallback_overrides_false_zero_exit(self) -> None:
+        output = (
+            "PhysX warning: GPU solver pipeline failed, switching to software"
+        )
+        self.assertEqual(gpu_worker.provider_terminal_error(output), output)
+
     def test_kit_semantic_startup_failures_override_false_zero_exit(self) -> None:
         for output in (
             "Failed to resolve extension dependencies",
