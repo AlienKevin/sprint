@@ -410,6 +410,61 @@ class ClaimSelectionTests(unittest.TestCase):
             self.assertEqual(latest, "job-1")
 
 
+class HostJobRegistryTests(unittest.TestCase):
+    def test_persist_records_job_outside_agent_volume_first(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            run = {"run_id": "run-1", "state_dir": raw}
+            job = {"job_id": "job-1", "status": "running", "attempt": 1}
+            writes: list[str] = []
+
+            def put(_run: dict, remote: str, _payload: dict) -> None:
+                writes.append(remote)
+
+            with (
+                mock.patch.object(gpu_worker, "put_json", side_effect=put),
+                mock.patch.object(gpu_worker, "mirror_agent_job"),
+            ):
+                gpu_worker.persist_job(run, job)
+
+            local = Path(raw) / "gpu-job-registry" / "job-1.json"
+            self.assertEqual(json.loads(local.read_text()), job)
+            self.assertEqual(
+                writes,
+                [
+                    "runs/run-1/gpu-jobs/status/job-1.json",
+                    "runs/run-1/gpu-jobs/queue/job-1.json",
+                ],
+            )
+
+    def test_load_survives_agent_removing_volume_mirrors(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            run = {"run_id": "run-1", "state_dir": raw}
+            path = Path(raw) / "gpu-job-registry" / "job-1.json"
+            path.parent.mkdir()
+            path.write_text(
+                json.dumps({"job_id": "job-1", "status": "retry_wait"})
+            )
+            with mock.patch.object(
+                gpu_worker.sprintctl,
+                "volume_get_text",
+                side_effect=AssertionError("host registry must win"),
+            ):
+                payload = gpu_worker.load_job(run, "job-1")
+
+            self.assertEqual(payload["status"], "retry_wait")
+
+    def test_list_retains_host_job_after_agent_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            run = {"run_id": "run-1", "state_dir": raw}
+            path = Path(raw) / "gpu-job-registry" / "job-1.json"
+            path.parent.mkdir()
+            path.write_text(json.dumps({"job_id": "job-1", "status": "running"}))
+            with mock.patch.object(
+                gpu_worker, "volume_ls_json_names", return_value=[]
+            ):
+                self.assertEqual(gpu_worker.list_job_ids(run), ["job-1"])
+
+
 class LeaseLivenessTests(unittest.TestCase):
     def setUp(self) -> None:
         self.job = {

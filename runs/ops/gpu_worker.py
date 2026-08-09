@@ -260,6 +260,37 @@ def jobs_prefix(run_id: str) -> str:
     return f"runs/{run_id}/gpu-jobs"
 
 
+def host_job_path(run: dict[str, Any], job_id: str) -> Path | None:
+    """Return the host-owned canonical record for a logical GPU job.
+
+    The agent can legitimately remove its queue/status mirrors after ``wait``
+    returns.  Keeping the controller's copy outside the agent sandbox avoids a
+    race where that cleanup happens before the next host reconciliation pass.
+    """
+    state_dir = str(run.get("state_dir") or "").strip()
+    if not state_dir or not re.fullmatch(r"[A-Za-z0-9_-]+", job_id):
+        return None
+    return Path(state_dir) / "gpu-job-registry" / f"{job_id}.json"
+
+
+def load_host_job(run: dict[str, Any], job_id: str) -> dict[str, Any] | None:
+    path = host_job_path(run, job_id)
+    if path is None or not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def list_host_job_ids(run: dict[str, Any]) -> list[str]:
+    path = host_job_path(run, "placeholder")
+    if path is None:
+        return []
+    return sorted(item.stem for item in path.parent.glob("*.json"))
+
+
 def utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -346,6 +377,13 @@ def load_job(run: dict[str, Any], job_id: str) -> dict[str, Any] | None:
     Queue files stay at status=pending after claim; reading them first caused
     dispatch_once to re-spawn the same job forever and never reach later jobs.
     """
+    # Once claimed, the host registry is authoritative.  Volume status and
+    # queue files are agent-visible delivery mirrors and may disappear before
+    # the controller has archived terminal provider output or copied the final
+    # policy back into the CPU sandbox.
+    local = load_host_job(run, job_id)
+    if local is not None:
+        return local
     prefix = jobs_prefix(str(run["run_id"]))
     text = sprintctl.volume_get_text(run, f"{prefix}/status/{job_id}.json")
     if text is None:
@@ -778,9 +816,12 @@ def archive_provider_logs(
 
 
 def persist_job(run: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]:
-    """Write canonical status/ and mirror into queue/."""
+    """Write the host canonical record, then agent-visible Volume mirrors."""
     prefix = jobs_prefix(str(run["run_id"]))
     job_id = str(job["job_id"])
+    local_path = host_job_path(run, job_id)
+    if local_path is not None:
+        sprintctl.atomic_write_json(local_path, job, mode=0o600)
     put_json(run, f"{prefix}/status/{job_id}.json", job)
     put_json(run, f"{prefix}/queue/{job_id}.json", job)
     mirror_agent_job(run, job)
@@ -1128,7 +1169,8 @@ def list_pending_job_ids(run: dict[str, Any]) -> list[str]:
 
 def list_job_ids(run: dict[str, Any]) -> list[str]:
     prefix = jobs_prefix(str(run["run_id"]))
-    names = set(volume_ls_json_names(run, f"{prefix}/queue"))
+    names = {f"{job_id}.json" for job_id in list_host_job_ids(run)}
+    names.update(volume_ls_json_names(run, f"{prefix}/queue"))
     names.update(volume_ls_json_names(run, f"{prefix}/status"))
     return sorted(Path(name).stem for name in names if name.endswith(".json"))
 
