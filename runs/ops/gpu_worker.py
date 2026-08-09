@@ -903,17 +903,6 @@ def provider_terminal_error(stream_text: str) -> str | None:
             "unhandled Python exception",
         )
         return final[-1000:]
-    # Modal's gVisor sandboxes do not expose Vulkan, so a
-    # ``gpu.foundation.plugin`` diagnostic is expected even when headless CUDA
-    # physics subsequently starts.  Kit can also stop at that exact point and
-    # still return zero, however.  Only classify the diagnostic as terminal
-    # when the provider stream contains no later Isaac scene/simulation marker.
-    if (
-        "[gpu.foundation.plugin] No device could be created" in stream_text
-        and "[INFO]: Starting the simulation" not in stream_text
-        and "[INFO]: Time taken for scene creation" not in stream_text
-    ):
-        return "Isaac GPU startup ended before scene creation"
     for marker in (
         "Failed to resolve extension dependencies",
         "Failed to startup python app",

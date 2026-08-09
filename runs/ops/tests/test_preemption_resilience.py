@@ -136,6 +136,22 @@ class CheckpointStoreTests(unittest.TestCase):
             self.assertEqual(latest.checkpoint_id, newest.checkpoint_id)
             self.assertEqual(latest.sequence, 50)
 
+    def test_same_sequence_is_idempotent_only_for_identical_state(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "trainer.pt"
+            source.write_bytes(b"trainer-state-a")
+            store = resilience.CheckpointStore(root / "checkpoints")
+            first = store.commit(source, sequence=7, replay_cursor=7)
+            replay = store.commit(source, sequence=7, replay_cursor=7)
+            self.assertEqual(replay.checkpoint_id, first.checkpoint_id)
+            self.assertEqual(len(list(store.iter_valid())), 1)
+
+            source.write_bytes(b"trainer-state-b")
+            with self.assertRaisesRegex(ValueError, "sequences must advance"):
+                store.commit(source, sequence=7, replay_cursor=7)
+            self.assertEqual(len(list(store.iter_valid())), 1)
+
     def test_fenced_lease_cannot_publish_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -302,6 +318,29 @@ class WorkerAttemptGuardTests(unittest.TestCase):
                     samples, started_epoch_s=100, now_epoch_s=500
                 )
             )
+
+    def test_training_progress_watchdog_requires_cursor_advance(self) -> None:
+        watchdog = worker_run.TrainingProgressWatchdog(grace_seconds=300)
+        self.assertFalse(watchdog.observe({"iteration": 0}, now_epoch_s=100))
+        self.assertFalse(watchdog.observe({"iteration": 0}, now_epoch_s=399))
+        self.assertTrue(watchdog.observe({"iteration": 0}, now_epoch_s=400))
+
+        watchdog = worker_run.TrainingProgressWatchdog(grace_seconds=300)
+        self.assertFalse(watchdog.observe({"iteration": 0}, now_epoch_s=100))
+        self.assertFalse(watchdog.observe({"iteration": 1}, now_epoch_s=350))
+        self.assertFalse(watchdog.observe({"iteration": 1}, now_epoch_s=649))
+        self.assertTrue(watchdog.observe({"iteration": 1}, now_epoch_s=650))
+
+    def test_progress_watchdog_cannot_be_reported_as_success(self) -> None:
+        self.assertEqual(
+            worker_run.final_attempt_outcome(
+                0,
+                interrupted=False,
+                activity_watchdog_fired=False,
+                progress_watchdog_fired=True,
+            ),
+            (1, "failed"),
+        )
 
 
 class ReplayAndResumeTests(unittest.TestCase):

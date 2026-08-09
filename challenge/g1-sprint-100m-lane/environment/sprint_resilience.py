@@ -281,6 +281,22 @@ class CheckpointStore:
 
         self._assert_lease()
 
+        # A trainer cursor is a logical commit sequence, not merely a label.
+        # Replaying the exact same bytes is idempotent; publishing different
+        # trainer state at the same cursor is ambiguous and, in practice, is a
+        # common symptom of a loop whose iteration counter never advances.
+        current = self.latest_valid(verify_hash=False)
+        if current is not None and sequence == current.sequence:
+            if (
+                source_path.stat().st_size == current.size_bytes
+                and sha256_file(source_path) == current.sha256
+            ):
+                return current
+            raise ValueError(
+                f"checkpoint sequence {sequence} was already committed with "
+                "different trainer state; sequences must advance monotonically"
+            )
+
         self.committed_dir.mkdir(parents=True, exist_ok=True)
         checkpoint_id = f"{sequence:020d}-{uuid.uuid4().hex}"
         partial = self.committed_dir / f".{checkpoint_id}.partial"

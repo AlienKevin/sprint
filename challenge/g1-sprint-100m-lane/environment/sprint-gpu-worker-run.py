@@ -365,11 +365,52 @@ def gpu_activity_stalled(
     )
 
 
+def progress_cursor(progress: dict | None) -> float | None:
+    """Return a monotonic trainer cursor without treating timestamps as work."""
+    if not isinstance(progress, dict):
+        return None
+    for key in (
+        "completed_iteration",
+        "iteration",
+        "global_step",
+        "step",
+        "sequence",
+        "cursor",
+    ):
+        value = progress.get(key)
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+class TrainingProgressWatchdog:
+    """Detect a live training loop that republishes one cursor forever."""
+
+    def __init__(self, *, grace_seconds: float = 300.0) -> None:
+        self.grace_seconds = float(grace_seconds)
+        self.last_cursor: float | None = None
+        self.last_advanced_epoch_s: float | None = None
+
+    def observe(self, progress: dict | None, *, now_epoch_s: float) -> bool:
+        cursor = progress_cursor(progress)
+        if cursor is None:
+            return False
+        if self.last_cursor is None or cursor > self.last_cursor:
+            self.last_cursor = cursor
+            self.last_advanced_epoch_s = float(now_epoch_s)
+            return False
+        assert self.last_advanced_epoch_s is not None
+        return float(now_epoch_s) - self.last_advanced_epoch_s >= self.grace_seconds
+
+
 def final_attempt_outcome(
     exit_code: int,
     *,
     interrupted: bool,
     activity_watchdog_fired: bool,
+    progress_watchdog_fired: bool = False,
 ) -> tuple[int, str]:
     """Make watchdog termination a truthful deterministic failure.
 
@@ -379,7 +420,7 @@ def final_attempt_outcome(
     """
     if interrupted:
         return exit_code, "interrupted"
-    if activity_watchdog_fired:
+    if activity_watchdog_fired or progress_watchdog_fired:
         return (exit_code if exit_code != 0 else 1), "failed"
     return exit_code, "succeeded" if exit_code == 0 else "failed"
 
@@ -703,6 +744,8 @@ def main() -> int:
     print("exec", command, "cwd", workdir, flush=True)
     interrupted = False
     activity_watchdog_fired = False
+    progress_watchdog_fired = False
+    progress_watchdog = TrainingProgressWatchdog()
     try:
         proc = subprocess.Popen(
             command,
@@ -728,7 +771,8 @@ def main() -> int:
         activity_samples = Path("/logs/artifacts/telemetry/samples.jsonl")
 
         def update_heartbeat(status: str) -> None:
-            nonlocal progress, checkpoint, error, activity_watchdog_fired
+            nonlocal progress, checkpoint, error
+            nonlocal activity_watchdog_fired, progress_watchdog_fired
             progress, checkpoint = progress_snapshot(
                 progress_file,
                 checkpoint_dir,
@@ -775,6 +819,20 @@ def main() -> int:
                 )
                 print(error, flush=True)
                 stop_child(proc)
+            if (
+                not progress_watchdog_fired
+                and progress_watchdog.observe(
+                    progress,
+                    now_epoch_s=time.time(),
+                )
+            ):
+                progress_watchdog_fired = True
+                error = (
+                    "Training progress watchdog: checkpoint/progress cursor "
+                    "did not advance during the five-minute window"
+                )
+                print(error, flush=True)
+                stop_child(proc)
 
         exit_code, interrupted = supervise_child(
             proc,
@@ -797,6 +855,7 @@ def main() -> int:
         exit_code,
         interrupted=interrupted,
         activity_watchdog_fired=activity_watchdog_fired,
+        progress_watchdog_fired=progress_watchdog_fired,
     )
     progress, checkpoint = progress_snapshot(progress_file, checkpoint_dir)
     finished = time.time()
