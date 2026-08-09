@@ -2215,13 +2215,26 @@ def build_timeline(
             "resource_usage_summary": payload["resource_usage_summary"],
             "dashboard_artifacts": [
                 {
-                    "finished_epoch_ms": artifact.get("finished_epoch_ms"),
+                    "submission_index": artifact.get("submission_index"),
+                    "finished_epoch_ms": parse_epoch_ms(artifact.get("finished_at")),
                     "rewards": {
                         "valid_run": (artifact.get("rewards") or {}).get(
                             "valid_run"
                         ),
                         "best_100m_s": (artifact.get("rewards") or {}).get(
                             "best_100m_s"
+                        ),
+                        "gate_finished": (artifact.get("rewards") or {}).get(
+                            "gate_finished"
+                        ),
+                        "gate_in_lane": (artifact.get("rewards") or {}).get(
+                            "gate_in_lane"
+                        ),
+                        "gate_self_collision": (
+                            artifact.get("rewards") or {}
+                        ).get("gate_self_collision"),
+                        "peak_speed_mps": (artifact.get("rewards") or {}).get(
+                            "peak_speed_mps"
                         ),
                     },
                     "cost_at_result": artifact.get("cost_at_result"),

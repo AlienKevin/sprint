@@ -629,6 +629,8 @@ def test_homepage_uses_compact_timeline_index_summaries() -> None:
     source = (ROOT / "sprint-web" / "app.js").read_text()
     assert "dashboard_artifacts" in source
     assert "await json(tMeta.path)" not in source
+    assert "DQ / DNF" in source
+    assert ".append(document.createElementNS" not in source
 
 
 def test_replay_renderer_exposes_complete_cli() -> None:
