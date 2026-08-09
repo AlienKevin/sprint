@@ -30,7 +30,7 @@ import sprintctl  # noqa: E402
 UV = Path(os.environ.get("UV", "/home/ubuntu/.local/bin/uv"))
 WEB = ROOT / "sprint-web"
 BATCH_ROOT = SCRIPT_DIR / "batches"
-HARBOR_REVISION = "5e5ddfcab7e40746d887b220e1280b2dae747a94"
+HARBOR_REVISION = "30343f6a98793ab83574f246d5365dda78a1b831"
 CODEX_VERSION = "0.147.0"
 TRIALS_PER_MODEL = 3
 DEFAULT_FAMILIES = ("deepseek", "luna")

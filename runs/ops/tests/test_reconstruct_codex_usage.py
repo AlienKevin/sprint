@@ -303,3 +303,66 @@ def test_stale_mutable_harbor_provenance_is_replayed_and_attested(
     assert list(provenance.glob("original-usage-audit.*.json"))
     run_audit = json.loads((tmp_path / "usage/run-usage-audit.json").read_text())
     assert run_audit["request_count"] == repaired["request_count"]
+
+
+def test_post_scrub_provenance_snapshots_are_replayed_and_reattested(
+    tmp_path: Path,
+) -> None:
+    trial = tmp_path / "harbor-jobs/job/task__trial"
+    session_dir = trial / "agent/sessions/2026/08/08"
+    session_dir.mkdir(parents=True)
+    run = {
+        "run_id": "post-scrub-provenance",
+        "model": "deepseek/deepseek-v4-flash",
+        "resolved_model_version": "DeepSeek-V4-Flash-0731",
+        "reasoning_effort": "high",
+        "cpu_launch_attempt": 1,
+        "cpu_launch_history": [{"attempt": 1}],
+        "trial_path": str(trial),
+    }
+    (tmp_path / "run.json").write_text(json.dumps(run))
+    write_session(tmp_path, 1, "session-one", "2026-08-08T00:00:01Z")
+    durable = next((tmp_path / "durable-trace/raw").rglob("*.jsonl"))
+    session = session_dir / "rollout.jsonl"
+    session.write_bytes(durable.read_bytes())
+    agent = Codex(
+        logs_dir=trial / "agent",
+        model_name=run["model"],
+        reasoning_effort=run["reasoning_effort"],
+    )
+    agent.populate_context_post_run(AgentContext())
+
+    provenance = trial / "agent/usage-provenance"
+    source_snapshot = provenance / "source-session.jsonl"
+    trajectory_snapshot = provenance / "trajectory.json"
+    source_snapshot.write_text(
+        source_snapshot.read_text().replace("done", "[REDACTED]")
+    )
+    trajectory_snapshot.write_text(
+        trajectory_snapshot.read_text().replace("done", "[REDACTED]")
+    )
+    audit_path = trial / "agent/usage-audit.json"
+    stale = json.loads(audit_path.read_text())
+    assert stale["provenance"]["source_session_sha256"] != hashlib.sha256(
+        source_snapshot.read_bytes()
+    ).hexdigest()
+
+    subprocess.run(
+        [sys.executable, str(SCRIPT), "--state-dir", str(tmp_path)],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    repaired = json.loads(audit_path.read_text())
+    assert repaired["provenance"]["source_session_sha256"] == hashlib.sha256(
+        source_snapshot.read_bytes()
+    ).hexdigest()
+    assert repaired["provenance"]["trajectory_sha256"] == hashlib.sha256(
+        trajectory_snapshot.read_bytes()
+    ).hexdigest()
+    assert repaired["request_count"] == 1
+    run_audit = json.loads((tmp_path / "usage/run-usage-audit.json").read_text())
+    assert run_audit["request_count"] == 1
+    assert run_audit["source_sessions"][0]["origin"] == "harbor_final_archive"

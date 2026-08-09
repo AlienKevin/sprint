@@ -2,6 +2,7 @@ from typing import Any, override
 import asyncio
 import contextlib
 import hashlib
+import json
 import logging
 import traceback
 from abc import ABC, abstractmethod
@@ -69,6 +70,43 @@ from harbor.verifier.factory import VerifierFactory
 TrialHookCallback = Callable[[TrialHookEvent], Awaitable[None]]
 
 _MAX_VERIFIER_ENV_SESSION_ID_LEN = 63
+
+
+def _reattest_scrubbed_usage_provenance(trial_dir: Path) -> bool:
+    """Refresh immutable usage hashes after the final secret-scrub pass."""
+    agent_dir = (trial_dir / "agent").resolve()
+    audit_path = agent_dir / "usage-audit.json"
+    try:
+        audit = json.loads(audit_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    provenance = audit.get("provenance")
+    if not isinstance(provenance, dict):
+        return False
+    attested = False
+    for path_key, hash_key in (
+        ("source_session_path", "source_session_sha256"),
+        ("trajectory_path", "trajectory_sha256"),
+    ):
+        relative = provenance.get(path_key)
+        if not isinstance(relative, str) or not relative:
+            continue
+        candidate = (agent_dir / relative).resolve()
+        try:
+            candidate.relative_to(agent_dir)
+        except ValueError:
+            return False
+        if not candidate.is_file() or candidate.is_symlink():
+            return False
+        provenance[hash_key] = hashlib.sha256(candidate.read_bytes()).hexdigest()
+        attested = True
+    if not attested:
+        return False
+    provenance["attestation_phase"] = "post_secret_scrub"
+    temp = audit_path.with_name(f".{audit_path.name}.post-scrub.tmp")
+    temp.write_text(json.dumps(audit, indent=2, sort_keys=True) + "\n")
+    temp.replace(audit_path)
+    return True
 
 
 class Trial(ABC):
@@ -850,6 +888,7 @@ class Trial(ABC):
                     "Skipping unscrubbable trial output %s: %s", path, exc
                 )
                 continue
+        _reattest_scrubbed_usage_provenance(self.paths.trial_dir)
 
     def _init_agent(self) -> None:
         extra_kwargs: dict[str, Any] = {}

@@ -56,18 +56,22 @@ def recover_harbor_provenance(
     """Rebuild stale mutable-path provenance into immutable signed snapshots."""
     agent_dir = trial / "agent"
     provenance = audit.get("provenance") or {}
-    source_name = provenance.get("source_session_file")
-    if not isinstance(source_name, str) or not source_name:
-        raise SystemExit("Harbor usage audit has no recoverable source session name")
-    matches = list((agent_dir / "sessions").rglob(source_name))
-    matches.extend((agent_dir / "codex-state" / "sessions").rglob(source_name))
-    matches = [path.resolve() for path in matches if path.is_file()]
-    if not matches:
-        raise SystemExit("Harbor usage audit source session is missing")
-    actual_hashes = {sha256_file(path) for path in matches}
-    if len(actual_hashes) != 1:
-        raise SystemExit("Harbor final source session copies disagree")
-    source_path = matches[0]
+    source_path = resolve_agent_provenance(
+        agent_dir, provenance.get("source_session_path")
+    )
+    if source_path is None:
+        source_name = provenance.get("source_session_file")
+        if not isinstance(source_name, str) or not source_name:
+            raise SystemExit("Harbor usage audit has no recoverable source session")
+        matches = list((agent_dir / "sessions").rglob(source_name))
+        matches.extend((agent_dir / "codex-state" / "sessions").rglob(source_name))
+        matches = [path.resolve() for path in matches if path.is_file()]
+        if not matches:
+            raise SystemExit("Harbor usage audit source session is missing")
+        actual_hashes = {sha256_file(path) for path in matches}
+        if len(actual_hashes) != 1:
+            raise SystemExit("Harbor final source session copies disagree")
+        source_path = matches[0]
 
     kwargs: dict[str, Any] = {
         "logs_dir": agent_dir,
