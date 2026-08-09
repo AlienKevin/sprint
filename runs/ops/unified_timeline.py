@@ -895,6 +895,26 @@ class Builder:
             except (OSError, json.JSONDecodeError):
                 continue
             self.source_counts["usage_audit_files"] += 1
+            audit_requests = audit.get("requests")
+            audit_request_count = audit.get("request_count")
+            calculated = audit.get("calculated_api_usage_usd")
+            audit_complete = bool(
+                audit.get("cost_reconstruction_complete") is True
+                and isinstance(audit_requests, list)
+                and audit_request_count == len(audit_requests)
+                and isinstance(calculated, (int, float))
+                and not isinstance(calculated, bool)
+            )
+            if audit_complete:
+                self.counts["complete_usage_audits"] += 1
+            if (
+                audit_complete
+                and audit_request_count == 0
+                and float(calculated) == 0.0
+                and audit.get("zero_request_reason")
+                == "no completed model request was present in any captured CPU attempt"
+            ):
+                self.counts["attested_zero_request_usage_audits"] += 1
             default_session_id = self.relative(trial) if trial else self.run_id
             session_id = str(audit.get("session_id") or default_session_id)
             for snapshot in audit.get("pricing_snapshots") or []:
@@ -1484,7 +1504,13 @@ class Builder:
                     and not isinstance(event.get("calculated_cost_usd"), bool)
                 )
                 if usage_events
-                else None
+                else (
+                    0.0
+                    if self.counts["attested_zero_request_usage_audits"]
+                    == self.source_counts["usage_audit_files"]
+                    and self.source_counts["usage_audit_files"] > 0
+                    else None
+                )
             ),
             "pricing_snapshot_ids": sorted(
                 {
@@ -1650,7 +1676,9 @@ class Builder:
             == 0,
             "submission_ledger": self.source_counts["ledger_files"] > 0,
             "model_usage_and_cost": (
-                bool(usage_events)
+                self.source_counts["usage_audit_files"] > 0
+                and self.counts["complete_usage_audits"]
+                == self.source_counts["usage_audit_files"]
                 and self.counts["incomplete_model_request_costs"] == 0
                 if self.run.get("usage_audit_required")
                 else True

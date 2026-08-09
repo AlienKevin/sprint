@@ -496,13 +496,17 @@ def main() -> int:
         "request_count": len(requests),
         "requests": requests,
         "pricing_snapshots": list(snapshots.values()),
-        "cost_reconstruction_complete": complete and bool(requests),
+        "cost_reconstruction_complete": complete,
         "calculated_api_usage_usd": (
             sum(float(request["calculated_cost_usd"]) for request in requests)
-            if complete and requests
+            if complete
             else None
         ),
     }
+    if complete and not requests:
+        payload["zero_request_reason"] = (
+            "no completed model request was present in any captured CPU attempt"
+        )
     atomic_text(
         state_dir / "usage" / "run-usage-audit.json",
         json.dumps(payload, indent=2, sort_keys=True) + "\n",

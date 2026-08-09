@@ -11,6 +11,9 @@ from harbor.models.agent.context import AgentContext
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "reconstruct_codex_usage.py"
+sys.path.insert(0, str(SCRIPT.parent))
+
+import sprintctl  # noqa: E402
 
 
 def write_session(state: Path, attempt: int, session_id: str, timestamp: str) -> None:
@@ -65,6 +68,46 @@ def write_session(state: Path, attempt: int, session_id: str, timestamp: str) ->
     chunk.write_text("".join(json.dumps(row) + "\n" for row in rows))
 
 
+def write_zero_request_session(state: Path, attempt: int, session_id: str) -> None:
+    chunk = (
+        state
+        / "durable-trace"
+        / "raw"
+        / f"cpu-attempt-{attempt:03d}"
+        / "codex"
+        / f"source-{attempt}"
+        / "chunks"
+        / "0000000000000000-0000000000001000-test.jsonl"
+    )
+    chunk.parent.mkdir(parents=True)
+    rows = [
+        {"type": "session_meta", "payload": {"id": session_id}},
+        {
+            "type": "turn_context",
+            "timestamp": "2026-08-09T05:44:35Z",
+            "payload": {"model": "gpt-5.6-luna", "effort": "max"},
+        },
+        {
+            "type": "response_item",
+            "timestamp": "2026-08-09T05:44:35Z",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "starting"}],
+            },
+        },
+        {
+            "type": "event_msg",
+            "timestamp": "2026-08-09T05:44:36Z",
+            "payload": {
+                "type": "error",
+                "message": "provider rejected request before completion",
+            },
+        },
+    ]
+    chunk.write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+
 def test_reconstructs_all_cpu_attempts_and_aggregates_cost(tmp_path: Path) -> None:
     run = {
         "run_id": "restart-cost-fixture",
@@ -98,6 +141,40 @@ def test_reconstructs_all_cpu_attempts_and_aggregates_cost(tmp_path: Path) -> No
     assert audit["calculated_api_usage_usd"] > 0
     trajectories = list((tmp_path / "trace" / "reconstructed").rglob("trajectory.json"))
     assert len(trajectories) == 2
+
+
+def test_zero_completed_requests_are_attested_as_exact_zero_cost(
+    tmp_path: Path,
+) -> None:
+    run = {
+        "run_id": "provider-rejected-before-response",
+        "model": "openai/gpt-5.6-luna",
+        "resolved_model_version": "gpt-5.6-luna",
+        "reasoning_effort": "max",
+        "cpu_launch_history": [{"attempt": 1}, {"attempt": 2}],
+    }
+    (tmp_path / "run.json").write_text(json.dumps(run))
+    write_zero_request_session(tmp_path, 1, "session-one")
+    write_zero_request_session(tmp_path, 2, "session-two")
+
+    subprocess.run(
+        [sys.executable, str(SCRIPT), "--state-dir", str(tmp_path)],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    audit = json.loads((tmp_path / "usage/run-usage-audit.json").read_text())
+    assert audit["request_count"] == 0
+    assert audit["cost_reconstruction_complete"] is True
+    assert audit["calculated_api_usage_usd"] == 0.0
+    assert audit["attempt_coverage_complete"] is True
+    assert audit["zero_request_reason"] == (
+        "no completed model request was present in any captured CPU attempt"
+    )
+    assert all(row["trajectory_sha256"] for row in audit["source_sessions"])
+    assert sprintctl.run_usage_audit_ready(tmp_path, run) == (True, [])
 
 
 def test_harbor_final_archive_supersedes_verified_durable_prefix(

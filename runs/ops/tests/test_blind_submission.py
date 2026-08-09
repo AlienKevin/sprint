@@ -186,11 +186,60 @@ def test_all_submission_finalization_needs_no_final_policy_or_verifier(
             }
         )
     )
+    raw_chunk = state / "trace" / "raw.jsonl"
+    trajectory = state / "trace" / "trajectory.json"
+    raw_chunk.parent.mkdir()
+    raw_chunk.write_text('{"type":"provider_rejected"}\n')
+    trajectory.write_text('{"schema_version":"ATIF-v1.7","steps":[]}\n')
+    usage = state / "usage" / "run-usage-audit.json"
+    usage.parent.mkdir()
+    usage.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "run_id": "run",
+                "model": "openai/gpt-5.6-luna",
+                "resolved_model_version": "gpt-5.6-luna",
+                "reasoning_effort": "max",
+                "expected_cpu_attempts": [1],
+                "captured_cpu_attempts": [1],
+                "attempt_coverage_complete": True,
+                "request_count": 0,
+                "requests": [],
+                "pricing_snapshots": [],
+                "cost_reconstruction_complete": True,
+                "calculated_api_usage_usd": 0.0,
+                "zero_request_reason": (
+                    "no completed model request was present in any captured CPU attempt"
+                ),
+                "source_sessions": [
+                    {
+                        "cpu_attempt": 1,
+                        "request_count": 0,
+                        "cost_reconstruction_complete": True,
+                        "chunks": [
+                            {
+                                "path": "trace/raw.jsonl",
+                                "sha256": sprintctl.sha256_file(raw_chunk),
+                            }
+                        ],
+                        "trajectory_path": "trace/trajectory.json",
+                        "trajectory_sha256": sprintctl.sha256_file(trajectory),
+                    }
+                ],
+            }
+        )
+    )
     run = {
         "run_id": "run",
         "state_dir": str(state),
         "jobs_root": str(jobs),
         "evaluation_result_policy": "all_blind_submissions_by_deadline",
+        "model": "openai/gpt-5.6-luna",
+        "resolved_model_version": "gpt-5.6-luna",
+        "reasoning_effort": "max",
+        "cpu_launch_history": [{"attempt": 1}],
+        "usage_audit_required": True,
     }
     (state / "run.json").write_text(json.dumps(run))
 
@@ -198,5 +247,6 @@ def test_all_submission_finalization_needs_no_final_policy_or_verifier(
 
     assert ready, details
     assert conditions["continuous_result_set"] is True
+    assert conditions["usage_audit_complete"] is True
     assert "final_verifier" not in conditions
     assert "final_policy_frozen" not in conditions

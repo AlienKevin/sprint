@@ -574,6 +574,9 @@ def test_request_costs_are_joined_to_performance_on_the_same_clock(
     run_path.write_text(json.dumps(run))
     audit = {
         "session_id": "session-cost",
+        "request_count": 1,
+        "cost_reconstruction_complete": True,
+        "calculated_api_usage_usd": 0.25,
         "pricing_snapshots": [{"id": "price-v1"}],
         "requests": [
             {
@@ -614,6 +617,42 @@ def test_request_costs_are_joined_to_performance_on_the_same_clock(
         event for event in payload["events"] if event["kind"] == "model_request_usage"
     )
     assert request["elapsed_ms"] == 18_000
+
+
+def test_attested_zero_request_failure_has_complete_zero_cost_timeline(
+    tmp_path: Path,
+) -> None:
+    state = fixture_run(tmp_path)
+    run_path = state / "run.json"
+    run = json.loads(run_path.read_text())
+    run["usage_audit_required"] = True
+    run_path.write_text(json.dumps(run))
+    audit_path = state / "usage" / "run-usage-audit.json"
+    audit_path.parent.mkdir()
+    audit_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "run_id": "timeline-fixture",
+                "request_count": 0,
+                "requests": [],
+                "pricing_snapshots": [],
+                "cost_reconstruction_complete": True,
+                "calculated_api_usage_usd": 0.0,
+                "zero_request_reason": (
+                    "no completed model request was present in any captured CPU attempt"
+                ),
+            }
+        )
+    )
+
+    payload = unified_timeline.build_timeline(state)
+
+    assert payload["coverage"]["requirements"]["model_usage_and_cost"] is True
+    assert payload["coverage"]["counts"]["complete_usage_audits"] == 1
+    assert payload["coverage"]["counts"]["attested_zero_request_usage_audits"] == 1
+    assert payload["usage_summary"]["request_count"] == 0
+    assert payload["usage_summary"]["calculated_api_usage_usd"] == 0.0
 
 
 def test_all_submission_result_set_has_no_privileged_primary(

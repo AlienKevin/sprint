@@ -1261,11 +1261,17 @@ def run_usage_audit_ready(
     if audit.get("cost_reconstruction_complete") is not True:
         details.append("run usage audit cost reconstruction is incomplete")
     requests = audit.get("requests")
-    if not isinstance(requests, list) or not requests:
-        details.append("run usage audit has no model requests")
+    if not isinstance(requests, list):
+        details.append("run usage audit requests are missing")
         requests = []
     if audit.get("request_count") != len(requests):
         details.append("run usage audit request count mismatch")
+    if not requests and audit.get("zero_request_reason") != (
+        "no completed model request was present in any captured CPU attempt"
+    ):
+        details.append("run usage audit has no attested zero-request reason")
+    if requests and audit.get("zero_request_reason") is not None:
+        details.append("run usage audit has a contradictory zero-request reason")
     calculated = audit.get("calculated_api_usage_usd")
     request_cost = sum(
         float(request.get("calculated_cost_usd") or 0)
@@ -1293,7 +1299,13 @@ def run_usage_audit_ready(
         if not isinstance(source, dict):
             details.append("run usage source session is malformed")
             continue
-        for chunk in source.get("chunks") or []:
+        if source.get("cost_reconstruction_complete") is not True:
+            details.append("run usage source session cost is incomplete")
+        chunks = source.get("chunks")
+        if not isinstance(chunks, list) or not chunks:
+            details.append("run usage source session has no raw chunks")
+            chunks = []
+        for chunk in chunks:
             relative = chunk.get("path") if isinstance(chunk, dict) else None
             chunk_path = state_dir / str(relative)
             if (
@@ -1303,6 +1315,14 @@ def run_usage_audit_ready(
             ):
                 details.append("run usage source chunk checksum mismatch")
                 break
+        trajectory_relative = source.get("trajectory_path")
+        trajectory = state_dir / str(trajectory_relative)
+        if (
+            not trajectory_relative
+            or not trajectory.is_file()
+            or source.get("trajectory_sha256") != sha256_file(trajectory)
+        ):
+            details.append("run usage source trajectory checksum mismatch")
     return not details, details
 
 
@@ -1515,8 +1535,23 @@ def final_conditions(
         except (OSError, json.JSONDecodeError):
             pass
     if run.get("usage_audit_required"):
-        trial_audit_ready, trial_audit_details = usage_audit_ready(trial, run)
         run_audit_ready, run_audit_details = run_usage_audit_ready(state_dir, run)
+        try:
+            run_audit = json.loads(
+                (state_dir / "usage" / "run-usage-audit.json").read_text()
+            )
+        except (OSError, json.JSONDecodeError):
+            run_audit = {}
+        # A provider rejection before its first completed response has no
+        # request-level Harbor audit or tariff snapshot to materialize. The
+        # all-attempt host reconstruction is authoritative in this one case:
+        # it attests every raw chunk and reconstructed ATIF checksum and an
+        # exact zero-dollar total. Runs with any completed request still need
+        # the independent Harbor audit -> ATIF -> result reconciliation.
+        if run_audit_ready and run_audit.get("request_count") == 0:
+            trial_audit_ready, trial_audit_details = True, []
+        else:
+            trial_audit_ready, trial_audit_details = usage_audit_ready(trial, run)
         conditions["usage_audit_complete"] = trial_audit_ready and run_audit_ready
         details.extend(trial_audit_details)
         details.extend(run_audit_details)
