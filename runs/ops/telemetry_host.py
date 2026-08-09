@@ -621,8 +621,10 @@ def active_training_container_ids(run: dict[str, Any]) -> set[str]:
     import gpu_worker
 
     active: set[str] = set()
-    for job_id in gpu_worker.list_job_ids(run):
-        job = gpu_worker.load_job(run, job_id) or {}
+    # The append-only host registry is authoritative after claim and avoids a
+    # Modal Volume list/get for every historical queue record on every poll.
+    for job_id in gpu_worker.list_host_job_ids(run):
+        job = gpu_worker.load_host_job(run, job_id) or {}
         if str(job.get("status") or "") not in gpu_claim.OWNED:
             continue
         sandbox_id = job.get("sandbox_id")

@@ -446,9 +446,11 @@ class TelemetrySamplerTests(unittest.TestCase):
             "failed": {"status": "failed", "sandbox_id": "sb-old-failed"},
         }
         with (
-            mock.patch.object(gpu_worker, "list_job_ids", return_value=list(jobs)),
+            mock.patch.object(gpu_worker, "list_host_job_ids", return_value=list(jobs)),
             mock.patch.object(
-                gpu_worker, "load_job", side_effect=lambda _run, job_id: jobs[job_id]
+                gpu_worker,
+                "load_host_job",
+                side_effect=lambda _run, job_id: jobs[job_id],
             ),
         ):
             active = telemetry_host.active_training_container_ids({})
