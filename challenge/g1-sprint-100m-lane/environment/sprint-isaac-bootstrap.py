@@ -46,14 +46,19 @@ def main() -> int:
         pass
     install_app_launcher_hook()
     sys.argv = [str(script), *sys.argv[2:]]
-    # Match ``python3 /path/to/script.py``: runpy does not automatically put
-    # the script directory at sys.path[0], but agent training scripts commonly
-    # import sibling packages from their workspace.
-    sys.path.insert(0, str(script.parent))
+    # Match normal workspace execution while being slightly more permissive:
+    # runpy does not add either location automatically, and agent-authored
+    # scripts may import a sibling module (script directory) or a workspace
+    # package such as ``train.robot`` (working directory).
+    import_roots = list(
+        dict.fromkeys((str(script.parent), str(Path.cwd().resolve())))
+    )
+    for path in reversed(import_roots):
+        sys.path.insert(0, path)
     try:
         runpy.run_path(str(script), run_name="__main__")
     finally:
-        sys.path.pop(0)
+        del sys.path[: len(import_roots)]
     return 0
 
 

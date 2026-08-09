@@ -665,9 +665,10 @@ def provider_terminal_error(stream_text: str) -> str | None:
     """Return a definitive child failure marker hidden by a zero wrapper exit.
 
     Isaac/Kit can occasionally finish its outer application with status zero
-    after Python emitted an unhandled exception.  Generic ``[Error]`` lines are
-    not sufficient because headless Vulkan initialization emits recoverable
-    diagnostics, but an unhandled Python traceback is terminal.
+    after Python emitted an unhandled exception or Kit failed before starting
+    the application. Generic ``[Error]`` lines are not sufficient because
+    headless Vulkan initialization emits recoverable diagnostics, but these
+    semantic startup failures are terminal.
     """
     if "Traceback (most recent call last):" in stream_text:
         tail = stream_text[stream_text.rfind("Traceback (most recent call last):") :]
@@ -676,6 +677,22 @@ def provider_terminal_error(stream_text: str) -> str | None:
             "unhandled Python exception",
         )
         return final[-1000:]
+    for marker in (
+        "Failed to resolve extension dependencies",
+        "Failed to startup python app",
+        "ModuleNotFoundError:",
+    ):
+        if marker not in stream_text:
+            continue
+        line = next(
+            (
+                item.strip()
+                for item in reversed(stream_text.splitlines())
+                if marker in item
+            ),
+            marker,
+        )
+        return line[-1000:]
     return None
 
 
@@ -691,7 +708,7 @@ def apply_provider_terminal_error(
         payload["status"] = "failed"
         payload["exit_code"] = 1
         payload["error"] = terminal_error
-        payload["failure_reason"] = "provider_stream_unhandled_exception"
+        payload["failure_reason"] = "provider_stream_terminal_error"
     return payload
 
 

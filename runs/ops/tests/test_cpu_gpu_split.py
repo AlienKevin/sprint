@@ -241,7 +241,7 @@ class ClaimSelectionTests(unittest.TestCase):
         self.assertEqual(archived["provider_reported_exit_code"], 0)
         self.assertEqual(
             archived["failure_reason"],
-            "provider_stream_unhandled_exception",
+            "provider_stream_terminal_error",
         )
         self.assertEqual(
             detail["provider_terminal_error"], "FileNotFoundError: robot.usd"
@@ -253,6 +253,14 @@ class ClaimSelectionTests(unittest.TestCase):
                 "[Error] [gpu.foundation.plugin] No device could be created"
             )
         )
+
+    def test_kit_semantic_startup_failures_override_false_zero_exit(self) -> None:
+        for output in (
+            "Failed to resolve extension dependencies",
+            "Failed to startup python app",
+            "ModuleNotFoundError: No module named 'train'",
+        ):
+            self.assertEqual(gpu_worker.provider_terminal_error(output), output)
 
     def test_audits_preexisting_archived_log_and_repairs_status(self) -> None:
         job = {

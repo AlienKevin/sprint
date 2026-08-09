@@ -30,6 +30,8 @@ import sprintctl  # noqa: E402
 UV = Path(os.environ.get("UV", "/home/ubuntu/.local/bin/uv"))
 WEB = ROOT / "sprint-web"
 BATCH_ROOT = SCRIPT_DIR / "batches"
+WARMUP_MANIFEST = SCRIPT_DIR / "modal-image-warmup.json"
+FUNCTIONAL_CANARY_REPORT = SCRIPT_DIR / "training-gpu-canary.json"
 HARBOR_REVISION = "30343f6a98793ab83574f246d5365dda78a1b831"
 CODEX_VERSION = "0.147.0"
 TRIALS_PER_MODEL = 3
@@ -85,6 +87,25 @@ def load_env(path: Path) -> dict[str, str]:
         if name.strip() in {"OPENAI_API_KEY", "DEEPSEEK_API_KEY"} and value:
             values[name.strip()] = value
     return values
+
+
+def functional_gpu_canary_ready() -> bool:
+    try:
+        warmup = json.loads(WARMUP_MANIFEST.read_text())
+        canary = json.loads(FUNCTIONAL_CANARY_REPORT.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    contexts = warmup.get("contexts", {})
+    return bool(
+        warmup.get("completed")
+        and canary.get("schema_version") == 2
+        and canary.get("completed")
+        and canary.get("full_path_verified")
+        and canary.get("image_id")
+        == contexts.get("agent_training", {}).get("image_id")
+        and canary.get("verifier_image_id")
+        == contexts.get("verifier", {}).get("image_id")
+    )
 
 
 def matrix(
@@ -274,6 +295,7 @@ def preflight(
         ).returncode
         == 0
     )
+    checks["functional_gpu_canary"] = functional_gpu_canary_ready()
     checks["vercel_project_link"] = vercel_project_link_ready()
     command_env = dict(os.environ)
     command_env["MODAL_PROFILE"] = modal_profile

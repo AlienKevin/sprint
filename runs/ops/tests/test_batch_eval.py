@@ -109,6 +109,42 @@ def test_env_loader_reads_only_required_model_keys(tmp_path: Path) -> None:
     }
 
 
+def test_functional_gpu_canary_must_match_both_warmed_images(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    warmup = tmp_path / "warmup.json"
+    canary = tmp_path / "canary.json"
+    warmup.write_text(
+        json.dumps(
+            {
+                "completed": True,
+                "contexts": {
+                    "agent_training": {"image_id": "im-agent"},
+                    "verifier": {"image_id": "im-verifier"},
+                },
+            }
+        )
+    )
+    canary.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "completed": True,
+                "full_path_verified": True,
+                "image_id": "im-agent",
+                "verifier_image_id": "im-verifier",
+            }
+        )
+    )
+    monkeypatch.setattr(batch_eval, "WARMUP_MANIFEST", warmup)
+    monkeypatch.setattr(batch_eval, "FUNCTIONAL_CANARY_REPORT", canary)
+    assert batch_eval.functional_gpu_canary_ready()
+    payload = json.loads(canary.read_text())
+    payload["verifier_image_id"] = "im-stale"
+    canary.write_text(json.dumps(payload))
+    assert not batch_eval.functional_gpu_canary_ready()
+
+
 def test_provider_inference_probe_records_usage_without_secret(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

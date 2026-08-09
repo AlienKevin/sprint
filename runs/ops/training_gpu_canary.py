@@ -38,6 +38,7 @@ def main() -> int:
     if not warmup.get("completed"):
         raise RuntimeError("Modal image warm-up is not complete")
     image_id = str(warmup["contexts"]["agent_training"]["image_id"])
+    verifier_image_id = str(warmup["contexts"]["verifier"]["image_id"])
     canary_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     remote_root = f"/training-canary/{canary_id}"
 
@@ -60,35 +61,64 @@ def main() -> int:
         f"export SPRINT_GPU_PROGRESS_FILE=/warm{remote_root}/progress.json; "
         "timeout --signal=TERM --kill-after=30 900 "
         "python3 /opt/sprint-isaac-bootstrap.py /app/train_sprint.py "
-        "--headless --device cuda:0 --num_envs 32 --max_iters 3 "
+        "--headless --device cuda:0 --num_envs 128 --max_iters 10 "
         "--chunk_iters 1 --save_interval 1 --episode_length 2 "
         f"--exp_name sealed_training_canary --log_root /warm{remote_root}/logs "
         f"2>&1 | tee /warm{remote_root}/training.log; "
         "kill $telemetry_pid 2>/dev/null || true; wait $telemetry_pid 2>/dev/null || true; "
         f"test -s /warm{remote_root}/checkpoints/policy_final.pt; "
         f"python3 -c \"import json; p=json.load(open('/warm{remote_root}/progress.json')); "
-        "assert p['finished'] is True and p['iteration'] >= 3\"; "
-        f"grep -F '[sprint] iter=3' /warm{remote_root}/training.log; "
+        "assert p['finished'] is True and p['iteration'] >= 10\"; "
+        f"grep -F '[sprint] iter=10' /warm{remote_root}/training.log; "
         f"python3 -c \"import json; rows=[json.loads(x) for x in "
         f"open('/warm{remote_root}/telemetry/samples.jsonl') if x.strip()]; "
         "gpus=[g for p in rows for g in p['gpus']]; "
         "assert gpus and all(g['gpu_name'] for g in gpus); "
-        "assert max(g['mem_used_mib'] for g in gpus) > 1000\""
+        "assert max(g['mem_used_mib'] for g in gpus) > 1000; "
+        "assert max(g['util_gpu_pct'] for g in gpus) >= 10\""
+    )
+
+    verifier_command = (
+        "set -euo pipefail; "
+        f"mkdir -p /warm{remote_root}/verifier/telemetry; "
+        "SPRINT_REQUESTED_CPU_CORES=8 SPRINT_REQUESTED_MEMORY_MIB=32768 "
+        "python3 /tests/verifier_telemetry.py "
+        f"--out-dir /warm{remote_root}/verifier/telemetry --interval-seconds 2 & "
+        "telemetry_pid=$!; trap 'kill $telemetry_pid 2>/dev/null || true' EXIT; "
+        "timeout --signal=TERM --kill-after=30 180 "
+        f"python3 /tests/verify.py --policy /warm{remote_root}/checkpoints/policy_final.pt "
+        f"--logs /warm{remote_root}/verifier --tests /tests --runs 1 "
+        "--distance 1 --max-seconds 2 --skip-robustness --headless "
+        f"2>&1 | tee /warm{remote_root}/verifier/isaac-stdout.txt; "
+        "kill $telemetry_pid 2>/dev/null || true; wait $telemetry_pid 2>/dev/null || true; "
+        f"test -s /warm{remote_root}/verifier/sprint_results.json; "
+        f"test -s /warm{remote_root}/verifier/lanes.json; "
+        f"test -s /warm{remote_root}/verifier/replay.json; "
+        f"! grep -Eq 'GPU solver pipeline failed|GPU Bp pipeline failed|switching to software' "
+        f"/warm{remote_root}/verifier/isaac-stdout.txt; "
+        f"python3 -c \"import json; rows=[json.loads(x) for x in "
+        f"open('/warm{remote_root}/verifier/telemetry/samples.jsonl') if x.strip()]; "
+        "gpus=[g for p in rows for g in p['gpus']]; "
+        "assert gpus and all(g['gpu_name'] for g in gpus); "
+        f"result=json.load(open('/warm{remote_root}/verifier/sprint_results.json')); "
+        "assert result['runs'] == 1\"; "
+        "echo SEALED_GENERATED_POLICY_VERIFIED"
     )
 
     started = time.time()
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "completed": False,
         "canary_id": canary_id,
         "image_id": image_id,
+        "verifier_image_id": verifier_image_id,
         "work_archive_sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
         "remote_root": remote_root,
         "started_at_epoch_s": started,
     }
     try:
         with modal.enable_output():
-            report["sandbox"] = run_sandbox(
+            report["training_sandbox"] = run_sandbox(
                 app=app,
                 image=modal.Image.from_id(image_id),
                 role="training-gpu-functional-canary",
@@ -96,8 +126,19 @@ def main() -> int:
                 volume=volume,
                 command=command,
                 timeout=1200,
-                required_output_substrings=("[sprint] iter=3",),
+                required_output_substrings=("[sprint] iter=10",),
             )
+            report["verifier_sandbox"] = run_sandbox(
+                app=app,
+                image=modal.Image.from_id(verifier_image_id),
+                role="generated-policy-sealed-verifier-canary",
+                gpu="A10G",
+                volume=volume,
+                command=verifier_command,
+                timeout=300,
+                required_output_substrings=("SEALED_GENERATED_POLICY_VERIFIED",),
+            )
+        report["full_path_verified"] = True
         report["completed"] = True
         report["completed_at_epoch_s"] = time.time()
         report["elapsed_s"] = round(time.time() - started, 3)
