@@ -5,9 +5,11 @@ from __future__ import annotations
 import importlib.machinery
 import importlib.util
 import hashlib
+import io
 import json
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import unittest
@@ -110,6 +112,125 @@ class ClaimSelectionTests(unittest.TestCase):
             out["command"],
             ["python3", "/app/train.py", "--headless"],
         )
+
+
+    def test_host_pins_and_restores_exact_claimed_workspace(self) -> None:
+        archive_bytes = b"agent workspace bytes"
+        digest = hashlib.sha256(archive_bytes).hexdigest()
+        with tempfile.TemporaryDirectory() as raw:
+            run = {
+                "run_id": "run-a",
+                "state_dir": raw,
+                "volume_name": "volume-a",
+            }
+            job = {
+                "job_id": "job-a",
+                "work_archive": "runs/run-a/gpu-jobs/work/job-a/app.tar.gz",
+                "submitted_work_archive_sha256": digest,
+            }
+
+            def download(command, **_kwargs):
+                Path(command[-1]).write_bytes(archive_bytes)
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with (
+                mock.patch.object(gpu_worker.sprintctl, "run_command", download),
+                mock.patch.object(gpu_worker.sprintctl, "volume_upload") as upload,
+            ):
+                pinned = gpu_worker.pin_work_archive(run, job)
+                gpu_worker.restore_pinned_work_archive(run, pinned)
+
+            self.assertEqual(pinned["work_archive_sha256"], digest)
+            self.assertEqual(pinned["work_archive_size_bytes"], len(archive_bytes))
+            self.assertEqual(
+                pinned["work_archive_provenance"], "host-pinned-at-lease-claim"
+            )
+            self.assertNotIn("work_archive_changed_before_claim", pinned)
+            canonical = gpu_worker.host_work_archive_path(run, "job-a")
+            self.assertIsNotNone(canonical)
+            assert canonical is not None
+            self.assertEqual(canonical.read_bytes(), archive_bytes)
+            upload.assert_called_once_with(
+                run, canonical, "runs/run-a/gpu-jobs/work/job-a/app.tar.gz"
+            )
+
+    def test_host_records_workspace_changed_before_claim(self) -> None:
+        archive_bytes = b"changed after enqueue"
+        with tempfile.TemporaryDirectory() as raw:
+            run = {
+                "run_id": "run-a",
+                "state_dir": raw,
+                "volume_name": "volume-a",
+            }
+            job = {
+                "job_id": "job-a",
+                "work_archive": "runs/run-a/gpu-jobs/work/job-a/app.tar.gz",
+                "submitted_work_archive_sha256": hashlib.sha256(b"old").hexdigest(),
+            }
+
+            def download(command, **_kwargs):
+                Path(command[-1]).write_bytes(archive_bytes)
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with mock.patch.object(gpu_worker.sprintctl, "run_command", download):
+                pinned = gpu_worker.pin_work_archive(run, job)
+
+            self.assertTrue(pinned["work_archive_changed_before_claim"])
+            self.assertEqual(
+                pinned["work_archive_sha256"],
+                hashlib.sha256(archive_bytes).hexdigest(),
+            )
+
+    def test_retry_rejects_corrupt_host_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            run = {
+                "run_id": "run-a",
+                "state_dir": raw,
+                "volume_name": "volume-a",
+            }
+            job = {
+                "job_id": "job-a",
+                "work_archive": "runs/run-a/gpu-jobs/work/job-a/app.tar.gz",
+                "work_archive_sha256": hashlib.sha256(b"expected").hexdigest(),
+            }
+            canonical = gpu_worker.host_work_archive_path(run, "job-a")
+            assert canonical is not None
+            canonical.parent.mkdir(parents=True)
+            canonical.write_bytes(b"corrupt")
+            with self.assertRaisesRegex(RuntimeError, "digest mismatch"):
+                gpu_worker.restore_pinned_work_archive(run, job)
+
+    def test_worker_extracts_only_regular_app_files(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            archive = root / "work.tar.gz"
+            content = b"print('ok')\n"
+            with tarfile.open(archive, "w:gz") as tar:
+                info = tarfile.TarInfo("app/train.py")
+                info.size = len(content)
+                info.mode = 0o755
+                tar.addfile(info, io.BytesIO(content))
+            destination = root / "out"
+            worker_run.safe_extract_work_archive(archive, destination)
+            extracted = destination / "app" / "train.py"
+            self.assertEqual(extracted.read_bytes(), content)
+            self.assertTrue(extracted.stat().st_mode & 0o100)
+
+    def test_worker_rejects_tar_traversal_and_links(self) -> None:
+        for name, kind in (("../../opt/pwn", "file"), ("app/link", "link")):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                archive = root / "work.tar.gz"
+                with tarfile.open(archive, "w:gz") as tar:
+                    info = tarfile.TarInfo(name)
+                    if kind == "link":
+                        info.type = tarfile.SYMTYPE
+                        info.linkname = "/opt/sprint-gpu-worker-run.py"
+                    else:
+                        info.size = 1
+                    tar.addfile(info, None if kind == "link" else io.BytesIO(b"x"))
+                with self.assertRaisesRegex(RuntimeError, "unsafe|unsupported"):
+                    worker_run.safe_extract_work_archive(archive, root / "out")
 
     def test_does_not_rewrite_other_isaaclab_actions(self) -> None:
         job = {"command": ["/opt/IsaacLab/isaaclab.sh", "-s"]}
@@ -1500,6 +1621,10 @@ class RetryAndFencingTests(unittest.TestCase):
                 mock.patch.object(gpu_worker, "list_job_ids", return_value=["queued"]),
                 mock.patch.object(gpu_worker, "load_job", side_effect=load_job),
                 mock.patch.object(gpu_worker, "persist_job", side_effect=persist_job),
+                mock.patch.object(
+                    gpu_worker, "pin_work_archive", side_effect=lambda _run, job: job
+                ),
+                mock.patch.object(gpu_worker, "restore_pinned_work_archive"),
                 mock.patch.object(
                     gpu_worker,
                     "operator_stop_requested",

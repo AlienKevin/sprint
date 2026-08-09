@@ -23,9 +23,10 @@ from train.spec import (
 )
 ```
 
-Your TorchScript policy maps `(N, OBSERVATION_DIM)` to `(N, ACTION_DIM)` joint
-position targets. Use `OBSERVATION_SLICES` instead of copying numeric offsets.
-An optional `reset()` method clears policy state between verifier trials.
+`spec.py` is authoritative for tensor shapes, observation fields, action scale,
+control frequency, and the optional state-reset ABI. Use its named values rather
+than copying offsets or signatures. `sprint-check POLICY.pt` validates the
+exported TorchScript contract before submission.
 
 ## Runtime and GPU jobs
 

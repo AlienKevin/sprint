@@ -18,6 +18,7 @@ starts an A10G sandbox with the same image + volume.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -167,6 +168,9 @@ def cmd_submit(args: argparse.Namespace) -> int:
     work_rel = f"runs/{run_id}/gpu-jobs/work/{job_id}/app.tar.gz"
     archive = Path("/durable") / work_rel
     included = pack_sync_dirs(archive, sync_dirs)
+    archive_size = archive.stat().st_size
+    with archive.open("rb") as handle:
+        submitted_archive_sha256 = hashlib.file_digest(handle, "sha256").hexdigest()
     checkpoint_dir = Path(args.checkpoint_dir or root / "checkpoints" / job_id)
     progress_file = Path(args.progress_file or checkpoint_dir / "progress.json")
 
@@ -181,6 +185,8 @@ def cmd_submit(args: argparse.Namespace) -> int:
         "note": args.note or "",
         "sync_dirs": included,
         "work_archive": work_rel,
+        "submitted_work_archive_sha256": submitted_archive_sha256,
+        "submitted_work_archive_size_bytes": archive_size,
         "status": "pending",
         "attempt": 0,
         "max_attempts": int(args.max_attempts),

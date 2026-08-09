@@ -1,4 +1,17 @@
-"""Agent-facing policy interface for the Sprint task."""
+"""Executable policy interface for the Sprint task.
+
+Required TorchScript method::
+
+    forward(observation: Tensor[N, 122]) -> Tensor[N, 37]
+
+Stateful policies may additionally expose::
+
+    reset(done_mask: Tensor[N, bool]) -> None
+
+The verifier calls ``reset`` with a boolean mask for every parallel environment.
+Stateless policies must omit the method rather than exporting a different
+signature.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +22,8 @@ OBSERVATION_DIM = 122
 ACTION_DIM = 37
 ACTION_SCALE = 0.5
 CONTROL_FREQUENCY_HZ = 50
+RESET_METHOD = "reset(done_mask: Tensor[N, bool]) -> None"
+RESET_MASK_DESCRIPTION = "one boolean per parallel environment; true clears state"
 
 
 @dataclass(frozen=True)

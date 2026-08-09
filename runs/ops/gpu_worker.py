@@ -16,6 +16,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import sys
 import tempfile
 import time
@@ -65,6 +66,7 @@ AGENT_GPU_MIRROR_LOG_BYTES = 768 * 1024
 AGENT_GPU_MIRROR_ARTIFACT_BYTES = 32 * 1024 * 1024
 AGENT_GPU_MIRROR_ARG_BYTES = 64 * 1024
 AGENT_GPU_CLI_PATH = "/usr/local/bin/sprint-gpu-train"
+MAX_WORK_ARCHIVE_BYTES = 256 * 1024 * 1024
 
 
 def mirror_agent_job(
@@ -329,6 +331,107 @@ def host_job_path(run: dict[str, Any], job_id: str) -> Path | None:
     if not state_dir or not re.fullmatch(r"[A-Za-z0-9_-]+", job_id):
         return None
     return Path(state_dir) / "gpu-job-registry" / f"{job_id}.json"
+
+
+def host_work_archive_path(run: dict[str, Any], job_id: str) -> Path | None:
+    """Return the controller-owned immutable workspace for a claimed job."""
+    record = host_job_path(run, job_id)
+    if record is None:
+        return None
+    return record.parent.parent / "gpu-job-work" / job_id / "app.tar.gz"
+
+
+def _validated_work_archive_remote(run: dict[str, Any], job: dict[str, Any]) -> str:
+    run_id = str(run["run_id"])
+    job_id = str(job["job_id"])
+    expected = f"{jobs_prefix(run_id)}/work/{job_id}/app.tar.gz"
+    remote = str(job.get("work_archive") or "")
+    if remote != expected:
+        raise RuntimeError(f"invalid work archive path for {job_id}: {remote!r}")
+    return remote
+
+
+def _file_sha256(path: Path) -> str:
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def pin_work_archive(run: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]:
+    """Snapshot the workspace at lease claim for identical retries.
+
+    The queue and its Volume workspace are agent-owned until the controller
+    claims them.  Once claimed, the host copy and digest become authoritative;
+    every retry restores those exact bytes before allocating a replacement.
+    """
+    payload = dict(job)
+    job_id = str(payload["job_id"])
+    remote = _validated_work_archive_remote(run, payload)
+    canonical = host_work_archive_path(run, job_id)
+    if canonical is None:
+        raise RuntimeError("run state_dir is required to pin GPU work")
+    expected = str(payload.get("work_archive_sha256") or "")
+    if canonical.is_file():
+        size = canonical.stat().st_size
+        digest = _file_sha256(canonical)
+        if expected and digest != expected:
+            raise RuntimeError("host-pinned GPU work archive digest mismatch")
+    else:
+        canonical.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory() as raw:
+            downloaded = Path(raw) / "app.tar.gz"
+            result = sprintctl.run_command(
+                sprintctl.modal_command(
+                    "volume",
+                    "get",
+                    "--force",
+                    str(run["volume_name"]),
+                    remote,
+                    str(downloaded),
+                ),
+                run=run,
+                check=False,
+                timeout=180,
+            )
+            if result.returncode != 0 or not downloaded.is_file():
+                raise RuntimeError(f"unable to pin GPU work archive: {remote}")
+            size = downloaded.stat().st_size
+            if size <= 0 or size > MAX_WORK_ARCHIVE_BYTES:
+                raise RuntimeError(f"invalid GPU work archive size: {size}")
+            digest = _file_sha256(downloaded)
+            if expected and digest != expected:
+                raise RuntimeError("GPU work archive changed after host claim")
+            staged = canonical.with_name(f".{canonical.name}.{os.getpid()}.tmp")
+            with downloaded.open("rb") as source, staged.open("wb") as target:
+                shutil.copyfileobj(source, target)
+                target.flush()
+                os.fsync(target.fileno())
+            os.chmod(staged, 0o600)
+            os.replace(staged, canonical)
+    submitted = str(payload.get("submitted_work_archive_sha256") or "")
+    payload.update(
+        {
+            "work_archive_sha256": digest,
+            "work_archive_size_bytes": size,
+            "work_archive_pinned_at": payload.get("work_archive_pinned_at")
+            or utc_now(),
+            "work_archive_provenance": "host-pinned-at-lease-claim",
+        }
+    )
+    if submitted and submitted != digest:
+        payload["work_archive_changed_before_claim"] = True
+    return payload
+
+
+def restore_pinned_work_archive(run: dict[str, Any], job: dict[str, Any]) -> None:
+    """Restore the controller snapshot before every attempt allocation."""
+    job_id = str(job["job_id"])
+    canonical = host_work_archive_path(run, job_id)
+    expected = str(job.get("work_archive_sha256") or "")
+    if canonical is None or not canonical.is_file() or not expected:
+        raise RuntimeError("missing host-pinned GPU work archive")
+    if _file_sha256(canonical) != expected:
+        raise RuntimeError("host-pinned GPU work archive digest mismatch")
+    sprintctl.volume_upload(run, canonical, _validated_work_archive_remote(run, job))
 
 
 def load_host_job(run: dict[str, Any], job_id: str) -> dict[str, Any] | None:
@@ -1667,6 +1770,9 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
                 retry_reason=claimed.get("retry_reason"),
             )
             try:
+                claimed = pin_work_archive(run, claimed)
+                persist_job(run, claimed)
+                restore_pinned_work_archive(run, claimed)
                 lease = Lease(
                     job_id=str(claimed["job_id"]),
                     attempt=int(claimed["attempt"]),

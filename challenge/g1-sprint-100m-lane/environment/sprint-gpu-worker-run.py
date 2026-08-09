@@ -6,6 +6,7 @@ Starts durable GPU telemetry, emits timeline phases, runs the job command.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import signal
@@ -13,8 +14,10 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 from pathlib import Path
+from pathlib import PurePosixPath
 
 # Same directory as this script when installed at /opt/
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -32,6 +35,56 @@ except ImportError:
     spec.loader.exec_module(timeline)
 
 from sprint_resilience import CheckpointStore, Interruption, Lease
+
+MAX_ARCHIVE_MEMBERS = 20_000
+MAX_ARCHIVE_EXPANDED_BYTES = 512 * 1024 * 1024
+
+
+def file_sha256(path: Path) -> str:
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def safe_extract_work_archive(archive: Path, destination: Path) -> None:
+    """Extract only regular files/directories rooted at ``app/``.
+
+    GPU workspaces are agent-authored.  Never let tar links, device nodes, or
+    path traversal overwrite the trusted worker/sampler outside the workspace.
+    """
+    destination.mkdir(parents=True, exist_ok=True)
+    total = 0
+    with tarfile.open(archive, "r:gz") as tar:
+        members = tar.getmembers()
+        if len(members) > MAX_ARCHIVE_MEMBERS:
+            raise RuntimeError("GPU work archive contains too many members")
+        for member in members:
+            path = PurePosixPath(member.name)
+            if (
+                path.is_absolute()
+                or not path.parts
+                or path.parts[0] != "app"
+                or any(part in {"", ".", ".."} for part in path.parts)
+            ):
+                raise RuntimeError(f"unsafe GPU work archive path: {member.name!r}")
+            if not (member.isdir() or member.isfile()):
+                raise RuntimeError(
+                    f"unsupported GPU work archive member: {member.name!r}"
+                )
+            total += max(0, int(member.size))
+            if total > MAX_ARCHIVE_EXPANDED_BYTES:
+                raise RuntimeError("GPU work archive expands beyond the size limit")
+        for member in members:
+            target = destination.joinpath(*PurePosixPath(member.name).parts)
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            source = tar.extractfile(member)
+            if source is None:
+                raise RuntimeError(f"unable to read archive member: {member.name!r}")
+            with source, target.open("wb") as output:
+                shutil.copyfileobj(source, output)
+            os.chmod(target, member.mode & 0o777)
 
 
 def utc_now() -> str:
@@ -452,6 +505,7 @@ def main() -> int:
         "worker_hostname": os.uname().nodename,
         "progress": progress,
         "checkpoint": checkpoint,
+        "work_archive_sha256": job.get("work_archive_sha256"),
     }
     write_status(attempt_path, attempt_record)
     write_status(
@@ -500,13 +554,49 @@ def main() -> int:
     start_telemetry(run_id, job_id, attempt, lease_id)
 
     archive = prefix / "work" / job_id / "app.tar.gz"
-    if archive.is_file():
-        with tarfile.open(archive, "r:gz") as tar:
-            tar.extractall("/tmp")
-        app_src = Path("/tmp/app")
-        if app_src.is_dir():
+    expected_archive_sha256 = str(job.get("work_archive_sha256") or "")
+    try:
+        if not archive.is_file() or not expected_archive_sha256:
+            raise RuntimeError("missing host-pinned GPU work archive")
+        actual_archive_sha256 = file_sha256(archive)
+        if actual_archive_sha256 != expected_archive_sha256:
+            raise RuntimeError("GPU work archive digest mismatch")
+        with tempfile.TemporaryDirectory(prefix=f"sprint-{job_id}-") as raw:
+            extract_root = Path(raw)
+            safe_extract_work_archive(archive, extract_root)
+            app_src = extract_root / "app"
+            if not app_src.is_dir():
+                raise RuntimeError("GPU work archive is missing app/")
             Path("/app").mkdir(parents=True, exist_ok=True)
             subprocess.run(["cp", "-a", f"{app_src}/.", "/app/"], check=True)
+    except Exception as exc:  # noqa: BLE001
+        finished = time.time()
+        error = f"work archive rejected: {type(exc).__name__}: {exc}"
+        attempt_record.update(
+            {
+                "status": "failed",
+                "error": error,
+                "exit_code": 2,
+                "finished_at": utc_now(),
+                "finished_at_epoch_s": finished,
+            }
+        )
+        write_status(attempt_path, attempt_record)
+        write_status(
+            heartbeat_path,
+            heartbeat_payload(
+                run_id=run_id,
+                job_id=job_id,
+                attempt=attempt,
+                lease_id=lease_id,
+                status="failed",
+                progress=progress,
+                checkpoint=checkpoint,
+                lease_seconds=lease_seconds,
+            ),
+        )
+        print(error, flush=True)
+        return 2
 
     try:
         command = build_attempt_command(job, attempt, checkpoint)
