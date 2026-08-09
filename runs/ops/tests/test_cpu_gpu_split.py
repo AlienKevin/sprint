@@ -392,6 +392,20 @@ class ClaimSelectionTests(unittest.TestCase):
             detail["provider_terminal_error"], "FileNotFoundError: robot.usd"
         )
 
+    def test_worker_error_overrides_false_success_without_traceback(self) -> None:
+        audited = gpu_worker.apply_provider_terminal_error(
+            {
+                "status": "succeeded",
+                "exit_code": 0,
+                "error": "GPU activity watchdog: no accelerator progress",
+            },
+            None,
+        )
+        self.assertEqual(audited["status"], "failed")
+        self.assertEqual(audited["exit_code"], 1)
+        self.assertEqual(audited["failure_reason"], "worker_reported_error")
+        self.assertEqual(audited["worker_reported_status"], "succeeded")
+
     def test_recoverable_isaac_gpu_warning_does_not_override_success(self) -> None:
         self.assertIsNone(
             gpu_worker.provider_terminal_error(

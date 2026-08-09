@@ -185,6 +185,24 @@ class CheckpointStoreTests(unittest.TestCase):
 
 
 class WorkerAttemptGuardTests(unittest.TestCase):
+    def test_gpu_activity_watchdog_cannot_be_reported_as_success(self) -> None:
+        self.assertEqual(
+            worker_run.final_attempt_outcome(
+                0,
+                interrupted=False,
+                activity_watchdog_fired=True,
+            ),
+            (1, "failed"),
+        )
+        self.assertEqual(
+            worker_run.final_attempt_outcome(
+                143,
+                interrupted=False,
+                activity_watchdog_fired=True,
+            ),
+            (143, "failed"),
+        )
+
     def test_replacement_without_checkpoint_is_rejected_without_resume_arg(
         self,
     ) -> None:

@@ -184,7 +184,9 @@ os.replace(cli_temporary, cli_target)
             )
             sandbox_id = (identity.stdout or "").strip()
             if identity.returncode != 0 or not sandbox_id.startswith("sb-"):
-                error = (identity.stderr or identity.stdout or "missing sandbox ID").strip()
+                error = (
+                    identity.stderr or identity.stdout or "missing sandbox ID"
+                ).strip()
                 return {
                     "agent_mirror": "error",
                     "agent_mirror_error": error[-1000:],
@@ -868,6 +870,14 @@ def apply_provider_terminal_error(
     payload = dict(job)
     payload["provider_terminal_error_checked_at"] = utc_now()
     payload["provider_terminal_error_detected"] = bool(terminal_error)
+    worker_error = str(payload.get("error") or "").strip()
+    if worker_error and str(payload.get("status") or "") == "succeeded":
+        payload["worker_reported_status"] = "succeeded"
+        payload["worker_reported_exit_code"] = payload.get("exit_code")
+        payload["status"] = "failed"
+        if not payload.get("exit_code"):
+            payload["exit_code"] = 1
+        payload["failure_reason"] = "worker_reported_error"
     if terminal_error and str(payload.get("status") or "") == "succeeded":
         payload["provider_reported_status"] = "succeeded"
         payload["provider_reported_exit_code"] = payload.get("exit_code")
@@ -1429,8 +1439,7 @@ def list_pending_job_ids(run: dict[str, Any]) -> list[str]:
     return [
         Path(name).stem
         for name in volume_ls_json_names(run, f"{prefix}/queue")
-        if name.endswith(".json")
-        and re.fullmatch(r"[A-Za-z0-9_-]+", Path(name).stem)
+        if name.endswith(".json") and re.fullmatch(r"[A-Za-z0-9_-]+", Path(name).stem)
     ]
 
 
@@ -1500,8 +1509,7 @@ def list_job_ids(run: dict[str, Any]) -> list[str]:
     return sorted(
         Path(name).stem
         for name in names
-        if name.endswith(".json")
-        and re.fullmatch(r"[A-Za-z0-9_-]+", Path(name).stem)
+        if name.endswith(".json") and re.fullmatch(r"[A-Za-z0-9_-]+", Path(name).stem)
     )
 
 

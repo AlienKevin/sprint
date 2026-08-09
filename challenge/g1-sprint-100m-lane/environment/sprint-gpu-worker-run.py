@@ -356,6 +356,25 @@ def gpu_activity_stalled(
     )
 
 
+def final_attempt_outcome(
+    exit_code: int,
+    *,
+    interrupted: bool,
+    activity_watchdog_fired: bool,
+) -> tuple[int, str]:
+    """Make watchdog termination a truthful deterministic failure.
+
+    Frameworks may catch SIGTERM during cleanup and return zero. A worker
+    stopped because it never used the accelerator must not therefore become a
+    successful attempt or enter the infrastructure-preemption retry path.
+    """
+    if interrupted:
+        return exit_code, "interrupted"
+    if activity_watchdog_fired:
+        return (exit_code if exit_code != 0 else 1), "failed"
+    return exit_code, "succeeded" if exit_code == 0 else "failed"
+
+
 def heartbeat_payload(
     *,
     run_id: str,
@@ -674,6 +693,7 @@ def main() -> int:
     emit(run_id, job_id, attempt, lease_id, "gpu_active", "enter")
     print("exec", command, "cwd", workdir, flush=True)
     interrupted = False
+    activity_watchdog_fired = False
     try:
         proc = subprocess.Popen(
             command,
@@ -697,7 +717,6 @@ def main() -> int:
     else:
         error = None
         activity_samples = Path("/logs/artifacts/telemetry/samples.jsonl")
-        activity_watchdog_fired = False
 
         def update_heartbeat(status: str) -> None:
             nonlocal progress, checkpoint, error, activity_watchdog_fired
@@ -765,6 +784,11 @@ def main() -> int:
             interrupted=interrupted,
         )
 
+    exit_code, final_status = final_attempt_outcome(
+        exit_code,
+        interrupted=interrupted,
+        activity_watchdog_fired=activity_watchdog_fired,
+    )
     progress, checkpoint = progress_snapshot(progress_file, checkpoint_dir)
     finished = time.time()
     attempt_record.update(
@@ -772,13 +796,7 @@ def main() -> int:
             "finished_at": utc_now(),
             "finished_at_epoch_s": finished,
             "exit_code": exit_code,
-            "status": (
-                "interrupted"
-                if interrupted
-                else "succeeded"
-                if exit_code == 0
-                else "failed"
-            ),
+            "status": final_status,
             "progress": progress,
             "checkpoint": checkpoint,
         }
