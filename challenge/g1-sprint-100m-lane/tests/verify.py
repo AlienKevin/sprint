@@ -295,6 +295,9 @@ def main() -> int:
     doc = {
         "valid_run": valid_run,
         "best_valid_100m_s": best.finish_time_s if best else None,
+        # Continuous progress feedback for policies that do not reach the line.
+        # This is diagnostic only and does not participate in any gate.
+        "max_distance_m": max(r.max_distance_m for r in nominal),
         "lanes_finished": len(finished),
         "lanes_valid": len(valid),
         "lanes_total": len(nominal),

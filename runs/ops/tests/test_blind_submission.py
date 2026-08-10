@@ -140,6 +140,7 @@ def test_board_exposes_pending_and_completed_verifier_feedback(
                 "rewards": {
                     "valid_run": 0.0,
                     "best_100m_s": 0.0,
+                    "max_distance_m": 14.5,
                     "gate_finished": 1.0,
                     "gate_in_lane": 0.0,
                     "gate_self_collision": 1.0,
@@ -150,6 +151,17 @@ def test_board_exposes_pending_and_completed_verifier_feedback(
     assert board.main() == 0
     output = capsys.readouterr().out
     assert "one  chosen  DQ  failed gates: in_lane" in output
+    assert "max distance" not in output
+
+    payload = json.loads((results / "one.pt.json").read_text())
+    payload["rewards"]["gate_finished"] = 0.0
+    (results / "one.pt.json").write_text(json.dumps(payload))
+    assert board.main() == 0
+    output = capsys.readouterr().out
+    assert (
+        "one  chosen  DQ  failed gates: finished,in_lane; max distance: 14.500m"
+        in output
+    )
 
 
 def test_board_exposes_valid_score_and_rate_rejection(

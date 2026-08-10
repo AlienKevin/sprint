@@ -36,6 +36,7 @@ class RunResult:
     env_id: int
     commanded_speed: float
     distance_m: float
+    max_distance_m: float
     duration_s: float
     finish_time_s: float | None
     gate_times_s: dict[str, float | None] = field(default_factory=dict)
@@ -106,6 +107,7 @@ def evaluate_run(
 
     duration = t[count - 1] - t[0]
     distance = x[count - 1] - x[0]
+    max_distance = max(x[:count]) - x[0]
     mean_speed = distance / duration if duration > 0 else 0.0
     peak_speed = max(vx[:count]) if count else 0.0
     achieved = sum(vx[:count]) / count if count else 0.0
@@ -116,9 +118,9 @@ def evaluate_run(
         Check(
             "finished",
             finish_time is not None,
-            distance,
+            max_distance,
             finish_distance_m,
-            f"covered {distance:.1f} m of {finish_distance_m:g} m",
+            f"covered {max_distance:.1f} m of {finish_distance_m:g} m",
         ),
         Check(
             "in_lane",
@@ -142,6 +144,7 @@ def evaluate_run(
         env_id=env_id,
         commanded_speed=commanded_speed,
         distance_m=round(distance, 3),
+        max_distance_m=round(max_distance, 3),
         duration_s=round(duration, 3),
         finish_time_s=None if finish_time is None else round(finish_time, 3),
         gate_times_s={

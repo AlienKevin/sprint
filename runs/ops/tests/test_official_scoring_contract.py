@@ -68,6 +68,18 @@ def test_lane_and_self_collision_are_independent_hard_gates() -> None:
     assert result.valid is False
 
 
+def test_maximum_forward_distance_is_diagnostic_not_final_displacement() -> None:
+    result = evaluate(x=[0.0, 14.5, 3.0])
+    assert result.distance_m == 3.0
+    assert result.max_distance_m == 14.5
+    assert result.valid is False
+    assert [check.name for check in result.checks] == [
+        "finished",
+        "in_lane",
+        "self_collision",
+    ]
+
+
 def test_agent_and_verifier_contracts_are_identical_and_lean() -> None:
     agent = (TASK / "environment" / "bin" / "sprint-check").read_text()
     verifier = (TASK / "tests" / "check_submission.py").read_text()
@@ -86,3 +98,4 @@ def test_verifier_entrypoint_has_no_optional_sweep_or_reward_fields() -> None:
         assert name not in entrypoint
     assert "robustness" not in verifier.lower()
     assert "perturbations.json" not in verifier
+    assert '"max_distance_m"' in entrypoint

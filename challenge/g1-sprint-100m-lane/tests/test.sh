@@ -52,6 +52,8 @@ data = {
     "reward": 1.0 if valid else 0.0,
     "valid_run": 1.0 if valid else 0.0,
     "best_100m_s": float(r.get("best_valid_100m_s") or 0.0),
+    # Diagnostic progress for DQ/DNF feedback; never used as a validity gate.
+    "max_distance_m": float(r.get("max_distance_m") or 0.0),
     # 1 = gate passed (or not applicable), 0 = gate failed and DQed the run.
     "gate_finished": 0.0 if "finished" in failed else 1.0,
     "gate_in_lane": 0.0 if "in_lane" in failed else 1.0,

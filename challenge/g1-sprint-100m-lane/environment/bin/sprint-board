@@ -72,6 +72,13 @@ def main() -> int:
             f"{float(best):.3f}s" if valid and isinstance(best, (int, float)) else "DQ"
         )
         detail = "valid" if valid else f"failed gates: {','.join(gates) or 'unknown'}"
+        max_distance = rewards.get("max_distance_m")
+        if (
+            not valid
+            and "finished" in gates
+            and isinstance(max_distance, (int, float))
+        ):
+            detail += f"; max distance: {float(max_distance):.3f}m"
         print(f"{prefix}  {score}  {detail}")
     return 0
 
