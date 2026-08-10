@@ -88,7 +88,7 @@ def main() -> int:
             and "finished" in gates
             and isinstance(max_distance, (int, float))
         ):
-            detail += f"; max distance: {float(max_distance):.3f}m"
+            detail += f"; max legal distance: {float(max_distance):.3f}m"
         print(f"{prefix}  {score}  {detail}")
     return 0
 

@@ -295,9 +295,12 @@ def main() -> int:
     doc = {
         "valid_run": valid_run,
         "best_valid_100m_s": best.finish_time_s if best else None,
-        # Continuous progress feedback for policies that do not reach the line.
-        # This is diagnostic only and does not participate in any gate.
+        # Continuous legal-progress feedback for policies that do not reach the
+        # line. Counting stops at the first lane or self-collision DQ. The raw
+        # post-DQ displacement remains in trusted verifier artifacts for audit.
         "max_distance_m": max(r.max_distance_m for r in nominal),
+        "max_distance_semantics": "legal_prefix_until_first_disqualification",
+        "raw_max_distance_m": max(r.raw_max_distance_m for r in nominal),
         "lanes_finished": len(finished),
         "lanes_valid": len(valid),
         "lanes_total": len(nominal),
@@ -307,10 +310,7 @@ def main() -> int:
             {c.name for r in nominal for c in r.checks if not c.passed}
         ),
         "failed_gate_details": {
-            c.name: c.detail
-            for r in nominal
-            for c in r.checks
-            if not c.passed
+            c.name: c.detail for r in nominal for c in r.checks if not c.passed
         },
         "splits_s": best.gate_times_s if best else None,
         "performance": performance,

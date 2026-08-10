@@ -761,7 +761,12 @@ def test_dq_replay_is_queued_and_public_index_is_path_safe(tmp_path: Path) -> No
     replay.write_text('{"schema_version":1,"body_names":[],"frames":[]}\n')
     details.write_text(
         json.dumps(
-            {"valid_run": False, "max_distance_m": 14.5, "failed_gates": ["in_lane"]}
+            {
+                "valid_run": False,
+                "max_distance_m": 14.5,
+                "max_distance_semantics": ("legal_prefix_until_first_disqualification"),
+                "failed_gates": ["in_lane"],
+            }
         )
     )
     ledger = trial / "artifacts/continuous/ledger.jsonl"
@@ -800,6 +805,9 @@ def test_dq_replay_is_queued_and_public_index_is_path_safe(tmp_path: Path) -> No
     assert str(tmp_path) not in encoded
     assert public["policies"][0]["replay_ready"] is True
     assert public["policies"][0]["replay_url"].startswith("/replay/frontier-")
+    assert public["policies"][0]["max_distance_semantics"] == (
+        "legal_prefix_until_first_disqualification"
+    )
 
 
 def test_public_policy_index_keeps_only_six_newest_runs(tmp_path: Path) -> None:

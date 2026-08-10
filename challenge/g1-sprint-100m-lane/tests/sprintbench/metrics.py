@@ -37,8 +37,12 @@ class RunResult:
     commanded_speed: float
     distance_m: float
     max_distance_m: float
+    raw_max_distance_m: float
     duration_s: float
     finish_time_s: float | None
+    first_disqualification_gate: str | None = None
+    first_disqualification_time_s: float | None = None
+    first_disqualification_distance_m: float | None = None
     gate_times_s: dict[str, float | None] = field(default_factory=dict)
     mean_speed_mps: float = 0.0
     peak_speed_mps: float = 0.0
@@ -65,18 +69,42 @@ def gate_crossing_times(
     for index in range(1, len(x)):
         while gate_index < len(gates) and x[index] >= gates[gate_index]:
             x0, x1 = x[index - 1], x[index]
-            fraction = (
-                0.0
-                if x1 == x0
-                else (gates[gate_index] - x0) / (x1 - x0)
-            )
-            out[f"{gates[gate_index]:g}m"] = (
-                t[index - 1] + fraction * (t[index] - t[index - 1])
+            fraction = 0.0 if x1 == x0 else (gates[gate_index] - x0) / (x1 - x0)
+            out[f"{gates[gate_index]:g}m"] = t[index - 1] + fraction * (
+                t[index] - t[index - 1]
             )
             gate_index += 1
         if gate_index >= len(gates):
             break
     return out
+
+
+def _threshold_crossing(
+    values: list[float],
+    t: list[float],
+    x: list[float],
+    threshold: float,
+) -> tuple[float, float] | None:
+    """First threshold violation, interpolated to the boundary crossing."""
+
+    if values[0] > threshold:
+        return t[0], x[0]
+    for index in range(1, len(values)):
+        if values[index] <= threshold:
+            continue
+        previous = values[index - 1]
+        current = values[index]
+        fraction = (
+            0.0
+            if current == previous
+            else (threshold - previous) / (current - previous)
+        )
+        fraction = min(max(fraction, 0.0), 1.0)
+        return (
+            t[index - 1] + fraction * (t[index] - t[index - 1]),
+            x[index - 1] + fraction * (x[index] - x[index - 1]),
+        )
+    return None
 
 
 def evaluate_run(
@@ -94,7 +122,9 @@ def evaluate_run(
     """Evaluate exactly the three public gates for one recorded lane."""
 
     if not t or len(t) != len(x) or len(t) != len(y) or len(t) != len(vx):
-        raise ValueError("time, position, and velocity traces must be nonempty and aligned")
+        raise ValueError(
+            "time, position, and velocity traces must be nonempty and aligned"
+        )
     if self_penetration_m is None or len(self_penetration_m) != len(t):
         raise ValueError("the official self-collision trace is required")
 
@@ -107,12 +137,45 @@ def evaluate_run(
 
     duration = t[count - 1] - t[0]
     distance = x[count - 1] - x[0]
-    max_distance = max(x[:count]) - x[0]
+    raw_max_distance = max(x[:count]) - x[0]
     mean_speed = distance / duration if duration > 0 else 0.0
     peak_speed = max(vx[:count]) if count else 0.0
     achieved = sum(vx[:count]) / count if count else 0.0
     max_lateral = max(abs(value) for value in y[:count])
     max_self = max(self_penetration_m[:count], default=0.0)
+
+    disqualifications: list[tuple[float, str, float]] = []
+    lane_crossing = _threshold_crossing(
+        [abs(value) for value in y[:count]],
+        t[:count],
+        x[:count],
+        LANE_HALF_WIDTH_M,
+    )
+    if lane_crossing is not None:
+        disqualifications.append((*lane_crossing[:1], "in_lane", lane_crossing[1]))
+    self_crossing = _threshold_crossing(
+        self_penetration_m[:count],
+        t[:count],
+        x[:count],
+        MAX_SELF_PENETRATION_M,
+    )
+    if self_crossing is not None:
+        disqualifications.append(
+            (*self_crossing[:1], "self_collision", self_crossing[1])
+        )
+
+    first_disqualification = min(disqualifications, default=None)
+    if first_disqualification is None:
+        max_distance = raw_max_distance
+    else:
+        disqualification_time, _, disqualification_x = first_disqualification
+        legal_x = [
+            position
+            for sample_time, position in zip(t[:count], x[:count], strict=True)
+            if sample_time < disqualification_time
+        ]
+        legal_x.append(disqualification_x)
+        max_distance = max(legal_x) - x[0]
 
     checks = [
         Check(
@@ -120,7 +183,7 @@ def evaluate_run(
             finish_time is not None,
             max_distance,
             finish_distance_m,
-            f"covered {max_distance:.1f} m of {finish_distance_m:g} m",
+            f"covered {max_distance:.1f} legal m of {finish_distance_m:g} m",
         ),
         Check(
             "in_lane",
@@ -145,8 +208,22 @@ def evaluate_run(
         commanded_speed=commanded_speed,
         distance_m=round(distance, 3),
         max_distance_m=round(max_distance, 3),
+        raw_max_distance_m=round(raw_max_distance, 3),
         duration_s=round(duration, 3),
         finish_time_s=None if finish_time is None else round(finish_time, 3),
+        first_disqualification_gate=(
+            None if first_disqualification is None else first_disqualification[1]
+        ),
+        first_disqualification_time_s=(
+            None
+            if first_disqualification is None
+            else round(first_disqualification[0], 3)
+        ),
+        first_disqualification_distance_m=(
+            None
+            if first_disqualification is None
+            else round(first_disqualification[2] - x[0], 3)
+        ),
         gate_times_s={
             key: None if value is None else round(value, 3)
             for key, value in gate_times.items()
