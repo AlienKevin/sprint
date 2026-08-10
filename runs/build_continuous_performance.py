@@ -404,6 +404,48 @@ def score_capture(path: Path) -> dict[str, Any]:
     }
 
 
+def trusted_pose_capture_index(run_ids: Iterable[str]) -> dict[str, Path]:
+    """Index sealed verifier trajectories by the exact policy bytes they graded.
+
+    Website replay rendering is deliberately downstream of verification.  A
+    renderer or HTML validation failure must therefore never make a trusted
+    pose trajectory unavailable to performance reconstruction.  Cache hits are
+    covered too: their policy hash resolves to the original fresh evaluation's
+    verifier artifact, even when that evaluation belongs to another trial in
+    the batch.
+    """
+
+    captures: dict[str, Path] = {}
+    for run_id in sorted(set(run_ids)):
+        attempts = RUNS / run_id / "harbor-jobs"
+        for result_path in sorted(
+            attempts.glob("**/artifacts/continuous/attempts/*/result.json")
+        ):
+            try:
+                result = load_json(result_path)
+            except (OSError, json.JSONDecodeError):
+                continue
+            policy_hash = str(result.get("artifact_sha256") or "")
+            replay = result_path.parent / "verifier" / "replay.json"
+            if len(policy_hash) == 64 and replay.is_file():
+                captures.setdefault(policy_hash, replay)
+    return captures
+
+
+def resolve_pose_capture(
+    *, run_id: str, policy_hash: str, trusted: dict[str, Path]
+) -> tuple[Path, str] | None:
+    """Resolve a scoreable trajectory without depending on website rendering."""
+
+    rendered = RUNS / run_id / "captures" / f"frontier-{policy_hash[:12]}.json"
+    if rendered.is_file():
+        return rendered, "validated_website_capture"
+    source = trusted.get(policy_hash)
+    if source is not None and source.is_file():
+        return source, "trusted_verifier_replay"
+    return None
+
+
 def step_auc(points: Iterable[dict[str, Any]], key: str, cap: float) -> float:
     rows = sorted(
         (
@@ -618,6 +660,9 @@ def build(batch_prefix: str, output: Path, cost_cap: float = 80.0) -> dict[str, 
     )
     if len(selected) != 6:
         raise RuntimeError(f"expected six {batch_prefix!r} runs, found {len(selected)}")
+    trusted_captures = trusted_pose_capture_index(
+        str(row["run_id"]) for row in selected
+    )
 
     cost_caps: list[float] = []
     time_caps: list[float] = []
@@ -658,15 +703,15 @@ def build(batch_prefix: str, output: Path, cost_cap: float = 80.0) -> dict[str, 
             if artifact is None:
                 missing.append(index)
                 continue
-            capture = (
-                RUNS
-                / run_id
-                / "captures"
-                / f"frontier-{policy['policy_sha256'][:12]}.json"
+            resolved_capture = resolve_pose_capture(
+                run_id=run_id,
+                policy_hash=str(policy["policy_sha256"]),
+                trusted=trusted_captures,
             )
-            if not capture.exists():
+            if resolved_capture is None:
                 missing.append(index)
                 continue
+            capture, capture_provenance = resolved_capture
             reconstruction = score_capture(capture)
             result_cost = artifact.get("cost_at_result") or {}
             api_cost = float(result_cost.get("api_calculated_usd") or 0.0)
@@ -700,9 +745,15 @@ def build(batch_prefix: str, output: Path, cost_cap: float = 80.0) -> dict[str, 
                     )
                 ),
                 "failed_gates": policy.get("failed_gates") or [],
+                "pose_capture_provenance": capture_provenance,
                 **reconstruction,
             }
             points.append(point)
+        if missing:
+            raise RuntimeError(
+                f"{run_id} lacks trusted pose trajectories for submissions "
+                f"{missing}; continuous score publication is fail-closed"
+            )
         if not points:
             raise RuntimeError(f"{run_id} has no reconstructable policy readouts")
         best = max(points, key=lambda row: row["continuous_score_mps"])
@@ -753,6 +804,7 @@ def build(batch_prefix: str, output: Path, cost_cap: float = 80.0) -> dict[str, 
             "higher_is_better": True,
             "distance_semantics": "maximum forward distance before first reconstructed lane/self-collision DQ",
             "provenance": "offline reconstruction from trusted representative-lane 10 Hz verifier pose captures; not an official rescore",
+            "coverage_policy": "fail closed unless every published policy has an exact trusted pose trajectory; website rendering is not a scoring dependency",
         },
         "cost": {
             "includes": ["model API", "CPU agent", "training sandbox"],

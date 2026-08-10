@@ -121,3 +121,52 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "setModelAccent" in timeline_app
     assert page.index("Performance vs cost") < page.index("Performance over time")
     assert "representative-lane verifier captures" in page
+
+
+def test_trusted_pose_capture_index_recovers_renderer_failure_and_cache_hit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = "run-a"
+    attempt = (
+        tmp_path
+        / run_id
+        / "harbor-jobs"
+        / "job"
+        / "task"
+        / "artifacts"
+        / "continuous"
+        / "attempts"
+        / "0001-policy.pt"
+    )
+    verifier = attempt / "verifier"
+    verifier.mkdir(parents=True)
+    digest = "a" * 64
+    (attempt / "result.json").write_text(
+        '{"artifact_sha256":"' + digest + '"}\n'
+    )
+    (verifier / "replay.json").write_text('{"trusted":true}\n')
+    monkeypatch.setattr(continuous, "RUNS", tmp_path)
+
+    index = continuous.trusted_pose_capture_index([run_id])
+    resolved = continuous.resolve_pose_capture(
+        run_id=run_id, policy_hash=digest, trusted=index
+    )
+
+    assert resolved == (verifier / "replay.json", "trusted_verifier_replay")
+
+
+def test_resolve_pose_capture_prefers_validated_website_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = "run-a"
+    digest = "b" * 64
+    rendered = tmp_path / run_id / "captures" / f"frontier-{digest[:12]}.json"
+    rendered.parent.mkdir(parents=True)
+    rendered.write_text('{"rendered":true}\n')
+    trusted = tmp_path / "trusted.json"
+    trusted.write_text('{"trusted":true}\n')
+    monkeypatch.setattr(continuous, "RUNS", tmp_path)
+
+    assert continuous.resolve_pose_capture(
+        run_id=run_id, policy_hash=digest, trusted={digest: trusted}
+    ) == (rendered, "validated_website_capture")
