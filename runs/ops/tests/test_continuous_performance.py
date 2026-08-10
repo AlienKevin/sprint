@@ -106,5 +106,6 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "continuous_score_mps" in app
     assert 'id="cost-scores"' in page
     assert 'id="time-scores"' in page
+    assert "auc-bar-row" in app
     assert page.index("Performance vs cost") < page.index("Performance over time")
     assert "representative-lane verifier captures" in page
