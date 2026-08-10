@@ -4,7 +4,7 @@
     deepseek: {label:'DeepSeek V4 Flash 0731', color:'#9ac641', cls:'deepseek'},
     luna: {label:'GPT‑5.6 Luna', color:'#58c9f5', cls:'luna'}
   };
-  const state = {runs:[], policies:[], timelines:new Map(), filter:'story'};
+  const state = {runs:[], policies:[], timelines:new Map(), filter:'all'};
   const finite = value => typeof value === 'number' && Number.isFinite(value);
   const groupBy = (rows,key) => rows.reduce((out,row)=>{const value=key(row);(out[value]??=[]).push(row);return out},{});
   const family = model => String(model||'').toLowerCase().includes('deepseek') ? 'deepseek' : String(model||'').toLowerCase().includes('luna') ? 'luna' : null;
