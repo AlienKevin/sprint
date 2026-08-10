@@ -3,57 +3,55 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="description" content="Independent Codex agents teach a Unitree G1 humanoid to sprint 100 metres.">
-  <title>G1 Sprint · Experiment dashboard</title>
+  <meta name="description" content="AI agents compete to train the fastest, most cost-efficient humanoid sprinter.">
+  <title>The Race to AGI4ALL</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <header class="hero">
-    <nav><span class="brand">G1 / SPRINT</span><span id="live" class="live">waiting for trials</span></nav>
+    <nav><span class="brand">AGI4ALL / G1 SPRINT</span><span id="live" class="live">loading race</span></nav>
     <div class="hero-copy">
-      <p class="eyebrow">INDEPENDENT CODEX AGENTS · CONTROLLED COMPUTE</p>
-      <h1>Teaching a humanoid<br>to <em>sprint.</em></h1>
-      <p class="intro">DeepSeek V4 Flash 0731, GPT‑5.6 Luna, and the one-time GPT‑5.6 Sol canary. Controlled CPU and A10G allowances, independent sealed verifier lanes—and every fall, recovery, tool call, dollar, and GPU cycle on one clock.</p>
+      <p class="eyebrow">AI AGENTS · ONE HUMANOID · ONE FINISH LINE</p>
+      <h1>The Race to<br><em>AGI4ALL.</em></h1>
+      <p class="intro">AI agents race to train the fastest humanoid—at the lowest cost.</p>
     </div>
     <div id="model-cards" class="model-cards" aria-live="polite"></div>
   </header>
 
   <main>
     <section class="section">
-      <div class="section-head"><div><p class="kicker">EFFICIENCY</p><h2>Performance vs cost</h2></div><p>The three trials for each model are merged: cost is summed across all three, while quality is the best policy any of them has produced by that spending horizon. This retrospective view uses a shared $80 cutoff.</p></div>
+      <div class="section-head"><div><p class="kicker">RACE ECONOMICS</p><h2>Performance vs cost</h2></div><p>The three trials for each competitor are merged: cost is summed across all three, while quality is the best policy any of them has produced by that spending horizon. This retrospective view uses a shared $80 cutoff.</p></div>
       <div class="chart-card"><svg id="cost-chart" role="img" aria-label="Continuous performance versus cumulative model cost"></svg><div id="cost-legend" class="legend"></div></div>
       <div id="cost-scores" class="performance-scores"></div>
-      <p class="metric-note"><strong>Continuous score</strong> = (legal distance ÷ 100m) × (legal distance ÷ time to that point). Legal distance stops at the first lane or self-collision disqualification. Cost includes model API, CPU agents, and training sandboxes; verifier and website infrastructure are excluded.</p>
+      <p class="metric-note"><strong>Effective Speed</strong> = (legal distance ÷ 100m) × (legal distance ÷ time to that point). Legal distance stops at the first lane or self-collision disqualification. Cost includes model API, CPU agents, and training sandboxes; verifier and website infrastructure are excluded.</p>
     </section>
 
-    <section class="section">
-      <div class="section-head"><div><p class="kicker">THE RACE</p><h2>Performance over time</h2></div><p>The three trials for each model share one elapsed-time horizon. Each connected line shows the best policy produced by any of those trials so far.</p></div>
+    <section class="section" id="time-performance" hidden>
+      <div class="section-head"><div><p class="kicker">RACE PROGRESS</p><h2>Performance over time</h2></div><p>The three trials for each competitor share one elapsed-time horizon. Each connected line shows the best policy produced by any of those trials so far.</p></div>
       <div class="chart-card"><svg id="time-chart" role="img" aria-label="Continuous performance over experiment time"></svg><div id="time-legend" class="legend"></div></div>
       <div id="time-scores" class="performance-scores"></div>
-      <p class="metric-note">Normalized AUC compares both models over the same 9.59-hour window. The r8 values are reconstructed from archived trusted 10Hz representative-lane verifier captures; official verdicts are unchanged.</p>
+      <p class="metric-note">The Time Efficiency Score compares both competitors over the same 9.59-hour window. The r8 values are reconstructed from archived trusted 10Hz representative-lane verifier captures; official verdicts are unchanged.</p>
+    </section>
+
+    <section class="section readout-detail" id="readout-detail" hidden aria-live="polite">
+      <div class="readout-head">
+        <div><p class="kicker">POLICY READOUT</p><h2 id="readout-title">Selected policy</h2><p id="readout-subtitle"></p></div>
+        <button id="readout-close" type="button" aria-label="Close selected policy">Close</button>
+      </div>
+      <div id="readout-stats" class="readout-stats"></div>
+      <div class="readout-frame-wrap"><iframe id="readout-replay" title="Selected policy replay" loading="lazy"></iframe></div>
+      <div class="readout-timeline-head"><p class="kicker">RUN TIMELINE</p><h3>What the agent was doing</h3></div>
+      <div class="readout-timeline-wrap"><iframe id="readout-timeline" title="Selected policy run timeline" loading="lazy"></iframe></div>
     </section>
 
     <section class="section">
-      <div class="section-head"><div><p class="kicker">COST BY TRIAL</p><h2>Where the budget went</h2></div><p>Agent-side cost by independent trial. Verifier infrastructure remains excluded.</p></div>
+      <div class="section-head"><div><p class="kicker">TEAM SPEND</p><h2>Where the budget went</h2></div><p>Agent-side cost by independent trial. Verifier infrastructure remains excluded.</p></div>
       <div id="resource-bars" class="resource-bars"></div>
     </section>
 
-    <section class="section">
-      <div class="section-head"><div><p class="kicker">POLICY EVOLUTION</p><h2>Successes, falls, and wrong turns</h2></div><p>Every card is an immutable policy graded in a fresh sealed verifier. Public replay archives have been cleared; authoritative run evidence is retained separately.</p></div>
-      <div class="filters" id="filters">
-        <button data-filter="story">Story</button><button data-filter="failures">Failures</button><button data-filter="valid">Valid</button><button class="active" data-filter="all">All policies</button>
-      </div>
-      <div id="policy-grid" class="policy-grid"><p class="empty">Waiting for the first scored policy…</p></div>
-    </section>
-
-    <section class="section">
-      <div class="section-head"><div><p class="kicker">UNDER THE HOOD</p><h2>Unified experiment traces</h2></div><p>Zoom into CPU, training GPU, verifier GPU, memory, preemptions, tool calls, traces, submissions, and artifacts without mixing resource roles.</p></div>
-      <div id="run-links" class="run-links"></div>
-      <a class="timeline-cta" href="/timeline">Open the unified timeline explorer <span>↗</span></a>
-    </section>
   </main>
 
-  <footer><span>G1 Sprint</span><span id="updated">No experiment data deployed yet</span></footer>
+  <footer><span>The Race to AGI4ALL</span><span id="updated">No race data deployed yet</span></footer>
   <script src="/app.js"></script>
 </body>
 </html>

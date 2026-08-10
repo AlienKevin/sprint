@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import ast
 import hashlib
+import importlib.util
 import json
 import math
 from dataclasses import dataclass
@@ -469,6 +470,108 @@ def step_auc(points: Iterable[dict[str, Any]], key: str, cap: float) -> float:
     return area / cap if cap > 0.0 else 0.0
 
 
+def frontier_replay_points(
+    models: Iterable[dict[str, Any]], cost_cap: float, time_cap: float
+) -> list[dict[str, Any]]:
+    """Select the union of record-setting readouts on cost and time curves."""
+
+    selected: dict[tuple[str, str], dict[str, Any]] = {}
+    for model in models:
+        for key, cap in (
+            ("cumulative_agent_cost_usd", cost_cap),
+            ("hours_since_agent_launch", time_cap),
+        ):
+            best = 0.0
+            rows = sorted(
+                (
+                    point
+                    for point in model.get("points", [])
+                    if finite_number(point.get(key)) is not None
+                    and float(point[key]) <= cap
+                ),
+                key=lambda point: float(point[key]),
+            )
+            for point in rows:
+                score = float(point["continuous_score_mps"])
+                if score <= best:
+                    continue
+                best = score
+                selected[(point["source_run_id"], point["policy_sha256"])] = point
+    return sorted(
+        selected.values(),
+        key=lambda point: (point["source_run_id"], point["submission_index"]),
+    )
+
+
+def publish_frontier_replays(
+    *,
+    models: list[dict[str, Any]],
+    runs: list[dict[str, Any]],
+    trusted: dict[str, Path],
+    cost_cap: float,
+    time_cap: float,
+) -> None:
+    """Publish only record-setting replays and attach their stable URLs."""
+
+    module_path = ROOT / "runs/build_lane_3d.py"
+    spec = importlib.util.spec_from_file_location("sprint_frontier_replay", module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load replay renderer: {module_path}")
+    renderer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(renderer)
+    hq = load_json(ROOT / "runs/g1_hq.json")["meshes"]
+    replay_dir = WEB / "replay"
+    replay_dir.mkdir(parents=True, exist_ok=True)
+    for stale in replay_dir.glob("readout-*.html"):
+        stale.unlink()
+
+    url_by_hash: dict[str, str] = {}
+    for point in frontier_replay_points(models, cost_cap, time_cap):
+        policy_hash = str(point["policy_sha256"])
+        resolved = resolve_pose_capture(
+            run_id=str(point["source_run_id"]),
+            policy_hash=policy_hash,
+            trusted=trusted,
+        )
+        if resolved is None:
+            raise RuntimeError(f"frontier replay unavailable for {policy_hash}")
+        capture_path, _ = resolved
+        capture = load_json(capture_path)
+        data = renderer.capture_to_data(
+            capture,
+            hq,
+            f"trial {point['source_trial']} / policy {point['submission_index']}",
+        )
+        html = renderer.assemble_html(
+            data,
+            title="The Race to AGI4ALL · Policy replay",
+            eyebrow="POLICY REPLAY",
+            headline=f"Trial {point['source_trial']} · policy {point['submission_index']}",
+            lede="Record-setting policy readout.",
+            cap=f"Effective Speed {float(point['continuous_score_mps']):.3f} m/s",
+            story="Replay freezes at the first disqualification or finish.",
+            sr_only="Unitree G1 policy replay on the sprint course.",
+            active=policy_hash[:12],
+        )
+        embed_css = (
+            "<style>html,body{margin:0;background:#070908}.wrap{max-width:none;"
+            "padding:0}.wrap>.eyebrow,.wrap>h1,.wrap>.lede,.polsel,.cap,.story{"
+            "display:none}.stagewrap{margin:0;border:0;border-radius:0;box-shadow:none}"
+            "</style>"
+        )
+        html = html.replace('<div class="wrap">', embed_css + '<div class="wrap">', 1)
+        filename = f"readout-{policy_hash[:12]}.html"
+        (replay_dir / filename).write_text(html)
+        url_by_hash[policy_hash] = f"/replay/{filename}"
+
+    for collection in (models, runs):
+        for group in collection:
+            for point in group.get("points", []):
+                replay_url = url_by_hash.get(str(point["policy_sha256"]))
+                if replay_url:
+                    point["replay_url"] = replay_url
+
+
 def model_family(model: str | None) -> str:
     value = (model or "").lower()
     if "deepseek" in value:
@@ -793,12 +896,20 @@ def build(batch_prefix: str, output: Path, cost_cap: float = 80.0) -> dict[str, 
     output_models, model_cost_cap = aggregate_models(
         output_runs, common_time_cap, cost_ledgers, cost_cap
     )
+    publish_frontier_replays(
+        models=output_models,
+        runs=output_runs,
+        trusted=trusted_captures,
+        cost_cap=model_cost_cap,
+        time_cap=common_time_cap,
+    )
     payload = {
         "schema_version": 2,
         "generated_at": utc_now(),
         "batch_prefix": batch_prefix,
         "metric": {
-            "name": "completion_adjusted_legal_speed",
+            "name": "effective_speed",
+            "technical_name": "completion_adjusted_legal_speed",
             "formula": "distance_m^2 / (100m * time_to_distance_s)",
             "unit": "m/s",
             "higher_is_better": True,

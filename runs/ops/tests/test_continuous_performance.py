@@ -48,6 +48,41 @@ def test_step_auc_uses_best_so_far_and_common_cap() -> None:
     assert continuous.step_auc(points, "cost", 10.0) == pytest.approx(1.2)
 
 
+def test_frontier_replays_are_union_of_cost_and_time_record_setters() -> None:
+    points = [
+        {
+            "source_run_id": "run-1",
+            "policy_sha256": "a" * 64,
+            "submission_index": 1,
+            "cumulative_agent_cost_usd": 2.0,
+            "hours_since_agent_launch": 8.0,
+            "continuous_score_mps": 1.0,
+        },
+        {
+            "source_run_id": "run-1",
+            "policy_sha256": "b" * 64,
+            "submission_index": 2,
+            "cumulative_agent_cost_usd": 8.0,
+            "hours_since_agent_launch": 2.0,
+            "continuous_score_mps": 2.0,
+        },
+        {
+            "source_run_id": "run-1",
+            "policy_sha256": "c" * 64,
+            "submission_index": 3,
+            "cumulative_agent_cost_usd": 9.0,
+            "hours_since_agent_launch": 9.0,
+            "continuous_score_mps": 0.5,
+        },
+    ]
+
+    selected = continuous.frontier_replay_points(
+        [{"points": points}], cost_cap=10.0, time_cap=10.0
+    )
+
+    assert {point["policy_sha256"] for point in selected} == {"a" * 64, "b" * 64}
+
+
 def test_cost_ledger_integrates_requests_and_allocation_intervals() -> None:
     timeline = {
         "clock": {"origin_epoch_ms": 0, "end_epoch_ms": 4000},
@@ -119,8 +154,21 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "--deepseek:#4D6BFF" in timeline_page
     assert "--luna:#66D693" in timeline_page
     assert "setModelAccent" in timeline_app
+    assert "<title>The Race to AGI4ALL</title>" in page
+    assert "The Race to<br><em>AGI4ALL.</em>" in page
+    assert "AI agents race to train the fastest humanoid—at the lowest cost." in page
+    assert "The Race to AGI4ALL · Race control" in timeline_page
     assert page.index("Performance vs cost") < page.index("Performance over time")
     assert "representative-lane verifier captures" in page
+    assert 'id="time-performance" hidden' in page
+    assert 'id="readout-detail"' in page
+    assert 'id="readout-replay"' in page
+    assert 'id="readout-timeline"' in page
+    assert 'id="policy-grid"' not in page
+    assert 'id="run-links"' not in page
+    assert "Cost-Adjusted Effective Speed" in app
+    assert "effective speed (m/s)" in app
+    assert "showReadout" in app
 
 
 def test_trusted_pose_capture_index_recovers_renderer_failure_and_cache_hit(
@@ -141,9 +189,7 @@ def test_trusted_pose_capture_index_recovers_renderer_failure_and_cache_hit(
     verifier = attempt / "verifier"
     verifier.mkdir(parents=True)
     digest = "a" * 64
-    (attempt / "result.json").write_text(
-        '{"artifact_sha256":"' + digest + '"}\n'
-    )
+    (attempt / "result.json").write_text('{"artifact_sha256":"' + digest + '"}\n')
     (verifier / "replay.json").write_text('{"trusted":true}\n')
     monkeypatch.setattr(continuous, "RUNS", tmp_path)
 

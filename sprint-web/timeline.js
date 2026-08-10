@@ -1,4 +1,5 @@
 (() => {
+  if(new URLSearchParams(location.search).get('embed')==='1')document.documentElement.classList.add('embedded');
   const $ = s => document.querySelector(s), canvas = $('#chart'), ctx = canvas.getContext('2d');
   const runSelect = $('#run'), status = $('#status'), tip = $('#tip');
   let data = null, index = null, view = null, dragging = null, cursor = null;

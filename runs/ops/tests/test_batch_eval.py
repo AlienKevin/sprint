@@ -858,14 +858,15 @@ def test_homepage_uses_compact_timeline_index_summaries() -> None:
     source = (ROOT / "sprint-web" / "app.js").read_text()
     assert "dashboard_artifacts" in source
     assert "await json(tMeta.path)" not in source
-    assert "DQ / DNF" in source
+    assert "showReadout" in source
+    assert "readout-timeline" in source
     assert ".append(document.createElementNS" not in source
     assert "final_api_cost_usd" in source
     assert "modal_provider_billing" in source
     assert "verifier sandbox excluded" in source
     assert "modalRoleCost(run,'verifier_gpu')" not in source
     assert "Full-screen replay" not in source
-    assert "website replay archived" in source
+    assert "replay_url" in source
 
 
 def test_timeline_json_export_replaces_nonfinite_numbers(tmp_path: Path) -> None:
