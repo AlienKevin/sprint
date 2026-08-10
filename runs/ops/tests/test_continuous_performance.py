@@ -156,6 +156,8 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "setModelAccent" in timeline_app
     assert "<title>The Race to AGI4ALL</title>" in page
     assert "The Race to<br><em>AGI4ALL.</em>" in page
+    assert '<span class="brand">AGI4ALL</span>' in page
+    assert "color: var(--deep)" in styles
     assert "AI agents race to train the fastest humanoid—at the lowest cost." in page
     assert "The Race to AGI4ALL · Race control" in timeline_page
     assert page.index("Performance vs cost") < page.index("Performance over time")

@@ -100,9 +100,11 @@ h1 {
   font-weight: 760;
 }
 h1 em {
+  display: inline-block;
   font-style: normal;
-  color: transparent;
-  -webkit-text-stroke: 1px var(--text);
+  color: var(--deep);
+  letter-spacing: -0.045em;
+  -webkit-text-stroke: 0;
 }
 .intro {
   font-size: clamp(17px, 2vw, 24px);
