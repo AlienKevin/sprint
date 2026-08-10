@@ -1,8 +1,8 @@
 (() => {
   const $ = selector => document.querySelector(selector);
   const MODEL = {
-    deepseek: {label:'DeepSeek V4 Flash 0731', color:'#9ac641', cls:'deepseek'},
-    luna: {label:'GPT‑5.6 Luna', color:'#58c9f5', cls:'luna'},
+    deepseek: {label:'DeepSeek V4 Flash 0731', color:'#4D6BFF', cls:'deepseek'},
+    luna: {label:'GPT‑5.6 Luna', color:'#66D693', cls:'luna'},
     sol: {label:'GPT‑5.6 Sol', color:'#f1c35b', cls:'sol'}
   };
   const DISPLAY_FAMILIES = ['deepseek','luna','sol'];

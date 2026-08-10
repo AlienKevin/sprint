@@ -6,9 +6,12 @@
   --line: #293229;
   --text: #f0f4ed;
   --muted: #96a096;
-  --luna: #58c9f5;
-  --deep: #9ac641;
+  --luna: #66D693;
+  --deep: #4D6BFF;
   --sol: #f1c35b;
+  --valid: #55c77a;
+  --cost-cpu: #58c9f5;
+  --cost-training: #a4c85a;
   --fail: #ef644d;
   --warm: #f1c35b;
   --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -47,8 +50,8 @@ body:before {
   inset: 0;
   pointer-events: none;
   background:
-    radial-gradient(circle at 82% 3%, #183a2260, transparent 32%),
-    radial-gradient(circle at 12% 12%, #102c3a55, transparent 28%);
+    radial-gradient(circle at 82% 3%, #173b2c66, transparent 32%),
+    radial-gradient(circle at 12% 12%, #18245f5c, transparent 28%);
   z-index: -1;
 }
 .hero {
@@ -327,11 +330,11 @@ main {
 }
 .cost-segment.cpu,
 .cost-legend .cpu {
-  background: var(--luna);
+  background: var(--cost-cpu);
 }
 .cost-segment.training,
 .cost-legend .training {
-  background: var(--deep);
+  background: var(--cost-training);
 }
 .cost-note {
   margin: 10px 0 24px;
@@ -424,7 +427,7 @@ main {
   flex-direction: column;
 }
 .policy-card.valid {
-  border-top: 3px solid var(--deep);
+  border-top: 3px solid var(--valid);
 }
 .policy-card.failure {
   border-top: 3px solid var(--fail);

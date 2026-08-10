@@ -102,10 +102,22 @@ def test_cost_ledger_integrates_requests_and_allocation_intervals() -> None:
 def test_dashboard_loads_continuous_readouts() -> None:
     app = (ROOT / "sprint-web/app.js").read_text()
     page = (ROOT / "sprint-web/index.html").read_text()
+    styles = (ROOT / "sprint-web/styles.css").read_text()
+    timeline_page = (ROOT / "sprint-web/timeline.html").read_text()
+    timeline_app = (ROOT / "sprint-web/timeline.js").read_text()
     assert "/data/performance/r8-continuous.json" in app
     assert "continuous_score_mps" in app
     assert 'id="cost-scores"' in page
     assert 'id="time-scores"' in page
     assert "auc-bar-row" in app
+    assert "color:'#4D6BFF'" in app
+    assert "color:'#66D693'" in app
+    assert "--deep: #4D6BFF" in styles
+    assert "--luna: #66D693" in styles
+    assert "background: var(--cost-cpu)" in styles
+    assert "background: var(--cost-training)" in styles
+    assert "--deepseek:#4D6BFF" in timeline_page
+    assert "--luna:#66D693" in timeline_page
+    assert "setModelAccent" in timeline_app
     assert page.index("Performance vs cost") < page.index("Performance over time")
     assert "representative-lane verifier captures" in page
