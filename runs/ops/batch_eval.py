@@ -42,9 +42,9 @@ REASONING_EFFORT = "max"
 RUN_HOURS: float | None = None
 POLL_SECONDS = 30
 # The task permits 15 minutes for one sealed verification. Leave five minutes
-# for sandbox startup and result archival before declaring one trial's
-# independent verifier lane stuck; otherwise a legitimate timeout can race the
-# watchdog.
+# for sandbox startup and result archival before declaring one run's accepted
+# work stuck in the shared verifier lane; otherwise a legitimate timeout can
+# race the watchdog.
 VERIFIER_LANE_STALL_SECONDS = 20 * 60
 # The production Vercel team is on Hobby. A 20-minute rolling publication
 # cadence caps publication at 72 deployments per day, leaving headroom
@@ -111,9 +111,10 @@ def functional_gpu_canary_ready() -> bool:
     contexts = warmup.get("contexts", {})
     return bool(
         warmup.get("completed")
-        and canary.get("schema_version") == 2
+        and canary.get("schema_version") == 3
         and canary.get("completed")
         and canary.get("full_path_verified")
+        and canary.get("verifier_equivalence_verified")
         and canary.get("image_id") == contexts.get("agent_training", {}).get("image_id")
         and canary.get("verifier_image_id")
         == contexts.get("verifier", {}).get("image_id")

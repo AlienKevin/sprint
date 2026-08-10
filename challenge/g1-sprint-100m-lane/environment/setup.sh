@@ -6,8 +6,6 @@ set -euo pipefail
 mkdir -p /app/submissions/queue /app/submissions/notes \
          /app/submissions/receipts /logs/artifacts/telemetry
 
-# No reference policy, no copy of the course, no copy of the scorer. The agent
-# trains against whatever it likes, using the Isaac Lab install at /opt/IsaacLab
-# or anything else, and submits immutable candidates for trusted asynchronous
-# scoring. Optional PhysX spawn helper for the scored-course G1 lands at
-# /app/train via the Dockerfile.
+# The reviewed nominal verifier source is published read-only at /app/verifier.
+# The agent can run it only through its own training-GPU queue. Official scoring
+# remains a separate trusted process and returns no result to the agent.

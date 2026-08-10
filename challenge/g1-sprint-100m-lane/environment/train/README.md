@@ -63,6 +63,20 @@ from durable state.
 
 Run `sprint-gpu-train --help` for the full job and checkpoint interface.
 
+## Local verification
+
+The exact nominal verifier source is published read-only at `/app/verifier`.
+Queue it on this trial's training A10G with:
+
+```bash
+sprint-verify /app/policy.pt
+sprint-gpu-train logs JOB_ID
+```
+
+This local result is for your own debugging. `sprint-submit` separately archives
+immutable policy bytes for blind official scoring; the official verifier does
+not return its result or trace during the run.
+
 ## Import
 
 `/app` is on `PYTHONPATH` when you work from `/app`:

@@ -89,7 +89,7 @@ def test_forward_distance_stops_at_first_lane_disqualification() -> None:
     )
 
     # The trajectory continues far outside the lane for audit/replay, but only
-    # progress through the interpolated 0.61 m boundary is returned as feedback.
+    # The archived diagnostic stops at the interpolated 0.61 m boundary.
     expected_fraction = (0.61 - 0.305) / (3.9667 - 0.305)
     expected_distance = 2.0 + expected_fraction * (44.93 - 2.0)
     assert result.max_distance_m == round(expected_distance, 3)

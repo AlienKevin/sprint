@@ -147,9 +147,10 @@ def test_functional_gpu_canary_must_match_both_warmed_images(
     canary.write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "completed": True,
                 "full_path_verified": True,
+                "verifier_equivalence_verified": True,
                 "image_id": "im-agent",
                 "verifier_image_id": "im-verifier",
             }

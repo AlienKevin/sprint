@@ -70,12 +70,20 @@ def main() -> int:
         f"python3 -c \"import json; p=json.load(open('/warm{remote_root}/progress.json')); "
         "assert p['finished'] is True and p['iteration'] >= 10\"; "
         f"grep -F '[sprint] iter=10' /warm{remote_root}/training.log; "
-        f"python3 -c \"import json; rows=[json.loads(x) for x in "
+        f'python3 -c "import json; rows=[json.loads(x) for x in '
         f"open('/warm{remote_root}/telemetry/samples.jsonl') if x.strip()]; "
         "gpus=[g for p in rows for g in p['gpus']]; "
         "assert gpus and all(g['gpu_name'] for g in gpus); "
         "assert max(g['mem_used_mib'] for g in gpus) > 1000; "
-        "assert max(g['util_gpu_pct'] for g in gpus) >= 10\""
+        "assert max(g['util_gpu_pct'] for g in gpus) >= 10\"; "
+        f"mkdir -p /warm{remote_root}/agent-verifier; "
+        "timeout --signal=TERM --kill-after=30 180 "
+        "python3 /opt/sprint-verifier/verify.py "
+        f"--policy /warm{remote_root}/checkpoints/policy_final.pt "
+        f"--logs /warm{remote_root}/agent-verifier "
+        "--tests /opt/sprint-verifier --runs 1 --distance 1 --max-seconds 2 "
+        "--headless; "
+        "echo AGENT_PUBLISHED_VERIFIER_COMPLETED"
     )
 
     verifier_command = (
@@ -96,18 +104,22 @@ def main() -> int:
         f"test -s /warm{remote_root}/verifier/replay.json; "
         f"! grep -Eq 'GPU solver pipeline failed|GPU Bp pipeline failed|switching to software' "
         f"/warm{remote_root}/verifier/isaac-stdout.txt; "
-        f"python3 -c \"import json; rows=[json.loads(x) for x in "
+        f'python3 -c "import json; rows=[json.loads(x) for x in '
         f"open('/warm{remote_root}/verifier/telemetry/samples.jsonl') if x.strip()]; "
         "gpus=[g for p in rows for g in p['gpus']]; "
         "assert gpus and all(g['gpu_name'] for g in gpus); "
         f"result=json.load(open('/warm{remote_root}/verifier/sprint_results.json')); "
         "assert result['runs'] == 1\"; "
+        "python3 /tests/compare_results.py "
+        f"--agent /warm{remote_root}/agent-verifier/sprint_results.json "
+        f"--official /warm{remote_root}/verifier/sprint_results.json "
+        f"--out /warm{remote_root}/verifier-equivalence.json; "
         "echo SEALED_GENERATED_POLICY_VERIFIED"
     )
 
     started = time.time()
     report = {
-        "schema_version": 2,
+        "schema_version": 3,
         "completed": False,
         "canary_id": canary_id,
         "image_id": image_id,
@@ -126,7 +138,10 @@ def main() -> int:
                 volume=volume,
                 command=command,
                 timeout=1200,
-                required_output_substrings=("[sprint] iter=10",),
+                required_output_substrings=(
+                    "[sprint] iter=10",
+                    "AGENT_PUBLISHED_VERIFIER_COMPLETED",
+                ),
             )
             report["verifier_sandbox"] = run_sandbox(
                 app=app,
@@ -136,8 +151,12 @@ def main() -> int:
                 volume=volume,
                 command=verifier_command,
                 timeout=300,
-                required_output_substrings=("SEALED_GENERATED_POLICY_VERIFIED",),
+                required_output_substrings=(
+                    "SEALED_GENERATED_POLICY_VERIFIED",
+                    "VERIFIER_EQUIVALENCE_OK",
+                ),
             )
+        report["verifier_equivalence_verified"] = True
         report["full_path_verified"] = True
         report["completed"] = True
         report["completed_at_epoch_s"] = time.time()

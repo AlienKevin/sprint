@@ -1,27 +1,11 @@
 #!/usr/bin/env python3
-"""Show local submission requests and completed trusted verifier feedback."""
+"""List local submission receipts. Official verifier output remains blind."""
 
 import json
 import os
 import sys
 
 RECEIPTS = "/app/submissions/receipts"
-RESULTS = "/app/submissions/results"
-FAILURE_LABELS = {
-    "finished": "did not finish",
-    "in_lane": "left the lane",
-    "self_collision": "self-collision",
-}
-
-
-def result_for(submission_id: str) -> dict | None:
-    path = os.path.join(RESULTS, f"{submission_id}.pt.json")
-    try:
-        with open(path, encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except (FileNotFoundError, PermissionError, json.JSONDecodeError):
-        return None
-    return payload if isinstance(payload, dict) else None
 
 
 def main() -> int:
@@ -45,51 +29,8 @@ def main() -> int:
             continue
         note = str(receipt.get("note") or "")
         submission_id = receipt.get("submission_id", name[:-5])
-        result = result_for(str(submission_id))
         prefix = f"{submission_id}" + (f"  {note}" if note else "")
-        if result is None:
-            print(f"{prefix}  pending host acceptance/result")
-            continue
-        if not result.get("accepted", True):
-            retry = result.get("retry_after_sec")
-            suffix = (
-                f"; retry after {retry:g}s" if isinstance(retry, (int, float)) else ""
-            )
-            print(
-                f"{prefix}  rejected: {result.get('error') or 'admission rejected'}{suffix}"
-            )
-            continue
-        rewards = result.get("rewards")
-        if not isinstance(rewards, dict):
-            if result.get("error"):
-                print(f"{prefix}  verifier error: {result['error']}")
-            else:
-                print(f"{prefix}  accepted; scoring")
-            continue
-        valid = bool(rewards.get("valid_run"))
-        best = rewards.get("best_100m_s")
-        gates = [
-            name
-            for name in ("finished", "in_lane", "self_collision")
-            if not bool(rewards.get(f"gate_{name}"))
-        ]
-        score = (
-            f"{float(best):.3f}s" if valid and isinstance(best, (int, float)) else "DQ"
-        )
-        detail = (
-            "valid"
-            if valid
-            else ", ".join(FAILURE_LABELS.get(name, name) for name in gates)
-            or "invalid result"
-        )
-        max_distance = rewards.get("max_distance_m")
-        if (
-            not valid
-            and "finished" in gates
-            and isinstance(max_distance, (int, float))
-        ):
-            detail += f"; max legal distance: {float(max_distance):.3f}m"
-        print(f"{prefix}  {score}  {detail}")
+        print(f"{prefix}  submitted; official result hidden")
     return 0
 
 

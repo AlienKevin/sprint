@@ -1,0 +1,21 @@
+{
+  "files": {
+    "collision_geometry.json": "5693973a81bae392f6a8a5512612ab3a2b72a808dbd586caef4dbc9ea540fa1e",
+    "compare_results.py": "02f3e1d57a4f152f188004ba33b984b35e538fdb04f83a04ba0124e32beb83f4",
+    "sprint_gpu_pipeline.py": "fc2c0212491b9e7c75effdbc31b5073d3a5ea7c4df34c49d23faf75c8e5d29c7",
+    "sprintbench/__init__.py": "0eb58b11b4d2c96687531106f6065c252f8fd2a14de2dd3f7ce11964cab9ae4d",
+    "sprintbench/assets.py": "d2acdab80641ec1494e0bf5fc5e437daafa91a9d1f26a17039417d7211270fc1",
+    "sprintbench/metrics.py": "89488be7f7ab2ab8feaa7d6ab827d15cbc91e03a1ab35ff9bd8bc01bc5cb67d3",
+    "sprintbench/policy.py": "ad5c4829b1dc72e51ec9b32d8d08fc17a6076cd8a33d01246833908d8771397c",
+    "sprintbench/replay.py": "db341ad01cc744b11fc404672278b3f4a5edbb258b585cf299eae1428757766e",
+    "sprintbench/rollout.py": "73618f88a19ccf5c8bd3614ad5fbb69ef5604bbe3a9eb48d5b8e68f8cffe6ea9",
+    "sprintbench/sprint_command.py": "88a344c82903ea1a914b053afb1cc1080e8d44c835d9e45d9dac96c1a151513d",
+    "sprintbench/sprint_env_cfg.py": "a300c7bebbc97d2a64faf0a1fca25656ead56da513f1a152bf0db65f28dd8961",
+    "sprintbench/tasks.py": "8f694377cb3864825d51f1f22265a2b5fed75748a8f874107fd3898121a2ad99",
+    "test.sh": "ec9f4a0142c5157f02cba147c2a6f4f2875bde2299fd4442819418e30e2386a3",
+    "verifier_telemetry.py": "eee1001aefaddb5be135f4de8a935d9114ec77c14ecc0cfb10672be76fa483a9",
+    "verify.py": "4b8ffc89027c5dbd98ede7c4b632d9f7975a9dd30ad58bb5fe8956adf42ce437"
+  },
+  "schema_version": 1,
+  "source": "challenge/g1-sprint-100m-lane/tests"
+}

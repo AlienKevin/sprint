@@ -11,7 +11,8 @@ committed.
 - one durable CPU agent sandbox (4 physical cores, 16 GiB, no GPU);
 - at most one active A10G training worker per model run, resumed from durable
   checksummed checkpoints after preemption;
-- asynchronous score feedback through one independent verifier lane per trial;
+- agent-funded local verification plus blind archival scoring through one
+  batch-scoped trusted verifier lane;
 - the fastest valid submitted policy as the run's final score;
 - durable raw agent traces, ATIF trajectories, tool latency, tokens, model cost,
   resource telemetry, Modal allocation/cost reconciliation, and schema-v6
@@ -19,10 +20,10 @@ committed.
 - no general agent internet access and no cloud control-plane credentials.
 
 Concurrent model runs have independent CPU sandboxes, volumes, training queues,
-verifier queues, and ledgers. A trusted five-minute acceptance cooldown and a
-one-outstanding-policy limit apply separately to each trial. Trials share no
-verifier lease; their only remaining coupling is Modal GPU availability.
-Training and verifier GPU costs remain separate.
+submission queues, and ledgers. A trusted five-minute acceptance cooldown and a
+one-outstanding-policy limit apply separately to each trial. Official scoring is
+blind and globally serialized; local verifier runs consume the submitting
+trial's own training allocation. Training and verifier GPU costs remain separate.
 
 ## One-time setup
 
@@ -53,8 +54,9 @@ uv run --project harbor python runs/ops/warm_modal_images.py \
   --policy /tmp/sprint-warmup.pt
 ```
 
-When verifier behavior changes, prove real PPO export and the complete sealed
-three-lane scoring path with the disposable functional canary:
+When verifier behavior changes, prove policy export, agent-visible/local versus
+trusted-verifier equivalence, and the complete sealed scoring path with the
+disposable functional canary:
 
 ```bash
 uv run --project harbor python runs/ops/training_gpu_canary.py \

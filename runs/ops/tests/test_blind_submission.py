@@ -109,16 +109,13 @@ def test_submission_accepts_after_sixty_prior_receipts(
     assert len(list(Path(submit.QUEUE).glob("*.pt"))) == 1
 
 
-def test_board_exposes_pending_and_completed_verifier_feedback(
+def test_board_lists_receipts_without_reading_official_results(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
     board = load_script("sprint-board")
     receipts = tmp_path / "receipts"
-    results = tmp_path / "results"
     receipts.mkdir()
-    results.mkdir()
     board.RECEIPTS = str(receipts)
-    board.RESULTS = str(results)
     (receipts / "one.json").write_text(
         json.dumps(
             {
@@ -131,82 +128,9 @@ def test_board_exposes_pending_and_completed_verifier_feedback(
 
     assert board.main() == 0
     output = capsys.readouterr().out
-    assert "one  chosen  pending host acceptance/result" in output
-
-    (results / "one.pt.json").write_text(
-        json.dumps(
-            {
-                "accepted": True,
-                "rewards": {
-                    "valid_run": 0.0,
-                    "best_100m_s": 0.0,
-                    "max_distance_m": 14.5,
-                    "gate_finished": 1.0,
-                    "gate_in_lane": 0.0,
-                    "gate_self_collision": 1.0,
-                },
-            }
-        )
-    )
-    assert board.main() == 0
-    output = capsys.readouterr().out
-    assert "one  chosen  DQ  left the lane" in output
-    assert "max legal distance" not in output
-
-    payload = json.loads((results / "one.pt.json").read_text())
-    payload["rewards"]["gate_finished"] = 0.0
-    (results / "one.pt.json").write_text(json.dumps(payload))
-    assert board.main() == 0
-    output = capsys.readouterr().out
-    assert (
-        "one  chosen  DQ  did not finish, left the lane; max legal distance: 14.500m"
-        in output
-    )
-
-
-def test_board_exposes_valid_score_and_rate_rejection(
-    tmp_path: Path, monkeypatch, capsys
-) -> None:
-    board = load_script("sprint-board")
-    receipts = tmp_path / "receipts"
-    results = tmp_path / "results"
-    receipts.mkdir()
-    results.mkdir()
-    board.RECEIPTS = str(receipts)
-    board.RESULTS = str(results)
-    for submission_id in ("valid", "limited"):
-        (receipts / f"{submission_id}.json").write_text(
-            json.dumps({"submission_id": submission_id, "note": ""})
-        )
-    (results / "valid.pt.json").write_text(
-        json.dumps(
-            {
-                "accepted": True,
-                "rewards": {
-                    "valid_run": 1.0,
-                    "best_100m_s": 8.948,
-                    "gate_finished": 1.0,
-                    "gate_in_lane": 1.0,
-                    "gate_self_collision": 1.0,
-                },
-            }
-        )
-    )
-    (results / "limited.pt.json").write_text(
-        json.dumps(
-            {
-                "accepted": False,
-                "error": "submission cooldown active",
-                "retry_after_sec": 173,
-            }
-        )
-    )
-    monkeypatch.setattr(sys, "argv", ["sprint-board"])
-
-    assert board.main() == 0
-    output = capsys.readouterr().out
-    assert "valid  8.948s  valid" in output
-    assert "limited  rejected: submission cooldown active; retry after 173s" in output
+    assert "one  chosen  submitted; official result hidden" in output
+    assert "DQ" not in output
+    assert "valid" not in output
 
 
 def test_finalization_requires_nonempty_host_frozen_policy(tmp_path: Path) -> None:

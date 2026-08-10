@@ -106,21 +106,24 @@ scoring/verifier workers.
   agent remains alive. `sprint-gpu-train wait` is a blocking tool call; agents
   should normally submit and poll status if they have useful CPU-side work.
 - `sprint-submit` returns immediately. Scoring does not pause the agent or stop
-  an existing training worker; `sprint-board` exposes trusted score and gate
-  feedback when the independent verifier finishes.
+  an existing training worker; `sprint-board` lists receipts only. Agents debug
+  with the published verifier on their own training GPU, while official output
+  remains in the trusted archive.
 
-## Independent feedback scoring
+## Blind archival scoring
 
-Every model run has its own immutable queue, trusted acceptance gate, and
-one-at-a-time verifier lane. There is no cross-trial verifier lease. Each cache
-miss runs in a fresh ephemeral sealed Modal sandbox. Exact policy bytes under
-the same complete task fingerprint reuse a checksummed result only after the
-new request passes the same gate. The host accepts at most one outstanding
-policy per trial and no more than one every 300 seconds; request-ID replay is
-idempotent. All accepted work drains after the agent exits.
+Every model run has its own immutable queue and trusted acceptance gate. All
+accepted work feeds one batch-scoped, crash-safe verifier lease, so at most one
+official verifier sandbox is active. Each policy executes in an isolated process.
+Exact policy bytes under the same complete task fingerprint may reuse a
+checksummed result only after the new request passes the same gate. The host
+accepts at most one outstanding policy per trial and no more than one every 300
+seconds; request-ID replay is idempotent. All accepted work drains after the
+agent exits. Scores, gates, traces, queue progress, and completion timing are
+never returned to the agent.
 
-`run.json` records `scoring_queue_scope=independent_feedback_per_trial_queue`, a
-run-unique provenance key, per-trial concurrency one, the 300-second interval,
+`run.json` records `scoring_queue_scope=shared_blind_archival_queue`, the
+batch-scoped provenance key, per-trial concurrency one, the 300-second interval,
 and the one-outstanding limit. Timeline events carry queue wait and cache/source
 provenance for every accepted policy.
 There is no host-frozen primary artifact. The result is the complete submitted

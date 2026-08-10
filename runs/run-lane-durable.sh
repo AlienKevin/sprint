@@ -177,7 +177,8 @@ fi
   echo "uv is required (set UV to its absolute executable path)" >&2
   exit 1
 }
-export SPRINT_SHARED_STATE_DIR="$ROOT/runs/ops/feedback-verifier"
+export SPRINT_SHARED_STATE_DIR="$ROOT/runs/ops/feedback-verifier/${BATCH_ID:-standalone}"
+export SPRINT_SHARED_CACHE_DIR="$ROOT/runs/ops/feedback-verifier/result-cache"
 
 if [[ "$AGENT_KIND" == "claude-code" ]]; then
   if [[ -n "$ENDPOINT" ]]; then
@@ -685,18 +686,18 @@ base = {
     "telemetry_gpu_max_gap_seconds": 45,
     "telemetry_gpu_pipeline_max_gap_seconds": 45,
     "telemetry_resource_roles": ["cpu-agent", "training-gpu", "verifier-gpu"],
-    # Each run has its own trusted acceptance gate and verifier lane. Accepted
-    # cache misses use fresh ephemeral sandboxes; no cross-run lease exists.
-    "scoring_queue_scope": "independent_feedback_per_trial_queue",
-    "scoring_queue_key": run_id,
+    # Per-trial admission is rate-limited, then every run in this batch feeds
+    # one crash-safe blind official verifier lane.
+    "scoring_queue_scope": "shared_blind_archival_queue",
+    "scoring_queue_key": batch_id or "standalone",
     "scoring_max_concurrent_per_trial": 1,
-    "scoring_cross_trial_lease": False,
+    "scoring_cross_trial_lease": True,
     "scoring_minimum_submission_interval_sec": 300,
     "scoring_max_outstanding_submissions_per_trial": 1,
-    "scoring_feedback_policy": "score_and_gates_when_ready",
+    "scoring_feedback_policy": "official_results_hidden_agent_local_verification",
     "scoring_drain_policy": "all_accepted_submissions",
     "scoring_deduplication_key": "task_fingerprint_plus_policy_sha256",
-    "evaluation_result_policy": "all_feedback_submissions",
+    "evaluation_result_policy": "all_blind_archival_submissions",
     "verifier_cost_attribution": "measurement_overhead_separate_from_agent_cost",
     "cpu_supervised": supervised == "1",
     "cpu_launch_attempt": int(cpu_attempt),
@@ -793,7 +794,7 @@ SHARED_AGENT_ENV=(
   --ae "SPRINT_GPU_JOBS_ROOT=/durable/runs/$RUN_ID/gpu-jobs"
   --ae "SPRINT_CPU_LAUNCH_ATTEMPT=$CPU_LAUNCH_ATTEMPT"
   --ae "SPRINT_MODEL=$MODEL"
-  --ae "SPRINT_SCORING_QUEUE_KEY=$RUN_ID"
+  --ae "SPRINT_SCORING_QUEUE_KEY=${BATCH_ID:-standalone}"
   --ae "SPRINT_REQUESTED_CPU_CORES=4"
   --ae "SPRINT_REQUESTED_MEMORY_MIB=16384"
 )

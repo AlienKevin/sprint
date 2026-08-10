@@ -3,10 +3,10 @@
 
     sprint-submit mypolicy.pt --note "candidate-a"
 
-Prints a request id and exits. Scoring runs on the real course in a sealed
-container. Use sprint-board to see whether the trusted host accepted the
-request and to read completed score and gate feedback. Every accepted policy
-is retained in the final trajectory and Pareto analysis.
+Prints a request id and exits. Official scoring is blind: sprint-board lists
+local receipts, while scores, gates, traces, queue progress, and completion
+timing remain in the trusted archive. Every accepted policy is retained in the
+final trajectory and Pareto analysis.
 """
 
 import argparse
@@ -100,7 +100,7 @@ def main() -> int:
     print(f"queued {job_id}" + (f"  ({note})" if note else ""))
     print(
         "Harbor accepts at most one outstanding policy and one every 300 seconds; "
-        "run sprint-board for acceptance and score feedback."
+        "run sprint-board to list local submission receipts."
     )
     return 0
 

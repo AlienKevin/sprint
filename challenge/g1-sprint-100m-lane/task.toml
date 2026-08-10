@@ -29,7 +29,7 @@ environment_mode = "separate"
 enabled = true
 watch_dir = "/app/submissions/queue"
 results_dir = "/app/submissions/results"
-return_results_to_agent = true
+return_results_to_agent = false
 drain_pending_on_stop = true
 # Every accepted policy is part of the benchmark result set. There is no
 # privileged final artifact or separate post-agent verification.
@@ -40,13 +40,14 @@ submission_path = "/app/submission/policy.pt"
 poll_interval_sec = 20.0
 minimum_submission_interval_sec = 300.0
 max_outstanding_submissions = 1
-# There is deliberately no cross-trial scheduler lock. Each run owns an
-# independent one-at-a-time queue and every accepted cache miss gets a fresh,
-# ephemeral sealed Modal verifier sandbox. One trial therefore cannot delay
-# another trial's scoring except through ordinary provider GPU availability.
+# Every trial feeds one batch-scoped trusted verifier lane. Official results are
+# archival benchmark measurements and never return to the agent; the published
+# verifier in the training image is the agent's debugging surface. The host
+# lease is crash-safe and admits at most one official verifier sandbox at once.
+shared_scheduler_lock_path = "$SPRINT_SHARED_STATE_DIR/verifier.lock"
 # Replayed bytes under the exact same task/verifier fingerprint reuse the
 # checksummed trusted result. A verifier/task change creates a different key.
-shared_result_cache_dir = "$SPRINT_SHARED_STATE_DIR/result-cache"
+shared_result_cache_dir = "$SPRINT_SHARED_CACHE_DIR"
 #
 # Headless Kit cannot initialize Vulkan in Modal's gVisor sandbox, but CUDA
 # physics remains active. The verifier rejects PhysX's distinct software-

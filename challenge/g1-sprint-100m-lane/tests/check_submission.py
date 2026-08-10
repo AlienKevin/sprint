@@ -46,9 +46,10 @@ Official verifier gates (a valid 100 m time needs every gating check to pass):
                              ancestors<=3 and siblings excluded; PhysX self-collisions on)
 
 Trusted verification:
-  sprint-submit returns immediately. sprint-board reports acceptance and the
-  official score/gates when the sealed verifier finishes. sprint-check only
-  validates the TorchScript interface on CPU — it does not run the course.
+  sprint-submit returns immediately. Official scores/gates are blind during the
+  run; sprint-board lists local receipts. sprint-check only validates the
+  TorchScript interface on CPU — it does not run the course. Use sprint-verify
+  for an agent-funded local execution of the published verifier.
 """.strip()
 
 
