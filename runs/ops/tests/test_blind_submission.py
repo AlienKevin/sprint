@@ -150,7 +150,7 @@ def test_board_exposes_pending_and_completed_verifier_feedback(
     )
     assert board.main() == 0
     output = capsys.readouterr().out
-    assert "one  chosen  DQ  failed gates: in_lane" in output
+    assert "one  chosen  DQ  left the lane" in output
     assert "max distance" not in output
 
     payload = json.loads((results / "one.pt.json").read_text())
@@ -159,7 +159,7 @@ def test_board_exposes_pending_and_completed_verifier_feedback(
     assert board.main() == 0
     output = capsys.readouterr().out
     assert (
-        "one  chosen  DQ  failed gates: finished,in_lane; max distance: 14.500m"
+        "one  chosen  DQ  did not finish, left the lane; max distance: 14.500m"
         in output
     )
 

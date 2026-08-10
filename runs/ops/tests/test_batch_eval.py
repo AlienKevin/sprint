@@ -1075,6 +1075,8 @@ def test_website_javascript_parses_and_has_no_legacy_opus_copy() -> None:
     assert "GPT‑5.6 Luna" in source
     assert "GPT‑5.6 Sol" in source
     assert "value.includes('gpt-5.6-sol')?'sol'" in source
+    assert "did not finish" in source
+    assert "left the lane" in source
     assert "Opus" not in source
     spec = importlib.util.find_spec("json")
     assert spec is not None

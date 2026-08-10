@@ -7,6 +7,11 @@ import sys
 
 RECEIPTS = "/app/submissions/receipts"
 RESULTS = "/app/submissions/results"
+FAILURE_LABELS = {
+    "finished": "did not finish",
+    "in_lane": "left the lane",
+    "self_collision": "self-collision",
+}
 
 
 def result_for(submission_id: str) -> dict | None:
@@ -71,7 +76,12 @@ def main() -> int:
         score = (
             f"{float(best):.3f}s" if valid and isinstance(best, (int, float)) else "DQ"
         )
-        detail = "valid" if valid else f"failed gates: {','.join(gates) or 'unknown'}"
+        detail = (
+            "valid"
+            if valid
+            else ", ".join(FAILURE_LABELS.get(name, name) for name in gates)
+            or "invalid result"
+        )
         max_distance = rewards.get("max_distance_m")
         if (
             not valid
