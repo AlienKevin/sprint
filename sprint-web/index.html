@@ -20,19 +20,22 @@
 
   <main>
     <section class="section">
-      <div class="section-head"><div><p class="kicker">THE RACE</p><h2>Performance over time</h2></div><p>Every dot is a scored submission. Disqualified policies stay in the DQ band; each connected line is that trial's best valid time so far.</p></div>
-      <div class="chart-card"><svg id="time-chart" role="img" aria-label="100 metre performance over experiment time"></svg><div id="time-legend" class="legend"></div></div>
+      <div class="section-head"><div><p class="kicker">EFFICIENCY</p><h2>Performance vs cost</h2></div><p>The three trials for each model are merged: cost is summed across all three, while quality is the best policy any of them has produced by that spending horizon. This retrospective view uses a shared $80 cutoff.</p></div>
+      <div class="chart-card"><svg id="cost-chart" role="img" aria-label="Continuous performance versus cumulative model cost"></svg><div id="cost-legend" class="legend"></div></div>
+      <div id="cost-scores" class="performance-scores"></div>
+      <p class="metric-note"><strong>Continuous score</strong> = (legal distance ÷ 100m) × (legal distance ÷ time to that point). Legal distance stops at the first lane or self-collision disqualification. Cost includes model API, CPU agents, and training sandboxes; verifier and website infrastructure are excluded.</p>
     </section>
 
-    <section class="section split">
-      <div>
-        <div class="section-head compact"><div><p class="kicker">EFFICIENCY</p><h2>Performance vs cost</h2></div></div>
-        <div class="chart-card"><svg id="cost-chart" role="img" aria-label="100 metre performance versus cumulative cost"></svg></div>
-      </div>
-      <div>
-        <div class="section-head compact"><div><p class="kicker">COST BY TRIAL</p><h2>Where the budget went</h2></div></div>
-        <div id="resource-bars" class="resource-bars"></div>
-      </div>
+    <section class="section">
+      <div class="section-head"><div><p class="kicker">THE RACE</p><h2>Performance over time</h2></div><p>The three trials for each model share one elapsed-time horizon. Each connected line shows the best policy produced by any of those trials so far.</p></div>
+      <div class="chart-card"><svg id="time-chart" role="img" aria-label="Continuous performance over experiment time"></svg><div id="time-legend" class="legend"></div></div>
+      <div id="time-scores" class="performance-scores"></div>
+      <p class="metric-note">Normalized AUC compares both models over the same 9.59-hour window. The r8 values are reconstructed from archived trusted 10Hz representative-lane verifier captures; official verdicts are unchanged.</p>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><div><p class="kicker">COST BY TRIAL</p><h2>Where the budget went</h2></div><p>Agent-side cost by independent trial. Verifier infrastructure remains excluded.</p></div>
+      <div id="resource-bars" class="resource-bars"></div>
     </section>
 
     <section class="section">
