@@ -16,6 +16,7 @@ from harbor.agents.installed.base import (
 from harbor.agents.installed.codex_cost import (
     DEEPSEEK_V4_FLASH_PRICING,
     GPT_5_6_LUNA_PRICING,
+    GPT_5_6_SOL_PRICING,
     GPT_5_6_TERRA_PRICING,
     build_request_usage_record,
     build_usage_audit,
@@ -979,6 +980,7 @@ class Codex(BaseInstalledAgent):
                 total_cost_usd = info.get("cost_usd")
             if total_cost_usd is None:
                 if canonical_model_name(default_model_name) in {
+                    GPT_5_6_SOL_PRICING["model"],
                     GPT_5_6_TERRA_PRICING["model"],
                     GPT_5_6_LUNA_PRICING["model"],
                     DEEPSEEK_V4_FLASH_PRICING["model"],

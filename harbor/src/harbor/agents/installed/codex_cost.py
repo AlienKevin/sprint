@@ -11,6 +11,30 @@ USAGE_AUDIT_SCHEMA_VERSION = 1
 # This is deliberately pinned rather than delegated to LiteLLM. Cost reports must
 # remain reproducible after a dependency updates its mutable pricing table.
 # Refresh the snapshot only after checking the linked first-party model page.
+GPT_5_6_SOL_PRICING: dict[str, Any] = {
+    "id": "openai-gpt-5.6-sol-default-2026-08-10",
+    "provider": "openai",
+    "model": "gpt-5.6-sol",
+    "service_tier": "default",
+    "currency": "USD",
+    "captured_at": "2026-08-10",
+    "source_url": "https://developers.openai.com/api/docs/models/gpt-5.6-sol",
+    "unit_tokens": 1_000_000,
+    "rates_usd_per_million_tokens": {
+        "uncached_input": "5.00",
+        "cached_input": "0.50",
+        "cache_write_input": "6.25",
+        "output": "30.00",
+    },
+    "cache_write_multiplier": "1.25",
+    "long_context": {
+        "threshold_input_tokens": 272_000,
+        "input_multiplier": "2.0",
+        "output_multiplier": "1.5",
+        "scope": "full_request",
+    },
+}
+
 GPT_5_6_TERRA_PRICING: dict[str, Any] = {
     "id": "openai-gpt-5.6-terra-default-2026-08-08",
     "provider": "openai",
@@ -142,6 +166,7 @@ def build_request_usage_record(
     }
 
     supported = {
+        GPT_5_6_SOL_PRICING["model"],
         GPT_5_6_TERRA_PRICING["model"],
         GPT_5_6_LUNA_PRICING["model"],
         DEEPSEEK_V4_FLASH_PRICING["model"],
@@ -225,11 +250,11 @@ def build_request_usage_record(
         )
         return record
 
-    pricing = (
-        GPT_5_6_LUNA_PRICING
-        if normalized_model == GPT_5_6_LUNA_PRICING["model"]
-        else GPT_5_6_TERRA_PRICING
-    )
+    pricing = {
+        GPT_5_6_SOL_PRICING["model"]: GPT_5_6_SOL_PRICING,
+        GPT_5_6_TERRA_PRICING["model"]: GPT_5_6_TERRA_PRICING,
+        GPT_5_6_LUNA_PRICING["model"]: GPT_5_6_LUNA_PRICING,
+    }[normalized_model]
     record["pricing_snapshot_id"] = pricing["id"]
     missing = [
         name
@@ -371,6 +396,7 @@ def build_usage_audit(
         snapshot
         for snapshot_id in snapshot_ids
         for snapshot in (
+            GPT_5_6_SOL_PRICING,
             GPT_5_6_TERRA_PRICING,
             GPT_5_6_LUNA_PRICING,
             DEEPSEEK_V4_FLASH_PRICING,

@@ -517,6 +517,35 @@ class DurableOpsTests(unittest.TestCase):
         self.assertEqual(config["reasoning_effort"], "max")
         self.assertTrue(config["usage_audit_required"])
 
+    def test_sol_dry_run_pins_reconstructible_cost_policy(self) -> None:
+        run_id = f"dry-{uuid.uuid4().hex[:12]}"
+        env = os.environ.copy()
+        env["OPENAI_API_KEY"] = "fake-openai-key-that-must-never-print-123456789"
+        completed = subprocess.run(
+            [
+                "bash",
+                str(ROOT / "runs/run-lane-durable.sh"),
+                "--dry-run",
+                "--run-id",
+                run_id,
+                "--agent-kind",
+                "codex",
+                "--model",
+                "openai/gpt-5.6-sol",
+                "--reasoning-effort",
+                "high",
+            ],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        config = json.loads(completed.stdout)
+        self.assertEqual(config["service_tier"], "default")
+        self.assertEqual(config["reasoning_effort"], "high")
+        self.assertTrue(config["usage_audit_required"])
+
     def test_deepseek_dry_run_requires_reconstructible_cost_policy(self) -> None:
         run_id = f"dry-{uuid.uuid4().hex[:12]}"
         env = os.environ.copy()

@@ -1160,7 +1160,9 @@ def usage_audit_ready(trial: Path, run: dict[str, Any]) -> tuple[bool, list[str]
 
     expected_model = str(run.get("model") or "").split("/", 1)[-1]
     expected_service_tier = (
-        "default" if expected_model in {"gpt-5.6-terra", "gpt-5.6-luna"} else None
+        "default"
+        if expected_model in {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
+        else None
     )
     for index, request in enumerate(requests, start=1):
         if not isinstance(request, dict):

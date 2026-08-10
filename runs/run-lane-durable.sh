@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="${SPRINT_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"
 SOURCE_ROOT="$ROOT"
 HARBOR="${HARBOR_PATH:-$SOURCE_ROOT/harbor}"
-HARBOR_COMMIT=89394fca3fbc3e3dcd4d45e1d766ed2b5ad46202
+HARBOR_COMMIT=16c2b3f62bd6c878057da8f0fb09bdd34c94b410
 HARBOR_BRANCH=continuous-verification
 UV="${UV:-$(command -v uv || true)}"
 if [[ -z "$UV" && -x /home/ubuntu/.local/bin/uv ]]; then
@@ -437,13 +437,19 @@ payload = {
     "service_tier": (
         "default"
         if agent_kind == "codex"
-        and model.split("/", 1)[-1] in {"gpt-5.6-terra", "gpt-5.6-luna"}
+        and model.split("/", 1)[-1]
+        in {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
         else None
     ),
     "usage_audit_required": (
         agent_kind == "codex"
         and model.split("/", 1)[-1]
-        in {"gpt-5.6-terra", "gpt-5.6-luna", "deepseek-v4-flash"}
+        in {
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "deepseek-v4-flash",
+        }
     ),
     "modal_profile": profile,
     "harbor_path": harbor,
@@ -672,7 +678,7 @@ base = {
     # OpenAI cost is accepted only from Harbor's per-request, checksummed usage
     # audit. Aggregate cached/uncached counters cannot recover long-context or
     # cache-write pricing correctly.
-    "usage_audit_required": agent_kind == "codex" and model.split("/", 1)[-1] in {"gpt-5.6-terra", "gpt-5.6-luna", "deepseek-v4-flash"},
+    "usage_audit_required": agent_kind == "codex" and model.split("/", 1)[-1] in {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "deepseek-v4-flash"},
     "hosted_model_tools_policy": "disabled" if agent_kind == "codex" else None,
     "timeline_bucket_seconds": 60,
     "telemetry_cpu_max_gap_seconds": 45,
@@ -821,7 +827,7 @@ else
   if [[ "$ENDPOINT" == *api.deepseek.com* ]]; then
     AGENT_HARBOR_ARGS+=(--ae "SPRINT_CODEX_PROVIDER=deepseek")
   fi
-  if [[ "${MODEL#*/}" == "gpt-5.6-terra" || "${MODEL#*/}" == "gpt-5.6-luna" ]]; then
+  if [[ "${MODEL#*/}" == "gpt-5.6-sol" || "${MODEL#*/}" == "gpt-5.6-terra" || "${MODEL#*/}" == "gpt-5.6-luna" ]]; then
     # Pin standard pricing. Leaving this unset lets Codex/project defaults pick
     # another service tier, which cannot be reconstructed from token counts.
     AGENT_HARBOR_ARGS+=(--ak "service_tier=default")

@@ -79,6 +79,7 @@ def recover_harbor_provenance(
         "reasoning_effort": str(run["reasoning_effort"]),
     }
     if str(run["model"]).split("/", 1)[-1] in {
+        "gpt-5.6-sol",
         "gpt-5.6-terra",
         "gpt-5.6-luna",
     }:
@@ -215,6 +216,7 @@ def reconstruct_group(
         "reasoning_effort": str(run["reasoning_effort"]),
     }
     if str(run["model"]).split("/", 1)[-1] in {
+        "gpt-5.6-sol",
         "gpt-5.6-terra",
         "gpt-5.6-luna",
     }:
