@@ -1020,23 +1020,23 @@ while True:
             )
             self.assertEqual(old["status"], "skipped_dominated")
 
-    def test_frontier_tolerance_and_completed_robustness_gate(self) -> None:
+    def test_frontier_uses_only_valid_time_with_tolerance(self) -> None:
         candidate = frontier_update.Candidate
         speed_only = [
-            candidate(1, "one", 10.0, 0.5, False, "a", "/a"),
-            candidate(2, "two", 9.9995, 0.9, True, "b", "/b"),
+            candidate(1, "one", 10.0, "a", "/a"),
+            candidate(2, "two", 9.9995, "b", "/b"),
         ]
-        frontier, uses_robustness = frontier_update.compute_frontier(speed_only)
-        self.assertFalse(uses_robustness)
+        frontier, has_secondary_objective = frontier_update.compute_frontier(speed_only)
+        self.assertFalse(has_secondary_objective)
         self.assertEqual([item.index for item in frontier], [1])
 
-        complete = [
-            candidate(1, "one", 9.0, 0.5, True, "a", "/a"),
-            candidate(2, "two", 10.0, 0.9, True, "b", "/b"),
+        faster = [
+            candidate(1, "one", 9.0, "a", "/a"),
+            candidate(2, "two", 10.0, "b", "/b"),
         ]
-        frontier, uses_robustness = frontier_update.compute_frontier(complete)
-        self.assertTrue(uses_robustness)
-        self.assertEqual({item.index for item in frontier}, {1, 2})
+        frontier, has_secondary_objective = frontier_update.compute_frontier(faster)
+        self.assertFalse(has_secondary_objective)
+        self.assertEqual([item.index for item in frontier], [1])
 
     def test_stop_and_finalize_are_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

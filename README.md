@@ -53,12 +53,12 @@ uv run --project harbor python runs/ops/warm_modal_images.py \
   --policy /tmp/sprint-warmup.pt
 ```
 
-When verifier behavior changes, prove the full nominal and fresh-process
-robustness path with any previously valid, untracked policy:
+When verifier behavior changes, prove real PPO export and the complete sealed
+three-lane scoring path with the disposable functional canary:
 
 ```bash
-uv run --project harbor python runs/ops/verifier_robustness_canary.py \
-  --policy /absolute/path/to/valid-policy.pt
+uv run --project harbor python runs/ops/training_gpu_canary.py \
+  --work-archive /absolute/path/to/app.tar.gz
 ```
 
 ## Run an evaluation batch

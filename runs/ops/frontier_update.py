@@ -185,57 +185,11 @@ def policy_for_row(trial: Path, row: dict[str, Any]) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
-def robustness_for_row(
-    trial: Path, row: dict[str, Any], rewards: dict[str, Any]
-) -> tuple[float | None, bool]:
-    rate = _as_number(rewards.get("robustness_rate"))
-    explicit = row.get("robustness_complete", rewards.get("robustness_complete"))
-    if explicit in (True, 1, 1.0):
-        return rate, rate is not None
-
-    completed = _as_number(
-        row.get(
-            "robustness_seeds_completed",
-            rewards.get("robustness_seeds_completed"),
-        )
-    )
-    total = _as_number(
-        row.get("robustness_seeds_total", rewards.get("robustness_seeds_total"))
-    )
-    if total and completed is not None:
-        return rate, completed >= total
-
-    attempt = attempt_dir_for_row(trial, row)
-    if not attempt:
-        return rate, False
-    results = attempt / "verifier" / "sprint_results.json"
-    stdout = attempt / "verifier" / "test-stdout.txt"
-    try:
-        result_doc = json.loads(results.read_text())
-    except (OSError, json.JSONDecodeError):
-        return rate, False
-    seed_total = int(result_doc.get("robustness_seeds") or 0)
-    result_rate = _as_number(result_doc.get("robustness_rate"))
-    if result_rate is not None:
-        rate = result_rate
-    if seed_total <= 0:
-        return rate, False
-    try:
-        completed_lines = len(
-            re.findall(r"^\s*seed\s+[^:]+:", stdout.read_text(), flags=re.MULTILINE)
-        )
-    except OSError:
-        return rate, False
-    return rate, completed_lines >= seed_total
-
-
 @dataclasses.dataclass(frozen=True)
 class Candidate:
     index: int
     name: str
     time_seconds: float
-    robustness: float | None
-    robustness_complete: bool
     policy_hash: str | None
     policy_path: str | None
 
@@ -258,14 +212,11 @@ def candidates_from_rows(
             continue
         policy = policy_for_row(trial, row)
         policy_hash = sha256_file(policy) if policy else None
-        robustness, complete = robustness_for_row(trial, row, rewards)
         candidates.append(
             Candidate(
                 index=index,
                 name=str(row.get("name") or f"attempt-{index}"),
                 time_seconds=best,
-                robustness=robustness,
-                robustness_complete=complete,
                 policy_hash=policy_hash,
                 policy_path=str(policy) if policy else None,
             )
@@ -316,7 +267,6 @@ def graded_policy_records(
                 "best_100m_s": best if valid and best and best > 0 else None,
                 "max_distance_m": _as_number(details.get("max_distance_m")),
                 "peak_speed_mps": _as_number(rewards.get("peak_speed_mps")),
-                "robustness_rate": _as_number(rewards.get("robustness_rate")),
                 "failed_gates": sorted({str(name) for name in failed}),
                 "submitted_at": row.get("submitted_at"),
                 "finished_at": row.get("finished_at"),
@@ -334,48 +284,11 @@ def graded_policy_records(
 def compute_frontier(candidates: Sequence[Candidate]) -> tuple[list[Candidate], bool]:
     if not candidates:
         return [], False
-    use_robustness = all(
-        candidate.robustness_complete and candidate.robustness is not None
-        for candidate in candidates
-    )
-    if not use_robustness:
-        best = candidates[0]
-        for candidate in candidates[1:]:
-            if candidate.time_seconds < best.time_seconds - TIME_TOLERANCE_SECONDS:
-                best = candidate
-        return [best], False
-
-    def dominates(left: Candidate, right: Candidate) -> bool:
-        assert left.robustness is not None and right.robustness is not None
-        time_not_worse = (
-            left.time_seconds <= right.time_seconds + TIME_TOLERANCE_SECONDS
-        )
-        robustness_not_worse = left.robustness >= right.robustness
-        time_better = left.time_seconds < right.time_seconds - TIME_TOLERANCE_SECONDS
-        robustness_better = left.robustness > right.robustness
-        same_point = (
-            abs(left.time_seconds - right.time_seconds) <= TIME_TOLERANCE_SECONDS
-            and abs(left.robustness - right.robustness) <= 1e-12
-        )
-        return (
-            time_not_worse
-            and robustness_not_worse
-            and (
-                time_better
-                or robustness_better
-                or (same_point and left.index < right.index)
-            )
-        )
-
-    frontier = [
-        candidate
-        for candidate in candidates
-        if not any(
-            other is not candidate and dominates(other, candidate)
-            for other in candidates
-        )
-    ]
-    return sorted(frontier, key=lambda item: (item.time_seconds, item.index)), True
+    best = candidates[0]
+    for candidate in candidates[1:]:
+        if candidate.time_seconds < best.time_seconds - TIME_TOLERANCE_SECONDS:
+            best = candidate
+    return [best], False
 
 
 def site_tree_hash(web: Path) -> str:
@@ -438,7 +351,6 @@ def initial_state(job: Path, trial: Path, web: Path) -> dict[str, Any]:
         "ledger_hash": None,
         "ledger_errors": [],
         "counts": {},
-        "robustness_objective": False,
         "policies": {},
         "frontier": [],
         "frontier_candidates": [],
@@ -585,7 +497,7 @@ def scan_frontier(
     read = read_ledger(ledger_path)
     candidates = candidates_from_rows(trial, read.rows)
     graded = graded_policy_records(trial, read.rows)
-    frontier, robust = compute_frontier(candidates)
+    frontier, _ = compute_frontier(candidates)
     state = load_state(state_path, job, trial, web)
     previous = set(state.get("frontier") or [])
     active = [candidate.policy_hash for candidate in frontier if candidate.policy_hash]
@@ -597,8 +509,6 @@ def scan_frontier(
             "index": candidate.index,
             "name": candidate.name,
             "best_100m_s": candidate.time_seconds,
-            "robustness_rate": candidate.robustness,
-            "robustness_complete": candidate.robustness_complete,
             "policy_hash": candidate.policy_hash,
             "policy_path": candidate.policy_path,
             "on_frontier": candidate.policy_hash in active,
@@ -679,7 +589,6 @@ def scan_frontier(
             "ledger_hash": read.digest,
             "ledger_errors": read.errors,
             "counts": ledger_counts(read),
-            "robustness_objective": robust,
             "frontier": active,
             "frontier_candidates": [
                 {
@@ -924,7 +833,6 @@ def write_web_policy_indexes(
                 "best_100m_s": policy.get("best_100m_s"),
                 "max_distance_m": policy.get("max_distance_m"),
                 "peak_speed_mps": policy.get("peak_speed_mps"),
-                "robustness_rate": policy.get("robustness_rate"),
                 "failed_gates": policy.get("failed_gates") or [],
                 "on_frontier": bool(policy.get("on_frontier")),
                 "replay_ready": bool(web_html),

@@ -29,10 +29,10 @@ import torch
 
 OBS_DIM = 122
 ACT_DIM = 37
-# Batch widths the verifier actually uses: one lane for the time trial, five for
-# the robustness sweep.  A policy whose internal state is baked to a fixed batch
-# would pass a single-lane probe and then fail mid-sweep.
-BATCH_WIDTHS = (1, 5, 32)
+# Batch widths cover the three-lane verifier plus small and vectorized local use.
+# A policy whose internal state is baked to one fixed batch would otherwise pass
+# a single-lane probe and fail during official scoring.
+BATCH_WIDTHS = (1, 3, 32)
 MAX_ABS_ACTION = 100.0
 
 # Official scoring contract. These are the checks the verifier actually
@@ -44,11 +44,6 @@ Official verifier gates (a valid 100 m time needs every gating check to pass):
   in_lane           GATING   base stays within +/-0.61 m (1.22 m World Athletics lane)
   self_collision    GATING   non-adjacent padded overlap <= 1 cm (2 cm radius pad;
                              ancestors<=3 and siblings excluded; PhysX self-collisions on)
-
-Measured and reported, but not disqualifying:
-  no_fall, upright_posture, no_ground_penetration, alternating_gait,
-  feet_leave_ground, foot_clearance, steady_progress, energy_accounted,
-  returned_to_standing; plus a held-out robustness sweep.
 
 Trusted verification:
   sprint-submit returns immediately. sprint-board reports acceptance and the
