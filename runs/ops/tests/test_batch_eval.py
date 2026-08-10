@@ -864,6 +864,8 @@ def test_homepage_uses_compact_timeline_index_summaries() -> None:
     assert "modal_provider_billing" in source
     assert "verifier sandbox excluded" in source
     assert "modalRoleCost(run,'verifier_gpu')" not in source
+    assert "Full-screen replay" not in source
+    assert "website replay archived" in source
 
 
 def test_timeline_json_export_replaces_nonfinite_numbers(tmp_path: Path) -> None:
