@@ -12,6 +12,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import math
 import os
 import pathlib
 import re
@@ -66,11 +67,30 @@ def sha256_file(path: pathlib.Path) -> str:
     return digest.hexdigest()
 
 
+def json_safe(value: Any) -> Any:
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {key: json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [json_safe(item) for item in value]
+    return value
+
+
 def atomic_json(path: pathlib.Path, payload: dict[str, Any], mode: int = 0o600) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     with tmp.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2, sort_keys=True, separators=(",", ": "))
+        json.dump(
+            json_safe(payload),
+            handle,
+            indent=2,
+            sort_keys=True,
+            separators=(",", ": "),
+            allow_nan=False,
+        )
         handle.write("\n")
         handle.flush()
         os.fsync(handle.fileno())
@@ -1977,13 +1997,22 @@ class Builder:
                             value, bool
                         ):
                             continue
+                        value_number = float(value)
+                        if not math.isfinite(value_number):
+                            continue
                         weight = gpu.get("pipeline_metrics_window_ms")
+                        weight_number = (
+                            float(weight)
+                            if isinstance(weight, (int, float))
+                            and not isinstance(weight, bool)
+                            and math.isfinite(float(weight))
+                            and weight > 0
+                            else 1.0
+                        )
                         weighted.append(
                             (
-                                float(value),
-                                float(weight)
-                                if isinstance(weight, (int, float)) and weight > 0
-                                else 1.0,
+                                value_number,
+                                weight_number,
                             )
                         )
                 if not weighted:

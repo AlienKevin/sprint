@@ -20,6 +20,7 @@ sys.path.insert(0, str(OPS))
 
 import batch_eval  # noqa: E402
 import frontier_update  # noqa: E402
+import unified_timeline  # noqa: E402
 
 
 def test_batch_matrix_is_exact_six_arm_max_effort_contract() -> None:
@@ -859,6 +860,16 @@ def test_homepage_uses_compact_timeline_index_summaries() -> None:
     assert "await json(tMeta.path)" not in source
     assert "DQ / DNF" in source
     assert ".append(document.createElementNS" not in source
+    assert "final_api_cost_usd" in source
+    assert "modal_provider_billing" in source
+    assert "verifier sandbox excluded" in source
+    assert "modalRoleCost(run,'verifier_gpu')" not in source
+
+
+def test_timeline_json_export_replaces_nonfinite_numbers(tmp_path: Path) -> None:
+    path = tmp_path / "timeline.json"
+    unified_timeline.atomic_json(path, {"value": float("inf")})
+    assert json.loads(path.read_text()) == {"value": None}
 
 
 def test_replay_renderer_exposes_complete_cli() -> None:
