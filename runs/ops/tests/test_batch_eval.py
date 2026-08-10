@@ -1069,6 +1069,31 @@ def test_resolved_website_alert_leaves_active_list_but_preserves_history() -> No
     )
 
 
+def test_provider_auth_alert_does_not_match_decimal_score(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = "eval-luna-1"
+    state_dir = tmp_path / run_id
+    state_dir.mkdir()
+    (state_dir / "frontier-worker.log").write_text(
+        '{"max_distance_m": 4.401}\n'
+        '"b9611a72b8f8f8146821ca6d4f83fa59e9812b7235e762825cf499d9b403e164"\n'
+        "HTTP status 401 unauthorized\n"
+    )
+    monkeypatch.setattr(batch_eval, "SCRIPT_DIR", tmp_path)
+
+    alerts = batch_eval.log_alerts(run_id)
+
+    assert alerts == [
+        {
+            "run_id": run_id,
+            "kind": "provider_auth",
+            "source": "frontier-worker.log",
+            "count_in_tail": "1",
+        }
+    ]
+
+
 def test_website_javascript_parses_and_has_no_legacy_opus_copy() -> None:
     source = (ROOT / "sprint-web/app.js").read_text()
     assert "DeepSeek V4 Flash 0731" in source

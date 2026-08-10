@@ -66,7 +66,9 @@ ALERT_PATTERNS = {
         r"\b(?:insufficient_quota|quota exceeded|billing limit|spend limit)\b", re.I
     ),
     "provider_auth": re.compile(
-        r"\b(?:401|403|invalid api key|authentication failed)\b", re.I
+        r"(?:\b(?:invalid api key|authentication failed)\b|"
+        r"(?<![A-Za-z0-9.])(?:401|403)(?![A-Za-z0-9]))",
+        re.I,
     ),
     "modal_infrastructure": re.compile(
         r"\b(?:modal.*(?:internal|connection|timeout)|sandbox.*failed|container.*lost)\b",
