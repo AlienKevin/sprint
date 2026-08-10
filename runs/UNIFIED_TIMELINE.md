@@ -50,6 +50,17 @@ explicitly excluded from the total because it is not time-weighted and Modal's
 included storage allowance is workspace-level. Shared image warm-up is
 benchmark overhead and is not charged to a model arm.
 
+## Model API cost accounting
+
+Model API request events preserve the provider-reported token buckets, model,
+service tier, context size, and usage timestamp. Their calculated cost uses the
+published standard list price selected at that request timestamp. This matters
+for mutable aliases such as GPT-5.6 Luna, whose price changed by 5x on
+2026-08-10. The timeline labels this value
+`published_standard_list_price`; it is reproducible but is not an invoice.
+Provider billing exports remain authoritative for contracted rates, credits,
+adjustments, and requests billed without a locally completed response.
+
 ## Privacy boundary
 
 Native Codex and Claude traces are private forensic artifacts. They may contain

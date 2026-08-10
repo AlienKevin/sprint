@@ -4,6 +4,7 @@ import pytest
 
 from harbor.agents.installed.codex_cost import (
     DEEPSEEK_V4_FLASH_PRICING,
+    GPT_5_6_LUNA_LEGACY_PRICING,
     GPT_5_6_LUNA_PRICING,
     GPT_5_6_SOL_PRICING,
     GPT_5_6_TERRA_PRICING,
@@ -40,7 +41,7 @@ def record(
         service_tier="default",
         reasoning_effort="high",
         usage=raw_usage,
-        usage_reported_at="2026-08-08T00:00:00Z",
+        usage_reported_at="2026-08-10T00:00:00Z",
         model_context_window=1_050_000,
     )
 
@@ -75,6 +76,15 @@ def test_long_context_multiplier_is_applied_per_request() -> None:
 
 
 def test_luna_cost_uses_pinned_standard_tariff_and_cache_write_rate() -> None:
+    assert GPT_5_6_LUNA_PRICING["source_url"] == (
+        "https://developers.openai.com/api/docs/pricing"
+    )
+    assert GPT_5_6_LUNA_PRICING["rates_usd_per_million_tokens"] == {
+        "uncached_input": "0.20",
+        "cached_input": "0.02",
+        "cache_write_input": "0.25",
+        "output": "1.20",
+    }
     result = build_request_usage_record(
         api_call_id="api_call_luna",
         model="openai/gpt-5.6-luna",
@@ -86,14 +96,65 @@ def test_luna_cost_uses_pinned_standard_tariff_and_cache_write_rate() -> None:
             cache_write=30_000,
             output=10_000,
         ),
-        usage_reported_at="2026-08-08T00:00:00Z",
+        usage_reported_at="2026-08-10T00:00:00Z",
         model_context_window=1_050_000,
     )
 
     assert result["pricing_snapshot_id"] == GPT_5_6_LUNA_PRICING["id"]
     assert result["cost_reconstruction_status"] == "complete"
-    # 60k*$1/M + 40k*$0.10/M + 30k*$1.25/M + 10k*$6/M
+    # Official Standard tariff on 2026-08-10:
+    # 60k*$0.20/M + 40k*$0.02/M + 30k*$0.25/M + 10k*$1.20/M
+    assert result["calculated_cost_usd"] == pytest.approx(0.0323)
+
+
+def test_luna_tariff_is_selected_by_request_timestamp() -> None:
+    result = build_request_usage_record(
+        api_call_id="api_call_luna_legacy",
+        model="openai/gpt-5.6-luna",
+        service_tier="default",
+        reasoning_effort="max",
+        usage=usage(
+            ordinary=60_000,
+            cached=40_000,
+            cache_write=30_000,
+            output=10_000,
+        ),
+        usage_reported_at="2026-08-09T23:59:59Z",
+        model_context_window=1_050_000,
+    )
+
+    assert result["pricing_snapshot_id"] == GPT_5_6_LUNA_LEGACY_PRICING["id"]
     assert result["calculated_cost_usd"] == pytest.approx(0.1615)
+
+
+def test_luna_missing_timestamp_fails_closed_at_tariff_boundary() -> None:
+    result = build_request_usage_record(
+        api_call_id="api_call_luna_missing_time",
+        model="openai/gpt-5.6-luna",
+        service_tier="default",
+        reasoning_effort="max",
+        usage=usage(ordinary=1, cached=0, cache_write=0, output=1),
+        usage_reported_at=None,
+        model_context_window=1_050_000,
+    )
+
+    assert result["cost_reconstruction_status"] == "incomplete"
+    assert result["incomplete_reasons"] == ["missing_usage_reported_at_for_pricing"]
+
+
+def test_luna_malformed_timestamp_fails_closed_at_tariff_boundary() -> None:
+    result = build_request_usage_record(
+        api_call_id="api_call_luna_bad_time",
+        model="openai/gpt-5.6-luna",
+        service_tier="default",
+        reasoning_effort="max",
+        usage=usage(ordinary=1, cached=0, cache_write=0, output=1),
+        usage_reported_at="not-a-timestamp",
+        model_context_window=1_050_000,
+    )
+
+    assert result["cost_reconstruction_status"] == "incomplete"
+    assert result["incomplete_reasons"] == ["missing_usage_reported_at_for_pricing"]
 
 
 def test_sol_cost_uses_pinned_standard_tariff_and_cache_write_rate() -> None:
@@ -130,12 +191,12 @@ def test_luna_long_context_multiplier_applies_to_entire_request() -> None:
             cache_write=0,
             output=10_000,
         ),
-        usage_reported_at="2026-08-08T00:00:00Z",
+        usage_reported_at="2026-08-10T00:00:00Z",
         model_context_window=1_050_000,
     )
 
     assert result["long_context_pricing_applied"] is True
-    assert result["calculated_cost_usd"] == pytest.approx(0.636)
+    assert result["calculated_cost_usd"] == pytest.approx(0.1272)
 
 
 def test_invalid_usage_fails_closed_instead_of_guessing() -> None:
@@ -210,6 +271,10 @@ def test_usage_audit_reconciles_every_billable_bucket() -> None:
     assert audit["reconciliation_mismatches"] == {}
     assert audit["reported_total_usage"]["cache_write_input_tokens"] == 40
     assert audit["pricing_snapshots"] == [GPT_5_6_TERRA_PRICING]
+    assert audit["calculated_api_usage_cost_basis"] == ("published_standard_list_price")
+    assert audit["provider_billed_api_usage_usd"] is None
+    assert audit["provider_billing_reconciled"] is False
+    assert audit["invoice_exact"] is False
     assert audit["calculated_api_usage_usd"] == pytest.approx(
         sum(item["calculated_cost_usd"] for item in records)
     )

@@ -909,6 +909,9 @@ class Builder:
             audit_requests = audit.get("requests")
             audit_request_count = audit.get("request_count")
             calculated = audit.get("calculated_api_usage_usd")
+            cost_basis = str(
+                audit.get("calculated_api_usage_cost_basis") or "legacy_unspecified"
+            )
             audit_complete = bool(
                 audit.get("cost_reconstruction_complete") is True
                 and isinstance(audit_requests, list)
@@ -969,6 +972,7 @@ class Builder:
                 }
                 data.update(
                     {
+                        "calculated_cost_basis": cost_basis,
                         "session_id": request_session_id,
                         "cpu_attempt": (
                             request.get("cpu_attempt")
@@ -1561,6 +1565,13 @@ class Builder:
                     str(event["pricing_snapshot_id"])
                     for event in usage_events
                     if event.get("pricing_snapshot_id")
+                }
+            ),
+            "calculated_api_usage_cost_basis": sorted(
+                {
+                    str(event["calculated_cost_basis"])
+                    for event in usage_events
+                    if event.get("calculated_cost_basis")
                 }
             ),
         }
@@ -2171,6 +2182,7 @@ class Builder:
                 else None
             ),
             "final_api_cost_usd": usage_summary["calculated_api_usage_usd"],
+            "final_api_cost_basis": usage_summary["calculated_api_usage_cost_basis"],
             "final_modal_estimated_cost_usd": modal_estimate["estimated_cost_usd"],
             "final_modal_provider_cost_precredits_usd": modal_provider.get(
                 "provider_cost_precredits_usd"
@@ -2193,9 +2205,9 @@ class Builder:
                 else None
             ),
             "final_total_cost_kind": (
-                "api_calculated_plus_agent_modal_provider_precredits"
+                "api_published_list_price_plus_agent_modal_provider_precredits"
                 if provider_complete
-                else "api_calculated_plus_agent_modal_tariff_estimate"
+                else "api_published_list_price_plus_agent_modal_tariff_estimate"
             ),
             "wall_duration_ms": end - origin
             if origin is not None and end is not None

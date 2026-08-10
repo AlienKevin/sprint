@@ -29,7 +29,13 @@ Luna additionally pins Codex `service_tier=default` and disables hosted web
 search. Harbor records every request's cache reads, cache writes, ordinary
 input, output, reasoning output, total tokens, context size, model, effort,
 tier, timestamp, long-context classification, pricing snapshot, and calculated
-cost. Sprint finalization rejects an incomplete or non-reconciling ledger.
+list-price cost. Luna tariff selection is request-time aware because the mutable
+Luna alias had a 5x price reduction on 2026-08-10. Sprint finalization rejects
+an incomplete or non-reconciling token ledger. The calculated value is a
+reproducible estimate at the timestamp-selected published standard tariff, not
+provider-billed or invoice-exact spend. The OpenAI Costs export remains
+authoritative for contracted rates, credits, adjustments, and requests billed
+without a locally completed response.
 
 DeepSeek uses its own provider pricing and does not receive the OpenAI service
 tier setting.

@@ -14,7 +14,8 @@ committed.
 - agent-funded local verification plus blind archival scoring through one
   batch-scoped trusted verifier lane;
 - the fastest valid submitted policy as the run's final score;
-- durable raw agent traces, ATIF trajectories, tool latency, tokens, model cost,
+- durable raw agent traces, ATIF trajectories, tool latency, tokens,
+  published-list-price model cost estimates,
   resource telemetry, Modal allocation/cost reconciliation, and schema-v6
   unified timelines;
 - no general agent internet access and no cloud control-plane credentials.

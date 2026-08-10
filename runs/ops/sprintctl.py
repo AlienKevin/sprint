@@ -1250,7 +1250,7 @@ def run_usage_audit_ready(
     except (OSError, json.JSONDecodeError) as exc:
         return False, [f"run usage audit artifact missing or invalid: {exc}"]
     expected_model = str(run.get("model") or "")
-    if audit.get("schema_version") != 1:
+    if audit.get("schema_version") not in {1, 2}:
         details.append("run usage audit schema mismatch")
     if audit.get("run_id") != run.get("run_id"):
         details.append("run usage audit run_id mismatch")

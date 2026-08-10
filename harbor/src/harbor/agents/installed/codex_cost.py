@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
 
-USAGE_AUDIT_SCHEMA_VERSION = 1
+USAGE_AUDIT_SCHEMA_VERSION = 2
+COST_ESTIMATE_BASIS = "published_standard_list_price"
 
 # This is deliberately pinned rather than delegated to LiteLLM. Cost reports must
 # remain reproducible after a dependency updates its mutable pricing table.
@@ -59,13 +61,14 @@ GPT_5_6_TERRA_PRICING: dict[str, Any] = {
     },
 }
 
-GPT_5_6_LUNA_PRICING: dict[str, Any] = {
+GPT_5_6_LUNA_LEGACY_PRICING: dict[str, Any] = {
     "id": "openai-gpt-5.6-luna-default-2026-08-08",
     "provider": "openai",
     "model": "gpt-5.6-luna",
     "service_tier": "default",
     "currency": "USD",
     "captured_at": "2026-08-08",
+    "effective_before": "2026-08-10T00:00:00Z",
     "source_url": "https://developers.openai.com/api/docs/models/gpt-5.6-luna",
     "unit_tokens": 1_000_000,
     "rates_usd_per_million_tokens": {
@@ -82,6 +85,63 @@ GPT_5_6_LUNA_PRICING: dict[str, Any] = {
         "scope": "full_request",
     },
 }
+
+GPT_5_6_LUNA_PRICING: dict[str, Any] = {
+    "id": "openai-gpt-5.6-luna-default-2026-08-10",
+    "provider": "openai",
+    "model": "gpt-5.6-luna",
+    "service_tier": "default",
+    "currency": "USD",
+    "captured_at": "2026-08-10",
+    "effective_from": "2026-08-10T00:00:00Z",
+    "source_url": "https://developers.openai.com/api/docs/pricing",
+    "unit_tokens": 1_000_000,
+    "rates_usd_per_million_tokens": {
+        "uncached_input": "0.20",
+        "cached_input": "0.02",
+        "cache_write_input": "0.25",
+        "output": "1.20",
+    },
+    "cache_write_multiplier": "1.25",
+    "long_context": {
+        "threshold_input_tokens": 272_000,
+        "input_multiplier": "2.0",
+        "output_multiplier": "1.5",
+        "scope": "full_request",
+    },
+}
+
+
+def pricing_snapshot_for_request(
+    model: str | None, usage_reported_at: str | None
+) -> dict[str, Any] | None:
+    """Select the dated tariff for a request to a mutable model alias."""
+    normalized_model = canonical_model_name(model)
+    if normalized_model == GPT_5_6_LUNA_PRICING["model"]:
+        if not usage_reported_at:
+            return None
+        try:
+            request_time = datetime.fromisoformat(
+                usage_reported_at.replace("Z", "+00:00")
+            )
+            effective_from = datetime.fromisoformat(
+                GPT_5_6_LUNA_PRICING["effective_from"].replace("Z", "+00:00")
+            )
+        except ValueError:
+            return None
+        if request_time.tzinfo is None:
+            return None
+        return (
+            GPT_5_6_LUNA_PRICING
+            if request_time >= effective_from
+            else GPT_5_6_LUNA_LEGACY_PRICING
+        )
+    return {
+        GPT_5_6_SOL_PRICING["model"]: GPT_5_6_SOL_PRICING,
+        GPT_5_6_TERRA_PRICING["model"]: GPT_5_6_TERRA_PRICING,
+        DEEPSEEK_V4_FLASH_PRICING["model"]: DEEPSEEK_V4_FLASH_PRICING,
+    }.get(normalized_model)
+
 
 # DeepSeek publishes cache-hit, cache-miss, and output prices. Keep the dated
 # model version in the snapshot because the public API name is a moving alias.
@@ -250,11 +310,11 @@ def build_request_usage_record(
         )
         return record
 
-    pricing = {
-        GPT_5_6_SOL_PRICING["model"]: GPT_5_6_SOL_PRICING,
-        GPT_5_6_TERRA_PRICING["model"]: GPT_5_6_TERRA_PRICING,
-        GPT_5_6_LUNA_PRICING["model"]: GPT_5_6_LUNA_PRICING,
-    }[normalized_model]
+    pricing = pricing_snapshot_for_request(normalized_model, usage_reported_at)
+    if pricing is None:
+        record["cost_reconstruction_status"] = "incomplete"
+        record["incomplete_reasons"] = ["missing_usage_reported_at_for_pricing"]
+        return record
     record["pricing_snapshot_id"] = pricing["id"]
     missing = [
         name
@@ -311,14 +371,10 @@ def build_request_usage_record(
     threshold = pricing["long_context"]["threshold_input_tokens"]
     long_context = input_tokens > threshold
     input_multiplier = Decimal(
-        pricing["long_context"]["input_multiplier"]
-        if long_context
-        else "1"
+        pricing["long_context"]["input_multiplier"] if long_context else "1"
     )
     output_multiplier = Decimal(
-        pricing["long_context"]["output_multiplier"]
-        if long_context
-        else "1"
+        pricing["long_context"]["output_multiplier"] if long_context else "1"
     )
     rates = pricing["rates_usd_per_million_tokens"]
     components = {
@@ -398,6 +454,7 @@ def build_usage_audit(
         for snapshot in (
             GPT_5_6_SOL_PRICING,
             GPT_5_6_TERRA_PRICING,
+            GPT_5_6_LUNA_LEGACY_PRICING,
             GPT_5_6_LUNA_PRICING,
             DEEPSEEK_V4_FLASH_PRICING,
         )
@@ -416,4 +473,13 @@ def build_usage_audit(
         "pricing_snapshots": snapshots,
         "cost_reconstruction_complete": complete,
         "calculated_api_usage_usd": calculated_cost,
+        # Token reconstruction proves that every locally observed request was
+        # priced reproducibly. It is not an OpenAI invoice: contracted rates,
+        # credits, taxes, requests lost before their response, and delayed
+        # provider accounting can only be resolved by the provider Costs API
+        # or billing export.
+        "calculated_api_usage_cost_basis": COST_ESTIMATE_BASIS,
+        "provider_billed_api_usage_usd": None,
+        "provider_billing_reconciled": False,
+        "invoice_exact": False,
     }

@@ -691,6 +691,7 @@ def test_request_costs_are_joined_to_performance_on_the_same_clock(
         "request_count": 1,
         "cost_reconstruction_complete": True,
         "calculated_api_usage_usd": 0.25,
+        "calculated_api_usage_cost_basis": "published_standard_list_price",
         "pricing_snapshots": [{"id": "price-v1"}],
         "requests": [
             {
@@ -718,6 +719,12 @@ def test_request_costs_are_joined_to_performance_on_the_same_clock(
     assert payload["coverage"]["requirements"]["model_usage_and_cost"] is True
     assert payload["usage_summary"]["request_count"] == 1
     assert payload["usage_summary"]["calculated_api_usage_usd"] == 0.25
+    assert payload["usage_summary"]["calculated_api_usage_cost_basis"] == [
+        "published_standard_list_price"
+    ]
+    assert payload["comparison_summary"]["final_api_cost_basis"] == [
+        "published_standard_list_price"
+    ]
     assert payload["comparison_summary"]["api_cost_at_best_usd"] == 0.25
     assert payload["artifacts"][1]["cost_at_result"]["api_calculated_usd"] == 0.25
     assert payload["artifacts"][1]["cost_at_result"]["total_estimated_usd"] == 0.2735704

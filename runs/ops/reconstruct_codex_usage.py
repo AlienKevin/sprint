@@ -13,6 +13,10 @@ from pathlib import Path
 from typing import Any
 
 from harbor.agents.installed.codex import Codex
+from harbor.agents.installed.codex_cost import (
+    USAGE_AUDIT_SCHEMA_VERSION,
+    pricing_snapshot_for_request,
+)
 from harbor.utils.trajectory_utils import format_trajectory_json
 
 
@@ -94,11 +98,15 @@ def recover_harbor_provenance(
         return [
             (
                 row.get("api_call_id"),
+                row.get("model"),
+                row.get("service_tier"),
                 row.get("input_tokens"),
                 row.get("cached_input_tokens"),
                 row.get("cache_write_input_tokens"),
                 row.get("output_tokens"),
-                row.get("calculated_cost_usd"),
+                row.get("reasoning_output_tokens"),
+                row.get("total_tokens"),
+                row.get("usage_reported_at"),
             )
             for row in payload.get("requests") or []
             if isinstance(row, dict)
@@ -107,8 +115,7 @@ def recover_harbor_provenance(
     if request_signature(recovered) != request_signature(audit):
         raise SystemExit("reconstructed Harbor request ledger differs from its audit")
     recovered_cost = recovered.get("calculated_api_usage_usd")
-    if recovered_cost != audit.get("calculated_api_usage_usd"):
-        raise SystemExit("reconstructed Harbor cost differs from its audit")
+    previous_cost = audit.get("calculated_api_usage_usd")
 
     trajectory_text = format_trajectory_json(trajectory.to_json_dict())
     final_metrics = json.loads(trajectory_text).get("final_metrics") or {}
@@ -129,9 +136,27 @@ def recover_harbor_provenance(
     recovered["provider_reported_total_cost_usd"] = audit.get(
         "provider_reported_total_cost_usd"
     )
-    recovered["selected_total_cost_usd"] = audit.get(
-        "selected_total_cost_usd", recovered_cost
+    recovered["selected_total_cost_usd"] = (
+        recovered["provider_reported_total_cost_usd"]
+        if isinstance(recovered["provider_reported_total_cost_usd"], (int, float))
+        else recovered_cost
     )
+    if previous_cost != recovered_cost:
+        recovered["pricing_correction"] = {
+            "reason": "pricing_snapshot_refresh",
+            "previous_calculated_api_usage_usd": previous_cost,
+            "corrected_calculated_api_usage_usd": recovered_cost,
+            "previous_pricing_snapshot_ids": sorted(
+                str(row["id"])
+                for row in audit.get("pricing_snapshots") or []
+                if isinstance(row, dict) and row.get("id")
+            ),
+            "corrected_pricing_snapshot_ids": sorted(
+                str(row["id"])
+                for row in recovered.get("pricing_snapshots") or []
+                if isinstance(row, dict) and row.get("id")
+            ),
+        }
     recovered["provenance"] = {
         "source_session_path": str(source_snapshot.relative_to(agent_dir)),
         "source_session_sha256": sha256_file(source_snapshot),
@@ -155,6 +180,7 @@ def recover_harbor_provenance(
                 "recovered_usage_audit_sha256": recovered_sha,
                 "request_count": len(recovered.get("requests") or []),
                 "calculated_api_usage_usd": recovered_cost,
+                "previous_calculated_api_usage_usd": previous_cost,
                 "source_session_sha256": sha256_file(source_snapshot),
                 "trajectory_sha256": sha256_file(trajectory_snapshot),
             },
@@ -281,6 +307,9 @@ def reconstruct_group(
             "request_count": len(requests),
             "cost_reconstruction_complete": audit.get("cost_reconstruction_complete"),
             "calculated_api_usage_usd": audit.get("calculated_api_usage_usd"),
+            "calculated_api_usage_cost_basis": audit.get(
+                "calculated_api_usage_cost_basis"
+            ),
             "requests": requests,
             "pricing_snapshots": audit.get("pricing_snapshots") or [],
             "reconciliation_mismatches": audit.get("reconciliation_mismatches") or {},
@@ -324,12 +353,23 @@ def harbor_final_source(
         agent_dir, provenance.get("trajectory_path")
     )
     source_hash = provenance.get("source_session_sha256")
+    stale_luna_pricing = any(
+        isinstance(request, dict)
+        and (
+            expected := pricing_snapshot_for_request(
+                request.get("model"), request.get("usage_reported_at")
+            )
+        )
+        is not None
+        and request.get("pricing_snapshot_id") != expected.get("id")
+        for request in audit.get("requests") or []
+    )
     if (
         session_path is None
         or provenance_trajectory is None
         or source_hash != sha256_file(session_path)
-        or provenance.get("trajectory_sha256")
-        != sha256_file(provenance_trajectory)
+        or provenance.get("trajectory_sha256") != sha256_file(provenance_trajectory)
+        or stale_luna_pricing
     ):
         audit = recover_harbor_provenance(trial=trial, run=run, audit=audit)
         provenance = audit["provenance"]
@@ -372,6 +412,7 @@ def harbor_final_source(
         "request_count": len(requests),
         "cost_reconstruction_complete": audit.get("cost_reconstruction_complete"),
         "calculated_api_usage_usd": audit.get("calculated_api_usage_usd"),
+        "calculated_api_usage_cost_basis": audit.get("calculated_api_usage_cost_basis"),
         "requests": requests,
         "pricing_snapshots": audit.get("pricing_snapshots") or [],
         "reconciliation_mismatches": audit.get("reconciliation_mismatches") or {},
@@ -415,6 +456,43 @@ def prefer_complete_session(
 
     previous_requests = request_map(previous)
     candidate_requests = request_map(candidate)
+
+    def dominating_harbor_final(final: dict[str, Any], durable: dict[str, Any]) -> bool:
+        if final.get("origin") != "harbor_final_archive":
+            return False
+        if final.get("session_id") != durable.get("session_id"):
+            return False
+        final_rows = [
+            row for row in final.get("requests") or [] if isinstance(row, dict)
+        ]
+        durable_rows = [
+            row for row in durable.get("requests") or [] if isinstance(row, dict)
+        ]
+        if len(final_rows) < len(durable_rows):
+            return False
+        fields = (
+            "input_tokens",
+            "cached_input_tokens",
+            "cache_write_input_tokens",
+            "output_tokens",
+            "reasoning_output_tokens",
+            "total_tokens",
+        )
+        return all(
+            sum(int(row.get(field) or 0) for row in final_rows)
+            >= sum(int(row.get(field) or 0) for row in durable_rows)
+            for field in fields
+        )
+
+    # Codex's local api_call_N identifiers are parser ordinals, not provider
+    # request IDs. A missing event in the durable mirror can shift every later
+    # ordinal even when Harbor's immutable final archive is the strict semantic
+    # superset. Accept only a same-session final archive that dominates the
+    # durable mirror in request count and every cumulative billing bucket.
+    if dominating_harbor_final(candidate, previous):
+        return candidate
+    if dominating_harbor_final(previous, candidate):
+        return previous
     common = set(previous_requests) & set(candidate_requests)
     if any(previous_requests[key] != candidate_requests[key] for key in common):
         raise SystemExit(
@@ -434,6 +512,7 @@ def prefer_complete_session(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state-dir", type=Path, required=True)
+    parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
     state_dir = args.state_dir.resolve()
     run = json.loads((state_dir / "run.json").read_text())
@@ -482,7 +561,7 @@ def main() -> int:
     }
     captured_attempts = {int(source["cpu_attempt"]) for source in sessions}
     payload = {
-        "schema_version": 1,
+        "schema_version": USAGE_AUDIT_SCHEMA_VERSION,
         "run_id": run["run_id"],
         "model": run["model"],
         "resolved_model_version": run.get("resolved_model_version"),
@@ -508,6 +587,19 @@ def main() -> int:
             if complete
             else None
         ),
+        "calculated_api_usage_cost_basis": next(
+            iter(
+                {
+                    str(source["calculated_api_usage_cost_basis"])
+                    for source in sessions
+                    if source.get("calculated_api_usage_cost_basis")
+                }
+            ),
+            None,
+        ),
+        "provider_billed_api_usage_usd": None,
+        "provider_billing_reconciled": False,
+        "invoice_exact": False,
     }
     if complete and not requests:
         payload["zero_request_reason"] = (
@@ -517,7 +609,8 @@ def main() -> int:
         state_dir / "usage" / "run-usage-audit.json",
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
     )
-    print(json.dumps(payload, indent=2, sort_keys=True))
+    if not args.quiet:
+        print(json.dumps(payload, indent=2, sort_keys=True))
     return 0 if payload["cost_reconstruction_complete"] else 1
 
 

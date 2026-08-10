@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="${SPRINT_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"
 SOURCE_ROOT="$ROOT"
 HARBOR="${HARBOR_PATH:-$SOURCE_ROOT/harbor}"
-HARBOR_COMMIT=16c2b3f62bd6c878057da8f0fb09bdd34c94b410
+HARBOR_COMMIT=dafb1387151e1c32702963d44fe6c3cea66cf8cb
 HARBOR_BRANCH=continuous-verification
 UV="${UV:-$(command -v uv || true)}"
 if [[ -z "$UV" && -x /home/ubuntu/.local/bin/uv ]]; then

@@ -14,6 +14,7 @@ SCRIPT = Path(__file__).resolve().parents[1] / "reconstruct_codex_usage.py"
 sys.path.insert(0, str(SCRIPT.parent))
 
 import sprintctl  # noqa: E402
+from reconstruct_codex_usage import prefer_complete_session  # noqa: E402
 
 
 def write_session(state: Path, attempt: int, session_id: str, timestamp: str) -> None:
@@ -175,6 +176,59 @@ def test_zero_completed_requests_are_attested_as_exact_zero_cost(
     )
     assert all(row["trajectory_sha256"] for row in audit["source_sessions"])
     assert sprintctl.run_usage_audit_ready(tmp_path, run) == (True, [])
+
+
+def test_dominating_harbor_final_supersedes_shifted_durable_ordinals(
+    tmp_path: Path,
+) -> None:
+    durable_path = tmp_path / "durable.jsonl"
+    final_path = tmp_path / "final.jsonl"
+    durable_path.write_text("durable")
+    final_path.write_text("final")
+    durable = {
+        "session_id": "same-session",
+        "combined_session_sha256": "durable",
+        "_session_path": str(durable_path),
+        "requests": [
+            {
+                "run_api_call_id": "same-session:api_call_1",
+                "input_tokens": 100,
+                "cached_input_tokens": 80,
+                "cache_write_input_tokens": 10,
+                "output_tokens": 10,
+                "reasoning_output_tokens": 5,
+                "total_tokens": 110,
+            }
+        ],
+    }
+    final = {
+        "session_id": "same-session",
+        "origin": "harbor_final_archive",
+        "combined_session_sha256": "final",
+        "_session_path": str(final_path),
+        "requests": [
+            {
+                "run_api_call_id": "same-session:api_call_1",
+                "input_tokens": 90,
+                "cached_input_tokens": 70,
+                "cache_write_input_tokens": 10,
+                "output_tokens": 10,
+                "reasoning_output_tokens": 5,
+                "total_tokens": 100,
+            },
+            {
+                "run_api_call_id": "same-session:api_call_2",
+                "input_tokens": 20,
+                "cached_input_tokens": 20,
+                "cache_write_input_tokens": 0,
+                "output_tokens": 5,
+                "reasoning_output_tokens": 1,
+                "total_tokens": 25,
+            },
+        ],
+    }
+
+    assert prefer_complete_session(durable, final) is final
 
 
 def test_harbor_final_archive_supersedes_verified_durable_prefix(
@@ -343,9 +397,10 @@ def test_post_scrub_provenance_snapshots_are_replayed_and_reattested(
     )
     audit_path = trial / "agent/usage-audit.json"
     stale = json.loads(audit_path.read_text())
-    assert stale["provenance"]["source_session_sha256"] != hashlib.sha256(
-        source_snapshot.read_bytes()
-    ).hexdigest()
+    assert (
+        stale["provenance"]["source_session_sha256"]
+        != hashlib.sha256(source_snapshot.read_bytes()).hexdigest()
+    )
 
     subprocess.run(
         [sys.executable, str(SCRIPT), "--state-dir", str(tmp_path)],
@@ -356,12 +411,14 @@ def test_post_scrub_provenance_snapshots_are_replayed_and_reattested(
     )
 
     repaired = json.loads(audit_path.read_text())
-    assert repaired["provenance"]["source_session_sha256"] == hashlib.sha256(
-        source_snapshot.read_bytes()
-    ).hexdigest()
-    assert repaired["provenance"]["trajectory_sha256"] == hashlib.sha256(
-        trajectory_snapshot.read_bytes()
-    ).hexdigest()
+    assert (
+        repaired["provenance"]["source_session_sha256"]
+        == hashlib.sha256(source_snapshot.read_bytes()).hexdigest()
+    )
+    assert (
+        repaired["provenance"]["trajectory_sha256"]
+        == hashlib.sha256(trajectory_snapshot.read_bytes()).hexdigest()
+    )
     assert repaired["request_count"] == 1
     run_audit = json.loads((tmp_path / "usage/run-usage-audit.json").read_text())
     assert run_audit["request_count"] == 1
