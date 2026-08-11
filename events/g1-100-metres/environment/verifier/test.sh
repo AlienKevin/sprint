@@ -41,7 +41,7 @@ r = json.load(open(path)) if os.path.exists(path) else {}
 # numeric keys, and a null or a list makes the whole result unparseable. A
 # run that did not finish reports 0.0 for its time, which is why valid_run is
 # the field to read first. Gate pass/fail is encoded as 1/0 floats for the
-# trusted result archive and website. It is not copied back to the agent.
+# trusted result archive. It is not copied back to the agent.
 valid = bool(int(os.environ["VALID"]))
 failed = set(r.get("failed_gates") or [])
 data = {

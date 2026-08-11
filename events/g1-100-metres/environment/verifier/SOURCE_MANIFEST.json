@@ -13,7 +13,7 @@
     "course/standing_start.py": "3f1d85ae5bd5d945d7a354f9709ff6072ed9346c1d2f8e6cdce1d29700e9fab8",
     "course/tasks.py": "0c2aa2e26bee69303018c620837baf788b369ef015bb2b581cc56d3c4b906feb",
     "sprint_gpu_pipeline.py": "fc2c0212491b9e7c75effdbc31b5073d3a5ea7c4df34c49d23faf75c8e5d29c7",
-    "test.sh": "021b7bbe591dea21a3a5aa5a975293a3997b40154af08f4d43d78ff97b3165df",
+    "test.sh": "e4d83660fce2470b9e3ad022ae5c652c8c5af5a459ecf0358b653a77ee08be4e",
     "verifier_telemetry.py": "ca27b4269a1d1f6484da3c88ccea4410bd88667678ba5d2b031b7169b104f60f",
     "verify.py": "36bf178a6d7765f9d589fd6b781a0ad74236bf74a4750e0afba197d098ef6a19"
   },

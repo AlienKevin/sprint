@@ -20,7 +20,11 @@ fields, action scale, 50 Hz control, and the optional state-reset ABI. Import
 its named constants instead of copying offsets. Export with `torch.jit.save`;
 `event check POLICY.pt` validates the portable CPU contract.
 
-## Score
+## Target metric
+
+**Optimize Cost-Adjusted Effective Speed (CAES); higher is better.** Effective
+Speed measures one policy, while CAES rewards producing better policies with
+less cumulative agent cost.
 
 Let `d` be the furthest legal forward distance in a rollout and `t` the time to
 reach it. Legal progress ends at the finish or the first whole-body lane or
@@ -91,8 +95,8 @@ do not. The sandbox has no general internet or cloud credentials.
 `event cost` returns the trusted JSON snapshot of this trial's cumulative model
 API, persistent CPU-agent, and training-sandbox cost. It includes the timestamp,
 component totals, exact equation and frozen rates, usage quantities, and pricing
-provenance. The same ledger drives the final website.
+provenance.
 
-Official verifier, observability, website, and storage costs are excluded, as
-are credits, discounts, taxes, and invoice adjustments. Run
+Official verifier, observability, and storage costs are excluded, as are
+credits, discounts, taxes, and invoice adjustments. Run
 `event check --rules` for the complete gating contract.
