@@ -216,7 +216,7 @@ Process names matching `api_key|token|password|secret|...` are replaced with
 
 ```bash
 # One-shot on the host (CPU-only is fine; notes=nvidia_smi_missing)
-python3 challenge/g1-100-metres/environment/sprint-telemetry.py \
+python3 events/g1-100-metres/environment/sprint-telemetry.py \
   --once --role host-controller --out-dir /tmp/sprint-telem-smoke --force \
   --pidfile /tmp/sprint-telem-smoke.pid
 

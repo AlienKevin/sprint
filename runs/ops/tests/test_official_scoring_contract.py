@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[3]
-TASK = ROOT / "challenge" / "g1-100-metres"
+TASK = ROOT / "events" / "g1-100-metres"
 sys.path.insert(0, str(TASK / "tests"))
 
 from sprintbench.metrics import evaluate_run  # noqa: E402

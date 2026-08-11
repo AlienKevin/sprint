@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 OPS = Path(__file__).resolve().parents[1]
-ENV = OPS.parents[1] / "challenge" / "g1-100-metres" / "environment"
+ENV = OPS.parents[1] / "events" / "g1-100-metres" / "environment"
 sys.path.insert(0, str(OPS))
 
 import unified_timeline  # noqa: E402

@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[3]
 
 def test_continuous_scoring_is_blind_rate_limited_and_globally_serialized() -> None:
     config = tomllib.loads(
-        (ROOT / "challenge" / "g1-100-metres" / "task.toml").read_text()
+        (ROOT / "events" / "g1-100-metres" / "task.toml").read_text()
     )
     continuous = config["verifier"]["continuous"]
     assert continuous["enabled"] is True

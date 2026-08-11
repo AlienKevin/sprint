@@ -11,7 +11,7 @@ if [[ -z "$UV" && -x /home/ubuntu/.local/bin/uv ]]; then
   UV=/home/ubuntu/.local/bin/uv
 fi
 CONTROL="$ROOT/runs/ops/sprintctl.py"
-TASK="$SOURCE_ROOT/challenge/g1-100-metres"
+TASK="$SOURCE_ROOT/events/g1-100-metres"
 MODAL_PROFILE=${MODAL_PROFILE:-kevinli020508}
 SANDBOX_TIMEOUT_SECONDS=86400
 DEPLOY_DEBOUNCE_SECONDS=300
@@ -270,7 +270,7 @@ PY
     exit 1
   }
   HARBOR="$SOURCE_ROOT/harbor"
-  TASK="$SOURCE_ROOT/challenge/g1-100-metres"
+  TASK="$SOURCE_ROOT/events/g1-100-metres"
   WARMUP_MANIFEST_PATH="$STATE_DIR/resume-image-provenance.json"
   python3 - "$STATE_DIR/run.json" "$WARMUP_MANIFEST_PATH" <<'PY'
 import json
@@ -477,7 +477,7 @@ fi
 # New evaluations only start from image definitions that were eagerly built
 # and exercised on Modal. A resume consumes the recorded immutable IDs above.
 if (( ! RESUMING )); then
-  if [[ -n "$(git -C "$ROOT" status --porcelain --untracked-files=all -- challenge harbor runs)" ]]; then
+  if [[ -n "$(git -C "$ROOT" status --porcelain --untracked-files=all -- events harbor runs)" ]]; then
     echo "new evaluations require committed benchmark, Harbor, and launcher source" >&2
     exit 1
   fi
@@ -574,7 +574,7 @@ import sys
 standing_gpu = standing_gpu_flag == "1"
 target = pathlib.Path(path)
 root_path = pathlib.Path(root)
-task_root = pathlib.Path(source_root) / "challenge/g1-100-metres"
+task_root = pathlib.Path(source_root) / "events/g1-100-metres"
 prompt_path = pathlib.Path(prompt_template)
 warmup_manifest = json.loads(pathlib.Path(warmup_manifest_path).read_text())
 

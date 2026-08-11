@@ -10,8 +10,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SOURCE = ROOT / "challenge/g1-100-metres/tests"
-TARGET = ROOT / "challenge/g1-100-metres/environment/verifier"
+SOURCE = ROOT / "events/g1-100-metres/tests"
+TARGET = ROOT / "events/g1-100-metres/environment/verifier"
 FILES = (
     Path("test.sh"),
     Path("verify.py"),
@@ -49,7 +49,7 @@ def main() -> int:
         json.dumps(
             {
                 "schema_version": 1,
-                "source": "challenge/g1-100-metres/tests",
+                "source": "events/g1-100-metres/tests",
                 "files": manifest,
             },
             indent=2,

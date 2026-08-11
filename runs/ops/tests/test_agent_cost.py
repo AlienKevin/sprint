@@ -119,7 +119,7 @@ def test_live_ledger_caps_open_training_interval_at_snapshot_time() -> None:
 
 
 def test_sprint_cost_is_a_single_json_interface(tmp_path: Path, monkeypatch) -> None:
-    path = ROOT / "challenge/g1-100-metres/environment/bin/sprint-cost"
+    path = ROOT / "events/g1-100-metres/environment/bin/sprint-cost"
     spec = importlib.util.spec_from_loader(
         "sprint_cost_cli", SourceFileLoader("sprint_cost_cli", str(path))
     )
@@ -164,6 +164,6 @@ def test_host_atomically_mirrors_cost_and_cli(tmp_path: Path, monkeypatch) -> No
     assert (
         cli.read_bytes()
         == (
-            ROOT / "challenge/g1-100-metres/environment/bin/sprint-cost"
+            ROOT / "events/g1-100-metres/environment/bin/sprint-cost"
         ).read_bytes()
     )

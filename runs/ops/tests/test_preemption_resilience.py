@@ -17,7 +17,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[3]
 OPS = ROOT / "runs" / "ops"
-ENV = ROOT / "challenge" / "g1-100-metres" / "environment"
+ENV = ROOT / "events" / "g1-100-metres" / "environment"
 sys.path.insert(0, str(OPS))
 sys.path.insert(0, str(ENV))
 

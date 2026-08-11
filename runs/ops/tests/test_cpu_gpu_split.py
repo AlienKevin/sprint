@@ -18,7 +18,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[3]
 OPS = ROOT / "runs" / "ops"
-ENV = ROOT / "challenge" / "g1-100-metres" / "environment"
+ENV = ROOT / "events" / "g1-100-metres" / "environment"
 sys.path.insert(0, str(OPS))
 sys.path.insert(0, str(ENV))
 
@@ -1609,7 +1609,7 @@ class NetworkIsolationTests(unittest.TestCase):
         import tomllib
 
         task = tomllib.loads(
-            (ROOT / "challenge" / "g1-100-metres" / "task.toml").read_text()
+            (ROOT / "events" / "g1-100-metres" / "task.toml").read_text()
         )
         self.assertEqual(task["environment"]["network_mode"], "no-network")
         self.assertEqual(task["verifier"]["environment"]["network_mode"], "no-network")
@@ -1692,7 +1692,7 @@ class NetworkIsolationTests(unittest.TestCase):
 
     def test_agent_clis_are_baked_at_launcher_pins(self) -> None:
         dockerfile = (
-            ROOT / "challenge" / "g1-100-metres" / "environment" / "Dockerfile"
+            ROOT / "events" / "g1-100-metres" / "environment" / "Dockerfile"
         ).read_text()
         launcher = (ROOT / "runs" / "run-lane-durable.sh").read_text()
         self.assertIn("ARG CODEX_VERSION=0.147.0", dockerfile)
@@ -2145,7 +2145,7 @@ class LauncherWiringTests(unittest.TestCase):
         launcher = (ROOT / "runs" / "run-lane-durable.sh").read_text()
         self.assertIn("SANDBOX_TIMEOUT_SECONDS=86400", launcher)
         self.assertIn("sandbox_timeout_secs=$SANDBOX_TIMEOUT_SECONDS", launcher)
-        task = (ROOT / "challenge" / "g1-100-metres" / "task.toml").read_text()
+        task = (ROOT / "events" / "g1-100-metres" / "task.toml").read_text()
         self.assertIn("gpus = 0", task)
         self.assertIn("cpus = 2", task)
         self.assertIn("memory_mb = 8192", task)
