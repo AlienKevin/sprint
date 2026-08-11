@@ -1198,7 +1198,7 @@ while True:
             with (
                 mock.patch.object(sprintctl, "load_run", return_value=(state_dir, run)),
                 mock.patch(
-                    "gpu_worker.dispatch_once",
+                    "event_runtime.compute.worker.dispatch_once",
                     side_effect=lambda _run_id: order.append("dispatch"),
                 ),
                 mock.patch(

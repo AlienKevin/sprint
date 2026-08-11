@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Drive CPU/GPU-split smoke checks against a just-launched durable run."""
+
 from __future__ import annotations
 
 import argparse
@@ -13,8 +14,9 @@ from typing import Any
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SCRIPT_DIR))
+sys.path.insert(0, str(ROOT))
 
-import gpu_worker  # noqa: E402
+from event_runtime.compute import worker as gpu_worker  # noqa: E402
 import sprintctl  # noqa: E402
 
 os.environ.setdefault("MODAL_PROFILE", "kevinli020508")
@@ -107,9 +109,7 @@ print(json.dumps(out, sort_keys=True), flush=True)
         f"export SPRINT_GPU_JOBS_ROOT={jobs_root!r}\n"
         'printf "%s\\n" "$SPRINT_RUN_ID" > /run/sprint-run-id\n'
         'printf "%s\\n" "$SPRINT_GPU_JOBS_ROOT" > /run/sprint-gpu-jobs-root\n'
-        "cat > /app/smoke_gpu_probe.py <<'PY'\n"
-        + probe.strip()
-        + "\nPY\n"
+        "cat > /app/smoke_gpu_probe.py <<'PY'\n" + probe.strip() + "\nPY\n"
         "sprint-gpu-train --timeout 1200 --note smoke-cuda-probe -- "
         "python3 -u /app/smoke_gpu_probe.py\n"
     )
@@ -142,7 +142,9 @@ print(json.dumps(out, sort_keys=True), flush=True)
     return job_id
 
 
-def wait_job_uses_gpu(run_id: str, job_id: str, timeout: float = 1800.0) -> dict[str, Any]:
+def wait_job_uses_gpu(
+    run_id: str, job_id: str, timeout: float = 1800.0
+) -> dict[str, Any]:
     def pred():
         Path("/data/.keepalive").touch()
         gpu_worker.dispatch_once(run_id)
@@ -285,11 +287,17 @@ def main() -> int:
             "name": "Codex/agent alive on CPU sandbox (no GPU)",
             "result": "PASS" if cpu_info["out"] else "FAIL",
             "evidence": "durable+sprint-gpu-train+TORCH_CUDA False; "
-            + ("codex process seen" if cpu_info["codex_hint"] else "codex not in pgrep yet"),
+            + (
+                "codex process seen"
+                if cpu_info["codex_hint"]
+                else "codex not in pgrep yet"
+            ),
         }
     )
     if not cpu_info.get("codex_hint"):
-        notes.append("Codex process not visible in early pgrep; CPU sandbox checks passed.")
+        notes.append(
+            "Codex process not visible in early pgrep; CPU sandbox checks passed."
+        )
 
     # (b) enqueue GPU job from inside agent + dispatch
     try:
@@ -297,7 +305,9 @@ def main() -> int:
         print("job_id", job_id, flush=True)
         job = wait_job_uses_gpu(run_id, job_id, timeout=2400)
         gpu_ok = False
-        evidence = f"job={job_id} status={job.get('status')} sandbox={job.get('sandbox_id')}"
+        evidence = (
+            f"job={job_id} status={job.get('status')} sandbox={job.get('sandbox_id')}"
+        )
         log = job.get("_log_snippet") or sprintctl.volume_get_text(
             run, f"runs/{run_id}/gpu-jobs/out/{job_id}/worker.log"
         )
@@ -437,7 +447,9 @@ def main() -> int:
             )
             alive, out, codex_hint = agent_codex_alive(run, container)
             still = alive and "DURABLE_OK" in out
-            telem_survived = bool(pre_kill) and len(post_kill) >= max(1, len(pre_kill) - 50)
+            telem_survived = bool(pre_kill) and len(post_kill) >= max(
+                1, len(pre_kill) - 50
+            )
             checklist.append(
                 {
                     "n": 6,

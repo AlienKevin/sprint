@@ -15,14 +15,15 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[2]
 OPS = ROOT / "runs" / "ops"
 ENV = ROOT / "events" / "g1-100-metres" / "environment"
 sys.path.insert(0, str(OPS))
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ENV))
 
-import gpu_claim  # noqa: E402
-import gpu_worker  # noqa: E402
+from event_runtime.compute import claim as gpu_claim  # noqa: E402
+from event_runtime.compute import worker as gpu_worker  # noqa: E402
 import sprint_resilience as resilience  # noqa: E402
 
 _worker_spec = importlib.util.spec_from_file_location(

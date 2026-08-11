@@ -8,6 +8,7 @@ second GPU, that a replacement is created after the first is terminated
 
 Everything is torn down in a finally block, including on failure.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -16,8 +17,10 @@ import sys
 import time
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import gpu_worker  # noqa: E402
+sys.path.insert(0, str(ROOT))
+from event_runtime.compute import worker as gpu_worker  # noqa: E402
 
 
 def main() -> int:
@@ -48,9 +51,22 @@ def main() -> int:
         # sandbox's own from_name() then 404s. Create it eagerly like the
         # durable launcher does.
         import subprocess
-        subprocess.run([sys.executable, "-m", "modal", "volume", "create",
-                        "--version", "1", vol_name],
-                       check=False, capture_output=True, timeout=180)
+
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "modal",
+                "volume",
+                "create",
+                "--version",
+                "1",
+                vol_name,
+            ],
+            check=False,
+            capture_output=True,
+            timeout=180,
+        )
         print(f"  volume {vol_name} ready")
 
         assert gpu_worker.standing_enabled(run), "flag not honoured"
@@ -59,8 +75,10 @@ def main() -> int:
         t0 = time.time()
         first = gpu_worker.ensure_standing_sandbox(run)
         created.append(first["sandbox_id"])
-        print(f"  create: {first['action']} {first['sandbox_id']} "
-              f"({time.time()-t0:.0f}s)")
+        print(
+            f"  create: {first['action']} {first['sandbox_id']} "
+            f"({time.time() - t0:.0f}s)"
+        )
         results["create"] = first
 
         second = gpu_worker.ensure_standing_sandbox(run)
@@ -71,7 +89,9 @@ def main() -> int:
         )
 
         sb = modal.Sandbox.from_id(first["sandbox_id"])
-        proc = sb.exec("bash", "-c", "nvidia-smi --query-gpu=name --format=csv,noheader")
+        proc = sb.exec(
+            "bash", "-c", "nvidia-smi --query-gpu=name --format=csv,noheader"
+        )
         out = (proc.stdout.read() or "").strip()
         proc.wait()
         print(f"  exec  : gpu={out!r}")
@@ -90,16 +110,17 @@ def main() -> int:
         print(f"  replace: {third['action']} {third['sandbox_id']}")
         results["replace"] = third
         results["replaced_after_kill"] = (
-            third["sandbox_id"] != first["sandbox_id"]
-            and third["action"] == "replaced"
+            third["sandbox_id"] != first["sandbox_id"] and third["action"] == "replaced"
         )
 
-        ok = all([
-            results.get("flag_honoured"),
-            results.get("reused_same_sandbox"),
-            results.get("exec_saw_gpu"),
-            results.get("replaced_after_kill"),
-        ])
+        ok = all(
+            [
+                results.get("flag_honoured"),
+                results.get("reused_same_sandbox"),
+                results.get("exec_saw_gpu"),
+                results.get("replaced_after_kill"),
+            ]
+        )
         results["PASS"] = ok
         print("\n  " + ("PASS" if ok else "FAIL"))
         print(json.dumps(results, indent=1, default=str))

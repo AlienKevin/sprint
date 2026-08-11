@@ -16,14 +16,15 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[2]
 OPS = ROOT / "runs" / "ops"
 ENV = ROOT / "events" / "g1-100-metres" / "environment"
 sys.path.insert(0, str(OPS))
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ENV))
 
-import gpu_claim  # noqa: E402
-import gpu_worker  # noqa: E402
+from event_runtime.compute import claim as gpu_claim  # noqa: E402
+from event_runtime.compute import worker as gpu_worker  # noqa: E402
 import sprint_resilience as resilience  # noqa: E402
 import start_lane_supervisor  # noqa: E402
 import supervise_lane  # noqa: E402
@@ -1589,7 +1590,7 @@ class AgentCredentialBoundaryTests(unittest.TestCase):
 
     def test_launcher_records_fixed_resource_budget(self) -> None:
         launcher = (ROOT / "runs" / "run-lane-durable.sh").read_text()
-        worker = (ROOT / "runs" / "ops" / "gpu_worker.py").read_text()
+        worker = (ROOT / "event_runtime/compute/worker.py").read_text()
         self.assertIn('"agent_cpu_instances": 1', launcher)
         self.assertIn('"training_max_concurrent_per_run": 1', launcher)
         self.assertIn("export SPRINT_CPU_LAUNCH_ATTEMPT=", launcher)
@@ -1615,11 +1616,11 @@ class NetworkIsolationTests(unittest.TestCase):
         self.assertEqual(task["verifier"]["environment"]["network_mode"], "no-network")
 
     def test_gpu_workers_block_all_network(self) -> None:
-        worker = (ROOT / "runs" / "ops" / "gpu_worker.py").read_text()
+        worker = (ROOT / "event_runtime/compute/worker.py").read_text()
         self.assertGreaterEqual(worker.count("block_network=True"), 2)
 
     def test_gpu_workers_force_headless_isaac_runtime(self) -> None:
-        worker = (ROOT / "runs" / "ops" / "gpu_worker.py").read_text()
+        worker = (ROOT / "event_runtime/compute/worker.py").read_text()
         self.assertGreaterEqual(worker.count('env={"HEADLESS": "1"}'), 2)
 
     def test_launcher_allows_only_one_audited_model_host(self) -> None:

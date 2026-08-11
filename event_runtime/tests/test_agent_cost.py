@@ -12,8 +12,8 @@ OPS = ROOT / "runs/ops"
 sys.path.insert(0, str(OPS))
 sys.path.insert(0, str(ROOT))
 
+from event_runtime.compute import worker as gpu_worker  # noqa: E402
 from event_runtime.cost import agent as agent_cost  # noqa: E402
-import gpu_worker  # noqa: E402
 
 
 def timeline_fixture() -> dict:

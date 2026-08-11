@@ -1,4 +1,5 @@
 """Pure lease, retry, and host-lock helpers for durable GPU jobs."""
+
 from __future__ import annotations
 
 import os
@@ -81,9 +82,7 @@ def parse_ts(value: str | None) -> float | None:
     try:
         import calendar
 
-        return float(
-            calendar.timegm(time.strptime(value, "%Y-%m-%dT%H:%M:%SZ"))
-        )
+        return float(calendar.timegm(time.strptime(value, "%Y-%m-%dT%H:%M:%SZ")))
     except (TypeError, ValueError):
         return None
 
@@ -98,9 +97,7 @@ def heartbeat_epoch(heartbeat: dict[str, Any] | None) -> float | None:
         return parse_ts(heartbeat.get("updated_at"))
 
 
-def heartbeat_matches(
-    job: dict[str, Any], heartbeat: dict[str, Any] | None
-) -> bool:
+def heartbeat_matches(job: dict[str, Any], heartbeat: dict[str, Any] | None) -> bool:
     if not heartbeat:
         return False
     try:

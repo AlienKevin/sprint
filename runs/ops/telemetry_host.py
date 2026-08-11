@@ -24,6 +24,7 @@ SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 RUNS = ROOT / "runs"
 sys.path.insert(0, str(SCRIPT_DIR))
+sys.path.insert(0, str(ROOT))
 
 import sprintctl  # noqa: E402
 
@@ -620,8 +621,8 @@ def active_training_container_ids(run: dict[str, Any]) -> set[str]:
     repeatedly exec'ing every dead Sandbox makes monitor cycles grow with the
     number of jobs and delays terminal-policy reconciliation.
     """
-    import gpu_claim
-    import gpu_worker
+    from event_runtime.compute import claim as gpu_claim
+    from event_runtime.compute import worker as gpu_worker
 
     active: set[str] = set()
     # The append-only host registry is authoritative after claim and avoids a
@@ -674,7 +675,7 @@ def discover_sidecar_containers(
 
 def gpu_job_metadata(run: dict[str, Any], container_id: str) -> dict[str, Any]:
     try:
-        import gpu_worker
+        from event_runtime.compute import worker as gpu_worker
 
         for job_id in gpu_worker.list_job_ids(run):
             job = gpu_worker.load_job(run, job_id) or {}

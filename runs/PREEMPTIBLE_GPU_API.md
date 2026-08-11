@@ -98,7 +98,8 @@ probe(handle) -> alive | exited | unknown
 terminate(handle) -> optional error
 ```
 
-Modal Sandbox mechanics implement that interface in `runs/ops/gpu_worker.py`.
+Modal Sandbox mechanics implement that interface in
+`event_runtime/compute/worker.py`.
 
 ## Storage tree
 

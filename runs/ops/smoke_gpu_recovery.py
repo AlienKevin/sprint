@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Force-kill GPU attempt 1 and prove automatic same-job recovery."""
+
 from __future__ import annotations
 
 import argparse
@@ -7,10 +8,16 @@ import json
 import time
 from pathlib import Path
 from typing import Any, Callable
+import sys
 
-import gpu_worker
-import sprintctl
-from smoke_cpu_gpu_split import agent_codex_alive
+ROOT = Path(__file__).resolve().parents[2]
+OPS_DIR = ROOT / "runs/ops"
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(OPS_DIR))
+
+from event_runtime.compute import worker as gpu_worker  # noqa: E402
+import sprintctl  # noqa: E402
+from smoke_cpu_gpu_split import agent_codex_alive  # noqa: E402
 
 
 def utc_now() -> str:
@@ -99,9 +106,7 @@ print("ATTEMPT2_RESUMED_AND_SUCCEEDED", json.dumps(final, sort_keys=True), flush
 """
     shell = (
         "set -euo pipefail\n"
-        "cat > /app/gpu_recovery_probe.py <<'PY'\n"
-        + probe.strip()
-        + "\nPY\n"
+        "cat > /app/gpu_recovery_probe.py <<'PY'\n" + probe.strip() + "\nPY\n"
         "sprint-gpu-train --max-attempts 3 --retry-backoff 2 "
         "--retry-backoff-max 5 --heartbeat-interval 5 "
         "--heartbeat-timeout 15 --note forced-recovery-smoke -- "
@@ -198,6 +203,7 @@ def main() -> int:
         "evidence": {},
     }
     try:
+
         def ready() -> tuple[bool, Any]:
             _, current_run = sprintctl.load_run(args.run_id)
             container = sprintctl.discover_agent_container(state_dir, current_run)
@@ -275,12 +281,13 @@ def main() -> int:
             run, f"runs/{args.run_id}/gpu-jobs/recovery-smoke-marker.json"
         )
         marker = json.loads(marker_text or "{}")
-        alive, cpu_output, codex_hint = agent_codex_alive(
-            run, container, timeout=45
+        alive, cpu_output, codex_hint = agent_codex_alive(run, container, timeout=45)
+        telemetry = (
+            sprintctl.volume_get_text(
+                run, f"runs/{args.run_id}/telemetry/by-job/{job_id}/samples.jsonl"
+            )
+            or ""
         )
-        telemetry = sprintctl.volume_get_text(
-            run, f"runs/{args.run_id}/telemetry/by-job/{job_id}/samples.jsonl"
-        ) or ""
         telemetry_attempts = sorted(
             {
                 int(row.get("attempt"))

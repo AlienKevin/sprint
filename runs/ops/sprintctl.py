@@ -597,7 +597,7 @@ def request_stop(run_id: str, *, reason: str = "operator_stop") -> dict[str, Any
     gpu_stopped: list[str] = []
     gpu_stop_error = None
     try:
-        import gpu_worker
+        from event_runtime.compute import worker as gpu_worker
 
         gpu_stopped = [
             str(item.get("job_id")) for item in gpu_worker.stop_all(run, reason=reason)
@@ -1044,7 +1044,7 @@ def monitor_once(
     # must be fenced/retried without waiting behind observability I/O.
     if run.get("cpu_agent_gpu_worker"):
         try:
-            import gpu_worker
+            from event_runtime.compute import worker as gpu_worker
 
             gpu_worker.dispatch_once(run_id)
         except Exception as exc:  # noqa: BLE001
@@ -1076,7 +1076,7 @@ def monitor_once(
                 cost_payload = agent_cost.build_snapshot(timeline, state_dir=state_dir)
                 cost_path = state_dir / "telemetry" / "agent-cost.json"
                 atomic_write_json(cost_path, cost_payload, mode=0o600)
-                import gpu_worker
+                from event_runtime.compute import worker as gpu_worker
 
                 mirror = gpu_worker.mirror_agent_cost(run, cost_payload)
                 atomic_write_json(
@@ -1929,11 +1929,11 @@ def main() -> int:
         elif args.command == "check":
             payload = check_recovery(args.run_id, args.cache)
         elif args.command == "gpu-dispatch":
-            import gpu_worker
+            from event_runtime.compute import worker as gpu_worker
 
             payload = gpu_worker.dispatch_once(args.run_id)
         elif args.command == "gpu-terminate":
-            import gpu_worker
+            from event_runtime.compute import worker as gpu_worker
 
             _, run = load_run(args.run_id)
             payload = gpu_worker.terminate_job(run, args.job_id)

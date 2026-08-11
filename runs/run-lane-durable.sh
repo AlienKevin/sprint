@@ -26,7 +26,7 @@ BAKED_CLAUDE_VERSION=2.1.220
 # Hold one dedicated A10G for the run's lifetime instead of spawning a worker
 # per training job. Gives each arm its own GPU at all times (fair comparison)
 # and survives Modal preempting it, at the cost of paying for an idle GPU
-# between jobs. Off by default. See runs/ops/gpu_worker.ensure_standing_sandbox.
+# between jobs. Off by default. See event_runtime.compute.worker.
 STANDING_GPU=${STANDING_GPU:-0}
 BATCH_ID=${SPRINT_BATCH_ID:-}
 RUN_ID=""

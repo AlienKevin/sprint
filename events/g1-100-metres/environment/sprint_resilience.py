@@ -6,7 +6,7 @@ anything it likes while computing, but only a committed checkpoint is eligible
 for resume.
 
 This module deliberately has no Modal import.  The host-side Modal adapter is
-``runs/ops/gpu_worker.py`` and CPU simulations can exercise this contract
+the host compute worker and CPU simulations can exercise this contract
 without cloud credentials or accelerator hardware.
 """
 from __future__ import annotations

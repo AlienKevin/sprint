@@ -28,12 +28,15 @@ import modal
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT = Path(__file__).resolve().parents[2]
+OPS_DIR = ROOT / "runs" / "ops"
 ENV_DIR = ROOT / "events" / "g1-100-metres" / "environment"
 DOCKERFILE = ENV_DIR / "Dockerfile"
 
 sys.path.insert(0, str(SCRIPT_DIR))
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(OPS_DIR))
 sys.path.insert(0, str(ENV_DIR))
-import gpu_claim  # noqa: E402
+from event_runtime.compute import claim as gpu_claim  # noqa: E402
 import sprintctl  # noqa: E402
 from sprint_resilience import (  # noqa: E402
     Lease,
@@ -2103,8 +2106,9 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in {"-h", "--help"}:
         print(
-            "Usage: gpu_worker.py dispatch --run-id ID\n"
-            "       gpu_worker.py terminate --run-id ID --job-id ID",
+            "Usage: python -m event_runtime.compute.worker dispatch --run-id ID\n"
+            "       python -m event_runtime.compute.worker terminate "
+            "--run-id ID --job-id ID",
             file=sys.stderr,
         )
         return 2
