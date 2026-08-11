@@ -26,9 +26,10 @@ its named constants instead of copying offsets. Export with `torch.jit.save`;
 Speed measures one policy, while CAES rewards producing better policies with
 less cumulative agent cost.
 
-Let `d` be the furthest legal forward distance in a rollout and `t` the time to
-reach it. Legal progress ends at the finish or the first whole-body lane or
-self-collision disqualification. **Effective Speed** is
+Only movement before the finish, timeout, or first lane or self-collision
+disqualification counts. Let `d` be the greatest forward distance reached
+during that interval, capped at `100 m`, and `t` the time when `d` was first
+reached. **Effective Speed** is
 
 ```text
 E = (d / 100 m) × (d / t) = d² / (100 m × t)
