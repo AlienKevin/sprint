@@ -5,11 +5,13 @@ import json
 import sys
 from pathlib import Path
 
-OPS = Path(__file__).resolve().parents[1]
-ENV = OPS.parents[1] / "events" / "g1-100-metres" / "environment"
+ROOT = Path(__file__).resolve().parents[2]
+OPS = ROOT / "runs/ops"
+ENV = ROOT / "events/g1-100-metres/environment"
 sys.path.insert(0, str(OPS))
+sys.path.insert(0, str(ROOT))
 
-import unified_timeline  # noqa: E402
+from event_runtime.export import timeline as unified_timeline  # noqa: E402
 
 
 def write_jsonl(path: Path, rows: list[dict]) -> None:

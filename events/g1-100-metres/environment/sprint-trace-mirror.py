@@ -8,8 +8,9 @@ the previous cursor or a harmless replayable chunk. Consumers deduplicate
 native records when CPU attempts are replayed.
 
 Raw chunks are private forensic data and may contain tool arguments/output.
-Only the summary from ``runs/ops/unified_timeline.py`` is public-safe.
+Only the summary from ``event_runtime.export.timeline`` is public-safe.
 """
+
 from __future__ import annotations
 
 import argparse

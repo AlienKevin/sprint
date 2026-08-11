@@ -39,6 +39,9 @@ from frontier_update import (  # noqa: E402
 )
 from event_runtime.cost import agent as agent_cost  # noqa: E402
 from event_runtime.cost import modal as modal_cost  # noqa: E402
+from event_runtime.export.timeline import (  # noqa: E402
+    SCHEMA_VERSION as UNIFIED_TIMELINE_SCHEMA_VERSION,
+)
 
 OPS_ROOT = ROOT / "runs" / "ops"
 FRONTIER_SCRIPT = SCRIPT_DIR / "frontier_update.py"
@@ -46,7 +49,6 @@ RECONSTRUCT_CODEX_USAGE_SCRIPT = ROOT / "event_runtime/cost/model_usage.py"
 UV = Path("/home/ubuntu/.local/bin/uv")
 POLL_SECONDS = 30
 DEFAULT_WAIT_SECONDS = 3 * 60 * 60
-UNIFIED_TIMELINE_SCHEMA_VERSION = 6
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,80}$")
 Uploader = Callable[[Path, str], None]
 
@@ -448,7 +450,7 @@ def sync_durable_telemetry(
 def build_unified_timeline(
     state_dir: Path, run: dict[str, Any], *, upload: bool = True
 ) -> dict[str, Any]:
-    import unified_timeline
+    from event_runtime.export import timeline as unified_timeline
 
     payload = unified_timeline.build_timeline(
         state_dir,

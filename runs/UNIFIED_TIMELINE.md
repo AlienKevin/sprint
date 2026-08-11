@@ -145,7 +145,7 @@ frontier from all scored submissions.
 ## Build and validate
 
 ```bash
-python3 runs/ops/unified_timeline.py \
+python3 -m event_runtime.export.timeline \
   --state-dir runs/ops/<run_id> \
   --web-dir sprint-web \
   --require-ready

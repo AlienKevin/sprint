@@ -17,11 +17,12 @@ import pytest
 ROOT = Path(__file__).resolve().parents[3]
 OPS = ROOT / "runs/ops"
 sys.path.insert(0, str(OPS))
+sys.path.insert(0, str(ROOT))
 
 import batch_eval  # noqa: E402
 import frontier_update  # noqa: E402
 import training_gpu_canary  # noqa: E402
-import unified_timeline  # noqa: E402
+from event_runtime.export import timeline as unified_timeline  # noqa: E402
 
 
 def test_batch_matrix_is_exact_six_arm_max_effort_contract() -> None:
