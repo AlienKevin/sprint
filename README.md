@@ -31,14 +31,14 @@ path, and one fresh A10G worker per planned trial before any agents launch.
 BATCH_ID="sprint-$(date -u +%Y%m%d)"
 TRIALS_PER_MODEL=3
 
-uv run --project harbor python runs/ops/batch_eval.py preflight \
+uv run --project harbor python -m event_runtime.control.batch preflight \
   --batch-id "$BATCH_ID" --trials-per-model "$TRIALS_PER_MODEL"
-uv run --project harbor python runs/ops/batch_eval.py launch \
+uv run --project harbor python -m event_runtime.control.batch launch \
   --batch-id "$BATCH_ID" --trials-per-model "$TRIALS_PER_MODEL" --confirm
-uv run --project harbor python runs/ops/batch_eval.py status \
+uv run --project harbor python -m event_runtime.control.batch status \
   --batch-id "$BATCH_ID"
 
 # Safely stop every trial and preserve its artifacts.
-uv run --project harbor python runs/ops/batch_eval.py stop \
+uv run --project harbor python -m event_runtime.control.batch stop \
   --batch-id "$BATCH_ID"
 ```

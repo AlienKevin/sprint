@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reproducible Sprint batch launch, monitoring, and website publishing."""
+"""Reproducible event batch launch, monitoring, and website publishing."""
 
 from __future__ import annotations
 
@@ -20,8 +20,9 @@ from pathlib import Path
 from typing import Any
 
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-ROOT = SCRIPT_DIR.parents[1]
+MODULE_DIR = Path(__file__).resolve().parent
+ROOT = MODULE_DIR.parents[1]
+SCRIPT_DIR = ROOT / "runs" / "ops"
 sys.path.insert(0, str(SCRIPT_DIR))
 sys.path.insert(0, str(ROOT))
 

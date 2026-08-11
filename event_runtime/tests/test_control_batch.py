@@ -14,12 +14,12 @@ from unittest import mock
 import pytest
 
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[2]
 OPS = ROOT / "runs/ops"
 sys.path.insert(0, str(OPS))
 sys.path.insert(0, str(ROOT))
 
-import batch_eval  # noqa: E402
+from event_runtime.control import batch as batch_eval  # noqa: E402
 from event_runtime.export import frontier as frontier_update  # noqa: E402
 import training_gpu_canary  # noqa: E402
 from event_runtime.export import timeline as unified_timeline  # noqa: E402
