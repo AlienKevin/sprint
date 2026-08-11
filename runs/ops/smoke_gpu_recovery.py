@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(OPS_DIR))
 
 from event_runtime.compute import worker as gpu_worker  # noqa: E402
-import sprintctl  # noqa: E402
+from event_runtime.control import run as sprintctl  # noqa: E402
 from smoke_cpu_gpu_split import agent_codex_alive  # noqa: E402
 
 

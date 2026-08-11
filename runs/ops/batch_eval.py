@@ -26,7 +26,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 sys.path.insert(0, str(ROOT))
 
 from event_runtime.export import frontier as frontier_update  # noqa: E402
-import sprintctl  # noqa: E402
+from event_runtime.control import run as sprintctl  # noqa: E402
 
 
 UV = Path(os.environ.get("UV", "/home/ubuntu/.local/bin/uv"))
@@ -942,7 +942,7 @@ def live_run_monitor_status(run_id: str) -> dict[str, Any] | None:
         pid = int((state_dir / "monitor.pid").read_text().strip())
     except (OSError, ValueError):
         return None
-    if not sprintctl.process_alive(pid, f"sprintctl.py monitor --run-id {run_id}"):
+    if not sprintctl.process_alive(pid, f"control/run.py monitor --run-id {run_id}"):
         return None
     try:
         payload = json.loads((state_dir / "status.json").read_text())

@@ -37,7 +37,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(OPS_DIR))
 sys.path.insert(0, str(ENV_DIR))
 from event_runtime.compute import claim as gpu_claim  # noqa: E402
-import sprintctl  # noqa: E402
+from event_runtime.control import run as sprintctl  # noqa: E402
 from sprint_resilience import (  # noqa: E402
     Lease,
     ProbeResult,

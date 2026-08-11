@@ -28,7 +28,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(OPS_DIR))
 
-import sprintctl  # noqa: E402
+from event_runtime.control import run as sprintctl  # noqa: E402
 
 SECRET_RE = re.compile(
     r"(?i)("

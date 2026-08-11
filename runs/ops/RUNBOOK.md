@@ -151,8 +151,8 @@ then recreates Harbor's CPU Sandbox against the same durable Sprint Volume.
 ## Status and manual safe stop
 
 ```bash
-python3 runs/ops/sprintctl.py status --run-id "$RUN_ID"
-python3 runs/ops/sprintctl.py stop --run-id "$RUN_ID"
+python3 -m event_runtime.control.run status --run-id "$RUN_ID"
+python3 -m event_runtime.control.run stop --run-id "$RUN_ID"
 ```
 
 Both outputs report `agent_kind`. The controller selects the app recorded for
@@ -175,9 +175,9 @@ and grader containers receive no signal.
 ## Wait and finalize
 
 ```bash
-python3 runs/ops/sprintctl.py wait --run-id "$RUN_ID" \
+python3 -m event_runtime.control.run wait --run-id "$RUN_ID" \
   --timeout-seconds 10800
-python3 runs/ops/sprintctl.py finalize --run-id "$RUN_ID"
+python3 -m event_runtime.control.run finalize --run-id "$RUN_ID"
 ```
 
 Success requires `STOP_ACK`, a clean terminal ledger, checksummed archives for
@@ -193,8 +193,8 @@ repeat.
 Recovery reads the named Volume and does not need a live Harbor app:
 
 ```bash
-python3 runs/ops/sprintctl.py check --run-id "$RUN_ID"
-python3 runs/ops/sprintctl.py recover --run-id "$RUN_ID" \
+python3 -m event_runtime.control.run check --run-id "$RUN_ID"
+python3 -m event_runtime.control.run recover --run-id "$RUN_ID" \
   --destination "/data/sprint-recovered/$RUN_ID"
 ```
 

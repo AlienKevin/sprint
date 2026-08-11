@@ -17,7 +17,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 sys.path.insert(0, str(ROOT))
 
 from event_runtime.compute import worker as gpu_worker  # noqa: E402
-import sprintctl  # noqa: E402
+from event_runtime.control import run as sprintctl  # noqa: E402
 
 os.environ.setdefault("MODAL_PROFILE", "kevinli020508")
 

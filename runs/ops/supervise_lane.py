@@ -21,10 +21,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIR))
-
 ROOT = Path(__file__).resolve().parents[2]
 OPS = ROOT / "runs" / "ops"
+sys.path.insert(0, str(SCRIPT_DIR))
+sys.path.insert(0, str(ROOT))
 
 DEFAULT_MIN_BACKOFF_S = 30
 DEFAULT_MAX_BACKOFF_S = 600
@@ -366,7 +366,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.dry_run:
             return False
         try:
-            import sprintctl
+            from event_runtime.control import run as sprintctl
 
             _, run = sprintctl.load_run(args.run_id)
             return bool(sprintctl.harbor_alive(run))

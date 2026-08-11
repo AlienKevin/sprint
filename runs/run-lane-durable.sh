@@ -10,7 +10,7 @@ UV="${UV:-$(command -v uv || true)}"
 if [[ -z "$UV" && -x /home/ubuntu/.local/bin/uv ]]; then
   UV=/home/ubuntu/.local/bin/uv
 fi
-CONTROL="$ROOT/runs/ops/sprintctl.py"
+CONTROL="$ROOT/event_runtime/control/run.py"
 TASK="$SOURCE_ROOT/events/g1-100-metres"
 MODAL_PROFILE=${MODAL_PROFILE:-kevinli020508}
 SANDBOX_TIMEOUT_SECONDS=86400

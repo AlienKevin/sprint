@@ -14,7 +14,7 @@ sys.path.insert(0, str(OPS))
 sys.path.insert(0, str(ROOT))
 
 from event_runtime.cost import modal as modal_cost  # noqa: E402
-import sprintctl  # noqa: E402
+from event_runtime.control import run as sprintctl  # noqa: E402
 
 
 CONTRACT = {

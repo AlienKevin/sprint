@@ -16,7 +16,7 @@ SCRIPT = ROOT / "event_runtime/cost/model_usage.py"
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(OPS))
 
-import sprintctl  # noqa: E402
+from event_runtime.control import run as sprintctl  # noqa: E402
 from event_runtime.cost.model_usage import prefer_complete_session  # noqa: E402
 
 

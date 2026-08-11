@@ -20,7 +20,6 @@ from typing import Any, Callable, Sequence
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(SCRIPT_DIR))
 sys.path.insert(0, str(ROOT))
 
 from event_runtime.export.frontier import (  # noqa: E402

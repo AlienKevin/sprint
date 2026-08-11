@@ -12,8 +12,9 @@ ROOT = Path(__file__).resolve().parents[3]
 BIN = ROOT / "events" / "g1-100-metres" / "environment" / "bin"
 OPS = ROOT / "runs" / "ops"
 sys.path.insert(0, str(OPS))
+sys.path.insert(0, str(ROOT))
 
-import sprintctl  # noqa: E402
+from event_runtime.control import run as sprintctl  # noqa: E402
 
 
 def load_script(name: str):

@@ -82,8 +82,8 @@ limits, retry exhaustion, cleanup, and the small provider adapter boundary.
 Manual:
 
 ```bash
-python3 runs/ops/sprintctl.py gpu-dispatch --run-id "$RUN_ID"
-python3 runs/ops/sprintctl.py gpu-terminate --run-id "$RUN_ID" --job-id "$JOB_ID"
+python3 -m event_runtime.control.run gpu-dispatch --run-id "$RUN_ID"
+python3 -m event_runtime.control.run gpu-terminate --run-id "$RUN_ID" --job-id "$JOB_ID"
 ```
 
 ## GPU telemetry (preemption-safe)
