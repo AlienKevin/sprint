@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -79,6 +81,61 @@ def test_published_verifier_is_an_exact_reviewed_source_mirror() -> None:
         exposed = published / relative
         assert exposed.read_bytes() == trusted.read_bytes()
         assert hashlib.sha256(exposed.read_bytes()).hexdigest() == expected
+
+
+def test_training_and_both_verifiers_share_one_exact_standing_start() -> None:
+    trusted = TASK / "tests/sprintbench/standing_start.py"
+    local = TASK / "environment/verifier/sprintbench/standing_start.py"
+    training = TASK / "environment/train/standing_start.py"
+    assert trusted.read_bytes() == local.read_bytes() == training.read_bytes()
+
+    source = trusted.read_text()
+    assert 'CANONICAL_START_NAME = "no-block-standing-start-v1"' in source
+    assert "ROOT_LINEAR_VELOCITY_M_S = (0.0, 0.0, 0.0)" in source
+    assert "ROOT_ANGULAR_VELOCITY_RAD_S = (0.0, 0.0, 0.0)" in source
+    assert 'JOINT_VELOCITIES_RAD_S = {".*": 0.0}' in source
+
+    official_cfg = (TASK / "tests/sprintbench/sprint_env_cfg.py").read_text()
+    local_cfg = (
+        TASK / "environment/verifier/sprintbench/sprint_env_cfg.py"
+    ).read_text()
+    training_robot = (TASK / "environment/train/robot.py").read_text()
+    needle = "apply_canonical_standing_start(robot)"
+    assert needle in official_cfg
+    assert needle in local_cfg
+    assert needle in training_robot
+
+
+def test_standing_start_adds_no_blocks_or_track_physics() -> None:
+    source = (TASK / "tests/sprintbench/standing_start.py").read_text().lower()
+    assert "startingblock" not in source
+    assert "starting_block" not in source
+    assert "foot plate" not in source
+
+
+def test_canonical_standing_start_sets_every_initial_state_field() -> None:
+    source = TASK / "tests/sprintbench/standing_start.py"
+    module_spec = importlib.util.spec_from_file_location("standing_start", source)
+    assert module_spec is not None and module_spec.loader is not None
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+
+    state = SimpleNamespace(
+        pos=None,
+        rot=None,
+        lin_vel=None,
+        ang_vel=None,
+        joint_pos=None,
+        joint_vel=None,
+    )
+    robot = SimpleNamespace(init_state=state)
+    assert module.apply_canonical_standing_start(robot) is robot
+    assert state.pos == module.ROOT_POSITION_M
+    assert state.rot == module.ROOT_ORIENTATION_WXYZ
+    assert state.lin_vel == module.ROOT_LINEAR_VELOCITY_M_S
+    assert state.ang_vel == module.ROOT_ANGULAR_VELOCITY_RAD_S
+    assert state.joint_pos == module.JOINT_POSITIONS_RAD
+    assert state.joint_vel == module.JOINT_VELOCITIES_RAD_S
 
 
 def test_local_verifier_uses_only_the_trial_training_queue() -> None:

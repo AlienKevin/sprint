@@ -46,6 +46,7 @@ from isaaclab_assets import G1_CFG
 from isaaclab_tasks.manager_based.locomotion.velocity.config.g1.flat_env_cfg import G1FlatEnvCfg
 
 from .sprint_command import SprintVelocityCommandCfg
+from .standing_start import apply_canonical_standing_start
 
 # The course.  100 m with intermediate gates so a policy that never finishes
 # still produces a comparable split rather than a single "DNF".
@@ -225,6 +226,7 @@ class G1Sprint100mEnvCfg(G1FlatEnvCfg):
         # most a few dozen environments, so the collision meshes cost little
         # here even though they are expensive at training scale.
         robot = copy.deepcopy(G1_CFG)
+        apply_canonical_standing_start(robot)
         robot.prim_path = "{ENV_REGEX_NS}/Robot"
 
         # --- physics the policy cannot punch through -------------------------

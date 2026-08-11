@@ -3,6 +3,14 @@
 The scored course uses full `G1_CFG`, `enabled_self_collisions=True`,
 `contact_offset=0.04`, and `max_depenetration_velocity=10.0`.
 
+Every rollout begins from `no-block-standing-start-v1`, defined exactly in
+`/app/train/standing_start.py`: the stable Isaac Lab 2.3.2 G1 standing pose,
+upright and aligned behind the line, with zero root and joint velocity. The
+100 metres normally uses starting blocks; this event deliberately adds no
+blocks or other track bodies, so the existing ground and contact physics are
+unchanged. Apply `apply_canonical_standing_start()` when constructing a custom
+training scene so local starts match the verifier.
+
 This package only ships that robot spawn. Rewards, terrain, and the geometric
 self-collision DQ are still yours (the DQ is verifier-only).
 

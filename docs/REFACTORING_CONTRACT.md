@@ -72,7 +72,8 @@ policy bytes and rollout inputs.
 The G1 100 metres contract remains:
 
 - Isaac Lab 2.3.2 with the current full G1 embodiment and physics settings;
-- a standing, aligned start;
+- the exact versioned no-block standing start, with fixed root/joint pose and
+  zero initial velocity for every policy and rollout;
 - finish when the forward-most torso point crosses 100 metres;
 - a 60-second finish requirement;
 - base within 0.61 metres of lane centre;

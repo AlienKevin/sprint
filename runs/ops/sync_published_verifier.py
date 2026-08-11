@@ -12,6 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "events/g1-100-metres/tests"
 TARGET = ROOT / "events/g1-100-metres/environment/verifier"
+TRAIN_START = ROOT / "events/g1-100-metres/environment/train/standing_start.py"
 FILES = (
     Path("test.sh"),
     Path("verify.py"),
@@ -27,6 +28,7 @@ FILES = (
     Path("sprintbench/rollout.py"),
     Path("sprintbench/sprint_command.py"),
     Path("sprintbench/sprint_env_cfg.py"),
+    Path("sprintbench/standing_start.py"),
     Path("sprintbench/tasks.py"),
 )
 
@@ -57,6 +59,7 @@ def main() -> int:
         )
         + "\n"
     )
+    shutil.copy2(SOURCE / "sprintbench/standing_start.py", TRAIN_START)
     return 0
 
 
