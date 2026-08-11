@@ -169,6 +169,8 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert 'id="policy-grid"' not in page
     assert 'id="run-links"' not in page
     assert "Cost-Adjusted Effective Speed" in app
+    assert "Best Cost-Adjusted Effective Speed" in app
+    assert "cost_auc_mps_at_common_cap" in app
     assert "effective speed (m/s)" in app
     assert "showReadout" in app
 
