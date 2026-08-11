@@ -1158,6 +1158,53 @@ def test_batch_monitor_reads_live_lane_status_without_duplicate_poll(
     assert batch_eval.live_run_monitor_status(run_id) == expected
 
 
+def test_batch_monitor_recovers_status_when_run_state_appears(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    batch_id = "eval"
+    run_id = "eval-luna-1"
+    ops = tmp_path / "ops"
+    run_dir = ops / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.json").write_text("{}\n")
+    monkeypatch.setattr(batch_eval, "SCRIPT_DIR", ops)
+    monkeypatch.setattr(batch_eval, "BATCH_ROOT", ops / "batches")
+    monkeypatch.setattr(batch_eval, "WEB", tmp_path / "web")
+    batch_eval.atomic_json(
+        batch_eval.batch_path(batch_id),
+        {
+            "batch_id": batch_id,
+            "status": "running",
+            "reasoning_effort": "max",
+            "codex_version": "0.147.0",
+            "run_hours": None,
+            "arms": [{"run_id": run_id, "status": "missing_run_state"}],
+            "alerts": [],
+        },
+    )
+    monkeypatch.setattr(
+        batch_eval,
+        "live_run_monitor_status",
+        lambda _run_id: {
+            "harbor_alive": True,
+            "ledger": {},
+            "snapshot_heartbeat_ok": True,
+        },
+    )
+    monkeypatch.setattr(batch_eval, "log_alerts", lambda _run_id: [])
+    monkeypatch.setattr(
+        batch_eval, "verifier_lane_stall_alerts", lambda *_args, **_kwargs: []
+    )
+    monkeypatch.setattr(
+        batch_eval, "continuous_ledger_error_alerts", lambda _payload: []
+    )
+    monkeypatch.setattr(batch_eval, "mark_deployed_runs", lambda _payload: [])
+
+    result = batch_eval.monitor_cycle(batch_id, deploy=False)
+
+    assert result["arms"][0]["status"] == "running"
+
+
 def test_resolved_website_alert_leaves_active_list_but_preserves_history() -> None:
     payload = {
         "alerts": [

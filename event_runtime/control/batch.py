@@ -1172,6 +1172,8 @@ def monitor_cycle(batch_id: str, *, deploy: bool = True) -> dict[str, Any]:
                 status = live_run_monitor_status(run_id)
                 if status is None:
                     status = sprintctl.monitor_once(run_id, upload=True)
+                if arm.get("status") == "missing_run_state":
+                    arm["status"] = "running"
                 for key in (
                     "ledger",
                     "snapshot_heartbeat_ok",
