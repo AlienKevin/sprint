@@ -41,7 +41,8 @@ MAX_ABS_ACTION = 100.0
 SCORING_RULES = """
 Official verifier gates (a valid 100 m time needs every gating check to pass):
   finished          GATING   torso reaches 100 m inside the 60 s window
-  in_lane           GATING   base stays within +/-0.61 m (1.22 m World Athletics lane)
+  in_lane           GATING   every collision shape stays between the vertical
+                             lane planes at +/-0.61 m from centre (1.22 m lane)
   self_collision    GATING   non-adjacent padded overlap <= 1 cm (2 cm radius pad;
                              ancestors<=3 and siblings excluded; PhysX self-collisions on)
 

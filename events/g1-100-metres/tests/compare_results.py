@@ -20,6 +20,7 @@ def canonical(payload: dict[str, Any]) -> dict[str, Any]:
         "best_valid_100m_s": rounded(payload.get("best_valid_100m_s")),
         "max_distance_m": rounded(payload.get("max_distance_m")),
         "max_distance_semantics": payload.get("max_distance_semantics"),
+        "lane_containment_semantics": payload.get("lane_containment_semantics"),
         "lanes_finished": int(payload.get("lanes_finished") or 0),
         "lanes_valid": int(payload.get("lanes_valid") or 0),
         "lanes_total": int(payload.get("lanes_total") or 0),

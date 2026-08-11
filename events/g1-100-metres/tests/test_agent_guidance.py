@@ -177,6 +177,7 @@ def test_equivalence_gate_accepts_only_matching_canonical_outputs(
         "best_valid_100m_s": None,
         "max_distance_m": 1.2344,
         "max_distance_semantics": "legal_prefix_until_first_disqualification",
+        "lane_containment_semantics": "whole_body_collision_envelope_between_vertical_boundaries",
         "lanes_finished": 0,
         "lanes_valid": 0,
         "lanes_total": 1,

@@ -247,7 +247,7 @@ def main() -> int:
     nominal, info = trial(args.policy, args.runs, device=device, label="nominal")
     say(
         f"  control {info['control_hz']} Hz, {info['collision_points']} collision "
-        f"points for the self-collision gate"
+        f"points for whole-body lane and self-collision gates"
     )
     describe(nominal)
 
@@ -300,6 +300,7 @@ def main() -> int:
         # post-DQ displacement remains in trusted verifier artifacts for audit.
         "max_distance_m": max(r.max_distance_m for r in nominal),
         "max_distance_semantics": "legal_prefix_until_first_disqualification",
+        "lane_containment_semantics": "whole_body_collision_envelope_between_vertical_boundaries",
         "raw_max_distance_m": max(r.raw_max_distance_m for r in nominal),
         "lanes_finished": len(finished),
         "lanes_valid": len(valid),

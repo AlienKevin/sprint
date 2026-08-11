@@ -3,12 +3,15 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[3]
 TASK = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TASK / "tests"))
 
 from course.metrics import evaluate_run  # noqa: E402
+from course.rollout import max_lateral_extent_from_world_y  # noqa: E402
 
 
 OPTIONAL_METRICS = {
@@ -28,7 +31,7 @@ OPTIONAL_METRICS = {
 def evaluate(
     *,
     x: list[float],
-    y: list[float] | None = None,
+    lateral_extent: list[float] | None = None,
     self_penetration: list[float] | None = None,
 ):
     count = len(x)
@@ -37,7 +40,7 @@ def evaluate(
         commanded_speed=0.0,
         t=[float(index) for index in range(count)],
         x=x,
-        y=y or [0.0] * count,
+        lateral_extent_m=lateral_extent or [0.4] * count,
         vx=[1.0] * count,
         gates=(50.0, 100.0),
         finish_distance_m=100.0,
@@ -60,7 +63,7 @@ def test_only_the_three_public_gates_are_scored() -> None:
 def test_lane_and_self_collision_are_independent_hard_gates() -> None:
     result = evaluate(
         x=[0.0, 100.0],
-        y=[0.0, 0.62],
+        lateral_extent=[0.4, 0.62],
         self_penetration=[0.0, 0.011],
     )
     failed = {check.name for check in result.checks if not check.passed}
@@ -85,12 +88,12 @@ def test_maximum_forward_distance_is_diagnostic_not_final_displacement() -> None
 def test_forward_distance_stops_at_first_lane_disqualification() -> None:
     result = evaluate(
         x=[0.0, 2.0, 44.93],
-        y=[0.0, 0.305, 3.9667],
+        lateral_extent=[0.4, 0.505, 3.9667],
     )
 
     # The trajectory continues far outside the lane for audit/replay, but only
     # The archived diagnostic stops at the interpolated 0.61 m boundary.
-    expected_fraction = (0.61 - 0.305) / (3.9667 - 0.305)
+    expected_fraction = (0.61 - 0.505) / (3.9667 - 0.505)
     expected_distance = 2.0 + expected_fraction * (44.93 - 2.0)
     assert result.max_distance_m == round(expected_distance, 3)
     assert result.raw_max_distance_m == 44.93
@@ -115,13 +118,48 @@ def test_forward_distance_stops_at_first_self_collision() -> None:
 def test_earliest_disqualification_controls_progress_cutoff() -> None:
     result = evaluate(
         x=[0.0, 3.0, 9.0],
-        y=[0.0, 0.7, 0.8],
+        lateral_extent=[0.4, 0.7, 0.8],
         self_penetration=[0.0, 0.0, 0.02],
     )
 
     assert result.first_disqualification_gate == "in_lane"
     assert result.max_distance_m < 3.0
     assert result.raw_max_distance_m == 9.0
+
+
+def test_whole_body_lane_extent_includes_collision_radii() -> None:
+    import torch
+
+    world_y = torch.tensor([[0.0, 0.50, -0.40], [6.0, 6.20, 5.50]])
+    radii = torch.tensor([0.05, 0.12, 0.05])
+    centres = torch.tensor([0.0, 6.0])
+
+    extent = max_lateral_extent_from_world_y(world_y, radii, centres)
+
+    assert extent.squeeze(1).tolist() == pytest.approx([0.62, 0.55])
+
+
+def test_lane_geometry_covers_all_major_body_regions() -> None:
+    import json
+
+    geometry = json.loads((TASK / "tests" / "collision_geometry.json").read_text())[
+        "bodies"
+    ]
+    required = {
+        "head_link",
+        "torso_link",
+        "pelvis",
+        "left_palm_link",
+        "right_palm_link",
+        "left_six_link",
+        "right_six_link",
+        "left_knee_link",
+        "right_knee_link",
+        "left_ankle_roll_link",
+        "right_ankle_roll_link",
+    }
+    assert required <= geometry.keys()
+    assert sum(len(body["points"]) for body in geometry.values()) == 1960
 
 
 def test_agent_and_verifier_contracts_are_identical_and_lean() -> None:

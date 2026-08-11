@@ -296,7 +296,7 @@ const clockEl=document.getElementById('clock');
 const cards=POL.map((p,i)=>document.getElementById('lane'+i));
 function hud(t,xs,dones){clockEl.textContent=t.toFixed(2);
   POL.forEach((p,i)=>{const el=cards[i]; if(!el)return; const d=Math.min(xs[i],100);
-    const lat=(p.max_lateral_m!=null)?(' · lat≤'+p.max_lateral_m.toFixed(2)+'m'):'';
+    const lat=(p.max_lateral_m!=null)?(' · body≤'+p.max_lateral_m.toFixed(2)+'m'):'';
     let status;
     if(dones[i] && p.disqualified){
       const reason=(p.dq&&p.dq.reason)?p.dq.reason.replace(/_/g,' '):'DQ';

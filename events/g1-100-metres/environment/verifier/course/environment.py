@@ -68,9 +68,9 @@ DEFAULT_SPEEDS = (0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0)
 def lane_offset(env) -> "torch.Tensor":
     """Signed cross-track error: metres left (+) or right (-) of the lane centre.
 
-    This is the quantity the lane rule actually judges, so the policy can see
-    what it is being held to. Measured on the base, in the environment's frame,
-    exactly as the verifier measures it.
+    This base-centre reference lets the policy steer relative to the lane. The
+    verifier's stricter gate measures the outer edge of every collision shape,
+    not this observation alone.
     """
     robot = env.scene["robot"]
     return (robot.data.root_pos_w[:, 1] - env.scene.env_origins[:, 1]).unsqueeze(-1)
@@ -198,7 +198,7 @@ class G1100MetresEnvCfg(G1FlatEnvCfg):
         # to 27-41 m against a 0.61 m half-width.
         #
         # Two terms, appended after the original 120 so the prefix is unchanged:
-        #   120:121  signed cross-track error, m   (the judged quantity)
+        #   120:121  signed base cross-track error, m (lane-centre reference)
         #   121:122  heading error, rad            (its derivative, for damping)
         #
         # Neither is a speed command: there is still nothing to tune and the

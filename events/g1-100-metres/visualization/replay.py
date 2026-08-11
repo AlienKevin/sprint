@@ -138,14 +138,17 @@ def compute_dq_event(
 ) -> tuple[float | None, str | None]:
     """Website-only DQ instant for replay freeze (does not affect scoring).
 
-    Prefer an explicit ``dq_time`` on the run record. Otherwise take the earliest
-    of: first |lateral| > lane half-width, first torso collapse (self-collision
-    proxy when penetration traces are absent), or end of scored segment when the
-    finished gate fails.
+    Prefer the verifier's explicit first-disqualification time. Older captures
+    fall back to pelvis lateral position, torso collapse, or the scored timeout.
     """
     run = run or {}
     if run.get("valid") is True:
         return None, None
+    if run.get("first_disqualification_time_s") is not None:
+        return (
+            float(run["first_disqualification_time_s"]),
+            str(run.get("first_disqualification_gate") or "disqualified"),
+        )
     if run.get("dq_time") is not None:
         return float(run["dq_time"]), str(run.get("dq_reason") or "disqualified")
 
@@ -258,11 +261,24 @@ def capture_to_data(
         kept = [pack(f) for f in fr if f[0] <= clip_t]
         sy = kept[0][2] if kept else 0.0
         ys = [abs(f[2] - sy) for f in kept]
+        lane_check = next(
+            (
+                check
+                for check in run.get("checks", [])
+                if check.get("name") == "in_lane"
+            ),
+            None,
+        )
+        max_lateral = (
+            float(lane_check["value"])
+            if lane_check is not None and lane_check.get("value") is not None
+            else (max(ys) if ys else 0.0)
+        )
         pol = {
             "label": f"Seed {i + 1}",
             "finish": round(fin, 3),
             "frames": kept,
-            "max_lateral_m": round(max(ys) if ys else 0.0, 3),
+            "max_lateral_m": round(max_lateral, 3),
             "valid": valid,
         }
         if valid is False and dq_time is not None:
@@ -393,8 +409,8 @@ def assemble_html(
         (
             r'<div class="cap">.*?</div>',
             f'<div class="cap"><span>{cap}</span>'
-            "<span>Corridor half-width <b>±0.61 m</b>; freezes on torso crossing "
-            "or first DQ gate</span><span><b>Drag</b> to orbit, <b>scroll</b> to zoom, "
+            "<span>Whole body must stay between the <b>±0.61 m</b> vertical lane "
+            "planes; freezes at first DQ</span><span><b>Drag</b> to orbit, <b>scroll</b> to zoom, "
             "<b>space</b> to pause</span></div>",
         ),
         (

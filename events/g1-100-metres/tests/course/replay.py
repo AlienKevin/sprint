@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DEFAULT_FPS = 10.0
 
 
@@ -116,6 +116,11 @@ class PoseRecorder:
         result = rows[selected]
         return {
             "schema_version": SCHEMA_VERSION,
+            "lane_gate": {
+                "semantics": "whole_body_collision_envelope",
+                "half_width_m": 0.61,
+                "collision_samples": 1960,
+            },
             "body_names": self.body_names,
             "fps": round(self.fps, 6),
             "runs": [result],

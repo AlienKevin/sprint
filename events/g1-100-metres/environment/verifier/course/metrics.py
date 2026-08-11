@@ -113,7 +113,7 @@ def evaluate_run(
     commanded_speed: float,
     t: list[float],
     x: list[float],
-    y: list[float],
+    lateral_extent_m: list[float],
     vx: list[float],
     gates: tuple[float, ...],
     finish_distance_m: float,
@@ -121,7 +121,12 @@ def evaluate_run(
 ) -> RunResult:
     """Evaluate exactly the three public gates for one recorded lane."""
 
-    if not t or len(t) != len(x) or len(t) != len(y) or len(t) != len(vx):
+    if (
+        not t
+        or len(t) != len(x)
+        or len(t) != len(lateral_extent_m)
+        or len(t) != len(vx)
+    ):
         raise ValueError(
             "time, position, and velocity traces must be nonempty and aligned"
         )
@@ -141,12 +146,12 @@ def evaluate_run(
     mean_speed = distance / duration if duration > 0 else 0.0
     peak_speed = max(vx[:count]) if count else 0.0
     achieved = sum(vx[:count]) / count if count else 0.0
-    max_lateral = max(abs(value) for value in y[:count])
+    max_lateral_extent = max(lateral_extent_m[:count])
     max_self = max(self_penetration_m[:count], default=0.0)
 
     disqualifications: list[tuple[float, str, float]] = []
     lane_crossing = _threshold_crossing(
-        [abs(value) for value in y[:count]],
+        lateral_extent_m[:count],
         t[:count],
         x[:count],
         LANE_HALF_WIDTH_M,
@@ -187,11 +192,12 @@ def evaluate_run(
         ),
         Check(
             "in_lane",
-            max_lateral <= LANE_HALF_WIDTH_M,
-            max_lateral,
+            max_lateral_extent <= LANE_HALF_WIDTH_M,
+            max_lateral_extent,
             LANE_HALF_WIDTH_M,
-            f"max lateral deviation {max_lateral:.2f} m "
-            f"(lane half-width {LANE_HALF_WIDTH_M:.2f} m)",
+            f"max whole-body lateral extent {max_lateral_extent:.2f} m "
+            f"from lane centre (vertical boundaries at "
+            f"+/-{LANE_HALF_WIDTH_M:.2f} m)",
         ),
         Check(
             "self_collision",

@@ -334,7 +334,10 @@ def main() -> int:
             "--logs /tmp/verifier-warm --tests /tests --runs 1 "
             "--distance 1 --max-seconds 2 --headless && "
             "python3 -c \"import json; p=json.load(open('/tmp/verifier-warm/replay.json')); "
-            "assert p['schema_version']==1; assert len(p['frames'])==1; "
+            "assert p['schema_version']==2; "
+            "assert p['lane_gate']['semantics']=='whole_body_collision_envelope'; "
+            "assert p['lane_gate']['collision_samples']==1960; "
+            "assert len(p['frames'])==1; "
             "assert p['frames'][0]; assert p['policy_sha256']\""
         )
         payload["verifier_probes"] = [

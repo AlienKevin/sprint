@@ -31,9 +31,13 @@ its named constants instead of copying offsets. Export with `torch.jit.save`;
 ## Score
 
 For one rollout, let `d` be the maximum forward distance reached before the
-earliest of finishing, leaving the `±0.61 m` lane, or exceeding `1 cm` of
-non-adjacent padded-body overlap. Let `t` be the first time that distance is
-reached. **Effective Speed** is
+earliest of finishing, any part of the robot crossing either vertical lane
+boundary at `±0.61 m` from the lane centre, or exceeding `1 cm` of
+non-adjacent padded-body overlap. Lane containment uses all 1,960 authoritative
+collision samples across all 38 represented bodies—including their radii—so
+arms, hands and fingers, legs and feet, torso, pelvis, and head must all remain
+inside. Let `t` be the first time that distance is reached. **Effective Speed**
+is
 
 ```text
 E = (d / 100 m) × (d / t) = d² / (100 m × t)

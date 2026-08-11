@@ -15,7 +15,8 @@ The protocol, in order:
 2. **Release.**  Hand back the commanded speed and start the clock.  Distance is
    measured from here, not from the spawn.
 3. **Record.**  One compact device-to-host transfer per control step containing
-   only forward position, lateral position, speed, and the self-collision gate.
+   only forward position, whole-body lateral extent, speed, and the
+   self-collision gate.
 """
 
 from __future__ import annotations
@@ -141,6 +142,39 @@ def load_geometry(path: str, robot, device: str):
         torch.tensor(rads, dtype=torch.float32, device=device),
         torch.tensor(bidx, dtype=torch.long, device=device),
     )
+
+
+def max_lateral_extent_from_world_y(
+    world_y: torch.Tensor,
+    radii: torch.Tensor,
+    lane_center_y: torch.Tensor,
+) -> torch.Tensor:
+    """Outermost collision-envelope distance from each lane centre."""
+
+    return (
+        ((world_y - lane_center_y.unsqueeze(1)).abs() + radii.unsqueeze(0))
+        .max(dim=1)
+        .values.unsqueeze(1)
+    )
+
+
+def max_whole_body_lateral_extent(
+    robot,
+    pts: torch.Tensor,
+    rad: torch.Tensor,
+    body: torch.Tensor,
+    origins: torch.Tensor,
+) -> torch.Tensor:
+    """Measure every collision sample against the two vertical lane planes."""
+
+    import isaaclab.utils.math as math_utils
+
+    n_env = robot.data.body_pos_w.shape[0]
+    quaternions = robot.data.body_quat_w[:, body]
+    translations = robot.data.body_pos_w[:, body]
+    local_points = pts.unsqueeze(0).expand(n_env, -1, -1)
+    world_points = math_utils.quat_apply(quaternions, local_points) + translations
+    return max_lateral_extent_from_world_y(world_points[..., 1], rad, origins[:, 1])
 
 
 def prepare_self_collision(pts, rad, body, body_names, device: str):
@@ -281,8 +315,8 @@ def run_trial(
     # forward-most point of the torso against the line, not the pelvis centre,
     # so a dip at the tape pays off exactly as it does for a sprinter.  The
     # torso's collision hull is transformed by its live pose each step and the
-    # leading point taken; lateral position and height stay on the base, which
-    # is what the lane and fall checks care about.
+    # leading point taken. Lane containment is measured separately from every
+    # collision sample, including its radius, so no limb can cross a boundary.
     import isaaclab.utils.math as _torso_math
 
     torso_id = (
@@ -325,7 +359,9 @@ def run_trial(
     # 2. release
     command.release(all_ids)
     start_x = torso_forward().clone()
-    trace: dict[str, list] = {key: [] for key in ("t", "x", "y", "vx", "self")}
+    trace: dict[str, list] = {
+        key: [] for key in ("t", "x", "lane_extent", "vx", "self")
+    }
     resolved = [False] * n
     t = 0.0
 
@@ -337,7 +373,10 @@ def run_trial(
         pos[:, 0] = torso_forward() - start_x
         snapshot = torch.cat(
             [
-                pos[:, :2],
+                pos[:, :1],
+                max_whole_body_lateral_extent(
+                    robot, geom_pts, geom_rad, geom_body, origins
+                ),
                 robot.data.root_lin_vel_b[:, :1],
                 max_self_penetration(robot, self_prep),
             ],
@@ -347,7 +386,7 @@ def run_trial(
 
         trace["t"].append(t)
         trace["x"].append([r[0] for r in rows])
-        trace["y"].append([r[1] for r in rows])
+        trace["lane_extent"].append([r[1] for r in rows])
         trace["vx"].append([r[2] for r in rows])
         trace["self"].append([r[3] for r in rows])
 
@@ -374,7 +413,7 @@ def run_trial(
             commanded_speed=speeds[i],
             t=trace["t"],
             x=[row[i] for row in trace["x"]],
-            y=[row[i] for row in trace["y"]],
+            lateral_extent_m=[row[i] for row in trace["lane_extent"]],
             vx=[row[i] for row in trace["vx"]],
             gates=gates,
             finish_distance_m=distance,
@@ -383,6 +422,7 @@ def run_trial(
         for i in range(n)
     ], {
         "collision_points": 0 if geom_pts is None else int(geom_pts.shape[0]),
+        "lane_collision_points": 0 if geom_pts is None else int(geom_pts.shape[0]),
         "self_collision_pairs": 0
         if self_prep is None
         else int(self_prep["pair_a"].numel()),

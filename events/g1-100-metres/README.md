@@ -9,9 +9,10 @@ in `instruction.md`; the complete agent-facing contract is in
 
 ## Difficulty Explanation
 
-The policy must learn locomotion, remain within the lane, avoid geometric
-self-collision, and balance quality against the API and compute cost required to
-discover it. No training method, reward, terrain, or architecture is prescribed.
+The policy must learn locomotion, keep its entire collision envelope within the
+lane, avoid geometric self-collision, and balance quality against the API and
+compute cost required to discover it. No training method, reward, terrain, or
+architecture is prescribed.
 
 ## Verification Explanation
 

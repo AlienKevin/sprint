@@ -331,35 +331,55 @@ def score_capture(path: Path) -> dict[str, Any]:
     run = (capture.get("runs") or [{}])[0]
     times, positions, quaternions = frame_poses(frames[0], len(names))
     forward = torso_forward_trace(names, positions, quaternions)
-    pelvis_index = names.index("pelvis")
-    lateral = np.abs(positions[:, pelvis_index, 1])
     finish = interpolated_crossing(forward, times, COURSE_DISTANCE_M)
     finish_time = None if finish is None else finish[0]
-    lane = interpolated_crossing(lateral, times, LANE_HALF_WIDTH_M)
 
     failed = {
         str(check.get("name"))
         for check in run.get("checks", [])
         if isinstance(check, dict) and not check.get("passed")
     }
-    self_collision = None
-    if "self_collision" in failed:
-        self_collision = first_self_collision(
-            collision_model(names), times, positions, quaternions
-        )
-
     candidates: list[tuple[float, str, int, float]] = []
-    if lane is not None:
-        candidates.append((lane[0], "in_lane", lane[1], lane[2]))
-    if self_collision is not None:
-        candidates.append(
-            (
-                self_collision[0],
-                "self_collision",
-                self_collision[1],
-                self_collision[2],
+    explicit_dq_time = finite_number(run.get("first_disqualification_time_s"))
+    explicit_dq_gate = run.get("first_disqualification_gate")
+    if explicit_dq_time is not None and explicit_dq_gate in {
+        "in_lane",
+        "self_collision",
+    }:
+        index = min(int(np.searchsorted(times, explicit_dq_time)), len(times) - 1)
+        if index == 0:
+            fraction = 0.0
+        else:
+            interval = float(times[index] - times[index - 1])
+            fraction = (
+                0.0
+                if interval <= 0.0
+                else (explicit_dq_time - float(times[index - 1])) / interval
             )
-        )
+            fraction = min(max(fraction, 0.0), 1.0)
+        candidates.append((explicit_dq_time, str(explicit_dq_gate), index, fraction))
+    else:
+        # Legacy captures predate explicit DQ provenance. Their contract judged
+        # the pelvis centre, so preserve that historical rule rather than
+        # retroactively applying today's whole-body lane gate.
+        pelvis_index = names.index("pelvis")
+        lateral = np.abs(positions[:, pelvis_index, 1])
+        lane = interpolated_crossing(lateral, times, LANE_HALF_WIDTH_M)
+        if lane is not None:
+            candidates.append((lane[0], "in_lane", lane[1], lane[2]))
+        if "self_collision" in failed:
+            self_collision = first_self_collision(
+                collision_model(names), times, positions, quaternions
+            )
+            if self_collision is not None:
+                candidates.append(
+                    (
+                        self_collision[0],
+                        "self_collision",
+                        self_collision[1],
+                        self_collision[2],
+                    )
+                )
     if finish_time is not None:
         candidates = [item for item in candidates if item[0] <= finish_time]
     first_dq = min(candidates, default=None)
