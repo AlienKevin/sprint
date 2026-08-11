@@ -1,18 +1,25 @@
 #!/usr/bin/env python3
-"""Reject an evaluation launch if its Modal image warmup is missing or stale."""
+"""Reject an event launch if its Modal image warmup is missing or stale."""
 
 from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+
+from event_runtime.event import load_event  # noqa: E402
+
+
+EVENT = load_event(repository_root=ROOT)
 MANIFEST = ROOT / "runs/ops/modal-image-warmup.json"
 CONTEXTS = {
-    "agent_training": ROOT / "events/g1-100-metres/environment",
-    "verifier": ROOT / "events/g1-100-metres/tests",
+    "agent_training": EVENT.environment,
+    "verifier": EVENT.verifier,
 }
 
 
@@ -33,7 +40,7 @@ def main() -> int:
         payload = json.loads(MANIFEST.read_text())
     except (OSError, json.JSONDecodeError) as exc:
         raise SystemExit(
-            "Modal images are not warmed; run runs/ops/warm_modal_images.py "
+            "Modal images are not warmed; run event_runtime/preflight/warm_images.py "
             f"before launching ({exc})"
         ) from exc
     if payload.get("schema_version") != 1 or payload.get("completed") is not True:

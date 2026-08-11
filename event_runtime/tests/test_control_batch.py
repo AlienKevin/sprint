@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT))
 
 from event_runtime.control import batch as batch_eval  # noqa: E402
 from event_runtime.export import frontier as frontier_update  # noqa: E402
-import training_gpu_canary  # noqa: E402
+from event_runtime.preflight import canary as training_gpu_canary  # noqa: E402
 from event_runtime.export import timeline as unified_timeline  # noqa: E402
 
 

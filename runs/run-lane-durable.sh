@@ -481,7 +481,7 @@ if (( ! RESUMING )); then
     echo "new evaluations require committed benchmark, Harbor, and launcher source" >&2
     exit 1
   fi
-  python3 "$ROOT/runs/ops/check_modal_image_warmup.py"
+  python3 "$ROOT/event_runtime/preflight/check_images.py"
   read -r AGENT_TRAINING_IMAGE_ID VERIFIER_IMAGE_ID < <(
     python3 - "$WARMUP_MANIFEST_PATH" <<'PY'
 import json

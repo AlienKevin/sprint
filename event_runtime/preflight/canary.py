@@ -16,15 +16,18 @@ from typing import Any
 
 import modal
 
-from warm_modal_images import APP_NAME, MANIFEST, VOLUME_NAME, run_sandbox
-
-
 ROOT = Path(__file__).resolve().parents[2]
 REPORT = ROOT / "runs/ops/training-gpu-canary.json"
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 sys.path.insert(0, str(ROOT))
 
+from event_runtime.preflight.warm_images import (  # noqa: E402
+    APP_NAME,
+    MANIFEST,
+    VOLUME_NAME,
+    run_sandbox,
+)
 from event_runtime.cost import agent as agent_cost  # noqa: E402
 from event_runtime.cost import modal as modal_cost  # noqa: E402
 

@@ -23,6 +23,7 @@ from typing import Any
 MODULE_DIR = Path(__file__).resolve().parent
 ROOT = MODULE_DIR.parents[1]
 SCRIPT_DIR = ROOT / "runs" / "ops"
+PREFLIGHT_DIR = ROOT / "event_runtime" / "preflight"
 sys.path.insert(0, str(SCRIPT_DIR))
 sys.path.insert(0, str(ROOT))
 
@@ -156,7 +157,7 @@ def training_gpu_fleet_probe(
         report_path = Path(temporary) / "report.json"
         command = [
             str(HARBOR_PYTHON),
-            str(SCRIPT_DIR / "training_gpu_fleet_probe.py"),
+            str(PREFLIGHT_DIR / "fleet.py"),
             "--report",
             str(report_path),
             "--batch-id",
@@ -531,7 +532,7 @@ def preflight(
     ).read_bytes()
     checks["warm_images"] = (
         subprocess.run(
-            [sys.executable, str(SCRIPT_DIR / "check_modal_image_warmup.py")],
+            [sys.executable, str(PREFLIGHT_DIR / "check_images.py")],
             cwd=ROOT,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

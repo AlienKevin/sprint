@@ -2125,7 +2125,7 @@ class LauncherWiringTests(unittest.TestCase):
         self.assertIn('provenance.get("agent_training_image_id")', launcher)
         self.assertIn('provenance.get("verifier_image_id")', launcher)
         self.assertGreater(
-            launcher.index('python3 "$ROOT/runs/ops/check_modal_image_warmup.py"'),
+            launcher.index('python3 "$ROOT/event_runtime/preflight/check_images.py"'),
             launcher.index("if (( ! RESUMING )); then"),
         )
 

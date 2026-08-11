@@ -7,11 +7,12 @@ from pathlib import Path
 import pytest
 
 
-OPS = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
+PREFLIGHT = ROOT / "event_runtime" / "preflight"
 
 
 def load_script(name: str):
-    path = OPS / name
+    path = PREFLIGHT / name
     spec = importlib.util.spec_from_file_location(path.stem, path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
@@ -20,8 +21,8 @@ def load_script(name: str):
 
 
 def test_context_digest_is_stable_and_ignores_python_cache(tmp_path: Path) -> None:
-    warmer = load_script("warm_modal_images.py")
-    checker = load_script("check_modal_image_warmup.py")
+    warmer = load_script("warm_images.py")
+    checker = load_script("check_images.py")
     (tmp_path / "Dockerfile").write_text("FROM scratch\n")
     expected = warmer.context_digest(tmp_path)
     assert checker.context_digest(tmp_path) == expected
@@ -35,7 +36,7 @@ def test_context_digest_is_stable_and_ignores_python_cache(tmp_path: Path) -> No
 def test_successful_sandbox_uses_returncode_after_wait(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    warmer = load_script("warm_modal_images.py")
+    warmer = load_script("warm_images.py")
 
     class Output:
         @staticmethod
@@ -71,7 +72,7 @@ def test_successful_sandbox_uses_returncode_after_wait(
 def test_warmup_reuses_unchanged_context_image(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    warmer = load_script("warm_modal_images.py")
+    warmer = load_script("warm_images.py")
 
     class ReusedImage:
         object_id = "im-existing"
@@ -96,9 +97,7 @@ def test_warmup_reuses_unchanged_context_image(
         context_sha256="same",
         previous_manifest={
             "completed": True,
-            "contexts": {
-                "verifier": {"sha256": "same", "image_id": "im-existing"}
-            },
+            "contexts": {"verifier": {"sha256": "same", "image_id": "im-existing"}},
         },
     )
 
@@ -111,7 +110,7 @@ def test_warmup_reuses_unchanged_context_image(
 def test_warmup_rebuilds_only_changed_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    warmer = load_script("warm_modal_images.py")
+    warmer = load_script("warm_images.py")
     built = object()
     monkeypatch.setattr(
         warmer,
@@ -126,9 +125,7 @@ def test_warmup_rebuilds_only_changed_context(
         context_sha256="new",
         previous_manifest={
             "completed": True,
-            "contexts": {
-                "verifier": {"sha256": "old", "image_id": "im-existing"}
-            },
+            "contexts": {"verifier": {"sha256": "old", "image_id": "im-existing"}},
         },
     )
 
@@ -156,7 +153,7 @@ def test_sandbox_fails_closed_on_semantic_failure(
     match: str,
 ) -> None:
     del tmp_path
-    warmer = load_script("warm_modal_images.py")
+    warmer = load_script("warm_images.py")
 
     class Output:
         @staticmethod
@@ -192,7 +189,7 @@ def test_sandbox_fails_closed_on_semantic_failure(
 def test_checker_accepts_complete_current_manifest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    checker = load_script("check_modal_image_warmup.py")
+    checker = load_script("check_images.py")
     agent = tmp_path / "agent"
     verifier = tmp_path / "verifier"
     agent.mkdir()
@@ -235,7 +232,7 @@ def test_checker_accepts_complete_current_manifest(
 def test_checker_rejects_changed_context(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    checker = load_script("check_modal_image_warmup.py")
+    checker = load_script("check_images.py")
     agent = tmp_path / "agent"
     verifier = tmp_path / "verifier"
     agent.mkdir()

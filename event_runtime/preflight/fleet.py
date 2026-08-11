@@ -8,13 +8,17 @@ import concurrent.futures
 import hashlib
 import json
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Any
 
 import modal
 
-from warm_modal_images import MANIFEST, run_sandbox
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+
+from event_runtime.preflight.warm_images import MANIFEST, run_sandbox  # noqa: E402
 
 
 def atomic_write(path: Path, payload: dict[str, Any]) -> None:

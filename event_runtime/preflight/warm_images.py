@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Eagerly build and exercise every Modal image used by Sprint evaluations."""
+"""Eagerly build and exercise every Modal image used by an event."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -15,8 +16,14 @@ import modal
 
 
 ROOT = Path(__file__).resolve().parents[2]
-AGENT_CONTEXT = ROOT / "events/g1-100-metres/environment"
-VERIFIER_CONTEXT = ROOT / "events/g1-100-metres/tests"
+sys.path.insert(0, str(ROOT))
+
+from event_runtime.event import load_event  # noqa: E402
+
+
+EVENT = load_event(repository_root=ROOT)
+AGENT_CONTEXT = EVENT.environment
+VERIFIER_CONTEXT = EVENT.verifier
 MANIFEST = ROOT / "runs/ops/modal-image-warmup.json"
 APP_NAME = "sprint-image-warmup"
 VOLUME_NAME = "sprint-image-warmup-artifacts"
