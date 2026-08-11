@@ -116,7 +116,19 @@ def load_policy(path: str, obs_dim: int, act_dim: int, device: str):
         raise SystemExit(
             f"policy emits {out.shape[-1]} actions, environment has {act_dim}"
         )
-    return lambda obs: module(obs.to("cpu")).to(obs.device)
+
+    def infer(obs):
+        return module(obs.to("cpu")).to(obs.device)
+
+    # Preserve the optional state-reset ABI through the CPU/GPU adapter.  The
+    # rollout invokes this at the starting gun, after the exact physical reset.
+    module_reset = getattr(module, "reset", None)
+    if module_reset is not None:
+        def reset(done_mask):
+            module_reset(done_mask.to("cpu"))
+
+        infer.reset = reset
+    return infer
 
 
 def trial(policy_path, runs, *, device="cuda:0", label=""):

@@ -9,13 +9,13 @@
     "course/metrics.py": "fe1ff439a7f2e09baac404edf34f1c725b8ed44d33ace328ff044bdcc023483d",
     "course/policy.py": "23d6b87f010c1bf410f429fa5caa6797ff996043c0a0620779e8eef4d23353f3",
     "course/replay.py": "9f0245d29a29ddd485527c7f24530bff2d4821b44be856222116693e3f9e7b85",
-    "course/rollout.py": "7cab0a788bbf0c4198edc5bb8d88694819147cf5b596d9de282537a4220782af",
+    "course/rollout.py": "b1cdb134d181b79291c348c76d30bf349d774f7c78e22523be32f8c552a20ed7",
     "course/standing_start.py": "fa9af143ffa403fa6b238783bdc18cd645d1f1eca6a0c3fb7106512d2b7e3c31",
     "course/tasks.py": "0c2aa2e26bee69303018c620837baf788b369ef015bb2b581cc56d3c4b906feb",
     "sprint_gpu_pipeline.py": "fc2c0212491b9e7c75effdbc31b5073d3a5ea7c4df34c49d23faf75c8e5d29c7",
     "test.sh": "021b7bbe591dea21a3a5aa5a975293a3997b40154af08f4d43d78ff97b3165df",
     "verifier_telemetry.py": "ca27b4269a1d1f6484da3c88ccea4410bd88667678ba5d2b031b7169b104f60f",
-    "verify.py": "35ec3746f1ec58d6c21f7b543361c9b43abd0052be46f8583dc3d11104175517"
+    "verify.py": "36bf178a6d7765f9d589fd6b781a0ad74236bf74a4750e0afba197d098ef6a19"
   },
   "schema_version": 1,
   "source": "events/g1-100-metres/tests"

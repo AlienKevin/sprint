@@ -130,6 +130,31 @@ def test_course_has_no_per_rollout_start_perturbation() -> None:
     assert '"velocity_range": {}' in config
 
 
+def test_policy_cannot_choose_a_private_pre_start_pose() -> None:
+    source = (TASK / "tests/course/rollout.py").read_text()
+    settle = source.index("# 1. Initialize PhysX/contact state")
+    gun = source.index("# 2. The starting gun")
+    release = source.index("# 3. release")
+    pre_start = source[settle:gun]
+    at_gun = source[gun:release]
+
+    assert "env.step(zero_actions)" in pre_start
+    assert "env.step(policy(obs_t))" not in pre_start
+    assert (
+        "with torch.inference_mode():\n            env.step(zero_actions)"
+        not in pre_start
+    )
+    assert "obs, _ = env.reset()" in at_gun
+    assert 'getattr(policy, "reset", None)' in at_gun
+    assert "reset_policy(torch.ones" in at_gun
+
+
+def test_official_loader_preserves_optional_policy_reset() -> None:
+    source = (TASK / "tests/verify.py").read_text()
+    assert 'module_reset = getattr(module, "reset", None)' in source
+    assert "infer.reset = reset" in source
+
+
 def test_canonical_standing_start_sets_every_initial_state_field() -> None:
     source = TASK / "tests/course/standing_start.py"
     module_spec = importlib.util.spec_from_file_location("standing_start", source)

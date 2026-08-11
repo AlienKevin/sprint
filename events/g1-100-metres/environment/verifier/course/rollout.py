@@ -9,12 +9,12 @@ rollout loops that drift apart quietly break that.
 
 The protocol, in order:
 
-1. **Settle.**  Stand on the line under a zero command.  The G1 spawns a couple
-   of centimetres clear of the plane and drops; timing from that instant charges
-   the policy for simulator initialization.
-2. **Release.**  Hand back the commanded speed and start the clock.  Distance is
-   measured from here, not from the spawn.
-3. **Record.**  One compact device-to-host transfer per control step containing
+1. **Initialize.**  Warm the simulator under zero actions, never policy actions.
+2. **Reset.**  Restore the exact published standing-start pose and clear any
+   optional policy state.  This reset is the starting line shown at replay t=0.
+3. **Release.**  Hand back the commanded speed and start the clock.  Distance is
+   measured from here, not from simulator initialization.
+4. **Record.**  One compact device-to-host transfer per control step containing
    only forward position, whole-body lateral extent, speed, and the
    self-collision gate.
 """
@@ -349,14 +349,29 @@ def run_trial(
     obs_t = obs["policy"] if isinstance(obs, dict) else obs
     all_ids = torch.arange(n, device=device)
 
-    # 1. settle under zero command; the scored clock has not started.
+    # 1. Initialize PhysX/contact state without letting the candidate choose a
+    # private pre-start posture.  A zero action holds the published default
+    # joint targets; calling policy() here used to give every policy an
+    # unscored second in which to move before replay t=0.
     command.hold(all_ids)
+    zero_actions = torch.zeros((n, robot.num_joints), device=device)
     for _ in range(int(settle_seconds / dt)):
-        with torch.inference_mode():
-            obs, *_ = env.step(policy(obs_t))
-        obs_t = obs["policy"] if isinstance(obs, dict) else obs
+        # Do not wrap this environment step in inference_mode: Isaac caches
+        # tensors produced by the step and the canonical reset below must
+        # overwrite them in place.
+        env.step(zero_actions)
 
-    # 2. release
+    # 2. The starting gun is a fresh canonical environment reset.  It restores
+    # root pose, every joint, and all velocities after simulator warm-up.  Reset
+    # recurrent policy state at the same boundary so both physical and hidden
+    # state are identical across candidates.
+    obs, _ = env.reset()
+    obs_t = obs["policy"] if isinstance(obs, dict) else obs
+    reset_policy = getattr(policy, "reset", None)
+    if reset_policy is not None:
+        reset_policy(torch.ones(n, dtype=torch.bool, device=device))
+
+    # 3. release
     command.release(all_ids)
     start_x = torso_forward().clone()
     trace: dict[str, list] = {
