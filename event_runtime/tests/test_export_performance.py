@@ -145,6 +145,9 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "const plottable=point=>finite(point[xKey])&&finite(point.continuous_score_mps)" in app
     assert "point[xKey]<=aucCap" not in app
     assert "submission${onFrontier?' frontier':''}" in app
+    assert "class:'submission-hit'" in app
+    assert "class:'submission-target'" in app
+    assert "This policy has no archived website replay." in app
     assert 'id="cost-scores"' in page
     assert 'id="time-scores"' in page
     assert "auc-bar-row" in app

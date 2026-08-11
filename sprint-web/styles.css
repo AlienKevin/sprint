@@ -215,23 +215,31 @@ main {
 .submission {
   stroke: #050505;
   stroke-width: 2;
-  opacity: 0.48;
+  opacity: 0.62;
 }
 .submission.frontier {
   opacity: 1;
 }
-.submission.replayable {
+.submission-target {
   cursor: pointer;
+  outline: none;
+}
+.submission-hit {
+  fill: transparent;
+  pointer-events: all;
+}
+.submission.replayable {
   opacity: 1;
   stroke: var(--text);
   stroke-width: 1.5px;
   transition: r .15s ease, stroke-width .15s ease;
 }
-.submission.replayable:hover,
-.submission.replayable:focus {
-  r: 8px;
+.submission-target:hover .submission,
+.submission-target:focus .submission {
+  r: 9px;
+  opacity: 1;
+  stroke: var(--text);
   stroke-width: 2.5px;
-  outline: none;
 }
 .dq {
   fill: var(--fail);
