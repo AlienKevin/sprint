@@ -297,7 +297,7 @@ def main() -> int:
                 if row.get("attempt") is not None
             }
         )
-        import gpu_timeline_host
+        from event_runtime.telemetry import timeline as gpu_timeline_host
 
         summary = gpu_timeline_host.host_write_summary(run)
         timeline_attempts = sorted(

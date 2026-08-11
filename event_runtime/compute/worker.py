@@ -1268,7 +1268,7 @@ def _timeline_event(
     **detail: Any,
 ) -> None:
     try:
-        import gpu_timeline_host
+        from event_runtime.telemetry import timeline as gpu_timeline_host
 
         gpu_timeline_host.host_append_event(
             run,

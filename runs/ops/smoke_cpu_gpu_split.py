@@ -364,7 +364,7 @@ def main() -> int:
     if job_id:
         # Force a host poll while GPU worker may still be up / freshly finished.
         try:
-            import telemetry_host
+            from event_runtime.telemetry import host as telemetry_host
 
             poll = telemetry_host.poll_once(run_id)
             host_evidence = (
@@ -489,7 +489,7 @@ def main() -> int:
     timeline_ok = False
     timeline_evidence = "n/a"
     try:
-        import gpu_timeline_host
+        from event_runtime.telemetry import timeline as gpu_timeline_host
 
         summary = gpu_timeline_host.host_write_summary(run)
         phases = {

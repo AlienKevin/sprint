@@ -1168,7 +1168,7 @@ while True:
             with (
                 mock.patch.object(sprintctl, "load_run", return_value=(state_dir, run)),
                 mock.patch.object(sprintctl, "request_stop") as request_stop,
-                mock.patch("telemetry_host.poll_once"),
+                mock.patch("event_runtime.telemetry.host.poll_once"),
                 mock.patch.object(
                     sprintctl, "discover_job_and_trial", return_value=(None, None)
                 ),
@@ -1202,7 +1202,7 @@ while True:
                     side_effect=lambda _run_id: order.append("dispatch"),
                 ),
                 mock.patch(
-                    "telemetry_host.poll_once",
+                    "event_runtime.telemetry.host.poll_once",
                     side_effect=lambda _run_id: order.append("telemetry"),
                 ),
                 mock.patch.object(

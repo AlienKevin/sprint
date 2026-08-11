@@ -22,9 +22,11 @@ from typing import Any
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 ROOT = pathlib.Path(__file__).resolve().parents[2]
+OPS_DIR = ROOT / "runs/ops"
 RUNS = ROOT / "runs"
 sys.path.insert(0, str(SCRIPT_DIR))
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(OPS_DIR))
 
 import sprintctl  # noqa: E402
 

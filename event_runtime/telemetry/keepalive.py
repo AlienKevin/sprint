@@ -4,6 +4,7 @@
 Used by durable and open Harbor runners so every future trial gets sampling
 without host coupling. Safe when /opt/sprint-telemetry.sh is missing.
 """
+
 from __future__ import annotations
 
 import argparse

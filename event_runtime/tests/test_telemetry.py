@@ -13,19 +13,20 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[2]
 TELEMETRY_PY = ROOT / "events/g1-100-metres/environment/sprint-telemetry.py"
 TELEMETRY_SH = ROOT / "events/g1-100-metres/environment/sprint-telemetry.sh"
-KEEPALIVE_PY = ROOT / "runs/ops/telemetry_keepalive.py"
+KEEPALIVE_PY = ROOT / "event_runtime/telemetry/keepalive.py"
 VERIFIER_TELEMETRY_PY = ROOT / "events/g1-100-metres/tests/verifier_telemetry.py"
 PIPELINE_PY = ROOT / "events/g1-100-metres/environment/sprint_gpu_pipeline.py"
 VERIFIER_PIPELINE_PY = ROOT / "events/g1-100-metres/tests/sprint_gpu_pipeline.py"
 OPS = ROOT / "runs/ops"
 sys.path.insert(0, str(OPS))
+sys.path.insert(0, str(ROOT))
 
-import telemetry_keepalive  # noqa: E402
-import telemetry_host  # noqa: E402
 from event_runtime.compute import worker as gpu_worker  # noqa: E402
+from event_runtime.telemetry import host as telemetry_host  # noqa: E402
+from event_runtime.telemetry import keepalive as telemetry_keepalive  # noqa: E402
 
 
 def load_module(name: str, path: Path):

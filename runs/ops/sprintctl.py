@@ -1052,7 +1052,7 @@ def monitor_once(
     # Host-side GPU/CPU telemetry backup (agent + best-effort verifiers).
     # In-sandbox sidecar is primary; this persists even if the mount lags.
     try:
-        import telemetry_host
+        from event_runtime.telemetry import host as telemetry_host
 
         telemetry_host.poll_once(run_id)
     except Exception as exc:  # noqa: BLE001

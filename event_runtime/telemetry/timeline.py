@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Host-side GPU timeline emit/summarize via Modal Volume (preemption-safe)."""
+
 from __future__ import annotations
 
 import importlib.util
@@ -13,8 +14,11 @@ from pathlib import Path
 from typing import Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-ENV_DIR = Path(__file__).resolve().parents[2] / "events/g1-100-metres/environment"
+ROOT = Path(__file__).resolve().parents[2]
+OPS_DIR = ROOT / "runs/ops"
+ENV_DIR = ROOT / "events/g1-100-metres/environment"
 sys.path.insert(0, str(SCRIPT_DIR))
+sys.path.insert(0, str(OPS_DIR))
 
 import sprintctl  # noqa: E402
 
@@ -174,9 +178,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         print(
             json.dumps(
-                host_append_event(
-                    run, phase=phase, action=action, job_id=job_id
-                ),
+                host_append_event(run, phase=phase, action=action, job_id=job_id),
                 indent=2,
                 sort_keys=True,
             )
