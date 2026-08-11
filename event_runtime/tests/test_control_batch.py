@@ -972,7 +972,7 @@ def test_replay_renderer_exposes_complete_cli() -> None:
     completed = subprocess.run(
         [
             sys.executable,
-            str(ROOT / "events/g1-100-metres/visualization/replay.py"),
+            str(ROOT / "events/g1-100-metres/replay/render.py"),
             "--help",
         ],
         text=True,

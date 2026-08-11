@@ -35,7 +35,9 @@ RUNS = ROOT / "runs" / "ops"
 WEB = ROOT / "web"
 sys.path.insert(0, str(ROOT))
 from event_runtime.cost import agent as agent_cost  # noqa: E402
+from event_runtime.event import load_event  # noqa: E402
 
+EVENT = load_event(repository_root=ROOT)
 COURSE_DISTANCE_M = 100.0
 LANE_HALF_WIDTH_M = 0.61
 SELF_COLLISION_THRESHOLD_M = 0.01
@@ -66,7 +68,7 @@ def completion_adjusted_speed(distance_m: float, elapsed_s: float) -> float:
 def contract_constants() -> tuple[dict[str, str | None], int, float, float]:
     """Read collision constants from the scorer without importing Isaac/Torch."""
 
-    source = ROOT / "events/g1-100-metres/environment/verifier/course/rollout.py"
+    source = EVENT.environment / "verifier/course/rollout.py"
     tree = ast.parse(source.read_text())
     wanted = {
         "G1_BODY_PARENT",
@@ -152,7 +154,7 @@ class CollisionModel:
 def collision_model(names: list[str]) -> CollisionModel:
     parents, ancestry, radius_pad, sphere_margin = contract_constants()
     geometry_path = (
-        ROOT / "events/g1-100-metres/environment/verifier/collision_geometry.json"
+        EVENT.environment / "verifier/collision_geometry.json"
     )
     geometry = load_json(geometry_path)
     bodies: list[BodyGeometry] = []
@@ -231,7 +233,7 @@ def torso_forward_trace(
     names: list[str], positions: np.ndarray, quaternions: np.ndarray
 ) -> np.ndarray:
     geometry_path = (
-        ROOT / "events/g1-100-metres/environment/verifier/collision_geometry.json"
+        EVENT.environment / "verifier/collision_geometry.json"
     )
     geometry = load_json(geometry_path)["bodies"]["torso_link"]
     body_index = names.index("torso_link")
@@ -510,15 +512,13 @@ def publish_policy_replays(
 ) -> None:
     """Attach a replay to every scored policy, rendering one when needed."""
 
-    module_path = ROOT / "events/g1-100-metres/visualization/replay.py"
+    module_path = EVENT.root / "replay/render.py"
     spec = importlib.util.spec_from_file_location("sprint_frontier_replay", module_path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"cannot load replay renderer: {module_path}")
     renderer = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(renderer)
-    hq = load_json(ROOT / "events/g1-100-metres/visualization/assets/g1_hq.json")[
-        "meshes"
-    ]
+    hq = load_json(EVENT.root / "replay/g1_hq.json")["meshes"]
     replay_dir = WEB / "replay"
     replay_dir.mkdir(parents=True, exist_ok=True)
     for stale in replay_dir.glob("readout-*.html"):

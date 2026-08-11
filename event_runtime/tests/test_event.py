@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from event_runtime.event import load_event
+from event_runtime.sync_verifier import verifier_source_files
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -28,3 +30,14 @@ def test_event_name_rejects_unsafe_or_noncanonical_values(name: str) -> None:
 def test_unknown_event_fails_closed() -> None:
     with pytest.raises(FileNotFoundError):
         load_event("not-an-event", repository_root=ROOT)
+
+
+def test_published_verifier_contract_matches_declared_sources() -> None:
+    event = load_event(repository_root=ROOT)
+    manifest = event.environment / "verifier/SOURCE_MANIFEST.json"
+    published = json.loads(manifest.read_text())["files"]
+    selected = {
+        relative.as_posix() for relative in verifier_source_files(event.verifier)
+    }
+    assert selected == set(published)
+    assert not any(path.startswith("test_") for path in selected)

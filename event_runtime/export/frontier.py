@@ -9,6 +9,7 @@ import dataclasses
 import datetime as dt
 import fcntl
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -23,8 +24,15 @@ from typing import Any, Callable, Iterator, Sequence
 
 ROOT = Path(__file__).resolve().parents[2]
 WEB_DEFAULT = ROOT / "web"
-BUILD_SCRIPT = ROOT / "events/g1-100-metres/visualization/replay.py"
-HQ_PATH = ROOT / "events/g1-100-metres/visualization/assets/g1_hq.json"
+sys.path.insert(0, str(ROOT))
+from event_runtime.event import load_event  # noqa: E402
+
+EVENT = load_event(repository_root=ROOT)
+EVENT_REPLAY = EVENT.root / "replay"
+BUILD_SCRIPT = EVENT_REPLAY / "render.py"
+HQ_PATH = EVENT_REPLAY / "g1_hq.json"
+SCENE_SOURCE = EVENT_REPLAY / "scene.js"
+PLAYER_TEMPLATE = ROOT / "web/replay-template.html"
 PROJECT_ID = "prj_dgvTovRNwdSDcefYmo6oXfju9M3p"
 ORG_ID = "team_SNgoAcFfHYXYdUIXhj16bGek"
 VERCEL_SCOPE = "alienkevins-projects"
@@ -420,8 +428,8 @@ def renderer_source_hash() -> str:
     for path in (
         Path(__file__).resolve(),
         BUILD_SCRIPT,
-        BUILD_SCRIPT.parent / "assets" / "scene_lane.js",
-        BUILD_SCRIPT.parent / "assets" / "replay.html",
+        SCENE_SOURCE,
+        PLAYER_TEMPLATE,
     ):
         digest.update(path.name.encode())
         digest.update(b"\0")
@@ -641,8 +649,13 @@ def _rotate_xyzw(quaternion: Sequence[float], vector: Sequence[float]) -> list[f
 
 
 def validate_capture_precision(capture: Path, html: Path) -> dict[str, Any]:
-    sys.path.insert(0, str(BUILD_SCRIPT.parent))
-    from replay import G1_PARENT, _rest_offsets  # noqa: PLC0415
+    spec = importlib.util.spec_from_file_location("event_replay_renderer", BUILD_SCRIPT)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load replay renderer: {BUILD_SCRIPT}")
+    renderer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(renderer)
+    G1_PARENT = renderer.G1_PARENT
+    _rest_offsets = renderer._rest_offsets
 
     payload = json.loads(capture.read_text())
     names = payload["body_names"]
@@ -750,7 +763,7 @@ def capture_and_render(
     web_html = web / "replay" / f"{label}.html"
 
     with tempfile.TemporaryDirectory(
-        prefix="sprint-frontier-", dir=state_path.parent
+        prefix="event-frontier-", dir=state_path.parent
     ) as raw:
         temporary = Path(raw)
         capture_tmp = temporary / "capture.json"
@@ -781,7 +794,7 @@ def capture_and_render(
                 "--meta-policy",
                 label,
                 "--title",
-                f"G1 Sprint attempt #{policy['index']} - {headline}",
+                f"G1 100 metres attempt #{policy['index']} - {headline}",
                 "--eyebrow",
                 f"Unitree G1 · submission #{policy['index']}",
                 "--headline",

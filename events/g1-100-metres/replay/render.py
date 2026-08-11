@@ -10,8 +10,11 @@ import re
 import statistics
 from pathlib import Path
 
-SP = Path(__file__).resolve().parent / "assets"
-HQ_DEFAULT = Path(__file__).resolve().parent / "assets/g1_hq.json"
+EVENT_REPLAY = Path(__file__).resolve().parent
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+PLAYER_TEMPLATE = REPOSITORY_ROOT / "web/replay-template.html"
+SCENE_SOURCE = EVENT_REPLAY / "scene.js"
+HQ_DEFAULT = EVENT_REPLAY / "g1_hq.json"
 COLS = ["#6E97C4", "#E0A43B", "#B6F24E", "#F2704E"]
 LANE_HALF_WIDTH_M = 0.61
 SCORED_TIMEOUT_S = 60.0
@@ -310,7 +313,7 @@ def capture_to_data(
 def policy_nav_html(_active: str) -> str:
     """Return to the live comparison; policy navigation lives there."""
     return (
-        '<div class="polsel" role="navigation" aria-label="Sprint comparison">'
+        '<div class="polsel" role="navigation" aria-label="Policy comparison">'
         '<a class="pol" href="/">← All runs and policies</a></div>'
     )
 
@@ -355,15 +358,15 @@ def assemble_html(
     active: str,
 ) -> str:
     """Render one self-contained replay from the checked-in HTML/JS chrome."""
-    scene = (SP / "scene_lane.js").read_text()
+    scene = SCENE_SOURCE.read_text()
     scene = scene.replace(
         "let raf=null,startWall=null,speed=0.6;",
         "let raf=null,startWall=null,speed=1;",
     )
-    template = (SP / "replay.html").read_text()
+    template = PLAYER_TEMPLATE.read_text()
     marker = "<script>const DATA="
     if marker not in template:
-        raise ValueError(f"replay shell is missing data marker: {SP / 'replay.html'}")
+        raise ValueError(f"replay shell is missing data marker: {PLAYER_TEMPLATE}")
     head = template.split(marker, 1)[0]
 
     labels: list[str] = []
