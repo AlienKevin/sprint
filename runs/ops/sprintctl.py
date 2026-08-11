@@ -36,6 +36,7 @@ from frontier_update import (  # noqa: E402
     utc_now,
 )
 import modal_cost  # noqa: E402
+import agent_cost  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 OPS_ROOT = ROOT / "runs" / "ops"
@@ -1070,7 +1071,23 @@ def monitor_once(
                     sync_durable_trace(state_dir, run)
                 if run.get("usage_audit_required"):
                     reconstruct_codex_usage(state_dir, run)
-                build_unified_timeline(state_dir, run, upload=upload)
+                timeline = build_unified_timeline(state_dir, run, upload=upload)
+                cost_payload = agent_cost.build_snapshot(timeline, state_dir=state_dir)
+                cost_path = state_dir / "telemetry" / "agent-cost.json"
+                atomic_write_json(cost_path, cost_payload, mode=0o600)
+                import gpu_worker
+
+                mirror = gpu_worker.mirror_agent_cost(run, cost_payload)
+                atomic_write_json(
+                    state_dir / "telemetry" / "agent-cost-mirror.json",
+                    {"schema_version": 1, "updated_at": utc_now(), **mirror},
+                    mode=0o600,
+                )
+                if mirror.get("agent_cost_mirror") == "error":
+                    raise RuntimeError(
+                        "agent cost mirror failed: "
+                        + str(mirror.get("agent_cost_mirror_error") or "unknown")
+                    )
             except Exception as exc:  # noqa: BLE001
                 record_controller_error(run_id, exc)
         frontier_path = state_dir / "frontier-state.json"

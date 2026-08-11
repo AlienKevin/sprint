@@ -124,7 +124,9 @@ def test_cost_ledger_integrates_requests_and_allocation_intervals() -> None:
                 },
             },
             "modal_provider_billing": {
-                "by_role_usd": {"cpu_agent": 4, "training_gpu": 20}
+                # Provider reconciliation is audit-only and must not mutate the
+                # deterministic comparison ledger or an agent's live cost.
+                "by_role_usd": {"cpu_agent": 400, "training_gpu": 2000}
             },
         },
     }

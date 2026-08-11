@@ -14,7 +14,7 @@ mkdir -p "$LOGS_DIR"
 # with the agent-controlled training GPU. Harbor archives this whole directory
 # for continuous attempts and the final score.
 TELEMETRY_DIR="$LOGS_DIR/telemetry"
-SPRINT_REQUESTED_CPU_CORES=8 SPRINT_REQUESTED_MEMORY_MIB=32768 \
+SPRINT_REQUESTED_CPU_CORES=4 SPRINT_REQUESTED_MEMORY_MIB=10240 \
   python3 "$TESTS_DIR/verifier_telemetry.py" \
     --out-dir "$TELEMETRY_DIR" \
     --interval-seconds "${SPRINT_VERIFIER_TELEMETRY_INTERVAL_S:-5}" &

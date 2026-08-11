@@ -20,6 +20,7 @@ sys.path.insert(0, str(OPS))
 
 import batch_eval  # noqa: E402
 import frontier_update  # noqa: E402
+import training_gpu_canary  # noqa: E402
 import unified_timeline  # noqa: E402
 
 
@@ -148,10 +149,25 @@ def test_functional_gpu_canary_must_match_both_warmed_images(
     canary.write_text(
         json.dumps(
             {
-                "schema_version": 3,
+                "schema_version": 4,
                 "completed": True,
                 "full_path_verified": True,
                 "verifier_equivalence_verified": True,
+                "cost_equivalence_verified": True,
+                "cost_equivalence": {
+                    "completed": True,
+                    "comparison": {
+                        "verified": True,
+                        "tolerance_usd": 1e-9,
+                        "max_absolute_delta_usd": 0.0,
+                        "comparisons": {
+                            "model_api_usd": {},
+                            "cpu_agent_usd": {},
+                            "training_sandboxes_usd": {},
+                            "total_usd": {},
+                        },
+                    },
+                },
                 "image_id": "im-agent",
                 "verifier_image_id": "im-verifier",
             }
@@ -164,6 +180,68 @@ def test_functional_gpu_canary_must_match_both_warmed_images(
     payload["verifier_image_id"] = "im-stale"
     canary.write_text(json.dumps(payload))
     assert not batch_eval.functional_gpu_canary_ready()
+
+
+def test_functional_gpu_canary_fails_closed_on_cost_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    warmup = tmp_path / "warmup.json"
+    canary = tmp_path / "canary.json"
+    warmup.write_text(
+        json.dumps(
+            {
+                "completed": True,
+                "contexts": {
+                    "agent_training": {"image_id": "im-agent"},
+                    "verifier": {"image_id": "im-verifier"},
+                },
+            }
+        )
+    )
+    canary.write_text(
+        json.dumps(
+            {
+                "schema_version": 4,
+                "completed": True,
+                "full_path_verified": True,
+                "verifier_equivalence_verified": True,
+                "cost_equivalence_verified": False,
+                "cost_equivalence": {
+                    "completed": True,
+                    "comparison": {"verified": False},
+                },
+                "image_id": "im-agent",
+                "verifier_image_id": "im-verifier",
+            }
+        )
+    )
+    monkeypatch.setattr(batch_eval, "WARMUP_MANIFEST", warmup)
+    monkeypatch.setattr(batch_eval, "FUNCTIONAL_CANARY_REPORT", canary)
+    assert not batch_eval.functional_gpu_canary_ready()
+
+
+def test_cost_canary_compares_every_component_and_fails_closed() -> None:
+    payload = {
+        "total_usd": 1.0,
+        "components": {
+            "model_api": {"cost_usd": 0.1},
+            "cpu_agent": {"cost_usd": 0.2},
+            "training_sandboxes": {"cost_usd": 0.7},
+        },
+    }
+    expected = {
+        "model_api_usd": 0.1,
+        "cpu_agent_usd": 0.2,
+        "training_sandboxes_usd": 0.7,
+        "total_usd": 1.0,
+    }
+    result = training_gpu_canary._assert_cost_match(payload, expected=expected)
+    assert result["verified"]
+    assert result["max_absolute_delta_usd"] == 0
+
+    expected["training_sandboxes_usd"] = 0.70001
+    with pytest.raises(RuntimeError, match="sprint-cost differs"):
+        training_gpu_canary._assert_cost_match(payload, expected=expected)
 
 
 def test_training_gpu_fleet_probe_requires_every_exact_worker_and_image(

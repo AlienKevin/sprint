@@ -8,7 +8,7 @@ committed.
 
 ## What a run provides
 
-- one durable CPU agent sandbox (4 physical cores, 16 GiB, no GPU);
+- one durable CPU agent sandbox (2 physical cores, 8 GiB, no GPU);
 - at most one active A10G training worker per model run, resumed from durable
   checksummed checkpoints after preemption;
 - agent-funded local verification plus blind archival scoring through one

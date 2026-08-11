@@ -425,9 +425,9 @@ payload = {
     "sandbox_timeout_seconds": int(sandbox_timeout),
     "sandbox_timeout_role": "modal_maximum_lifetime",
     "cpu_agent": {
-        "physical_cpu_cores": 4,
-        "vcpus_equivalent": 8,
-        "memory_mb": 16384,
+        "physical_cpu_cores": 2,
+        "vcpus_equivalent": 4,
+        "memory_mb": 8192,
         "gpus": 0,
     },
     "cgroup_telemetry_required": True,
@@ -643,24 +643,24 @@ base = {
     "resource_contract": {
         "cpu_agent": {
             "instances": 1,
-            "physical_cpu_cores": 4,
-            "vcpus_equivalent": 8,
-            "memory_mb": 16384,
+            "physical_cpu_cores": 2,
+            "vcpus_equivalent": 4,
+            "memory_mb": 8192,
             "gpus": 0,
         },
         "training_worker": {
             "max_concurrent": 1,
-            "physical_cpu_cores": 8,
-            "vcpus_equivalent": 16,
-            "memory_mb": 32768,
+            "physical_cpu_cores": 6,
+            "vcpus_equivalent": 12,
+            "memory_mb": 12288,
             "gpu_count": 1,
             "gpu_type": "A10G",
         },
         "verifier": {
             "max_concurrent": 1,
-            "physical_cpu_cores": 8,
-            "vcpus_equivalent": 16,
-            "memory_mb": 32768,
+            "physical_cpu_cores": 4,
+            "vcpus_equivalent": 8,
+            "memory_mb": 10240,
             "gpu_count": 1,
             "gpu_type": "A10G",
         },
@@ -795,8 +795,8 @@ SHARED_AGENT_ENV=(
   --ae "SPRINT_CPU_LAUNCH_ATTEMPT=$CPU_LAUNCH_ATTEMPT"
   --ae "SPRINT_MODEL=$MODEL"
   --ae "SPRINT_SCORING_QUEUE_KEY=${BATCH_ID:-standalone}"
-  --ae "SPRINT_REQUESTED_CPU_CORES=4"
-  --ae "SPRINT_REQUESTED_MEMORY_MIB=16384"
+  --ae "SPRINT_REQUESTED_CPU_CORES=2"
+  --ae "SPRINT_REQUESTED_MEMORY_MIB=8192"
 )
 if [[ "$AGENT_KIND" == "claude-code" ]]; then
   AGENT_HARBOR_ARGS=(

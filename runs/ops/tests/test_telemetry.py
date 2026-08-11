@@ -415,9 +415,9 @@ class TelemetrySamplerTests(unittest.TestCase):
         self.assertEqual(
             config["cpu_agent"],
             {
-                "physical_cpu_cores": 4,
-                "vcpus_equivalent": 8,
-                "memory_mb": 16384,
+                "physical_cpu_cores": 2,
+                "vcpus_equivalent": 4,
+                "memory_mb": 8192,
                 "gpus": 0,
             },
         )
@@ -504,12 +504,12 @@ class TelemetrySamplerTests(unittest.TestCase):
     def test_host_poll_normalizes_to_requested_resource_contract(self) -> None:
         run = {
             "resource_contract": {
-                "cpu_agent": {"physical_cpu_cores": 4, "memory_mb": 16384},
+                "cpu_agent": {"physical_cpu_cores": 2, "memory_mb": 8192},
                 "training_worker": {
                     "physical_cpu_cores": 8,
                     "memory_mb": 32768,
                 },
-                "verifier": {"physical_cpu_cores": 8, "memory_mb": 32768},
+                "verifier": {"physical_cpu_cores": 4, "memory_mb": 10240},
             }
         }
         sample = {

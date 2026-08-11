@@ -117,9 +117,9 @@ def cgroup_v1_sample(mount: pathlib.Path) -> dict[str, Any]:
         return {}
     elapsed_usec = max(1.0, (time.monotonic_ns() - started_ns) / 1000)
     used_cores = max(0, usage1 - usage0) / 1000 / elapsed_usec
-    requested_cores = float(os.environ.get("SPRINT_REQUESTED_CPU_CORES", "8"))
+    requested_cores = float(os.environ.get("SPRINT_REQUESTED_CPU_CORES", "4"))
     requested_memory_kib = (
-        int(os.environ.get("SPRINT_REQUESTED_MEMORY_MIB", "32768")) * 1024
+        int(os.environ.get("SPRINT_REQUESTED_MEMORY_MIB", "10240")) * 1024
     )
     memory_limit = scalar(memory / "memory.limit_in_bytes")
     if memory_limit is not None and memory_limit >= 1 << 60:
@@ -185,9 +185,9 @@ def cgroup_sample(root: pathlib.Path | None = None) -> dict[str, Any]:
     cpu1 = keyed_ints(root / "cpu.stat")
     elapsed_usec = max(1.0, (time.monotonic_ns() - started_ns) / 1000)
     used_cores = max(0, cpu1.get("usage_usec", 0) - cpu0["usage_usec"]) / elapsed_usec
-    requested_cores = float(os.environ.get("SPRINT_REQUESTED_CPU_CORES", "8"))
+    requested_cores = float(os.environ.get("SPRINT_REQUESTED_CPU_CORES", "4"))
     requested_memory_kib = (
-        int(os.environ.get("SPRINT_REQUESTED_MEMORY_MIB", "32768")) * 1024
+        int(os.environ.get("SPRINT_REQUESTED_MEMORY_MIB", "10240")) * 1024
     )
     memory_limit = scalar(root / "memory.max")
     memory_limit_kib = memory_limit // 1024 if memory_limit is not None else None

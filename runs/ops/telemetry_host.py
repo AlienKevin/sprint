@@ -107,8 +107,11 @@ except OSError:
     pass
 cpu0 = keyed(root / "cpu.stat")
 memory_current = scalar(root / "memory.current")
-requested_cpu = 8.0 if "__ROLE__" in {"training-gpu", "verifier-gpu"} else 4.0
-requested_memory_kib = (32768 if requested_cpu == 8.0 else 16384) * 1024
+requested_cpu = {"training-gpu": 6.0, "verifier-gpu": 4.0}.get("__ROLE__", 2.0)
+requested_memory_kib = {
+    "training-gpu": 12288,
+    "verifier-gpu": 10240,
+}.get("__ROLE__", 8192) * 1024
 resource = {}
 if "usage_usec" in cpu0 and memory_current is not None:
     started_ns = time.monotonic_ns()

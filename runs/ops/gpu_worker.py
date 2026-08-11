@@ -66,6 +66,7 @@ AGENT_GPU_MIRROR_LOG_BYTES = 768 * 1024
 AGENT_GPU_MIRROR_ARTIFACT_BYTES = 32 * 1024 * 1024
 AGENT_GPU_MIRROR_ARG_BYTES = 64 * 1024
 AGENT_GPU_CLI_PATH = "/usr/local/bin/sprint-gpu-train"
+AGENT_COST_CLI_PATH = "/usr/local/bin/sprint-cost"
 MAX_WORK_ARCHIVE_BYTES = 256 * 1024 * 1024
 
 
@@ -226,6 +227,88 @@ os.replace(cli_temporary, cli_target)
         "agent_mirror_files": len(files),
         "agent_mirror_log_truncated": log_truncated,
         "agent_cli_sha256": cli_sha256,
+    }
+
+
+def mirror_agent_cost(run: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    """Atomically publish a trusted cost snapshot and its read-only CLI.
+
+    The CPU agent has no Modal or provider credentials.  Only the host computes
+    this document, then installs it under the existing host-owned /run mirror.
+    """
+    container_id = str(run.get("agent_container_id") or "")
+    if not container_id.startswith("ta-"):
+        return {"agent_cost_mirror": "unavailable"}
+    content = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode()
+    cli_content = (ENV_DIR / "bin" / "sprint-cost").read_bytes()
+    cli_sha256 = hashlib.sha256(cli_content).hexdigest()
+    envelope = {
+        "cost": base64.b64encode(content).decode("ascii"),
+        "cli": base64.b64encode(cli_content).decode("ascii"),
+        "cli_sha256": cli_sha256,
+    }
+    compressed = gzip.compress(json.dumps(envelope, separators=(",", ":")).encode())
+    if len(compressed) > AGENT_GPU_MIRROR_ARG_BYTES:
+        return {
+            "agent_cost_mirror": "error",
+            "agent_cost_mirror_error": "cost payload exceeds trusted mirror bound",
+        }
+    install = """
+import base64, gzip, hashlib, json, os, pathlib, sys
+root = pathlib.Path(sys.argv[1]).resolve()
+payload = json.loads(gzip.decompress(base64.b64decode(sys.argv[2])))
+target = (root / "cost.json").resolve()
+if root not in target.parents:
+    raise SystemExit("invalid cost mirror path")
+target.parent.mkdir(parents=True, exist_ok=True)
+temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+temporary.write_bytes(base64.b64decode(payload["cost"]))
+os.chmod(temporary, 0o600)
+os.replace(temporary, target)
+cli = base64.b64decode(payload["cli"])
+if hashlib.sha256(cli).hexdigest() != payload["cli_sha256"]:
+    raise SystemExit("cost CLI checksum mismatch")
+cli_target = pathlib.Path(sys.argv[3])
+cli_temporary = cli_target.with_name(f".{cli_target.name}.{os.getpid()}.tmp")
+cli_temporary.write_bytes(cli)
+os.chmod(cli_temporary, 0o755)
+os.replace(cli_temporary, cli_target)
+""".strip()
+    encoded = base64.b64encode(compressed).decode("ascii")
+    try:
+        result = sprintctl.exec_container(
+            run,
+            container_id,
+            " ".join(
+                [
+                    "python3",
+                    "-c",
+                    shlex.quote(install),
+                    shlex.quote(AGENT_GPU_MIRROR_ROOT),
+                    shlex.quote(encoded),
+                    shlex.quote(AGENT_COST_CLI_PATH),
+                ]
+            ),
+            check=False,
+            timeout=20,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "agent_cost_mirror": "error",
+            "agent_cost_mirror_error": f"{type(exc).__name__}: {exc}",
+        }
+    if result.returncode != 0:
+        error = (result.stderr or result.stdout or "container exec failed").strip()
+        return {
+            "agent_cost_mirror": "error",
+            "agent_cost_mirror_error": error[-1000:],
+            "agent_cost_mirror_return_code": result.returncode,
+        }
+    return {
+        "agent_cost_mirror": "updated",
+        "agent_cost_snapshot_bytes": len(content),
+        "agent_cost_cli_sha256": cli_sha256,
+        "agent_cost_as_of": payload.get("as_of"),
     }
 
 
@@ -723,8 +806,8 @@ def ensure_standing_sandbox(run: dict[str, Any]) -> dict[str, Any]:
         app=app,
         image=image,
         gpu="A10G",
-        cpu=8,
-        memory=32768,
+        cpu=6,
+        memory=12288,
         env={"HEADLESS": "1"},
         block_network=True,
         timeout=int(run.get("sandbox_timeout_secs") or 86400),
@@ -810,8 +893,8 @@ def spawn_gpu_sandbox(run: dict[str, Any], job: dict[str, Any]) -> str:
         app=app,
         image=image,
         gpu="A10G",
-        cpu=8,
-        memory=32768,
+        cpu=6,
+        memory=12288,
         env={"HEADLESS": "1"},
         block_network=True,
         timeout=timeout,

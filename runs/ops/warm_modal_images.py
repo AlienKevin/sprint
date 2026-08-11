@@ -118,8 +118,8 @@ def run_sandbox(
     gpu: str | None = None,
     volume: modal.Volume | None = None,
     timeout: int = 300,
-    cpu: int = 8,
-    memory: int = 32768,
+    cpu: int = 6,
+    memory: int = 12288,
     required_output_substrings: tuple[str, ...] = (),
     forbidden_output_substrings: tuple[str, ...] = FATAL_SANDBOX_OUTPUT,
 ) -> dict[str, Any]:
@@ -259,17 +259,17 @@ def main() -> int:
                 "python3 -c 'import torch; print(torch.__version__)' && "
                 "test \"$(codex --version)\" = 'codex-cli 0.147.0' && "
                 "mkdir -p /tmp/cpu-telemetry && "
-                "SPRINT_REQUESTED_CPU_CORES=4 SPRINT_REQUESTED_MEMORY_MIB=16384 "
+                "SPRINT_REQUESTED_CPU_CORES=2 SPRINT_REQUESTED_MEMORY_MIB=8192 "
                 "python3 /opt/sprint-telemetry.py --once --role cpu-agent "
                 "--run-id warmup --out-dir /tmp/cpu-telemetry "
                 "--durable-dir /nonexistent --force && "
                 "python3 -c \"import json; p=json.load(open('/tmp/cpu-telemetry/latest.json')); "
                 "assert p['resource_accounting_scope'] in ('cgroup-v1','cgroup-v2'); "
-                "assert p['cpu_requested_cores']==4.0; "
-                "assert p['mem_requested_kib']==16777216; assert p['mem_used_kib']>0\""
+                "assert p['cpu_requested_cores']==2.0; "
+                "assert p['mem_requested_kib']==8388608; assert p['mem_used_kib']>0\""
             ),
-            cpu=4,
-            memory=16384,
+            cpu=2,
+            memory=8192,
         )
         payload["training_gpu_probe"] = run_sandbox(
             app=app,
@@ -280,14 +280,14 @@ def main() -> int:
                 'python3 -c "import torch; assert torch.cuda.is_available(); '
                 'print(torch.cuda.get_device_name(0))" && '
                 "mkdir -p /tmp/training-telemetry && "
-                "SPRINT_REQUESTED_CPU_CORES=8 SPRINT_REQUESTED_MEMORY_MIB=32768 "
+                "SPRINT_REQUESTED_CPU_CORES=6 SPRINT_REQUESTED_MEMORY_MIB=12288 "
                 "python3 /opt/sprint-telemetry.py --once --role training-gpu "
                 "--run-id warmup --out-dir /tmp/training-telemetry "
                 "--durable-dir /nonexistent --force && "
                 "python3 -c \"import json; p=json.load(open('/tmp/training-telemetry/latest.json')); "
                 "assert p['resource_accounting_scope'] in ('cgroup-v1','cgroup-v2'); "
-                "assert p['cpu_requested_cores']==8.0; "
-                "assert p['mem_requested_kib']==33554432; assert p['mem_used_kib']>0; "
+                "assert p['cpu_requested_cores']==6.0; "
+                "assert p['mem_requested_kib']==12582912; assert p['mem_used_kib']>0; "
                 "g=p['gpus'][0]; assert g['pipeline_metrics_status']=='ok'; "
                 "assert g['pipeline_metrics_sample_count']>0; "
                 "assert g['pipeline_metrics_group'] in (0,1,2); "
@@ -305,14 +305,14 @@ def main() -> int:
         verifier_command = (
             "mkdir -p /tmp/verifier-warm && "
             "mkdir -p /tmp/verifier-telemetry && "
-            "SPRINT_REQUESTED_CPU_CORES=8 SPRINT_REQUESTED_MEMORY_MIB=32768 "
+            "SPRINT_REQUESTED_CPU_CORES=4 SPRINT_REQUESTED_MEMORY_MIB=10240 "
             "timeout --preserve-status --signal=TERM --kill-after=5 5 "
             "python3 /tests/verifier_telemetry.py "
             "--out-dir /tmp/verifier-telemetry --interval-seconds 0.5 && "
             "python3 -c \"import json; p=json.load(open('/tmp/verifier-telemetry/latest.json')); "
             "assert p['resource_accounting_scope'] in ('cgroup-v1','cgroup-v2'); "
-            "assert p['cpu_requested_cores']==8.0; "
-            "assert p['mem_requested_kib']==33554432; assert p['mem_used_kib']>0; "
+            "assert p['cpu_requested_cores']==4.0; "
+            "assert p['mem_requested_kib']==10485760; assert p['mem_used_kib']>0; "
             "rows=[json.loads(x) for x in open('/tmp/verifier-telemetry/samples.jsonl')]; "
             "gs=[g for r in rows for g in r['gpus'] if g.get('pipeline_metrics_status')=='ok']; "
             "assert gs; assert all(g['pipeline_metrics_sample_count']>0 for g in gs); "
@@ -334,6 +334,8 @@ def main() -> int:
                 gpu="A10G",
                 volume=volume,
                 command=verifier_command,
+                cpu=4,
+                memory=10240,
             )
             for index in (1, 2)
         ]
