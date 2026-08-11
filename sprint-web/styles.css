@@ -227,6 +227,7 @@ main {
 .submission-hit {
   fill: transparent;
   pointer-events: all;
+  cursor: pointer;
 }
 .submission.replayable {
   opacity: 1;

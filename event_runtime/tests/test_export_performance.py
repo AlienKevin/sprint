@@ -147,6 +147,9 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "submission${onFrontier?' frontier':''}" in app
     assert "class:'submission-hit'" in app
     assert "class:'submission-target'" in app
+    assert "el.getScreenCTM()" in app
+    assert "nearest.distance<=22**2" in app
+    assert 'app.js?v=20260811-3' in page
     assert "This policy has no archived website replay." in app
     assert 'id="cost-scores"' in page
     assert 'id="time-scores"' in page
