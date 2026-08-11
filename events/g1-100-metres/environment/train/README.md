@@ -26,6 +26,42 @@ control frequency, and the optional state-reset ABI. Use its named values rather
 than copying offsets or signatures. `sprint-check POLICY.pt` validates the
 exported TorchScript contract before submission.
 
+## Target metric
+
+The benchmark has a policy metric and a model-level target metric.
+
+For one simulator rollout, let `d` be the maximum forward distance from the
+start reached before the earliest of finishing, leaving the lane, or exceeding
+the self-collision limit. Let `t` be the elapsed time when that maximum is first
+reached. The rollout's **Effective Speed** is
+
+```text
+E = (d / 100 m) × (d / t) = d² / (100 m × t)
+```
+
+`E` is zero when `d <= 0` or `t <= 0`. For a valid finish, `d = 100 m` and `t`
+is the interpolated finish-crossing time, so `E = 100 m / t`. A submitted
+policy's score is the greatest `E` across its three official rollouts.
+
+Each model is evaluated by three independent agent trials. At any wall-clock
+time, aggregate cost is the sum of the cumulative costs reported by
+`sprint-cost` for those three trials. At aggregate cost `c`, let `Q(c)` be the
+greatest policy score recorded from any of the three trials by that point.
+`Q(c)` is zero before the first scored policy and holds the best score so far
+between readouts.
+
+For a common budget cutoff `B`, the model's **Cost-Adjusted Effective Speed** is
+
+```text
+CAES(B) = (1 / B) × integral from 0 to B of Q(c) dc
+```
+
+This is the area under the best-so-far Effective Speed versus aggregate-cost
+curve, divided by `B`. It has units of m/s; higher is better. `B` may be chosen
+after the experiment, but the same `B` must be used for every compared model
+and cannot exceed the aggregate cost observed for any of them. The cumulative
+cost definition, included components, exclusions, and frozen rates are below.
+
 ## Runtime and GPU jobs
 
 The persistent agent sandbox has 2 physical CPU cores and 8 GiB RAM. GPU work
