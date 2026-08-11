@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""List local submission receipts. Official verifier output remains blind."""
+"""List this trial's archived policy receipts; official results remain blind."""
 
 import json
 import os

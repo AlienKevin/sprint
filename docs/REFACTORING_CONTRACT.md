@@ -10,8 +10,8 @@ is listed below as an intentional interface rename or is separately approved.
 
 ## Intentional interface changes
 
-The proposed `event` command consolidates existing agent commands without
-changing their behavior:
+The `event` command consolidates the former agent commands without changing
+their behavior:
 
 | Current interface | Proposed interface | Required semantic equivalence |
 |---|---|---|
@@ -23,8 +23,7 @@ changing their behavior:
 | `sprint-cost` | `event cost` | Same trial-local JSON, quantities, rates, exclusions, and total |
 | `sprint-board` | `event history` | Same trial-local receipts and no official result disclosure |
 
-No compatibility aliases are required after the cutover. Until the cutover is
-complete, the existing commands remain authoritative.
+No compatibility aliases are retained after the cutover.
 
 ## Agent-visible invariants
 

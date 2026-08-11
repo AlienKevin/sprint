@@ -73,7 +73,7 @@ the canary run.
 ## CPU agent + GPU worker
 
 Lane agent sandboxes use `gpus = 0` so Modal cannot preempt the harness.
-Isaac training is launched with `sprint-gpu-train -- python3 …` onto a
+Isaac training is launched with `event gpu -- python3 …` onto a
 host-dispatched A10G worker sharing `/durable`. Dispatch claims
 (`status=claiming`) before `Sandbox.create`. A dead `running` worker is fenced
 and retried under the same logical job ID. Architecture:

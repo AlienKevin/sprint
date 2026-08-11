@@ -16,22 +16,26 @@ from event_runtime.event import load_event  # noqa: E402
 
 
 EVENT = load_event(repository_root=ROOT)
+AGENT_COMMANDS = ROOT / "event_runtime" / "agent"
 MANIFEST = ROOT / "runs/ops/modal-image-warmup.json"
 CONTEXTS = {
-    "agent_training": EVENT.environment,
-    "verifier": EVENT.verifier,
+    "agent_training": (EVENT.environment, AGENT_COMMANDS),
+    "verifier": (EVENT.verifier,),
 }
 
 
-def context_digest(root: Path) -> str:
+def context_digest(*roots: Path) -> str:
     digest = hashlib.sha256()
-    for path in sorted(item for item in root.rglob("*") if item.is_file()):
-        if "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}:
-            continue
-        digest.update(path.relative_to(root).as_posix().encode())
+    for root in roots:
+        digest.update(root.name.encode())
         digest.update(b"\0")
-        digest.update(hashlib.sha256(path.read_bytes()).digest())
-        digest.update(b"\0")
+        for path in sorted(item for item in root.rglob("*") if item.is_file()):
+            if "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}:
+                continue
+            digest.update(path.relative_to(root).as_posix().encode())
+            digest.update(b"\0")
+            digest.update(hashlib.sha256(path.read_bytes()).digest())
+            digest.update(b"\0")
     return digest.hexdigest()
 
 
@@ -48,8 +52,8 @@ def main() -> int:
     if payload.get("unique_image_count") != 2:
         raise SystemExit("Modal warmup did not cover both Sprint image definitions")
     recorded = payload.get("contexts") or {}
-    for name, root in CONTEXTS.items():
-        expected = context_digest(root)
+    for name, roots in CONTEXTS.items():
+        expected = context_digest(*roots)
         entry = recorded.get(name) or {}
         if entry.get("sha256") != expected or not entry.get("image_id"):
             raise SystemExit(

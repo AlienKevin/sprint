@@ -125,12 +125,9 @@ def test_earliest_disqualification_controls_progress_cutoff() -> None:
 
 
 def test_agent_and_verifier_contracts_are_identical_and_lean() -> None:
-    agent = (TASK / "environment" / "bin" / "sprint-check").read_text()
+    agent = (TASK / "environment" / "check_policy.py").read_text()
     verifier = (TASK / "tests" / "check_submission.py").read_text()
-    normalized_agent = agent.replace(
-        "sprint-check policy.pt", "python check_submission.py policy.pt"
-    )
-    assert normalized_agent == verifier
+    assert agent == verifier
     for name in OPTIONAL_METRICS:
         assert name not in agent
 

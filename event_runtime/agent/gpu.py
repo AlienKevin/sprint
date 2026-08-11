@@ -5,10 +5,10 @@ The agent sandbox is CPU-only so Modal GPU preemption cannot kill Codex.
 Training runs on a separate GPU worker that mounts the same /durable volume.
 
 Usage:
-  sprint-gpu-train [options] -- CMD...
-  sprint-gpu-train status [JOB_ID]
-  sprint-gpu-train wait [JOB_ID] [--timeout SEC]
-  sprint-gpu-train logs [JOB_ID]
+  event gpu [options] -- CMD...
+  event gpu status [JOB_ID]
+  event gpu wait [JOB_ID] [--timeout SEC]
+  event gpu logs [JOB_ID]
 
 Jobs land under $SPRINT_GPU_JOBS_ROOT (default
 /durable/runs/$SPRINT_RUN_ID/gpu-jobs/). The host monitor claims pending jobs and
@@ -221,7 +221,7 @@ def cmd_submit(args: argparse.Namespace) -> int:
                 action="enter",
                 job_id=job_id,
                 attempt=1,
-                detail={"source": "sprint-gpu-train"},
+                detail={"source": "event gpu"},
                 durable_dir="/durable",
                 also_local=Path("/logs/artifacts/telemetry"),
             )
@@ -429,8 +429,8 @@ def main() -> int:
     checkpoint_completed = checkpoint_sub.add_parser("completed")
     checkpoint_completed.add_argument("key")
 
-    # Allow: sprint-gpu-train -- python train.py
-    # and:   sprint-gpu-train submit -- python train.py
+    # Allow: event gpu -- python train.py
+    # and:   event gpu submit -- python train.py
     argv = sys.argv[1:]
     if argv and argv[0] not in {
         "submit",

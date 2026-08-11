@@ -19,10 +19,10 @@ Do **not** pass Harbor `--override-gpus 0`. That overrides the verifier env too.
 Inside the agent sandbox (prefer `python3`; host rewrites bare `python`):
 
 ```bash
-sprint-gpu-train --timeout 3600 --max-attempts 3 -- python3 -u train_loop.py
-sprint-gpu-train status
-sprint-gpu-train wait JOB_ID
-sprint-gpu-train logs JOB_ID
+event gpu --timeout 3600 --max-attempts 3 -- python3 -u train_loop.py
+event gpu status
+event gpu wait JOB_ID
+event gpu logs JOB_ID
 ```
 
 Job files:
@@ -64,7 +64,7 @@ and `Sandbox.poll()`:
 - `max_attempts` ends a retry loop cleanly.
 
 Defaults are 45 seconds for heartbeat expiry, 20 seconds for dead grace, 10–120
-seconds for retry backoff, and three attempts. `sprint-gpu-train` accepts
+seconds for retry backoff, and three attempts. `event gpu` accepts
 `--heartbeat-timeout`, `--retry-backoff`, `--retry-backoff-max`, and
 `--max-attempts`.
 

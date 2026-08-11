@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Print the trusted cumulative comparison cost as one JSON document."""
+"""Print this trial's trusted cumulative comparison cost as one JSON document."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ def main() -> int:
                 {
                     "schema_version": 1,
                     "status": "error",
-                    "error": "sprint-cost takes no arguments",
+                    "error": "event cost takes no arguments",
                 },
                 sort_keys=True,
             )

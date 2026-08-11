@@ -2,9 +2,9 @@
 """Queue the published verifier on this trial's own training A10G.
 
 Usage:
-  sprint-verify POLICY.pt [--note TEXT]
+  event test POLICY.pt [--note TEXT]
 
-The command prints a GPU job ID. Inspect it with ``sprint-gpu-train status``,
+The command prints a GPU job ID. Inspect it with ``event gpu status``,
 ``wait``, or ``logs``. This is agent-funded local debugging; official scoring
 is separate and blind.
 """
@@ -43,7 +43,8 @@ def main() -> int:
         "exec bash /opt/sprint-verifier/test.sh"
     )
     command = [
-        "sprint-gpu-train",
+        "/usr/local/bin/event",
+        "gpu",
         "--timeout",
         "900",
         "--max-attempts",

@@ -241,7 +241,7 @@ def test_cost_canary_compares_every_component_and_fails_closed() -> None:
     assert result["max_absolute_delta_usd"] == 0
 
     expected["training_sandboxes_usd"] = 0.70001
-    with pytest.raises(RuntimeError, match="sprint-cost differs"):
+    with pytest.raises(RuntimeError, match="event cost differs"):
         training_gpu_canary._assert_cost_match(payload, expected=expected)
 
 

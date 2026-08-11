@@ -39,7 +39,7 @@ These use the live tariff estimate because Modal's authoritative report has
 hourly resolution. Agent performance-versus-cost excludes `verifier_gpu` and
 uses only model API, CPU-agent, and training-GPU spend. Verifier spend is
 retained separately as `verifier_measurement_overhead_*`; it cannot influence
-the agent; completed score and gate feedback is returned by `sprint-board`.
+the agent; official score and gate feedback remains hidden during the run.
 
 Provider rows include resource spend before credits. Credits, reservations,
 subscription charges, taxes, and storage/build costs not owned by a run App
@@ -114,10 +114,10 @@ The agent sandbox is CPU-only and independent of training GPU workers and
 scoring/verifier workers.
 
 - A preempted training GPU is fenced and retried from checkpoint while the CPU
-  agent remains alive. `sprint-gpu-train wait` is a blocking tool call; agents
+  agent remains alive. `event gpu wait` is a blocking tool call; agents
   should normally submit and poll status if they have useful CPU-side work.
-- `sprint-submit` returns immediately. Scoring does not pause the agent or stop
-  an existing training worker; `sprint-board` lists receipts only. Agents debug
+- `event archive` returns immediately. Scoring does not pause the agent or stop
+  an existing training worker; `event history` lists receipts only. Agents debug
   with the published verifier on their own training GPU, while official output
   remains in the trusted archive.
 

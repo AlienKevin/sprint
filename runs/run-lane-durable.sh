@@ -632,7 +632,7 @@ base = {
     "vercel_scope": "alienkevins-projects",
     "production_alias": "https://g1-sprint.vercel.app",
     # Agent sandbox is CPU-only (task.toml gpus=0); host monitor dispatches
-    # preemptible A10G workers for sprint-gpu-train jobs on the same volume.
+    # preemptible A10G workers for event-gpu jobs on the same volume.
     "cpu_agent_gpu_worker": True,
     "standing_gpu_worker": standing_gpu,
     "agent_cpu_instances": 1,

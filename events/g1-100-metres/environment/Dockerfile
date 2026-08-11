@@ -58,16 +58,11 @@ RUN python3 -c 'from pathlib import Path; p=Path("/opt/IsaacLab/apps/isaaclab.py
 COPY sprint_assets.py localize_assets.py /opt/
 RUN python3 /opt/localize_assets.py
 
-# Submission archives policy bytes for blind official scoring. Local verifier
-# execution is explicitly agent-funded through the same one-A10G training queue.
-COPY bin/event bin/sprint-submit bin/sprint-board bin/sprint-check bin/sprint-cost bin/sprint-gpu-train \
-     bin/sprint-verify \
-     /usr/local/bin/
-RUN chmod 0755 /usr/local/bin/event \
-                /usr/local/bin/sprint-submit /usr/local/bin/sprint-board \
-                /usr/local/bin/sprint-check /usr/local/bin/sprint-cost \
-                /usr/local/bin/sprint-gpu-train \
-                /usr/local/bin/sprint-verify
+# The generic command implementation is frozen into a late Modal image layer;
+# only this event-specific entry point and ABI checker live in the event image.
+COPY bin/event /usr/local/bin/event
+COPY check_policy.py /opt/event/check_policy.py
+RUN chmod 0755 /usr/local/bin/event /opt/event/check_policy.py
 COPY setup.sh /opt/setup.sh
 RUN bash /opt/setup.sh
 # Optional PhysX spawn helper matching the scored course (not stock G1 defaults).

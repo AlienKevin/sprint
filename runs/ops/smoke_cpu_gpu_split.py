@@ -49,7 +49,7 @@ def agent_codex_alive(
         container_id,
         "pgrep -af 'codex|sprint-codex' | head -5; "
         "test -d /durable && echo DURABLE_OK; "
-        "command -v sprint-gpu-train >/dev/null && echo TRAIN_CLI_OK; "
+        "command -v event >/dev/null && echo EVENT_CLI_OK; "
         "nvidia-smi >/tmp/agent-nvidia.out 2>/tmp/agent-nvidia.err; "
         "if grep -qiE 'NVIDIA|CUDA' /tmp/agent-nvidia.out 2>/dev/null; then echo AGENT_HAS_GPU; "
         "else echo AGENT_NO_GPU; fi; "
@@ -63,7 +63,7 @@ def agent_codex_alive(
     out = (result.stdout or "") + (result.stderr or "")
     alive = (
         "DURABLE_OK" in out
-        and "TRAIN_CLI_OK" in out
+        and "EVENT_CLI_OK" in out
         and "AGENT_NO_GPU" in out
         and "TORCH_CUDA False" in out
     )
@@ -110,7 +110,7 @@ print(json.dumps(out, sort_keys=True), flush=True)
         'printf "%s\\n" "$SPRINT_RUN_ID" > /run/sprint-run-id\n'
         'printf "%s\\n" "$SPRINT_GPU_JOBS_ROOT" > /run/sprint-gpu-jobs-root\n'
         "cat > /app/smoke_gpu_probe.py <<'PY'\n" + probe.strip() + "\nPY\n"
-        "sprint-gpu-train --timeout 1200 --note smoke-cuda-probe -- "
+        "event gpu --timeout 1200 --note smoke-cuda-probe -- "
         "python3 -u /app/smoke_gpu_probe.py\n"
     )
     result = sprintctl.run_command(
@@ -256,8 +256,7 @@ def main() -> int:
         probe = sprintctl.exec_container(
             run,
             container,
-            "test -x /opt/sprint-gpu-train -o -x /usr/local/bin/sprint-gpu-train "
-            "&& test -d /durable && printf READY",
+            "test -x /usr/local/bin/event && test -d /durable && printf READY",
             check=False,
             timeout=45,
         )
@@ -286,7 +285,7 @@ def main() -> int:
             "n": 1,
             "name": "Codex/agent alive on CPU sandbox (no GPU)",
             "result": "PASS" if cpu_info["out"] else "FAIL",
-            "evidence": "durable+sprint-gpu-train+TORCH_CUDA False; "
+            "evidence": "durable+event+TORCH_CUDA False; "
             + (
                 "codex process seen"
                 if cpu_info["codex_hint"]

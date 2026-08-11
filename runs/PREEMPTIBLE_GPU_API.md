@@ -7,12 +7,12 @@ replaceable attempts; preemption never requires the caller to submit again.
 ## Recommended use
 
 ```bash
-job=$(sprint-gpu-train \
+job=$(event gpu \
   --max-attempts 4 \
   --interruption-grace 20 \
   --resume-arg=--checkpoint \
   -- python3 -u train.py)
-sprint-gpu-train wait "$job"
+event gpu wait "$job"
 ```
 
 Inside `train.py`:
@@ -48,10 +48,10 @@ with Interruption() as interruption:
 Shell-based jobs can publish the same format:
 
 ```bash
-sprint-gpu-train checkpoint save /tmp/checkpoint.pt \
+event gpu checkpoint save /tmp/checkpoint.pt \
   --sequence "$step" --cursor "$step" --idempotency-key "train-step:$step"
-sprint-gpu-train checkpoint latest --path-only
-sprint-gpu-train checkpoint cleanup --keep 3
+event gpu checkpoint latest --path-only
+event gpu checkpoint cleanup --keep 3
 ```
 
 ## Semantics

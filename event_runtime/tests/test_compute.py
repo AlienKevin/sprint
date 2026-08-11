@@ -46,9 +46,9 @@ worker_run = importlib.util.module_from_spec(_worker_spec)
 _worker_spec.loader.exec_module(worker_run)
 
 _train_spec = importlib.util.spec_from_loader(
-    "sprint_gpu_train",
+    "event_gpu",
     importlib.machinery.SourceFileLoader(
-        "sprint_gpu_train", str(ENV / "bin" / "sprint-gpu-train")
+        "event_gpu", str(ROOT / "event_runtime/agent/gpu.py")
     ),
 )
 assert _train_spec and _train_spec.loader
@@ -482,8 +482,8 @@ class ClaimSelectionTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             mirror = Path(tmp) / "mirror"
-            cli_path = Path(tmp) / "bin" / "sprint-gpu-train"
-            cli_path.parent.mkdir()
+            cli_path = Path(tmp) / "event_runtime" / "agent" / "gpu.py"
+            cli_path.parent.mkdir(parents=True)
             with (
                 mock.patch.object(gpu_worker, "AGENT_GPU_MIRROR_ROOT", str(mirror)),
                 mock.patch.object(gpu_worker, "AGENT_GPU_CLI_PATH", str(cli_path)),

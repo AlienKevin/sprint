@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Submit a policy for asynchronous scoring. Returns immediately.
 
-    sprint-submit mypolicy.pt --note "candidate-a"
+    event archive mypolicy.pt --note "candidate-a"
 
-Prints a request id and exits. Official scoring is blind: sprint-board lists
+Prints a request id and exits. Official scoring is blind: ``event history`` lists
 local receipts, while scores, gates, traces, queue progress, and completion
 timing remain in the trusted archive. Every accepted policy is retained in the
 final trajectory and Pareto analysis.
@@ -50,7 +50,7 @@ def main() -> int:
 
     # Reject malformed TorchScript locally before spending verifier compute.
     check = subprocess.run(
-        [sys.executable, "/usr/local/bin/sprint-check", policy],
+        ["/usr/local/bin/event", "check", policy],
         capture_output=True,
         text=True,
     )
@@ -100,7 +100,7 @@ def main() -> int:
     print(f"queued {job_id}" + (f"  ({note})" if note else ""))
     print(
         "Harbor accepts at most one outstanding policy and one every 300 seconds; "
-        "run sprint-board to list local submission receipts."
+        "run 'event history' to list local submission receipts."
     )
     return 0
 

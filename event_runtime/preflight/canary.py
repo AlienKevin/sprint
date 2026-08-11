@@ -99,7 +99,7 @@ def _assert_cost_match(
     }
     if any(delta > tolerance_usd for delta in deltas.values()):
         raise RuntimeError(
-            "sprint-cost differs from independent host measurement: "
+            "event cost differs from independent host measurement: "
             + json.dumps(deltas, sort_keys=True)
         )
     return {
@@ -120,12 +120,12 @@ def _assert_cost_match(
 def run_cost_equivalence_canary(
     *, app: modal.App, image: modal.Image, training_allocated_s: float
 ) -> dict[str, Any]:
-    """Query sprint-cost in the exact agent image and compare at one cutoff.
+    """Query ``event cost`` in the exact agent image and compare at one cutoff.
 
     CPU allocation time is measured around a real Modal sandbox. Training time
     comes from the real functional training sandbox that just produced the
     canary policy. The host independently applies the pinned tariff, while the
-    agent sees only the normal sprint-cost JSON document.
+    agent sees only the normal ``event cost`` JSON document.
     """
     sandbox: modal.Sandbox | None = None
     allocation_started = time.monotonic()
@@ -208,11 +208,11 @@ def run_cost_equivalence_canary(
             raise RuntimeError(
                 f"cost canary snapshot install failed {return_code}: {stderr or stdout}"
             )
-        query = sandbox.exec("sprint-cost", timeout=30)
+        query = sandbox.exec("event", "cost", timeout=30)
         return_code, stdout, stderr = _read_process(query)
         if return_code != 0:
             raise RuntimeError(
-                f"sprint-cost canary query failed {return_code}: {stderr or stdout}"
+                f"event cost canary query failed {return_code}: {stderr or stdout}"
             )
         agent_payload = json.loads(stdout)
 

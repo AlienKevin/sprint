@@ -117,10 +117,10 @@ def test_live_ledger_caps_open_training_interval_at_snapshot_time() -> None:
     assert agent_cost.cumulative_cost_at_epoch(ledger, 4000) == 51.5
 
 
-def test_sprint_cost_is_a_single_json_interface(tmp_path: Path, monkeypatch) -> None:
-    path = ROOT / "events/g1-100-metres/environment/bin/sprint-cost"
+def test_event_cost_is_a_single_json_interface(tmp_path: Path, monkeypatch) -> None:
+    path = ROOT / "event_runtime/agent/cost.py"
     spec = importlib.util.spec_from_loader(
-        "sprint_cost_cli", SourceFileLoader("sprint_cost_cli", str(path))
+        "event_cost_cli", SourceFileLoader("event_cost_cli", str(path))
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -128,14 +128,14 @@ def test_sprint_cost_is_a_single_json_interface(tmp_path: Path, monkeypatch) -> 
     snapshot = tmp_path / "cost.json"
     snapshot.write_text(json.dumps({"schema_version": 1, "total_usd": 1.25}))
     monkeypatch.setattr(module, "SNAPSHOT", snapshot)
-    monkeypatch.setattr(module.sys, "argv", ["sprint-cost"])
+    monkeypatch.setattr(module.sys, "argv", ["event cost"])
     assert module.main() == 0
 
 
 def test_host_atomically_mirrors_cost_and_cli(tmp_path: Path, monkeypatch) -> None:
     mirror = tmp_path / "mirror"
-    cli = tmp_path / "bin" / "sprint-cost"
-    cli.parent.mkdir()
+    cli = tmp_path / "event_runtime" / "agent" / "cost.py"
+    cli.parent.mkdir(parents=True)
 
     def local_exec(
         _run: dict, container_id: str, command: str, **_kwargs: object
@@ -160,7 +160,4 @@ def test_host_atomically_mirrors_cost_and_cli(tmp_path: Path, monkeypatch) -> No
 
     assert detail["agent_cost_mirror"] == "updated"
     assert json.loads((mirror / "cost.json").read_text())["total_usd"] == 2.5
-    assert (
-        cli.read_bytes()
-        == (ROOT / "events/g1-100-metres/environment/bin/sprint-cost").read_bytes()
-    )
+    assert cli.read_bytes() == (ROOT / "event_runtime/agent/cost.py").read_bytes()

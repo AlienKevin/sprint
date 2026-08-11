@@ -1039,7 +1039,7 @@ def monitor_once(
             state_dir, run = load_run(run_id)
         except Exception as exc:  # noqa: BLE001
             record_controller_error(run_id, exc)
-    # CPU-agent runs: claim sprint-gpu-train queue jobs and spawn A10G workers.
+    # CPU-agent runs: claim event-gpu queue jobs and spawn A10G workers.
     # Dispatch before telemetry: Modal Volume scans/uploads are intentionally
     # best-effort and can take close to their one-minute timeout.  A dead lease
     # must be fenced/retried without waiting behind observability I/O.

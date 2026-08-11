@@ -83,7 +83,7 @@ build_timeout_sec = 5400.0
 cpus = 2
 # CPU-only agent sandbox: Modal Sandboxes without a GPU requirement are not
 # subject to infrastructure preemption. Isaac training runs on a separate A10G
-# worker (see runs/CPU_GPU_SPLIT.md + sprint-gpu-train). The durable launcher
+# worker (see runs/CPU_GPU_SPLIT.md + event gpu). The durable launcher
 # passes Modal's maximum 86,400-second Sandbox lifetime; the host supervisor
 # recreates this CPU sandbox from the same Volume if its process exits early.
 # Do NOT use Harbor --override-gpus 0 — that would also strip verifier GPUs.

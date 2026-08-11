@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "events/g1-100-metres/tests"
 TARGET = ROOT / "events/g1-100-metres/environment/verifier"
 TRAIN_START = ROOT / "events/g1-100-metres/environment/train/standing_start.py"
+CHECK_POLICY = ROOT / "events/g1-100-metres/environment/check_policy.py"
 FILES = (
     Path("test.sh"),
     Path("verify.py"),
@@ -60,6 +61,7 @@ def main() -> int:
         + "\n"
     )
     shutil.copy2(SOURCE / "sprintbench/standing_start.py", TRAIN_START)
+    shutil.copy2(SOURCE / "check_submission.py", CHECK_POLICY)
     return 0
 
 

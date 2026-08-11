@@ -33,6 +33,19 @@ def test_context_digest_is_stable_and_ignores_python_cache(tmp_path: Path) -> No
     assert warmer.context_digest(tmp_path) == expected
 
 
+def test_agent_command_source_is_part_of_image_digest(tmp_path: Path) -> None:
+    warmer = load_script("warm_images.py")
+    environment = tmp_path / "environment"
+    commands = tmp_path / "agent"
+    environment.mkdir()
+    commands.mkdir()
+    (environment / "Dockerfile").write_text("FROM scratch\n")
+    (commands / "cli.py").write_text("VERSION = 1\n")
+    before = warmer.context_digest(environment, commands)
+    (commands / "cli.py").write_text("VERSION = 2\n")
+    assert warmer.context_digest(environment, commands) != before
+
+
 def test_successful_sandbox_uses_returncode_after_wait(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -222,7 +235,7 @@ def test_checker_accepts_complete_current_manifest(
     )
     monkeypatch.setattr(checker, "MANIFEST", manifest)
     monkeypatch.setattr(
-        checker, "CONTEXTS", {"agent_training": agent, "verifier": verifier}
+        checker, "CONTEXTS", {"agent_training": (agent,), "verifier": (verifier,)}
     )
 
     assert checker.main() == 0
@@ -266,7 +279,7 @@ def test_checker_rejects_changed_context(
     (verifier / "verify.py").write_text("print('changed')\n")
     monkeypatch.setattr(checker, "MANIFEST", manifest)
     monkeypatch.setattr(
-        checker, "CONTEXTS", {"agent_training": agent, "verifier": verifier}
+        checker, "CONTEXTS", {"agent_training": (agent,), "verifier": (verifier,)}
     )
 
     with pytest.raises(SystemExit, match="verifier image changed"):

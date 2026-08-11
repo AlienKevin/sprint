@@ -104,7 +104,7 @@ def load_policy(path: str, obs_dim: int, act_dim: int, device: str):
     serialised graph rather than arbitrary Python, so scoring a submission does
     not execute code the agent chose to run inside the verifier.
     """
-    # sprint-check validates the portable submission ABI on CPU. A traced graph
+    # event check validates the portable submission ABI on CPU. A traced graph
     # may bake that export device into tensor constructors, which
     # ``map_location``/``module.to`` cannot rewrite. Keep the tiny policy on CPU
     # and transfer only the three-lane observation/action tensors; Isaac physics

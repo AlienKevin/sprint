@@ -31,7 +31,7 @@ from train.spec import (
 
 `spec.py` is authoritative for tensor shapes, observation fields, action scale,
 control frequency, and the optional state-reset ABI. Use its named values rather
-than copying offsets or signatures. `sprint-check POLICY.pt` validates the
+than copying offsets or signatures. `event check POLICY.pt` validates the
 exported TorchScript contract before submission.
 
 ## Target metric
@@ -53,7 +53,7 @@ policy's score is the greatest `E` across its three official rollouts.
 
 Each model is evaluated by three independent agent trials. At any wall-clock
 time, aggregate cost is the sum of the cumulative costs reported by
-`sprint-cost` for those three trials. At aggregate cost `c`, let `Q(c)` be the
+`event cost` for those three trials. At aggregate cost `c`, let `Q(c)` be the
 greatest policy score recorded from any of the three trials by that point.
 `Q(c)` is zero before the first scored policy and holds the best score so far
 between readouts.
@@ -76,16 +76,16 @@ The persistent agent sandbox has 2 physical CPU cores and 8 GiB RAM. GPU work
 runs on a separate A10G worker:
 
 ```bash
-sprint-gpu-train -- python3 -u /app/train/YOUR_SCRIPT.py
-sprint-gpu-train status
-sprint-gpu-train logs
-sprint-gpu-train wait
+event gpu -- python3 -u /app/train/YOUR_SCRIPT.py
+event gpu status
+event gpu logs
+event gpu wait
 ```
 
 One GPU job is active per run; additional jobs queue. Workers may be
 preempted and replaced. Write checkpoints under `$SPRINT_GPU_CHECKPOINT_DIR`
 and inspect `$SPRINT_GPU_RESUME` and `$SPRINT_GPU_RESUME_CHECKPOINT` on startup.
-For atomic publication, use `sprint-gpu-train checkpoint save` or the
+For atomic publication, use `event gpu checkpoint save` or the
 `CheckpointStore` in `/opt/sprint_resilience.py`. A recovery checkpoint must
 contain all mutable state needed to continue the chosen process, including its
 completed cursor. Do not use an exported TorchScript candidate as recovery
@@ -95,7 +95,7 @@ checkpoint exists, so it never silently restarts work.
 Atomically update `progress.json` with `{"policy_path": "/durable/.../policy.pt"}`
 after each complete export. The host mirrors every new reported policy into the
 CPU sandbox, including while training continues, and reports its fresh path as
-`agent_policy_mirror_path` in `sprint-gpu-train status`; submit that path even
+`agent_policy_mirror_path` in `event gpu status`; archive that path even
 if the long-lived `/durable` mount has not refreshed yet.
 
 The sandbox has no general internet or cloud credentials. PyTorch, Isaac Lab,
@@ -105,11 +105,11 @@ asset URLs. Workspace and `/durable/runs/$SPRINT_RUN_ID` survive CPU sandbox
 recreation, but processes and RAM do not. On a relaunched CPU attempt, resume
 from durable state.
 
-Run `sprint-gpu-train --help` for the full job and checkpoint interface.
+Run `event gpu --help` for the full job and checkpoint interface.
 
 ## Cumulative agent cost
 
-Run `sprint-cost` with no arguments. It prints one machine-readable JSON
+Run `event cost` with no arguments. It prints one machine-readable JSON
 document from the trusted host, refreshed on the normal monitor cadence. The
 same deterministic ledger drives the website comparison:
 
@@ -147,11 +147,11 @@ The exact nominal verifier source is published read-only at `/app/verifier`.
 Queue it on this trial's training A10G with:
 
 ```bash
-sprint-verify /app/policy.pt
-sprint-gpu-train logs JOB_ID
+event test /app/policy.pt
+event gpu logs JOB_ID
 ```
 
-This local result is for your own debugging. `sprint-submit` separately archives
+This local result is for your own debugging. `event archive` separately retains
 immutable policy bytes for blind official scoring; the official verifier does
 not return its result or trace during the run.
 
@@ -182,5 +182,5 @@ Apply this after any configuration lifecycle that rebuilds `scene.robot`.
 | `contact_offset` / `rest_offset` | `0.04` / `0.0` |
 | `max_depenetration_velocity` | `10.0` |
 
-See `sprint-check --rules` for gating. This package does not implement the
+See `event check --rules` for gating. This package does not implement the
 geometry pad check.

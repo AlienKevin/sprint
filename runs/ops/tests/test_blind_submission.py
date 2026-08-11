@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[3]
-BIN = ROOT / "events" / "g1-100-metres" / "environment" / "bin"
+AGENT = ROOT / "event_runtime" / "agent"
 OPS = ROOT / "runs" / "ops"
 sys.path.insert(0, str(OPS))
 sys.path.insert(0, str(ROOT))
@@ -18,7 +18,7 @@ from event_runtime.control import run as sprintctl  # noqa: E402
 
 
 def load_script(name: str):
-    path = BIN / name
+    path = AGENT / name
     loader = importlib.machinery.SourceFileLoader(f"test_{name}", str(path))
     spec = importlib.util.spec_from_loader(loader.name, loader)
     if spec is None:
@@ -38,7 +38,7 @@ def configure_paths(module, tmp_path: Path) -> None:
 def test_submit_returns_async_receipt_without_designating_final(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    submit = load_script("sprint-submit")
+    submit = load_script("archive.py")
     configure_paths(submit, tmp_path)
     monkeypatch.setattr(
         submit.subprocess,
@@ -52,14 +52,14 @@ def test_submit_returns_async_receipt_without_designating_final(
     monkeypatch.setattr(
         sys,
         "argv",
-        ["sprint-submit", str(policy), "--note", "candidate"],
+        ["event archive", str(policy), "--note", "candidate"],
     )
 
     assert submit.main() == 0
     output = capsys.readouterr().out
     assert "queued" in output
     assert "300 seconds" in output
-    assert "sprint-board" in output
+    assert "event history" in output
     receipts = list(Path(submit.RECEIPTS).glob("*.json"))
     assert len(receipts) == 1
     receipt = json.loads(receipts[0].read_text())
@@ -72,11 +72,11 @@ def test_submit_returns_async_receipt_without_designating_final(
 
 
 def test_removed_final_flag_is_rejected(tmp_path: Path, monkeypatch) -> None:
-    submit = load_script("sprint-submit")
+    submit = load_script("archive.py")
     configure_paths(submit, tmp_path)
     policy = tmp_path / "candidate.pt"
     policy.write_bytes(b"policy")
-    monkeypatch.setattr(sys, "argv", ["sprint-submit", str(policy), "--final"])
+    monkeypatch.setattr(sys, "argv", ["event archive", str(policy), "--final"])
 
     try:
         submit.main()
@@ -89,7 +89,7 @@ def test_removed_final_flag_is_rejected(tmp_path: Path, monkeypatch) -> None:
 def test_submission_accepts_after_sixty_prior_receipts(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    submit = load_script("sprint-submit")
+    submit = load_script("archive.py")
     configure_paths(submit, tmp_path)
     monkeypatch.setattr(
         submit.subprocess,
@@ -102,7 +102,7 @@ def test_submission_accepts_after_sixty_prior_receipts(
     receipts.mkdir(parents=True)
     for index in range(60):
         (receipts / f"prior-{index}.json").write_text("{}\n")
-    monkeypatch.setattr(sys, "argv", ["sprint-submit", str(policy)])
+    monkeypatch.setattr(sys, "argv", ["event archive", str(policy)])
 
     assert submit.main() == 0
     assert "queued" in capsys.readouterr().out
@@ -113,7 +113,7 @@ def test_submission_accepts_after_sixty_prior_receipts(
 def test_board_lists_receipts_without_reading_official_results(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    board = load_script("sprint-board")
+    board = load_script("history.py")
     receipts = tmp_path / "receipts"
     receipts.mkdir()
     board.RECEIPTS = str(receipts)
@@ -125,7 +125,7 @@ def test_board_lists_receipts_without_reading_official_results(
             }
         )
     )
-    monkeypatch.setattr(sys, "argv", ["sprint-board"])
+    monkeypatch.setattr(sys, "argv", ["event history"])
 
     assert board.main() == 0
     output = capsys.readouterr().out

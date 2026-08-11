@@ -1,43 +1,18 @@
 #!/usr/bin/env python3
-"""Work on the current event.
-
-Commands:
-  event gpu [ARGS...]       run or inspect trial-local GPU work
-  event check POLICY.pt     validate the policy interface on CPU
-  event test POLICY.pt      run the published checker on trial-local GPU compute
-  event archive POLICY.pt   retain a candidate for blind official scoring
-  event cost                print trial-local cumulative comparison cost as JSON
-  event history             list trial-local candidate receipts
-"""
+"""Work on the current event from one trial-local command surface."""
 
 from __future__ import annotations
 
-import os
 import sys
+from pathlib import Path
 
 
-COMMANDS = {
-    "gpu": "/usr/local/bin/sprint-gpu-train",
-    "check": "/usr/local/bin/sprint-check",
-    "test": "/usr/local/bin/sprint-verify",
-    "archive": "/usr/local/bin/sprint-submit",
-    "cost": "/usr/local/bin/sprint-cost",
-    "history": "/usr/local/bin/sprint-board",
-}
+sys.path.insert(0, "/opt")
+repository = Path(__file__).resolve().parents[4]
+if (repository / "event_runtime/agent").is_dir():
+    sys.path.insert(0, str(repository))
 
-
-def main() -> int:
-    if len(sys.argv) < 2 or sys.argv[1] in {"-h", "--help"}:
-        print(__doc__.strip())
-        return 0
-    action = sys.argv[1]
-    target = COMMANDS.get(action)
-    if target is None:
-        print(f"unknown event command: {action}", file=sys.stderr)
-        print("run 'event --help' for available commands", file=sys.stderr)
-        return 2
-    os.execv(target, [target, *sys.argv[2:]])
-    return 127
+from event_runtime.agent.cli import main  # noqa: E402
 
 
 if __name__ == "__main__":

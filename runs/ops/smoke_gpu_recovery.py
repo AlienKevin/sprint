@@ -107,7 +107,7 @@ print("ATTEMPT2_RESUMED_AND_SUCCEEDED", json.dumps(final, sort_keys=True), flush
     shell = (
         "set -euo pipefail\n"
         "cat > /app/gpu_recovery_probe.py <<'PY'\n" + probe.strip() + "\nPY\n"
-        "sprint-gpu-train --max-attempts 3 --retry-backoff 2 "
+        "event gpu --max-attempts 3 --retry-backoff 2 "
         "--retry-backoff-max 5 --heartbeat-interval 5 "
         "--heartbeat-timeout 15 --note forced-recovery-smoke -- "
         "python3 -u /app/gpu_recovery_probe.py\n"

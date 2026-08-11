@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Host-side GPU worker dispatch for CPU-agent durable lane runs.
 
-Claims jobs written by in-sandbox ``sprint-gpu-train`` under
+Claims jobs written by in-sandbox ``event gpu`` under
 ``/durable/runs/<run_id>/gpu-jobs/queue/`` and starts a preemptible A10G
 Modal Sandbox that mounts the same volume. The Codex/agent sandbox stays on
 CPU (gpus=0) so GPU preemption cannot kill the harness.
@@ -68,8 +68,9 @@ AGENT_GPU_MIRROR_ROOT = "/run/sprint-gpu-mirror"
 AGENT_GPU_MIRROR_LOG_BYTES = 768 * 1024
 AGENT_GPU_MIRROR_ARTIFACT_BYTES = 32 * 1024 * 1024
 AGENT_GPU_MIRROR_ARG_BYTES = 64 * 1024
-AGENT_GPU_CLI_PATH = "/usr/local/bin/sprint-gpu-train"
-AGENT_COST_CLI_PATH = "/usr/local/bin/sprint-cost"
+AGENT_GPU_CLI_PATH = "/opt/event_runtime/agent/gpu.py"
+AGENT_COST_CLI_PATH = "/opt/event_runtime/agent/cost.py"
+AGENT_COMMAND_SOURCE = ROOT / "event_runtime" / "agent"
 MAX_WORK_ARCHIVE_BYTES = 256 * 1024 * 1024
 
 
@@ -121,7 +122,7 @@ def mirror_agent_job(
             }
         files[f"artifacts/{job_id}/{safe_name}"] = artifact_content
 
-    cli_content = (ENV_DIR / "bin" / "sprint-gpu-train").read_bytes()
+    cli_content = (AGENT_COMMAND_SOURCE / "gpu.py").read_bytes()
     cli_sha256 = hashlib.sha256(cli_content).hexdigest()
     envelope = {
         "files": {
@@ -243,7 +244,7 @@ def mirror_agent_cost(run: dict[str, Any], payload: dict[str, Any]) -> dict[str,
     if not container_id.startswith("ta-"):
         return {"agent_cost_mirror": "unavailable"}
     content = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode()
-    cli_content = (ENV_DIR / "bin" / "sprint-cost").read_bytes()
+    cli_content = (AGENT_COMMAND_SOURCE / "cost.py").read_bytes()
     cli_sha256 = hashlib.sha256(cli_content).hexdigest()
     envelope = {
         "cost": base64.b64encode(content).decode("ascii"),
@@ -1075,7 +1076,7 @@ def archive_provider_logs(
 
     Older worker images tee Python wrapper messages but child processes inherit
     the container file descriptors directly.  Modal therefore retains their
-    output while ``sprint-gpu-train logs`` sees only the wrapper.  This host-side
+    output while ``event gpu logs`` sees only the wrapper.  This host-side
     fallback archives both streams after exit and also preserves them for the
     final artifact bundle.  Newer images may tee the child directly; replacing
     the log with the complete provider streams is idempotent in either case.

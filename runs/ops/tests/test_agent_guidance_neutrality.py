@@ -21,11 +21,11 @@ GUIDANCE = (
     TASK / "environment/train/README.md",
     TASK / "environment/train/robot.py",
     TASK / "environment/train/spec.py",
-    TASK / "environment/bin/sprint-submit",
-    TASK / "environment/bin/sprint-board",
-    TASK / "environment/bin/sprint-check",
-    TASK / "environment/bin/sprint-gpu-train",
-    TASK / "environment/bin/sprint-verify",
+    TASK / "environment/bin/event",
+    TASK / "environment/check_policy.py",
+    ROOT / "event_runtime/agent/archive.py",
+    ROOT / "event_runtime/agent/gpu.py",
+    ROOT / "event_runtime/agent/test_policy.py",
     ROOT / "runs/codex-goal.j2",
     ROOT / "runs/codex-goal-slash.j2",
 )
@@ -62,14 +62,9 @@ def test_agent_guidance_is_method_neutral() -> None:
 
 
 def test_agent_and_verifier_submission_contracts_match() -> None:
-    agent = (TASK / "environment/bin/sprint-check").read_text()
+    agent = (TASK / "environment/check_policy.py").read_text()
     verifier = (TASK / "tests/check_submission.py").read_text()
-    assert (
-        agent.replace(
-            "    sprint-check policy.pt", "    python check_submission.py policy.pt"
-        )
-        == verifier
-    )
+    assert agent == verifier
 
 
 def test_published_verifier_is_an_exact_reviewed_source_mirror() -> None:
@@ -139,9 +134,9 @@ def test_canonical_standing_start_sets_every_initial_state_field() -> None:
 
 
 def test_local_verifier_uses_only_the_trial_training_queue() -> None:
-    helper = (TASK / "environment/bin/sprint-verify").read_text()
+    helper = (ROOT / "event_runtime/agent/test_policy.py").read_text()
     dockerfile = (TASK / "environment/Dockerfile").read_text()
-    assert '"sprint-gpu-train"' in helper
+    assert '"gpu"' in helper
     assert '"--max-attempts",\n        "1"' in helper
     assert "/opt/sprint-verifier/test.sh" in helper
     assert "COPY verifier /opt/sprint-verifier" in dockerfile
