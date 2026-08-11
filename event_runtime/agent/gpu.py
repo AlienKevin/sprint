@@ -160,6 +160,12 @@ def _tar_filter(tarinfo: tarfile.TarInfo) -> tarfile.TarInfo | None:
     # otherwise valid workspace archive.
     if not (tarinfo.isfile() or tarinfo.isdir()):
         return None
+    parts = Path(name).parts
+    # The published verifier is already present in the immutable worker image.
+    # Never let a mutable workspace copy replace its /app/verifier convenience
+    # link or enter agent-authored training bytes.
+    if len(parts) >= 2 and parts[:2] == ("app", "verifier"):
+        return None
     skip_parts = {
         "__pycache__",
         ".git",
@@ -170,7 +176,6 @@ def _tar_filter(tarinfo: tarfile.TarInfo) -> tarfile.TarInfo | None:
         "isaac-sim",
         "kit",
     }
-    parts = Path(name).parts
     if any(part in skip_parts for part in parts):
         return None
     if name.endswith((".pt", ".pth", ".ckpt")) and tarinfo.size > 80_000_000:

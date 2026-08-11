@@ -846,7 +846,9 @@ class ClaimSelectionTests(unittest.TestCase):
             app = root / "app"
             app.mkdir()
             (app / "train.py").write_text("print('train')\n")
-            (app / "verifier").symlink_to("/opt/event/verifier")
+            (app / "linked-verifier").symlink_to("/opt/event/verifier")
+            (app / "verifier").mkdir()
+            (app / "verifier" / "mutable.py").write_text("MUTABLE = True\n")
             archive = root / "app.tar.gz"
 
             train_cli.pack_sync_dirs(archive, [app])
@@ -855,7 +857,9 @@ class ClaimSelectionTests(unittest.TestCase):
                 members = handle.getmembers()
             names = {member.name for member in members}
             self.assertIn("app/train.py", names)
+            self.assertNotIn("app/linked-verifier", names)
             self.assertNotIn("app/verifier", names)
+            self.assertNotIn("app/verifier/mutable.py", names)
             self.assertTrue(
                 all(member.isfile() or member.isdir() for member in members)
             )
