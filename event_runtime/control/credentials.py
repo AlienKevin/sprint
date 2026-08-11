@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Fail closed if an agent env file contains undeclared credentials."""
+"""Fail closed if an agent environment contains undeclared credentials."""
+
 from __future__ import annotations
 
 import re
@@ -56,7 +57,10 @@ def validate(path: Path, secret_name: str) -> set[str]:
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if len(args) != 2:
-        print("usage: validate_agent_env.py ENV_FILE SECRET_NAME", file=sys.stderr)
+        print(
+            "usage: python -m event_runtime.control.credentials ENV_FILE SECRET_NAME",
+            file=sys.stderr,
+        )
         return 2
     try:
         validate(Path(args[0]), args[1])

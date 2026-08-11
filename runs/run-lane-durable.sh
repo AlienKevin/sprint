@@ -541,7 +541,7 @@ chmod 0600 "$ENV_FILE" "$PASSWORD_FILE"
 # The host needs Modal credentials to create the sandbox, but the untrusted
 # agent must never receive a cloud control-plane credential. Keep its env file
 # on an explicit allowlist rather than relying on ambient inheritance.
-python3 "$ROOT/runs/ops/validate_agent_env.py" "$ENV_FILE" "$AGENT_SECRET_NAME"
+python3 "$ROOT/event_runtime/control/credentials.py" "$ENV_FILE" "$AGENT_SECRET_NAME"
 
 if [[ "$AGENT_KIND" == "claude-code" ]]; then
   PROMPT_TEMPLATE="${PROMPT_TEMPLATE_OVERRIDE:-$SOURCE_ROOT/runs/claude-code-goal.j2}"
