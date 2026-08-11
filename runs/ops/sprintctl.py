@@ -19,7 +19,9 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SCRIPT_DIR))
+sys.path.insert(0, str(ROOT))
 
 from frontier_update import (  # noqa: E402
     DEPLOY_DEBOUNCE_SECONDS,
@@ -35,13 +37,12 @@ from frontier_update import (  # noqa: E402
     sha256_file,
     utc_now,
 )
-import modal_cost  # noqa: E402
-import agent_cost  # noqa: E402
+from event_runtime.cost import agent as agent_cost  # noqa: E402
+from event_runtime.cost import modal as modal_cost  # noqa: E402
 
-ROOT = Path(__file__).resolve().parents[2]
 OPS_ROOT = ROOT / "runs" / "ops"
 FRONTIER_SCRIPT = SCRIPT_DIR / "frontier_update.py"
-RECONSTRUCT_CODEX_USAGE_SCRIPT = SCRIPT_DIR / "reconstruct_codex_usage.py"
+RECONSTRUCT_CODEX_USAGE_SCRIPT = ROOT / "event_runtime/cost/model_usage.py"
 UV = Path("/home/ubuntu/.local/bin/uv")
 POLL_SECONDS = 30
 DEFAULT_WAIT_SECONDS = 3 * 60 * 60

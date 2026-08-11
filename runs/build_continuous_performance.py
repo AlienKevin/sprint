@@ -33,8 +33,8 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 RUNS = ROOT / "runs" / "ops"
 WEB = ROOT / "sprint-web"
-sys.path.insert(0, str(RUNS))
-import agent_cost  # noqa: E402
+sys.path.insert(0, str(ROOT))
+from event_runtime.cost import agent as agent_cost  # noqa: E402
 
 COURSE_DISTANCE_M = 100.0
 LANE_HALF_WIDTH_M = 0.61
@@ -66,10 +66,7 @@ def completion_adjusted_speed(distance_m: float, elapsed_s: float) -> float:
 def contract_constants() -> tuple[dict[str, str | None], int, float, float]:
     """Read collision constants from the scorer without importing Isaac/Torch."""
 
-    source = (
-        ROOT
-        / "events/g1-100-metres/environment/verifier/sprintbench/rollout.py"
-    )
+    source = ROOT / "events/g1-100-metres/environment/verifier/sprintbench/rollout.py"
     tree = ast.parse(source.read_text())
     wanted = {
         "G1_BODY_PARENT",
@@ -155,8 +152,7 @@ class CollisionModel:
 def collision_model(names: list[str]) -> CollisionModel:
     parents, ancestry, radius_pad, sphere_margin = contract_constants()
     geometry_path = (
-        ROOT
-        / "events/g1-100-metres/environment/verifier/collision_geometry.json"
+        ROOT / "events/g1-100-metres/environment/verifier/collision_geometry.json"
     )
     geometry = load_json(geometry_path)
     bodies: list[BodyGeometry] = []
@@ -235,8 +231,7 @@ def torso_forward_trace(
     names: list[str], positions: np.ndarray, quaternions: np.ndarray
 ) -> np.ndarray:
     geometry_path = (
-        ROOT
-        / "events/g1-100-metres/environment/verifier/collision_geometry.json"
+        ROOT / "events/g1-100-metres/environment/verifier/collision_geometry.json"
     )
     geometry = load_json(geometry_path)["bodies"]["torso_link"]
     body_index = names.index("torso_link")

@@ -10,11 +10,14 @@ from harbor.agents.installed.codex import Codex
 from harbor.models.agent.context import AgentContext
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "reconstruct_codex_usage.py"
-sys.path.insert(0, str(SCRIPT.parent))
+ROOT = Path(__file__).resolve().parents[2]
+OPS = ROOT / "runs/ops"
+SCRIPT = ROOT / "event_runtime/cost/model_usage.py"
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(OPS))
 
 import sprintctl  # noqa: E402
-from reconstruct_codex_usage import prefer_complete_session  # noqa: E402
+from event_runtime.cost.model_usage import prefer_complete_session  # noqa: E402
 
 
 def write_session(state: Path, attempt: int, session_id: str, timestamp: str) -> None:

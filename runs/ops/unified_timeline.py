@@ -16,10 +16,15 @@ import math
 import os
 import pathlib
 import re
+import sys
 from collections import Counter, defaultdict
+from pathlib import Path
 from typing import Any, Iterable
 
-import modal_cost
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+
+from event_runtime.cost import modal as modal_cost  # noqa: E402
 
 SCHEMA_VERSION = 6
 DEFAULT_BUCKET_SECONDS = 60

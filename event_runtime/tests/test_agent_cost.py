@@ -7,14 +7,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-OPS = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
+OPS = ROOT / "runs/ops"
 sys.path.insert(0, str(OPS))
+sys.path.insert(0, str(ROOT))
 
-import agent_cost  # noqa: E402
+from event_runtime.cost import agent as agent_cost  # noqa: E402
 import gpu_worker  # noqa: E402
-
-
-ROOT = Path(__file__).resolve().parents[3]
 
 
 def timeline_fixture() -> dict:
@@ -163,7 +162,5 @@ def test_host_atomically_mirrors_cost_and_cli(tmp_path: Path, monkeypatch) -> No
     assert json.loads((mirror / "cost.json").read_text())["total_usd"] == 2.5
     assert (
         cli.read_bytes()
-        == (
-            ROOT / "events/g1-100-metres/environment/bin/sprint-cost"
-        ).read_bytes()
+        == (ROOT / "events/g1-100-metres/environment/bin/sprint-cost").read_bytes()
     )

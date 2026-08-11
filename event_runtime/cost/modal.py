@@ -330,9 +330,7 @@ def run_bounds(
     job_finished_at: dt.datetime | None = None
     if isinstance(job_path, str) and job_path:
         job = pathlib.Path(job_path)
-        job_finished_at = parse_time(
-            _read_json(job / "result.json").get("finished_at")
-        )
+        job_finished_at = parse_time(_read_json(job / "result.json").get("finished_at"))
         if job_finished_at is not None:
             end_candidates.append(job_finished_at)
         # Central blind scoring can drain accepted policies after the CPU
@@ -374,10 +372,7 @@ def run_bounds(
             terminal = (
                 event == "cpu_launch_exited"
                 or semantic in {"gpu_preempted", "gpu_released"}
-                or (
-                    row.get("phase") == "active"
-                    and row.get("action") == "exit"
-                )
+                or (row.get("phase") == "active" and row.get("action") == "exit")
             )
             if not terminal:
                 continue

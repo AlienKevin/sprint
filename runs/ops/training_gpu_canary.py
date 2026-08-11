@@ -23,9 +23,10 @@ ROOT = Path(__file__).resolve().parents[2]
 REPORT = ROOT / "runs/ops/training-gpu-canary.json"
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
+sys.path.insert(0, str(ROOT))
 
-import agent_cost  # noqa: E402
-import modal_cost  # noqa: E402
+from event_runtime.cost import agent as agent_cost  # noqa: E402
+from event_runtime.cost import modal as modal_cost  # noqa: E402
 
 
 CANARY_RESOURCE_CONTRACT = {

@@ -127,14 +127,14 @@ def _pricing_snapshots(state_dir: Path | None) -> list[dict[str, Any]]:
 
     # Before the first response arrives there is no usage audit yet. Load the
     # exact pricing module from this run's frozen Harbor source rather than
-    # maintaining a second mutable tariff table in Sprint.
+    # maintaining a second mutable tariff table in the event runtime.
     try:
         run = json.loads((state_dir / "run.json").read_text())
         source = (
             Path(str(run["harbor_path"])) / "src/harbor/agents/installed/codex_cost.py"
         )
         spec = importlib.util.spec_from_file_location(
-            f"sprint_cost_rates_{run['run_id']}", source
+            f"event_cost_rates_{run['run_id']}", source
         )
         if spec is None or spec.loader is None:
             return []

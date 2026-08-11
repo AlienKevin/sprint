@@ -8,10 +8,12 @@ from pathlib import Path
 
 import pytest
 
-OPS = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
+OPS = ROOT / "runs/ops"
 sys.path.insert(0, str(OPS))
+sys.path.insert(0, str(ROOT))
 
-import modal_cost  # noqa: E402
+from event_runtime.cost import modal as modal_cost  # noqa: E402
 import sprintctl  # noqa: E402
 
 
