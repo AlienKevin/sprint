@@ -16,8 +16,8 @@
         "limit": 10000
       },
       "supports_parallel_tool_calls": true,
-      "tool_mode": null,
-      "multi_agent_version": "v2",
+      "tool_mode": "code_mode_only",
+      "multi_agent_version": "v1",
       "use_responses_lite": false,
       "include_skills_usage_instructions": false,
       "auto_review_model_override": null,
@@ -83,8 +83,8 @@
         "limit": 10000
       },
       "supports_parallel_tool_calls": true,
-      "tool_mode": null,
-      "multi_agent_version": "v2",
+      "tool_mode": "code_mode_only",
+      "multi_agent_version": "v1",
       "use_responses_lite": false,
       "include_skills_usage_instructions": false,
       "auto_review_model_override": null,

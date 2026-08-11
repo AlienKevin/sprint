@@ -28,7 +28,7 @@ path, and one fresh A10G worker per planned trial before any agents launch.
 
 ```bash
 BATCH_ID="event-$(date -u +%Y%m%d)"
-TRIALS_PER_MODEL=3
+: "${TRIALS_PER_MODEL:?set the desired trials per model}"
 
 uv run --project harbor python -m event_runtime.control.batch preflight \
   --batch-id "$BATCH_ID" --trials-per-model "$TRIALS_PER_MODEL"

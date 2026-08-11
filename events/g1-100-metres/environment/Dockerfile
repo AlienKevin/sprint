@@ -105,7 +105,9 @@ RUN python3 /opt/sprint_gpu_pipeline.py \
       --output /opt/sprint-pm-sampling
 COPY sprint-codex-exec-wrapper.sh /opt/sprint-codex-exec-wrapper.sh
 COPY sprint-apply-deepseek-codex-config.sh /opt/sprint-apply-deepseek-codex-config.sh
+COPY sprint-apply-luna-codex-config.sh /opt/sprint-apply-luna-codex-config.sh
 COPY codex-deepseek-models.json /opt/sprint-codex-deepseek-models.json
+COPY codex-luna-model-lock.json /opt/sprint-codex-luna-model-lock.json
 COPY sprint-agent-shell-env.sh /opt/sprint-agent-shell-env.sh
 COPY sprint-gpu-worker-run.py /opt/sprint-gpu-worker-run.py
 COPY sprint-isaac-bootstrap.py /opt/sprint-isaac-bootstrap.py
@@ -114,11 +116,13 @@ COPY sprint_resilience.py /opt/sprint_resilience.py
 RUN chmod 0755 /opt/sprint-snapshot-loop.sh /opt/sprint-telemetry.sh \
     /opt/sprint-trace-mirror.py \
     /opt/sprint-codex-exec-wrapper.sh /opt/sprint-apply-deepseek-codex-config.sh \
+    /opt/sprint-apply-luna-codex-config.sh \
     /opt/sprint-gpu-worker-run.py /opt/sprint-isaac-bootstrap.py \
     /opt/sprint-gpu-timeline.py \
     && chmod 0644 /opt/sprint-agent-shell-env.sh /opt/sprint-telemetry.py \
       /opt/sprint_gpu_pipeline.py \
        /opt/sprint_resilience.py /opt/sprint_assets.py \
-       /opt/sprint-codex-deepseek-models.json
+       /opt/sprint-codex-deepseek-models.json \
+       /opt/sprint-codex-luna-model-lock.json
 
 WORKDIR /app

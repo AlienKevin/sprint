@@ -76,6 +76,44 @@ def test_event_command_runs_from_its_installed_path(tmp_path: Path) -> None:
     assert "event cost" in result.stdout
 
 
+def test_codex_comparison_models_have_one_explicit_tool_contract(tmp_path: Path) -> None:
+    environment = TASK / "environment"
+    deepseek = json.loads((environment / "codex-deepseek-models.json").read_text())
+    for model in deepseek["models"]:
+        assert model["tool_mode"] == "code_mode_only"
+        assert model["multi_agent_version"] == "v1"
+
+    luna_lock = json.loads((environment / "codex-luna-model-lock.json").read_text())
+    assert luna_lock["codex_version"] == "0.147.0"
+    assert luna_lock["model"]["slug"] == "gpt-5.6-luna"
+    assert luna_lock["model"]["tool_mode"] == "code_mode_only"
+    assert luna_lock["model"]["multi_agent_version"] == "v1"
+
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text('[projects."/app"]\ntrust_level = "trusted"\n')
+    result = subprocess.run(
+        ["bash", str(environment / "sprint-apply-luna-codex-config.sh")],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            "PATH": "/usr/bin:/bin",
+            "CODEX_HOME": str(codex_home),
+            "SPRINT_CODEX_LUNA_MODEL_LOCK": str(environment / "codex-luna-model-lock.json"),
+            "SPRINT_CODEX_DEEPSEEK_MODELS_JSON": str(environment / "codex-deepseek-models.json"),
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    locked_catalog = json.loads((codex_home / "models.json").read_text())
+    assert [model["slug"] for model in locked_catalog["models"]] == ["gpt-5.6-luna"]
+    assert locked_catalog["models"][0]["tool_mode"] == "code_mode_only"
+    assert locked_catalog["models"][0]["multi_agent_version"] == "v1"
+    config = (codex_home / "config.toml").read_text()
+    assert 'model = "gpt-5.6-luna"' in config
+    assert f'model_catalog_json = "{codex_home / "models.json"}"' in config
+
+
 def test_agent_and_verifier_submission_contracts_match() -> None:
     agent = (TASK / "environment/check_policy.py").read_text()
     verifier = (TASK / "tests/check_submission.py").read_text()
@@ -100,7 +138,7 @@ def test_training_and_both_verifiers_share_one_exact_standing_start() -> None:
     assert trusted.read_bytes() == local.read_bytes() == training.read_bytes()
 
     source = trusted.read_text()
-    assert 'CANONICAL_START_NAME = "no-block-standing-start-v1"' in source
+    assert 'CANONICAL_START_NAME = "standard-standing-start-v1"' in source
     assert "ROOT_LINEAR_VELOCITY_M_S = (0.0, 0.0, 0.0)" in source
     assert "ROOT_ANGULAR_VELOCITY_RAD_S = (0.0, 0.0, 0.0)" in source
     assert 'JOINT_VELOCITIES_RAD_S = {".*": 0.0}' in source

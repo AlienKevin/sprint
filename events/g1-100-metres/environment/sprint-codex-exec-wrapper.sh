@@ -30,16 +30,33 @@ umask 077
 mkdir -p "$AGENT_STATE_DIR" "$AGENT_LOG_DIR" "$CODEX_HOME_DIR"
 rm -f "$EXPECTED_INTERRUPT"
 
-# DeepSeek official Codex harness (provider + models.json). Activated when
-# SPRINT_CODEX_PROVIDER=deepseek or OPENAI_BASE_URL points at api.deepseek.com.
-# Luna / default OpenAI path leaves config alone.
+# Install a static model catalog for the two comparison models. DeepSeek needs
+# its custom provider definition; Luna needs an explicit copy of the catalog
+# bundled with pinned Codex 0.147.0 so a backend refresh cannot change tools or
+# collaboration semantics during the experiment.
 want_deepseek=0
+want_luna=0
 case "${SPRINT_CODEX_PROVIDER:-}" in
   deepseek|DeepSeek|DEEPSEEK) want_deepseek=1 ;;
 esac
 case "${OPENAI_BASE_URL:-}" in
   *api.deepseek.com*) want_deepseek=1 ;;
 esac
+case "${SPRINT_MODEL##*/}" in
+  gpt-5.6-luna) want_luna=1 ;;
+esac
+previous=
+for argument in "$@"; do
+  if [[ "$previous" == "--model" || "$previous" == "-m" ]]; then
+    [[ "$argument" == "gpt-5.6-luna" ]] && want_luna=1
+    previous=
+    continue
+  fi
+  case "$argument" in
+    --model=gpt-5.6-luna) want_luna=1 ;;
+    --model|-m) previous=$argument ;;
+  esac
+done
 if ((want_deepseek)); then
   apply=${SPRINT_APPLY_DEEPSEEK_CODEX_CONFIG:-/opt/sprint-apply-deepseek-codex-config.sh}
   if [[ ! -x "$apply" && -f "$apply" ]]; then
@@ -53,6 +70,20 @@ if ((want_deepseek)); then
     }
   else
     echo "DeepSeek Codex apply script missing: $apply" >&2
+    exit 1
+  fi
+elif ((want_luna)); then
+  apply=${SPRINT_APPLY_LUNA_CODEX_CONFIG:-/opt/sprint-apply-luna-codex-config.sh}
+  if [[ ! -x "$apply" && -f "$apply" ]]; then
+    chmod +x "$apply" 2>/dev/null || true
+  fi
+  if [[ -f "$apply" ]]; then
+    bash "$apply" || {
+      echo "failed to apply pinned Luna Codex config via $apply" >&2
+      exit 1
+    }
+  else
+    echo "pinned Luna Codex apply script missing: $apply" >&2
     exit 1
   fi
 fi

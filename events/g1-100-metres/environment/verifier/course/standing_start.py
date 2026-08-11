@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Sprint contributors.
 # SPDX-License-Identifier: BSD-3-Clause
-"""Canonical no-block standing start shared by every policy rollout.
+"""Standard standing start shared by every policy rollout.
 
 World Athletics requires blocks for the 100 metres.  Its standing-start rules
 instead constrain contact with the ground and starting line without defining a
@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 
-CANONICAL_START_NAME = "no-block-standing-start-v1"
+CANONICAL_START_NAME = "standard-standing-start-v1"
 ROOT_POSITION_M = (0.0, 0.0, 0.74)
 ROOT_ORIENTATION_WXYZ = (1.0, 0.0, 0.0, 0.0)
 ROOT_LINEAR_VELOCITY_M_S = (0.0, 0.0, 0.0)

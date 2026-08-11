@@ -4,15 +4,7 @@ Build and export a TorchScript policy for the frozen Unitree G1 course. This
 directory is the agent-facing source of truth for the start state, policy ABI,
 score, cost, and available commands.
 
-## Course and standing start
-
-Every rollout begins from `no-block-standing-start-v1`, defined exactly in
-`standing_start.py`. It follows the standing-start convention—stationary,
-upright, aligned with the lane, and wholly behind the line—but freezes one exact
-G1 root pose, joint pose, heading, and zero-velocity state because athletics
-rules do not define robot joint angles. There are no starting blocks, pedals,
-or extra track bodies, so ground and contact physics are unchanged. Apply
-`apply_canonical_standing_start()` to custom training scenes.
+## Course
 
 The scored robot uses full `G1_CFG`, self-collisions enabled, a `0.04 m` contact
 offset, zero rest offset, and `10 m/s` maximum depenetration velocity. Create it
@@ -34,7 +26,7 @@ For one rollout, let `d` be the maximum forward distance reached before the
 earliest of finishing, any part of the robot crossing either vertical lane
 boundary at `±0.61 m` from the lane centre, or exceeding `1 cm` of
 non-adjacent padded-body overlap. Lane containment uses all 1,960 authoritative
-collision samples across all 38 represented bodies—including their radii—so
+collision samples across all 38 represented bodies, including their radii, so
 arms, hands and fingers, legs and feet, torso, pelvis, and head must all remain
 inside. Let `t` be the first time that distance is reached. **Effective Speed**
 is
@@ -47,7 +39,7 @@ It is zero when `d <= 0` or `t <= 0`. A valid finish has `d = 100 m`, so
 `E = 100 m / t`. A policy score is the highest Effective Speed from three
 official rollouts.
 
-Models are compared with three independent agent trials. At combined agent cost
+Models are compared across independent agent trials. At combined agent cost
 `c`, `Q(c)` is the highest policy score any of those trials has produced by that
 spending point. For a shared post-experiment cost cutoff `B`, **Cost-Adjusted
 Effective Speed** is
