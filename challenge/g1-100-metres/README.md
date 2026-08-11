@@ -1,4 +1,4 @@
-# terminal-bench/g1-100-metres
+# g1-100-metres
 
 ## Objective
 
