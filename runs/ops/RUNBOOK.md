@@ -80,7 +80,7 @@ and retried under the same logical job ID. Architecture:
 `runs/CPU_GPU_SPLIT.md`. Smoke report:
 `runs/SMOKE_GPU_RECOVERY_20260803T032006Z.md`.
 
-Luna and DeepSeek run `supervise_lane.py` by default. CPU relaunches use
+Luna and DeepSeek run `event_runtime.control.supervisor` by default. CPU relaunches use
 `run-lane-durable.sh --supervised-launch`, a fresh Harbor jobs directory, and
 the same run and Volume. The supervisor honors operator stop, caps restarts,
 and backs off under a host lock. Do not start paid bakeoffs without approval.

@@ -25,9 +25,9 @@ sys.path.insert(0, str(ENV))
 
 from event_runtime.compute import claim as gpu_claim  # noqa: E402
 from event_runtime.compute import worker as gpu_worker  # noqa: E402
+from event_runtime.control import start_supervisor as start_lane_supervisor  # noqa: E402
+from event_runtime.control import supervisor as supervise_lane  # noqa: E402
 import sprint_resilience as resilience  # noqa: E402
-import start_lane_supervisor  # noqa: E402
-import supervise_lane  # noqa: E402
 import validate_agent_env  # noqa: E402
 
 # Timeline module is named with hyphens on disk; load via importlib.
@@ -2132,13 +2132,15 @@ class LauncherWiringTests(unittest.TestCase):
     def test_all_model_launchers_default_to_systemd_supervisor(self) -> None:
         for name in ("run-luna.sh", "run-deepseek.sh"):
             text = (ROOT / "runs" / name).read_text()
-            self.assertIn("start_lane_supervisor.py", text)
+            self.assertIn("start_supervisor.py", text)
             self.assertIn("--supervised-launch", text)
             self.assertIn("CPU_MAX_RESTARTS", text)
             self.assertIn("CPU_MAX_RESTARTS:-50", text)
         for name in ("run-opus.sh", "run-terra.sh", "run-lane.sh"):
             self.assertFalse((ROOT / "runs" / name).exists())
-        starter = (ROOT / "runs" / "ops" / "start_lane_supervisor.py").read_text()
+        starter = (
+            ROOT / "event_runtime" / "control" / "start_supervisor.py"
+        ).read_text()
         self.assertIn("Restart=on-failure", starter)
         self.assertIn("RestartPreventExitStatus=75 78", starter)
 
@@ -2166,7 +2168,7 @@ class LauncherWiringTests(unittest.TestCase):
                 "unit-run",
             ]
             argv = [
-                "start_lane_supervisor.py",
+                "start_supervisor.py",
                 "--run-id",
                 "unit-run",
                 "--launch-argv-json",

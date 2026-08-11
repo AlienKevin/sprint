@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Supervise a durable CPU-agent lane: relaunch after loss unless operator stop.
+"""Supervise a durable CPU-agent trial: relaunch after loss unless operator stop.
 
 Designed for long bakeoffs where Modal may preempt a GPU worker or Harbor/Codex
 may exit. Remounts the same ``sprint-$RUN_ID`` volume via the original launcher

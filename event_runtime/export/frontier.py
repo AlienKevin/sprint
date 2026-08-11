@@ -376,7 +376,7 @@ def load_state(path: Path, job: Path, trial: Path, web: Path) -> dict[str, Any]:
     if state.get("job") != str(job.resolve()) or state.get("trial") != str(
         trial.resolve()
     ):
-        # A supervised lane legitimately moves: supervise_lane.py relaunches the
+        # A supervised trial legitimately moves: supervisor.py relaunches the
         # same logical run into a fresh cpu-attempts/<n>/harbor-jobs/... tree
         # after Harbor or the agent is lost. The old guard treated that as a
         # foreign state file and raised, which killed the frontier worker for

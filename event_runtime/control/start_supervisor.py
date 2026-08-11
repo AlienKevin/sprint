@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Start a Sprint lane supervisor as a self-restarting systemd user service."""
+"""Start an event trial supervisor as a self-restarting systemd user service."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+MODULE_DIR = Path(__file__).resolve().parent
 OPS = ROOT / "runs" / "ops"
 
 
@@ -78,7 +79,7 @@ def main() -> int:
     supervisor_argv = [
         str(harbor_python),
         "-u",
-        str(OPS / "supervise_lane.py"),
+        str(MODULE_DIR / "supervisor.py"),
         "--run-id",
         args.run_id,
         "--launch-argv-json",

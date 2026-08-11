@@ -73,7 +73,7 @@ LAUNCH_ARGS=(
   --codex-version "$CODEX_VERSION"
 )
 LAUNCH_JSON=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${LAUNCH_ARGS[@]}")
-python3 "$ROOT/runs/ops/start_lane_supervisor.py" \
+python3 "$ROOT/event_runtime/control/start_supervisor.py" \
   --run-id "$RUN_ID" \
   --batch-id "${SPRINT_BATCH_ID:-}" \
   --launch-argv-json "$LAUNCH_JSON" \

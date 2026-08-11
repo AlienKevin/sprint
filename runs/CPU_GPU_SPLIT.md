@@ -149,7 +149,7 @@ python3 runs/ops/gpu_timeline_host.py summarize --run-id "$RUN_ID"
 
 ## Supervise / relaunch (bakeoffs)
 
-`runs/ops/supervise_lane.py` restarts a durable lane after Harbor/agent loss
+`event_runtime/control/supervisor.py` restarts a durable trial after Harbor/agent loss
 unless an operator stop file exists. The same `sprint-$RUN_ID` volume is
 remounted from a JSON argv vector; no shell command is evaluated. Each CPU
 relaunch gets a new host jobs directory while keeping the logical run and
@@ -163,7 +163,7 @@ agent. Unrecoverable volume loss and retry exhaustion write
 
 ```bash
 # dry-run / once (no paid bakeoff):
-python3 runs/ops/supervise_lane.py --run-id "$RUN_ID" --dry-run --once
+python3 -m event_runtime.control.supervisor --run-id "$RUN_ID" --dry-run --once
 # real bakeoff only with explicit operator approval:
 CONFIRM_LAUNCH=1 runs/run-deepseek.sh
 ```
