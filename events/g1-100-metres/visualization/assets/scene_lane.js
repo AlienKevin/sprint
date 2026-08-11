@@ -1,4 +1,4 @@
-/* ===== lane G1 replay (z-up, ±0.61 m corridor; DQ freeze + hazard decal) ===== */
+/* ===== G1 100 metres replay (z-up, ±0.61 m corridor; DQ freeze + hazard decal) ===== */
 const COL=[0x6E97C4,0xE0A43B,0xB6F24E,0xF2704E];
 const LINKS=DATA.links, MESHES=DATA.hq, POL=DATA.policies, FPS=DATA.fps, NL=LINKS.length;
 const PARENT=DATA.parents||{}, REST=DATA.rest||{};

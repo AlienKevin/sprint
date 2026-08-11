@@ -30,7 +30,7 @@ from typing import Any, Iterable
 import numpy as np
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 RUNS = ROOT / "runs" / "ops"
 WEB = ROOT / "sprint-web"
 sys.path.insert(0, str(ROOT))
@@ -512,7 +512,7 @@ def publish_frontier_replays(
 ) -> None:
     """Publish only record-setting replays and attach their stable URLs."""
 
-    module_path = ROOT / "runs/build_lane_3d.py"
+    module_path = ROOT / "events/g1-100-metres/visualization/replay.py"
     spec = importlib.util.spec_from_file_location("sprint_frontier_replay", module_path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"cannot load replay renderer: {module_path}")

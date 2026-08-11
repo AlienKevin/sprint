@@ -23,7 +23,7 @@ from typing import Any, Callable, Iterator, Sequence
 
 ROOT = Path(__file__).resolve().parents[2]
 WEB_DEFAULT = ROOT / "sprint-web"
-BUILD_SCRIPT = ROOT / "runs/build_lane_3d.py"
+BUILD_SCRIPT = ROOT / "events/g1-100-metres/visualization/replay.py"
 HQ_PATH = ROOT / "runs/g1_hq.json"
 PROJECT_ID = "prj_dgvTovRNwdSDcefYmo6oXfju9M3p"
 ORG_ID = "team_SNgoAcFfHYXYdUIXhj16bGek"
@@ -420,8 +420,8 @@ def renderer_source_hash() -> str:
     for path in (
         Path(__file__).resolve(),
         BUILD_SCRIPT,
-        BUILD_SCRIPT.parent / "replay_chrome" / "scene_lane.js",
-        BUILD_SCRIPT.parent / "replay_chrome" / "sprint-3d.html",
+        BUILD_SCRIPT.parent / "assets" / "scene_lane.js",
+        BUILD_SCRIPT.parent / "assets" / "replay.html",
     ):
         digest.update(path.name.encode())
         digest.update(b"\0")
@@ -641,8 +641,8 @@ def _rotate_xyzw(quaternion: Sequence[float], vector: Sequence[float]) -> list[f
 
 
 def validate_capture_precision(capture: Path, html: Path) -> dict[str, Any]:
-    sys.path.insert(0, str(ROOT / "runs"))
-    from build_lane_3d import G1_PARENT, _rest_offsets  # noqa: PLC0415
+    sys.path.insert(0, str(BUILD_SCRIPT.parent))
+    from replay import G1_PARENT, _rest_offsets  # noqa: PLC0415
 
     payload = json.loads(capture.read_text())
     names = payload["body_names"]

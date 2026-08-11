@@ -7,11 +7,9 @@ from pathlib import Path
 import pytest
 
 
-ROOT = Path(__file__).resolve().parents[3]
-MODULE_PATH = ROOT / "runs/build_continuous_performance.py"
-SPEC = importlib.util.spec_from_file_location(
-    "build_continuous_performance", MODULE_PATH
-)
+ROOT = Path(__file__).resolve().parents[2]
+MODULE_PATH = ROOT / "event_runtime/export/performance.py"
+SPEC = importlib.util.spec_from_file_location("event_performance", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 continuous = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = continuous

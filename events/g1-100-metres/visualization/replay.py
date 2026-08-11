@@ -10,8 +10,8 @@ import re
 import statistics
 from pathlib import Path
 
-SP = Path(__file__).resolve().parent / "replay_chrome"
-HQ_DEFAULT = Path(__file__).resolve().parent / "g1_hq.json"
+SP = Path(__file__).resolve().parent / "assets"
+HQ_DEFAULT = Path(__file__).resolve().parents[3] / "runs/g1_hq.json"
 COLS = ["#6E97C4", "#E0A43B", "#B6F24E", "#F2704E"]
 LANE_HALF_WIDTH_M = 0.61
 SCORED_TIMEOUT_S = 60.0
@@ -344,12 +344,10 @@ def assemble_html(
         "let raf=null,startWall=null,speed=0.6;",
         "let raf=null,startWall=null,speed=1;",
     )
-    template = (SP / "sprint-3d.html").read_text()
+    template = (SP / "replay.html").read_text()
     marker = "<script>const DATA="
     if marker not in template:
-        raise ValueError(
-            f"replay chrome is missing data marker: {SP / 'sprint-3d.html'}"
-        )
+        raise ValueError(f"replay shell is missing data marker: {SP / 'replay.html'}")
     head = template.split(marker, 1)[0]
 
     labels: list[str] = []

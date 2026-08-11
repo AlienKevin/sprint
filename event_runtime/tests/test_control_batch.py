@@ -956,7 +956,11 @@ def test_timeline_json_export_replaces_nonfinite_numbers(tmp_path: Path) -> None
 
 def test_replay_renderer_exposes_complete_cli() -> None:
     completed = subprocess.run(
-        [sys.executable, str(ROOT / "runs/build_lane_3d.py"), "--help"],
+        [
+            sys.executable,
+            str(ROOT / "events/g1-100-metres/visualization/replay.py"),
+            "--help",
+        ],
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
