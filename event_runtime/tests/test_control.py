@@ -405,7 +405,7 @@ class DurableOpsTests(unittest.TestCase):
         completed = subprocess.run(
             [
                 "bash",
-                str(ROOT / "runs/run-lane-durable.sh"),
+                str(ROOT / "event_runtime/control/launch.sh"),
                 "--dry-run",
                 "--run-id",
                 run_id,
@@ -433,7 +433,7 @@ class DurableOpsTests(unittest.TestCase):
         completed = subprocess.run(
             [
                 "bash",
-                str(ROOT / "runs/run-lane-durable.sh"),
+                str(ROOT / "event_runtime/control/launch.sh"),
                 "--dry-run",
                 "--run-id",
                 run_id,
@@ -469,7 +469,7 @@ class DurableOpsTests(unittest.TestCase):
         completed = subprocess.run(
             [
                 "bash",
-                str(ROOT / "runs/run-lane-durable.sh"),
+                str(ROOT / "event_runtime/control/launch.sh"),
                 "--dry-run",
                 "--run-id",
                 run_id,
@@ -496,7 +496,7 @@ class DurableOpsTests(unittest.TestCase):
         completed = subprocess.run(
             [
                 "bash",
-                str(ROOT / "runs/run-lane-durable.sh"),
+                str(ROOT / "event_runtime/control/launch.sh"),
                 "--dry-run",
                 "--run-id",
                 run_id,
@@ -525,7 +525,7 @@ class DurableOpsTests(unittest.TestCase):
         completed = subprocess.run(
             [
                 "bash",
-                str(ROOT / "runs/run-lane-durable.sh"),
+                str(ROOT / "event_runtime/control/launch.sh"),
                 "--dry-run",
                 "--run-id",
                 run_id,
@@ -554,7 +554,7 @@ class DurableOpsTests(unittest.TestCase):
         completed = subprocess.run(
             [
                 "bash",
-                str(ROOT / "runs/run-lane-durable.sh"),
+                str(ROOT / "event_runtime/control/launch.sh"),
                 "--dry-run",
                 "--run-id",
                 run_id,

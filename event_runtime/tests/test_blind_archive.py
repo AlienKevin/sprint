@@ -8,10 +8,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[2]
 AGENT = ROOT / "event_runtime" / "agent"
-OPS = ROOT / "runs" / "ops"
-sys.path.insert(0, str(OPS))
 sys.path.insert(0, str(ROOT))
 
 from event_runtime.control import run as sprintctl  # noqa: E402

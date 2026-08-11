@@ -518,7 +518,9 @@ def publish_frontier_replays(
         raise RuntimeError(f"cannot load replay renderer: {module_path}")
     renderer = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(renderer)
-    hq = load_json(ROOT / "runs/g1_hq.json")["meshes"]
+    hq = load_json(
+        ROOT / "events/g1-100-metres/visualization/assets/g1_hq.json"
+    )["meshes"]
     replay_dir = WEB / "replay"
     replay_dir.mkdir(parents=True, exist_ok=True)
     for stale in replay_dir.glob("readout-*.html"):

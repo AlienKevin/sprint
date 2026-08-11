@@ -9,7 +9,7 @@ import shutil
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 SOURCE = ROOT / "events/g1-100-metres/tests"
 TARGET = ROOT / "events/g1-100-metres/environment/verifier"
 TRAIN_START = ROOT / "events/g1-100-metres/environment/train/standing_start.py"

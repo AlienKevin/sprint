@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[3]
-TASK_TESTS = ROOT / "events/g1-100-metres/tests"
+TASK_TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TASK_TESTS))
 
 from sprintbench.replay import atomic_write, failure_modes, representative_index  # noqa: E402

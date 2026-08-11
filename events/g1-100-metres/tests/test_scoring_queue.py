@@ -4,11 +4,12 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
+EVENT = Path(__file__).resolve().parents[1]
 
 
 def test_continuous_scoring_is_blind_rate_limited_and_globally_serialized() -> None:
     config = tomllib.loads(
-        (ROOT / "events" / "g1-100-metres" / "task.toml").read_text()
+        (EVENT / "task.toml").read_text()
     )
     continuous = config["verifier"]["continuous"]
     assert continuous["enabled"] is True
@@ -25,7 +26,7 @@ def test_continuous_scoring_is_blind_rate_limited_and_globally_serialized() -> N
 
 
 def test_launcher_records_shared_blind_lane_and_rate_limit_provenance() -> None:
-    launcher = (ROOT / "runs" / "run-lane-durable.sh").read_text()
+    launcher = (ROOT / "event_runtime/control/launch.sh").read_text()
     assert '"scoring_queue_scope": "shared_blind_archival_queue"' in launcher
     assert '"scoring_queue_key": batch_id or "standalone"' in launcher
     assert '"scoring_max_concurrent_per_trial": 1' in launcher

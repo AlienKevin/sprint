@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="${SPRINT_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"
+ROOT="${EVENT_REPOSITORY_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)}"
 SOURCE_ROOT="$ROOT"
 HARBOR="${HARBOR_PATH:-$SOURCE_ROOT/harbor}"
 HARBOR_COMMIT=dafb1387151e1c32702963d44fe6c3cea66cf8cb
@@ -41,7 +41,7 @@ SUPERVISED_LAUNCH=0
 
 usage() {
   cat <<'EOF'
-Usage: runs/run-lane-durable.sh [options]
+Usage: event_runtime/control/launch.sh [options]
 
 Options:
   --run-id ID                Explicit unique run ID.
@@ -50,7 +50,7 @@ Options:
   --endpoint HTTPS_URL       Optional Codex API endpoint (no credentials/query).
   --reasoning-effort VALUE   Agent reasoning effort.
   --codex-version VERSION    Pin @openai/codex npm version (codex only; default 0.147.0).
-  --prompt-template PATH     Goal template under this repository's runs directory.
+  --prompt-template PATH     Goal template under event_runtime/control/templates.
   --standing-gpu             Hold a dedicated A10G for the whole run.
   --dry-run                  Print redacted configuration; launch nothing.
   --no-monitor               Do not start the host monitor automatically.
@@ -128,8 +128,8 @@ if [[ "$CODEX_VERSION" == -* || "$CODEX_VERSION" =~ [[:space:][:cntrl:]@] || -z 
 fi
 if [[ -n "$PROMPT_TEMPLATE_OVERRIDE" ]]; then
   PROMPT_TEMPLATE_OVERRIDE=$(realpath "$PROMPT_TEMPLATE_OVERRIDE")
-  [[ "$PROMPT_TEMPLATE_OVERRIDE" == "$ROOT/runs/"* && -f "$PROMPT_TEMPLATE_OVERRIDE" ]] || {
-    echo "--prompt-template must be a file under $ROOT/runs" >&2
+  [[ "$PROMPT_TEMPLATE_OVERRIDE" == "$ROOT/event_runtime/control/templates/"* && -f "$PROMPT_TEMPLATE_OVERRIDE" ]] || {
+    echo "--prompt-template must be under event_runtime/control/templates" >&2
     exit 2
   }
 fi
@@ -544,9 +544,9 @@ chmod 0600 "$ENV_FILE" "$PASSWORD_FILE"
 python3 "$ROOT/event_runtime/control/credentials.py" "$ENV_FILE" "$AGENT_SECRET_NAME"
 
 if [[ "$AGENT_KIND" == "claude-code" ]]; then
-  PROMPT_TEMPLATE="${PROMPT_TEMPLATE_OVERRIDE:-$SOURCE_ROOT/runs/claude-code-goal.j2}"
+  PROMPT_TEMPLATE="${PROMPT_TEMPLATE_OVERRIDE:-$SOURCE_ROOT/event_runtime/control/templates/claude.j2}"
 else
-  PROMPT_TEMPLATE="${PROMPT_TEMPLATE_OVERRIDE:-$SOURCE_ROOT/runs/codex-goal.j2}"
+  PROMPT_TEMPLATE="${PROMPT_TEMPLATE_OVERRIDE:-$SOURCE_ROOT/event_runtime/control/templates/codex.j2}"
 fi
 
 python3 - "$STATE_DIR/run.json" "$RUN_ID" "$APP_NAME" "$TRAINING_APP_NAME" \
@@ -848,7 +848,7 @@ else
   # branch never recreates it. Left unchecked the launcher just exits 1 and the
   # supervisor relaunches into the same wall until max_restarts burns out, which
   # is exactly how lane-luna-20260803T035544Z died silently after 15 restarts
-  # (see runs/BAKEOFF_20260803_FINDINGS.md D0). Fail loudly and immediately
+  # Missing provider usage is fatal because it would corrupt cost comparison.
   # instead, so the operator sees the cause rather than a restart-budget
   # exhaustion several hours later.
   if ! python3 -m modal volume list 2>/dev/null | grep -qF "$VOLUME_NAME"; then

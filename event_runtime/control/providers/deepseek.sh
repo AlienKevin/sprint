@@ -8,23 +8,20 @@
 # DeepSeek models.json (1M context).
 #
 # Usage:
-#   set -a; source runs/.secrets/deepseek.env; set +a
-#   runs/run-deepseek.sh                  # dry-run only
-#   CONFIRM_LAUNCH=1 runs/run-deepseek.sh # real launch
+#   CONFIRM_LAUNCH=1 event_runtime/control/providers/deepseek.sh
 set -euo pipefail
 
-ROOT="${SPRINT_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"
+ROOT="${EVENT_REPOSITORY_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)}"
 export MODAL_PROFILE="${MODAL_PROFILE:-kevinli020508}"
 
 MODEL="${MODEL:-deepseek/deepseek-v4-flash}"
 ENDPOINT="${ENDPOINT:-https://api.deepseek.com}"
 REASONING_EFFORT="${REASONING_EFFORT:-max}"  # API-max for DeepSeek Flash
-# Same pin as Luna; see runs/CODEX_PIN.md.
+# Same immutable harness pin as every competitor.
 CODEX_VERSION="${CODEX_VERSION:-0.147.0}"
 RUN_ID="${RUN_ID:-lane-deepseek-$(date -u +%Y%m%dT%H%M%SZ)}"
 
-GOAL_SRC="$ROOT/runs/codex-goal-slash.j2"
-GOAL_DST="$ROOT/runs/codex-goal.j2"
+GOAL="$ROOT/event_runtime/control/templates/codex.j2"
 
 if [[ -n "${DEEPSEEK_API_KEY:-}" ]]; then
   export OPENAI_API_KEY="$DEEPSEEK_API_KEY"
@@ -34,7 +31,7 @@ if [[ -z "${OPENAI_API_KEY:-}" ]]; then
   exit 1
 fi
 
-echo "launcher: run-deepseek.sh"
+echo "launcher: providers/deepseek.sh"
 echo "run_id:   $RUN_ID"
 echo "agent:    codex"
 echo "codex:    $CODEX_VERSION  (Harbor --ak version=...)"
@@ -44,7 +41,7 @@ echo "endpoint: $ENDPOINT"
 echo "provider: deepseek (official Codex config; SPRINT_CODEX_PROVIDER=deepseek)"
 echo "wire_api: responses (via [model_providers.deepseek]; not openai_base_url alone)"
 echo "catalog:  DeepSeek models.json (1M context, auto_compact_token_limit=null)"
-echo "goal:     $GOAL_SRC -> sync to $GOAL_DST before launch"
+echo "goal:     $GOAL"
 echo "profile:  $MODAL_PROFILE"
 echo "auth:     OPENAI_API_KEY=[configured] via env-file (not --ae)"
 
@@ -59,22 +56,16 @@ DRY_ARGS=(
 )
 
 echo "--- dry-run ---"
-"$ROOT/runs/run-lane-durable.sh" "${DRY_ARGS[@]}"
+"$ROOT/event_runtime/control/launch.sh" "${DRY_ARGS[@]}"
 
 if [[ "${CONFIRM_LAUNCH:-}" != "1" ]]; then
   echo "dry-run only. Set CONFIRM_LAUNCH=1 to launch." >&2
   exit 0
 fi
 
-if ! cmp -s "$GOAL_SRC" "$GOAL_DST"; then
-  echo "Refusing launch: $GOAL_DST does not match /goal template $GOAL_SRC" >&2
-  echo "Sync with: cp $GOAL_SRC $GOAL_DST" >&2
-  exit 2
-fi
-
 echo "--- launch ---"
 LAUNCH_ARGS=(
-  "$ROOT/runs/run-lane-durable.sh"
+  "$ROOT/event_runtime/control/launch.sh"
   --supervised-launch
   --run-id "$RUN_ID" \
   --agent-kind codex \

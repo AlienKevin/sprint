@@ -1589,7 +1589,7 @@ class AgentCredentialBoundaryTests(unittest.TestCase):
                 validate_agent_env.validate(path, "OPENAI_API_KEY")
 
     def test_launcher_records_fixed_resource_budget(self) -> None:
-        launcher = (ROOT / "runs" / "run-lane-durable.sh").read_text()
+        launcher = (ROOT / "event_runtime/control/launch.sh").read_text()
         worker = (ROOT / "event_runtime/compute/worker.py").read_text()
         self.assertIn('"agent_cpu_instances": 1', launcher)
         self.assertIn('"training_max_concurrent_per_run": 1', launcher)
@@ -1624,7 +1624,7 @@ class NetworkIsolationTests(unittest.TestCase):
         self.assertGreaterEqual(worker.count('env={"HEADLESS": "1"}'), 2)
 
     def test_launcher_allows_only_one_audited_model_host(self) -> None:
-        launcher = (ROOT / "runs" / "run-lane-durable.sh").read_text()
+        launcher = (ROOT / "event_runtime/control/launch.sh").read_text()
         self.assertIn('--allow-agent-host "$MODEL_API_HOST"', launcher)
         self.assertIn(
             "api.anthropic.com|api.deepseek.com|api.openai.com|openrouter.ai",
@@ -1641,7 +1641,7 @@ class NetworkIsolationTests(unittest.TestCase):
 
         result = subprocess.run(
             [
-                str(ROOT / "runs" / "run-lane-durable.sh"),
+                str(ROOT / "event_runtime/control/launch.sh"),
                 "--dry-run",
                 "--run-id",
                 "unit-extra-args",
@@ -1657,7 +1657,7 @@ class NetworkIsolationTests(unittest.TestCase):
         self.assertIn("extra Harbor arguments are disabled", result.stderr)
 
     def test_resume_refreshes_network_policy_metadata(self) -> None:
-        launcher = (ROOT / "runs" / "run-lane-durable.sh").read_text()
+        launcher = (ROOT / "event_runtime/control/launch.sh").read_text()
         update_start = launcher.index("    payload.update({")
         update_end = launcher.index("    })", update_start)
         resume_update = launcher[update_start:update_end]
@@ -1669,7 +1669,7 @@ class NetworkIsolationTests(unittest.TestCase):
     def test_unreviewed_endpoint_is_rejected_before_launch(self) -> None:
         import subprocess
 
-        launcher = ROOT / "runs" / "run-lane-durable.sh"
+        launcher = ROOT / "event_runtime/control/launch.sh"
         result = subprocess.run(
             [
                 str(launcher),
@@ -1695,7 +1695,7 @@ class NetworkIsolationTests(unittest.TestCase):
         dockerfile = (
             ROOT / "events" / "g1-100-metres" / "environment" / "Dockerfile"
         ).read_text()
-        launcher = (ROOT / "runs" / "run-lane-durable.sh").read_text()
+        launcher = (ROOT / "event_runtime/control/launch.sh").read_text()
         self.assertIn("ARG CODEX_VERSION=0.147.0", dockerfile)
         self.assertIn("ARG CLAUDE_CODE_VERSION=2.1.220", dockerfile)
         self.assertIn("BAKED_CODEX_VERSION=0.147.0", launcher)
@@ -2109,12 +2109,12 @@ class LauncherWiringTests(unittest.TestCase):
                     gpu_worker.training_image(run)
 
     def test_launcher_passes_pinned_agent_and_verifier_images(self) -> None:
-        launcher = (ROOT / "runs" / "run-lane-durable.sh").read_text()
+        launcher = (ROOT / "event_runtime/control/launch.sh").read_text()
         self.assertIn('--ek "modal_image_id=$AGENT_TRAINING_IMAGE_ID"', launcher)
         self.assertIn('--ek "verifier_image_id=$VERIFIER_IMAGE_ID"', launcher)
 
     def test_cpu_resume_uses_launch_source_and_recorded_images(self) -> None:
-        launcher = (ROOT / "runs" / "run-lane-durable.sh").read_text()
+        launcher = (ROOT / "event_runtime/control/launch.sh").read_text()
         self.assertIn('"sprint_source_commit": sprint_source_commit', launcher)
         self.assertIn('payload.get("sprint_source_commit")', launcher)
         self.assertIn(
@@ -2130,8 +2130,8 @@ class LauncherWiringTests(unittest.TestCase):
         )
 
     def test_all_model_launchers_default_to_systemd_supervisor(self) -> None:
-        for name in ("run-luna.sh", "run-deepseek.sh"):
-            text = (ROOT / "runs" / name).read_text()
+        for name in ("luna.sh", "deepseek.sh"):
+            text = (ROOT / "event_runtime/control/providers" / name).read_text()
             self.assertIn("start_supervisor.py", text)
             self.assertIn("--supervised-launch", text)
             self.assertIn("CPU_MAX_RESTARTS", text)
@@ -2145,7 +2145,7 @@ class LauncherWiringTests(unittest.TestCase):
         self.assertIn("RestartPreventExitStatus=75 78", starter)
 
     def test_cpu_sandbox_has_full_modal_lifetime_and_no_gpu(self) -> None:
-        launcher = (ROOT / "runs" / "run-lane-durable.sh").read_text()
+        launcher = (ROOT / "event_runtime/control/launch.sh").read_text()
         self.assertIn("SANDBOX_TIMEOUT_SECONDS=86400", launcher)
         self.assertIn("sandbox_timeout_secs=$SANDBOX_TIMEOUT_SECONDS", launcher)
         task = (ROOT / "events" / "g1-100-metres" / "task.toml").read_text()
@@ -2163,7 +2163,7 @@ class LauncherWiringTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as raw:
             launch = [
-                str(ROOT / "runs/run-lane-durable.sh"),
+                str(ROOT / "event_runtime/control/launch.sh"),
                 "--run-id",
                 "unit-run",
             ]
@@ -2223,11 +2223,12 @@ class LauncherWiringTests(unittest.TestCase):
             )
 
     def test_goal_templates_are_launchable_and_synced(self) -> None:
-        smoke = (ROOT / "runs" / "codex-recovery-smoke-goal.j2").read_text()
+        smoke = (
+            ROOT / "event_runtime/control/templates/recovery-smoke.j2"
+        ).read_text()
         self.assertIn("{{ instruction }}", smoke)
-        source = (ROOT / "runs" / "codex-goal-slash.j2").read_text()
-        live = (ROOT / "runs" / "codex-goal.j2").read_text()
-        self.assertEqual(source, live)
+        live = (ROOT / "event_runtime/control/templates/codex.j2").read_text()
+        self.assertIn("{{ instruction }}", live)
 
 
 if __name__ == "__main__":

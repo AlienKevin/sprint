@@ -13,11 +13,10 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 OPS_DIR = ROOT / "runs/ops"
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(OPS_DIR))
 
 from event_runtime.compute import worker as gpu_worker  # noqa: E402
 from event_runtime.control import run as sprintctl  # noqa: E402
-from smoke_cpu_gpu_split import agent_codex_alive  # noqa: E402
+from event_runtime.preflight.smoke_cpu_gpu_split import agent_codex_alive  # noqa: E402
 
 
 def utc_now() -> str:
@@ -180,7 +179,7 @@ def main() -> int:
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--timeout", type=int, default=1800)
     args = parser.parse_args()
-    state_dir = Path(__file__).resolve().parent / args.run_id
+    state_dir = OPS_DIR / args.run_id
 
     # The launcher runs in the background, so the smoke driver can start a few
     # milliseconds before run.json is published.  Treat that as normal launch

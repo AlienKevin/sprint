@@ -11,7 +11,7 @@ import statistics
 from pathlib import Path
 
 SP = Path(__file__).resolve().parent / "assets"
-HQ_DEFAULT = Path(__file__).resolve().parents[3] / "runs/g1_hq.json"
+HQ_DEFAULT = Path(__file__).resolve().parent / "assets/g1_hq.json"
 COLS = ["#6E97C4", "#E0A43B", "#B6F24E", "#F2704E"]
 LANE_HALF_WIDTH_M = 0.61
 SCORED_TIMEOUT_S = 60.0

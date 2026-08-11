@@ -212,8 +212,8 @@ def matrix(
         raise ValueError("trials per model must be between 1 and 50")
     arms: list[dict[str, Any]] = []
     specs = {
-        "deepseek": ("deepseek/deepseek-v4-flash", "run-deepseek.sh"),
-        "luna": ("openai/gpt-5.6-luna", "run-luna.sh"),
+        "deepseek": ("deepseek/deepseek-v4-flash", "deepseek.sh"),
+        "luna": ("openai/gpt-5.6-luna", "luna.sh"),
     }
     selected = tuple(dict.fromkeys(families))
     unknown = sorted(set(selected) - set(specs))
@@ -237,7 +237,7 @@ def matrix(
                     ),
                     "reasoning_effort": REASONING_EFFORT,
                     "codex_version": CODEX_VERSION,
-                    "wrapper": str(ROOT / "runs" / wrapper),
+                    "wrapper": str(MODULE_DIR / "providers" / wrapper),
                     "trial": trial,
                     "status": "planned",
                 }
@@ -527,9 +527,12 @@ def preflight(
     checks["harbor_revision"] = (
         ROOT / "harbor/.sprint-upstream-commit"
     ).read_text().strip() == HARBOR_REVISION
-    checks["goal_template"] = (ROOT / "runs/codex-goal-slash.j2").read_bytes() == (
-        ROOT / "runs/codex-goal.j2"
-    ).read_bytes()
+    goal_template = MODULE_DIR / "templates" / "codex.j2"
+    checks["goal_template"] = bool(
+        goal_template.is_file()
+        and goal_template.read_text().startswith("/goal ")
+        and "{{ instruction }}" in goal_template.read_text()
+    )
     checks["warm_images"] = (
         subprocess.run(
             [sys.executable, str(PREFLIGHT_DIR / "check_images.py")],

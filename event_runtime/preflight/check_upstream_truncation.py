@@ -19,8 +19,8 @@ This is read-only and deliberately standalone rather than patched into
 sprintctl.finalize, because sprintctl is imported by the live monitor of every
 running arm. Fold it in when no paid arm is in flight.
 
-    python3 runs/ops/check_upstream_truncation.py            # all runs
-    python3 runs/ops/check_upstream_truncation.py RUN_ID ... # specific runs
+    python3 event_runtime/preflight/check_upstream_truncation.py            # all runs
+    python3 event_runtime/preflight/check_upstream_truncation.py RUN_ID ... # specific runs
 """
 from __future__ import annotations
 

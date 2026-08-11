@@ -7,8 +7,7 @@ Unitree G1 policies in Isaac Lab and are compared by Cost-Adjusted Effective
 Speed. Results are published at [g1-sprint.vercel.app](https://g1-sprint.vercel.app/).
 
 Agents begin with the [`/app/train` guide](events/g1-100-metres/environment/train/README.md).
-Operators can use the [runbook](runs/ops/RUNBOOK.md) for recovery and detailed
-infrastructure procedures.
+Shared orchestration and recovery live in [`event_runtime`](event_runtime/README.md).
 
 ## Setup
 
@@ -28,7 +27,7 @@ Preflight verifies credentials, immutable images, the full training-to-verifier
 path, and one fresh A10G worker per planned trial before any agents launch.
 
 ```bash
-BATCH_ID="sprint-$(date -u +%Y%m%d)"
+BATCH_ID="event-$(date -u +%Y%m%d)"
 TRIALS_PER_MODEL=3
 
 uv run --project harbor python -m event_runtime.control.batch preflight \

@@ -18,7 +18,6 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(ROOT))
 from event_runtime.compute import worker as gpu_worker  # noqa: E402
 
@@ -42,7 +41,7 @@ def main() -> int:
     }
     results: dict[str, object] = {"run_id": rid}
     created: list[str] = []
-    state_dir = Path(__file__).resolve().parent / rid
+    state_dir = ROOT / "runs" / "ops" / rid
     state_dir.mkdir(parents=True, exist_ok=True)
 
     try:

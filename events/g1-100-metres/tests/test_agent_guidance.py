@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[3]
-TASK = ROOT / "events/g1-100-metres"
+TASK = Path(__file__).resolve().parents[1]
 
 # These are the benchmark-authored guidance surfaces available to the model.
 # Runtime implementation code may necessarily use words such as "rewards" for
@@ -26,8 +26,7 @@ GUIDANCE = (
     ROOT / "event_runtime/agent/archive.py",
     ROOT / "event_runtime/agent/gpu.py",
     ROOT / "event_runtime/agent/test_policy.py",
-    ROOT / "runs/codex-goal.j2",
-    ROOT / "runs/codex-goal-slash.j2",
+    ROOT / "event_runtime/control/templates/codex.j2",
 )
 
 NAMED_METHOD_CUES = (
