@@ -469,48 +469,26 @@ def step_auc(points: Iterable[dict[str, Any]], key: str, cap: float) -> float:
     return area / cap if cap > 0.0 else 0.0
 
 
-def frontier_replay_points(
-    models: Iterable[dict[str, Any]], cost_cap: float, time_cap: float
-) -> list[dict[str, Any]]:
-    """Select the union of record-setting readouts on cost and time curves."""
+def policy_replay_points(models: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Select every unique scored policy readout."""
 
     selected: dict[tuple[str, str], dict[str, Any]] = {}
     for model in models:
-        for key, cap in (
-            ("cumulative_agent_cost_usd", cost_cap),
-            ("hours_since_agent_launch", time_cap),
-        ):
-            best = 0.0
-            rows = sorted(
-                (
-                    point
-                    for point in model.get("points", [])
-                    if finite_number(point.get(key)) is not None
-                    and float(point[key]) <= cap
-                ),
-                key=lambda point: float(point[key]),
-            )
-            for point in rows:
-                score = float(point["continuous_score_mps"])
-                if score <= best:
-                    continue
-                best = score
-                selected[(point["source_run_id"], point["policy_sha256"])] = point
+        for point in model.get("points", []):
+            selected[(point["source_run_id"], point["policy_sha256"])] = point
     return sorted(
         selected.values(),
         key=lambda point: (point["source_run_id"], point["submission_index"]),
     )
 
 
-def publish_frontier_replays(
+def publish_policy_replays(
     *,
     models: list[dict[str, Any]],
     runs: list[dict[str, Any]],
     trusted: dict[str, Path],
-    cost_cap: float,
-    time_cap: float,
 ) -> None:
-    """Publish only record-setting replays and attach their stable URLs."""
+    """Attach a replay to every scored policy, rendering one when needed."""
 
     module_path = ROOT / "events/g1-100-metres/visualization/replay.py"
     spec = importlib.util.spec_from_file_location("sprint_frontier_replay", module_path)
@@ -527,15 +505,19 @@ def publish_frontier_replays(
         stale.unlink()
 
     url_by_hash: dict[str, str] = {}
-    for point in frontier_replay_points(models, cost_cap, time_cap):
+    for point in policy_replay_points(models):
         policy_hash = str(point["policy_sha256"])
+        archived = replay_dir / f"frontier-{policy_hash[:12]}.html"
+        if archived.is_file():
+            url_by_hash[policy_hash] = f"/replay/{archived.name}"
+            continue
         resolved = resolve_pose_capture(
             run_id=str(point["source_run_id"]),
             policy_hash=policy_hash,
             trusted=trusted,
         )
         if resolved is None:
-            raise RuntimeError(f"frontier replay unavailable for {policy_hash}")
+            raise RuntimeError(f"policy replay unavailable for {policy_hash}")
         capture_path, _ = resolved
         capture = load_json(capture_path)
         data = renderer.capture_to_data(
@@ -548,7 +530,7 @@ def publish_frontier_replays(
             title="The Race to AGI4ALL · Policy replay",
             eyebrow="POLICY REPLAY",
             headline=f"Trial {point['source_trial']} · policy {point['submission_index']}",
-            lede="Record-setting policy readout.",
+            lede="Policy readout.",
             cap=f"Effective Speed {float(point['continuous_score_mps']):.3f} m/s",
             story="Replay freezes at the first disqualification or finish.",
             sr_only="Unitree G1 policy replay on the sprint course.",
@@ -825,12 +807,10 @@ def build(batch_prefix: str, output: Path, cost_cap: float = 80.0) -> dict[str, 
     output_models, model_cost_cap = aggregate_models(
         output_runs, common_time_cap, cost_ledgers, cost_cap
     )
-    publish_frontier_replays(
+    publish_policy_replays(
         models=output_models,
         runs=output_runs,
         trusted=trusted_captures,
-        cost_cap=model_cost_cap,
-        time_cap=common_time_cap,
     )
     payload = {
         "schema_version": 2,

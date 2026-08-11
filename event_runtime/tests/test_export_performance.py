@@ -74,11 +74,13 @@ def test_frontier_replays_are_union_of_cost_and_time_record_setters() -> None:
         },
     ]
 
-    selected = continuous.frontier_replay_points(
-        [{"points": points}], cost_cap=10.0, time_cap=10.0
-    )
+    selected = continuous.policy_replay_points([{"points": points}])
 
-    assert {point["policy_sha256"] for point in selected} == {"a" * 64, "b" * 64}
+    assert {point["policy_sha256"] for point in selected} == {
+        "a" * 64,
+        "b" * 64,
+        "c" * 64,
+    }
 
 
 def test_cost_ledger_integrates_requests_and_allocation_intervals() -> None:
