@@ -840,6 +840,50 @@ class ClaimSelectionTests(unittest.TestCase):
             self.assertEqual(status["status"], "succeeded")
             self.assertEqual(latest, "job-1")
 
+    def test_agent_workspace_archive_omits_links_rejected_by_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            app = root / "app"
+            app.mkdir()
+            (app / "train.py").write_text("print('train')\n")
+            (app / "verifier").symlink_to("/opt/event/verifier")
+            archive = root / "app.tar.gz"
+
+            train_cli.pack_sync_dirs(archive, [app])
+
+            with tarfile.open(archive, "r:gz") as handle:
+                members = handle.getmembers()
+            names = {member.name for member in members}
+            self.assertIn("app/train.py", names)
+            self.assertNotIn("app/verifier", names)
+            self.assertTrue(
+                all(member.isfile() or member.isdir() for member in members)
+            )
+
+    def test_agent_workspace_archive_preserves_safe_app_destinations(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            app = root / "agent-app"
+            train = app / "train"
+            train.mkdir(parents=True)
+            (train / "train.py").write_text("print('train')\n")
+            staged = root / "staged-workspace"
+            (staged / "train").mkdir(parents=True)
+            (staged / "train" / "staged.py").write_text("print('staged')\n")
+            course = root / "course"
+            course.mkdir()
+            (course / "rules.py").write_text("RULES = True\n")
+            archive = root / "app.tar.gz"
+
+            with mock.patch.object(train_cli, "AGENT_WORKSPACE_ROOT", app):
+                train_cli.pack_sync_dirs(archive, [train, staged, course])
+
+            with tarfile.open(archive, "r:gz") as handle:
+                names = {member.name for member in handle.getmembers()}
+            self.assertIn("app/train/train.py", names)
+            self.assertIn("app/train/staged.py", names)
+            self.assertIn("app/course/rules.py", names)
+
 
 class HostJobRegistryTests(unittest.TestCase):
     def test_persist_records_job_outside_agent_volume_first(self) -> None:
@@ -2223,9 +2267,7 @@ class LauncherWiringTests(unittest.TestCase):
             )
 
     def test_goal_templates_are_launchable_and_synced(self) -> None:
-        smoke = (
-            ROOT / "event_runtime/control/templates/recovery-smoke.j2"
-        ).read_text()
+        smoke = (ROOT / "event_runtime/control/templates/recovery-smoke.j2").read_text()
         self.assertIn("{{ instruction }}", smoke)
         live = (ROOT / "event_runtime/control/templates/codex.j2").read_text()
         self.assertIn("{{ instruction }}", live)

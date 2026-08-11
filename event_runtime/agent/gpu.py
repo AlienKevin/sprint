@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sprint_resilience import CheckpointStore, CompletionJournal
 
 AGENT_MIRROR_ROOT = Path("/run/sprint-gpu-mirror")
+AGENT_WORKSPACE_ROOT = Path("/app")
 
 
 def utc_now() -> str:
@@ -130,7 +131,22 @@ def pack_sync_dirs(archive_path: Path, sync_dirs: list[Path]) -> list[str]:
             directory = directory.resolve()
             if not directory.is_dir():
                 raise SystemExit(f"sync path is not a directory: {directory}")
-            arcname = directory.name if directory != Path("/app") else "app"
+            workspace = AGENT_WORKSPACE_ROOT.resolve()
+            try:
+                relative = directory.relative_to(workspace)
+            except ValueError:
+                # Agents commonly stage a complete workspace in a temporary
+                # directory. A staged root containing train/ replaces /app;
+                # a supplemental external directory is mounted by basename.
+                arcname = (
+                    "app"
+                    if directory.name == "app" or (directory / "train").is_dir()
+                    else str(Path("app") / directory.name)
+                )
+            else:
+                arcname = (
+                    "app" if relative == Path(".") else str(Path("app") / relative)
+                )
             tar.add(directory, arcname=arcname, filter=_tar_filter)
             included.append(str(directory))
     return included
@@ -138,6 +154,12 @@ def pack_sync_dirs(archive_path: Path, sync_dirs: list[Path]) -> list[str]:
 
 def _tar_filter(tarinfo: tarfile.TarInfo) -> tarfile.TarInfo | None:
     name = tarinfo.name
+    # The worker extractor deliberately accepts only regular files and
+    # directories. Match that contract at submission time so agent-visible
+    # convenience symlinks (for example /app/verifier) cannot poison an
+    # otherwise valid workspace archive.
+    if not (tarinfo.isfile() or tarinfo.isdir()):
+        return None
     skip_parts = {
         "__pycache__",
         ".git",
