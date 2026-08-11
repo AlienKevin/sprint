@@ -23,8 +23,9 @@ from typing import Any
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT = SCRIPT_DIR.parents[1]
 sys.path.insert(0, str(SCRIPT_DIR))
+sys.path.insert(0, str(ROOT))
 
-import frontier_update  # noqa: E402
+from event_runtime.export import frontier as frontier_update  # noqa: E402
 import sprintctl  # noqa: E402
 
 

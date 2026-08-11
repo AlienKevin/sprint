@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SCRIPT_DIR))
 sys.path.insert(0, str(ROOT))
 
-from frontier_update import (  # noqa: E402
+from event_runtime.export.frontier import (  # noqa: E402
     DEPLOY_DEBOUNCE_SECONDS,
     WEB_DEFAULT,
     atomic_write_json,
@@ -44,7 +44,7 @@ from event_runtime.export.timeline import (  # noqa: E402
 )
 
 OPS_ROOT = ROOT / "runs" / "ops"
-FRONTIER_SCRIPT = SCRIPT_DIR / "frontier_update.py"
+FRONTIER_SCRIPT = ROOT / "event_runtime/export/frontier.py"
 RECONSTRUCT_CODEX_USAGE_SCRIPT = ROOT / "event_runtime/cost/model_usage.py"
 UV = Path("/home/ubuntu/.local/bin/uv")
 POLL_SECONDS = 30
@@ -879,7 +879,7 @@ def worker_alive(state_dir: Path) -> bool:
         pid = int((state_dir / "frontier-worker.pid").read_text().strip())
     except (OSError, ValueError):
         return False
-    return process_alive(pid, "frontier_update.py")
+    return process_alive(pid, "event_runtime/export/frontier.py")
 
 
 def maybe_start_frontier_worker(

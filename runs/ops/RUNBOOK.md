@@ -215,7 +215,7 @@ deployment.
 For a read-only frontier status with explicit paths:
 
 ```bash
-python3 runs/ops/frontier_update.py status \
+python3 -m event_runtime.export.frontier status \
   --job "$JOB" --trial "$TRIAL" \
   --state "runs/ops/$RUN_ID/frontier-state.json"
 ```

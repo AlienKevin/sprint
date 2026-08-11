@@ -20,7 +20,7 @@ sys.path.insert(0, str(OPS))
 sys.path.insert(0, str(ROOT))
 
 import batch_eval  # noqa: E402
-import frontier_update  # noqa: E402
+from event_runtime.export import frontier as frontier_update  # noqa: E402
 import training_gpu_canary  # noqa: E402
 from event_runtime.export import timeline as unified_timeline  # noqa: E402
 

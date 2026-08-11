@@ -17,8 +17,9 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[3]
 OPS = ROOT / "runs/ops"
 sys.path.insert(0, str(OPS))
+sys.path.insert(0, str(ROOT))
 
-import frontier_update  # noqa: E402
+from event_runtime.export import frontier as frontier_update  # noqa: E402
 import sprintctl  # noqa: E402
 
 
