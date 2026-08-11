@@ -26,6 +26,7 @@ runs/regrade/
 runs/ops/lane-*/
 runs/ops/smoke-*/
 runs/ops/canary-*/
+runs/ops/event-*/
 runs/ops/sprint-*/
 runs/ops/blind-verifier/
 runs/ops/feedback-verifier/

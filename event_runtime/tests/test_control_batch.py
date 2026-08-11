@@ -25,6 +25,20 @@ from event_runtime.preflight import canary as training_gpu_canary  # noqa: E402
 from event_runtime.export import timeline as unified_timeline  # noqa: E402
 
 
+def test_event_runtime_state_does_not_dirty_the_source_tree() -> None:
+    result = subprocess.run(
+        [
+            "git",
+            "check-ignore",
+            "--quiet",
+            "runs/ops/event-example/model-1/supervisor.json",
+        ],
+        cwd=ROOT,
+        check=False,
+    )
+    assert result.returncode == 0
+
+
 def test_batch_matrix_is_exact_six_arm_max_effort_contract() -> None:
     rows = batch_eval.matrix("eval-20260808")
     assert len(rows) == 6
