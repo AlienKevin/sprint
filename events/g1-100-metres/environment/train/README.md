@@ -22,22 +22,16 @@ its named constants instead of copying offsets. Export with `torch.jit.save`;
 
 ## Score
 
-For one rollout, let `d` be the maximum forward distance reached before the
-earliest of finishing, any part of the robot crossing either vertical lane
-boundary at `±0.61 m` from the lane centre, or exceeding `1 cm` of
-non-adjacent padded-body overlap. Lane containment uses all 1,960 authoritative
-collision samples across all 38 represented bodies, including their radii, so
-arms, hands and fingers, legs and feet, torso, pelvis, and head must all remain
-inside. Let `t` be the first time that distance is reached. **Effective Speed**
-is
+Let `d` be the furthest legal forward distance in a rollout and `t` the time to
+reach it. Legal progress ends at the finish or the first whole-body lane or
+self-collision disqualification. **Effective Speed** is
 
 ```text
 E = (d / 100 m) × (d / t) = d² / (100 m × t)
 ```
 
-It is zero when `d <= 0` or `t <= 0`. A valid finish has `d = 100 m`, so
-`E = 100 m / t`. A policy score is the highest Effective Speed from three
-official rollouts.
+For a valid finish, this simplifies to `100 m / t`. A policy keeps its highest
+Effective Speed from the official rollouts.
 
 Models are compared across independent agent trials. At combined agent cost
 `c`, `Q(c)` is the highest policy score any of those trials has produced by that
@@ -48,9 +42,8 @@ Effective Speed** is
 CAES(B) = (1 / B) × integral from 0 to B of Q(c) dc
 ```
 
-This is the mean best-so-far Effective Speed over the shared budget horizon. It
-has units of `m/s`; higher is better. The same `B` is used for every model and
-cannot exceed the combined cost observed for any compared model.
+This is the mean best-so-far Effective Speed over the shared cost horizon. It
+has units of `m/s`; higher is better.
 
 ## Commands
 
