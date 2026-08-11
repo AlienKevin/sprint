@@ -624,7 +624,7 @@ while true; do sleep 1; done
                     "bash",
                     str(
                         ROOT
-                        / "challenge/g1-sprint-100m-lane/environment/sprint-snapshot-loop.sh"
+                        / "challenge/g1-100-metres/environment/sprint-snapshot-loop.sh"
                     ),
                     "--run-id",
                     "test-watch",
@@ -792,7 +792,7 @@ while True:
                     "bash",
                     str(
                         ROOT
-                        / "challenge/g1-sprint-100m-lane/environment/sprint-codex-exec-wrapper.sh"
+                        / "challenge/g1-100-metres/environment/sprint-codex-exec-wrapper.sh"
                     ),
                     str(launcher),
                     "exec",
@@ -813,7 +813,7 @@ while True:
                     "bash",
                     str(
                         ROOT
-                        / "challenge/g1-sprint-100m-lane/environment/sprint-snapshot-loop.sh"
+                        / "challenge/g1-100-metres/environment/sprint-snapshot-loop.sh"
                     ),
                     "--run-id",
                     "test-codex",

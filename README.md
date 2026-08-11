@@ -49,7 +49,7 @@ export MODAL_PROFILE=your-modal-profile
 Before a paid batch, warm and prove both images with a disposable policy:
 
 ```bash
-uv run --project harbor python challenge/g1-sprint-100m-lane/tests/adversarial_policy.py \
+uv run --project harbor python challenge/g1-100-metres/tests/adversarial_policy.py \
   --mode slam --out /tmp/sprint-warmup.pt
 uv run --project harbor python runs/ops/warm_modal_images.py \
   --policy /tmp/sprint-warmup.pt
@@ -122,7 +122,7 @@ python3 runs/ops/batch_eval.py stop --batch-id "$BATCH_ID"
 | Path | Purpose |
 | --- | --- |
 | `harbor/` | Vendored `AlienKevin/harbor` continuous-verification fork |
-| `challenge/g1-sprint-100m-lane/` | Agent image, task contract, and sealed verifier |
+| `challenge/g1-100-metres/` | Agent image, task contract, and sealed verifier |
 | `runs/run-{deepseek,luna}.sh` | Safe model-specific launchers used by the fixed batch matrix |
 | `runs/ops/` | Batch controller, supervisor, recovery, telemetry, billing, finalization, and tests |
 | `sprint-web/` | Static site and schema-v6 timeline renderer |

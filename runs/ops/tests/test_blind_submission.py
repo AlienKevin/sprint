@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[3]
-BIN = ROOT / "challenge" / "g1-sprint-100m-lane" / "environment" / "bin"
+BIN = ROOT / "challenge" / "g1-100-metres" / "environment" / "bin"
 OPS = ROOT / "runs" / "ops"
 sys.path.insert(0, str(OPS))
 

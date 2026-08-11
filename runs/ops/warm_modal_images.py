@@ -15,8 +15,8 @@ import modal
 
 
 ROOT = Path(__file__).resolve().parents[2]
-AGENT_CONTEXT = ROOT / "challenge/g1-sprint-100m-lane/environment"
-VERIFIER_CONTEXT = ROOT / "challenge/g1-sprint-100m-lane/tests"
+AGENT_CONTEXT = ROOT / "challenge/g1-100-metres/environment"
+VERIFIER_CONTEXT = ROOT / "challenge/g1-100-metres/tests"
 MANIFEST = ROOT / "runs/ops/modal-image-warmup.json"
 APP_NAME = "sprint-image-warmup"
 VOLUME_NAME = "sprint-image-warmup-artifacts"

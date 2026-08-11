@@ -28,7 +28,7 @@ import modal
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT = Path(__file__).resolve().parents[2]
-ENV_DIR = ROOT / "challenge" / "g1-sprint-100m-lane" / "environment"
+ENV_DIR = ROOT / "challenge" / "g1-100-metres" / "environment"
 DOCKERFILE = ENV_DIR / "Dockerfile"
 
 sys.path.insert(0, str(SCRIPT_DIR))

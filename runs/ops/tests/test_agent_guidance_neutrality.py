@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[3]
-TASK = ROOT / "challenge/g1-sprint-100m-lane"
+TASK = ROOT / "challenge/g1-100-metres"
 
 # These are the benchmark-authored guidance surfaces available to the model.
 # Runtime implementation code may necessarily use words such as "rewards" for
@@ -73,7 +73,7 @@ def test_agent_and_verifier_submission_contracts_match() -> None:
 def test_published_verifier_is_an_exact_reviewed_source_mirror() -> None:
     published = TASK / "environment/verifier"
     manifest = json.loads((published / "SOURCE_MANIFEST.json").read_text())
-    assert manifest["source"] == "challenge/g1-sprint-100m-lane/tests"
+    assert manifest["source"] == "challenge/g1-100-metres/tests"
     for relative, expected in manifest["files"].items():
         trusted = TASK / "tests" / relative
         exposed = published / relative

@@ -11,8 +11,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = ROOT / "runs/ops/modal-image-warmup.json"
 CONTEXTS = {
-    "agent_training": ROOT / "challenge/g1-sprint-100m-lane/environment",
-    "verifier": ROOT / "challenge/g1-sprint-100m-lane/tests",
+    "agent_training": ROOT / "challenge/g1-100-metres/environment",
+    "verifier": ROOT / "challenge/g1-100-metres/tests",
 }
 
 

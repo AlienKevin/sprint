@@ -68,7 +68,7 @@ def contract_constants() -> tuple[dict[str, str | None], int, float, float]:
 
     source = (
         ROOT
-        / "challenge/g1-sprint-100m-lane/environment/verifier/sprintbench/rollout.py"
+        / "challenge/g1-100-metres/environment/verifier/sprintbench/rollout.py"
     )
     tree = ast.parse(source.read_text())
     wanted = {
@@ -156,7 +156,7 @@ def collision_model(names: list[str]) -> CollisionModel:
     parents, ancestry, radius_pad, sphere_margin = contract_constants()
     geometry_path = (
         ROOT
-        / "challenge/g1-sprint-100m-lane/environment/verifier/collision_geometry.json"
+        / "challenge/g1-100-metres/environment/verifier/collision_geometry.json"
     )
     geometry = load_json(geometry_path)
     bodies: list[BodyGeometry] = []
@@ -236,7 +236,7 @@ def torso_forward_trace(
 ) -> np.ndarray:
     geometry_path = (
         ROOT
-        / "challenge/g1-sprint-100m-lane/environment/verifier/collision_geometry.json"
+        / "challenge/g1-100-metres/environment/verifier/collision_geometry.json"
     )
     geometry = load_json(geometry_path)["bodies"]["torso_link"]
     body_index = names.index("torso_link")

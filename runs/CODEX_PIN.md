@@ -14,7 +14,7 @@ release.
 
 | File | Mechanism |
 |---|---|
-| `challenge/g1-sprint-100m-lane/environment/Dockerfile` | Bakes `@openai/codex@0.147.0` and checks its version |
+| `challenge/g1-100-metres/environment/Dockerfile` | Bakes `@openai/codex@0.147.0` and checks its version |
 | `runs/run-lane-durable.sh` | Requires `CODEX_VERSION=0.147.0`, records it in `run.json`, and passes `--ak version=...` to Harbor |
 | `runs/run-luna.sh` | Uses the same pin with the official OpenAI endpoint |
 | `runs/run-deepseek.sh` | Uses the same pin with DeepSeek's official Codex provider configuration |

@@ -6,7 +6,7 @@ schema_version = "1.3"
 # `/logs/verifier/telemetry`, which Harbor downloads with verifier output.
 
 [task]
-name = "terminal-bench/g1-sprint-100m-lane"
+name = "terminal-bench/g1-100-metres"
 description = "Produce a Unitree G1 humanoid policy that runs 100 m as fast as possible in Isaac Lab"
 authors = [{ name = "Kevin Li", email = "kevinli020508@gmail.com" }]
 keywords = ["robotics", "control", "isaac-lab", "humanoid", "locomotion", "gpu"]
@@ -51,7 +51,7 @@ shared_result_cache_dir = "$SPRINT_SHARED_CACHE_DIR"
 #
 # Headless Kit cannot initialize Vulkan in Modal's gVisor sandbox, but CUDA
 # physics remains active. The verifier rejects PhysX's distinct software-
-# fallback warnings; see NOTES-perf.md for measured evidence and timings.
+# fallback warnings rather than treating graphics-path warnings as fallback.
 max_concurrent = 1
 
 [verifier.environment]

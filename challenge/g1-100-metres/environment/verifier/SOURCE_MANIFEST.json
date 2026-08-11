@@ -17,5 +17,5 @@
     "verify.py": "2494310bcf80591c4c4d76185c925275f15883169378d19ac755710c832445fa"
   },
   "schema_version": 1,
-  "source": "challenge/g1-sprint-100m-lane/tests"
+  "source": "challenge/g1-100-metres/tests"
 }

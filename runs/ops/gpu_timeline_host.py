@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-ENV_DIR = Path(__file__).resolve().parents[2] / "challenge/g1-sprint-100m-lane/environment"
+ENV_DIR = Path(__file__).resolve().parents[2] / "challenge/g1-100-metres/environment"
 sys.path.insert(0, str(SCRIPT_DIR))
 
 import sprintctl  # noqa: E402
