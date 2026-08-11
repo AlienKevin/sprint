@@ -10,7 +10,7 @@ import re
 import statistics
 from pathlib import Path
 
-SP = Path(__file__).resolve().parent / "_lane_chrome"
+SP = Path(__file__).resolve().parent / "replay_chrome"
 HQ_DEFAULT = Path(__file__).resolve().parent / "g1_hq.json"
 COLS = ["#6E97C4", "#E0A43B", "#B6F24E", "#F2704E"]
 LANE_HALF_WIDTH_M = 0.61

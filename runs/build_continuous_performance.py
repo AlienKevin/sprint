@@ -21,6 +21,7 @@ import hashlib
 import importlib.util
 import json
 import math
+import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -32,6 +33,9 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 RUNS = ROOT / "runs" / "ops"
 WEB = ROOT / "sprint-web"
+sys.path.insert(0, str(RUNS))
+import agent_cost  # noqa: E402
+
 COURSE_DISTANCE_M = 100.0
 LANE_HALF_WIDTH_M = 0.61
 SELF_COLLISION_THRESHOLD_M = 0.01
@@ -582,83 +586,11 @@ def model_family(model: str | None) -> str:
 
 
 def build_cost_ledger(timeline: dict[str, Any]) -> dict[str, Any]:
-    resources = timeline["resource_usage_summary"]
-    estimate = resources["modal_estimate"]
-    rates = {
-        key: float(value)
-        for key, value in estimate["pricing_snapshot"]["rates_usd_per_second"].items()
-    }
-    contract = resources["resource_contract"]
-    provider = resources["modal_provider_billing"]["by_role_usd"]
-
-    def role_rate(role: str, contract_key: str) -> float:
-        spec = contract[contract_key]
-        rate = (
-            float(spec["physical_cpu_cores"]) * rates["CPU"]
-            + (float(spec["memory_mb"]) / 1024.0) * rates["Memory"]
-        )
-        if int(spec.get("gpu_count") or 0):
-            rate += rates[spec["gpu_type"]]
-        estimated = float(estimate["by_role"][role]["estimated_cost_usd"])
-        exact = float(provider[role])
-        return rate * (exact / estimated if estimated else 1.0)
-
-    events = timeline["events"]
-    cpu_start = min(
-        int(event["epoch_ms"])
-        for event in events
-        if event.get("kind") == "cpu_allocated"
-    )
-    starts = {
-        event["lease_id"]: int(event["epoch_ms"])
-        for event in events
-        if event.get("kind") in {"gpu_allocated", "gpu_reallocated"}
-        and event.get("lease_id")
-    }
-    ends = {
-        event["lease_id"]: int(event["epoch_ms"])
-        for event in events
-        if event.get("kind") in {"gpu_released", "gpu_preempted"}
-        and event.get("lease_id")
-    }
-    if set(starts) != set(ends):
-        raise RuntimeError("training allocation lifecycle is incomplete")
-    return {
-        "origin_epoch_ms": int(timeline["clock"]["origin_epoch_ms"]),
-        "end_epoch_ms": int(timeline["clock"]["end_epoch_ms"]),
-        "cpu_start_epoch_ms": cpu_start,
-        "cpu_usd_per_second": role_rate("cpu_agent", "cpu_agent"),
-        "training_intervals": sorted((starts[key], ends[key]) for key in starts),
-        "training_usd_per_second": role_rate("training_gpu", "training_worker"),
-        "api_events": sorted(
-            (
-                int(event["epoch_ms"]),
-                float(event.get("calculated_cost_usd") or 0.0),
-            )
-            for event in events
-            if event.get("kind") == "model_request_usage"
-        ),
-    }
+    return agent_cost.build_cost_ledger(timeline)
 
 
 def cumulative_cost_at_epoch(ledger: dict[str, Any], epoch_ms: int) -> float:
-    api_cost = sum(
-        cost for event_ms, cost in ledger["api_events"] if event_ms <= epoch_ms
-    )
-    cpu_ms = max(
-        0,
-        min(epoch_ms, ledger["end_epoch_ms"]) - ledger["cpu_start_epoch_ms"],
-    )
-    training_ms = sum(
-        max(0, min(epoch_ms, end_ms) - start_ms)
-        for start_ms, end_ms in ledger["training_intervals"]
-        if epoch_ms > start_ms
-    )
-    return (
-        api_cost
-        + (cpu_ms / 1000.0) * ledger["cpu_usd_per_second"]
-        + (training_ms / 1000.0) * ledger["training_usd_per_second"]
-    )
+    return agent_cost.cumulative_cost_at_epoch(ledger, epoch_ms)
 
 
 def aggregate_models(
@@ -920,7 +852,7 @@ def build(batch_prefix: str, output: Path, cost_cap: float = 80.0) -> dict[str, 
         "cost": {
             "includes": ["model API", "CPU agent", "training sandbox"],
             "excludes": ["verifier sandbox", "website", "observability infrastructure"],
-            "modal_method": "allocation intervals integrated to each readout timestamp and reconciled by role to exact final pre-credit Modal billing",
+            "modal_method": "allocation intervals integrated to each readout timestamp using the pinned published requested-resource tariff; provider billing is retained separately for audit",
             "common_auc_cap_usd": model_cost_cap,
             "aggregation": "sum cumulative cost across three trials; take best policy quality produced by any trial",
         },

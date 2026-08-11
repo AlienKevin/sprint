@@ -56,11 +56,14 @@ max_concurrent = 1
 
 [verifier.environment]
 build_timeout_sec = 5400.0   # Isaac Sim's extension cache alone is about 15 GB
-cpus = 8
+# Historical verifier telemetry (12,462 cgroup-local samples across 37 runs)
+# showed p99 CPU below 3.1 Modal physical cores and memory below 8.1 GiB.
+# Keep measured headroom without paying the former 8-core/32-GiB floor.
+cpus = 4
 gpus = 1
 gpu_types = ["A10G"]         # the score is a simulated time, so this only
                              # fixes how long verification takes, not the result
-memory_mb = 32768
+memory_mb = 10240
 storage_mb = 61440
 # Isaac streams every scene asset from NVIDIA's bucket at spawn time and caches
 # nothing, so this used to be unscoreable: FileNotFoundError on the robot, then
@@ -72,10 +75,12 @@ network_mode = "no-network"
 [environment]
 build_timeout_sec = 5400.0
 # The persistent agent runs Codex, shell tools, and orchestration only. Isaac
-# executes in separately metered training/verifier GPU sandboxes, so 4 physical
-# cores and 16 GiB retain headroom for sub-agents without paying Isaac-sized
+# executes in separately metered training/verifier GPU sandboxes. Across 36,054
+# historical cgroup-local samples, agent p99 CPU stayed below one Modal physical
+# core and peak memory stayed below 7.1 GiB, so 2 cores and 8 GiB retain measured
+# headroom without paying Isaac-sized
 # resources for the full 24-hour agent lifetime.
-cpus = 4
+cpus = 2
 # CPU-only agent sandbox: Modal Sandboxes without a GPU requirement are not
 # subject to infrastructure preemption. Isaac training runs on a separate A10G
 # worker (see runs/CPU_GPU_SPLIT.md + sprint-gpu-train). The durable launcher
@@ -83,7 +88,7 @@ cpus = 4
 # recreates this CPU sandbox from the same Volume if its process exits early.
 # Do NOT use Harbor --override-gpus 0 — that would also strip verifier GPUs.
 gpus = 0
-memory_mb = 16384
+memory_mb = 8192
 storage_mb = 61440
 # Start completely offline. The trusted launcher adds exactly one model API
 # hostname to the agent phase via Harbor --allow-agent-host. Agent setup stays

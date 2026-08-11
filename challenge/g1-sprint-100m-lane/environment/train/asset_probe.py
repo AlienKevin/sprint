@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 
 parser = argparse.ArgumentParser()
 from isaaclab.app import AppLauncher  # noqa: E402
@@ -39,5 +40,8 @@ def main() -> int:
 
 if __name__ == "__main__":
     code = main()
-    app.close()
-    raise SystemExit(code)
+    # The probe process is disposable; avoid Isaac Sim's headless teardown
+    # crash after the exact local-asset success markers have been flushed.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)

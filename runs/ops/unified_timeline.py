@@ -2220,24 +2220,20 @@ class Builder:
             else None,
             "final_agent_total_cost_usd": (
                 float(usage_summary["calculated_api_usage_usd"])
-                + float(selected_agent_modal_cost)
+                + float(estimated_agent_modal_cost)
                 if usage_summary["calculated_api_usage_usd"] is not None
-                and selected_agent_modal_cost is not None
+                and estimated_agent_modal_cost is not None
                 else None
             ),
             "final_verifier_measurement_overhead_usd": selected_verifier_cost,
             "final_total_cost_usd": (
                 float(usage_summary["calculated_api_usage_usd"])
-                + float(selected_agent_modal_cost)
+                + float(estimated_agent_modal_cost)
                 if usage_summary["calculated_api_usage_usd"] is not None
-                and selected_agent_modal_cost is not None
+                and estimated_agent_modal_cost is not None
                 else None
             ),
-            "final_total_cost_kind": (
-                "api_published_list_price_plus_agent_modal_provider_precredits"
-                if provider_complete
-                else "api_published_list_price_plus_agent_modal_tariff_estimate"
-            ),
+            "final_total_cost_kind": "api_published_list_price_plus_agent_modal_pinned_tariff",
             "wall_duration_ms": end - origin
             if origin is not None and end is not None
             else None,

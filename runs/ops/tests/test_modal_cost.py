@@ -17,9 +17,9 @@ import sprintctl  # noqa: E402
 
 CONTRACT = {
     "cpu_agent": {
-        "physical_cpu_cores": 4,
-        "vcpus_equivalent": 8,
-        "memory_mb": 16384,
+        "physical_cpu_cores": 2,
+        "vcpus_equivalent": 4,
+        "memory_mb": 8192,
         "gpus": 0,
     },
     "training_worker": {
@@ -30,9 +30,9 @@ CONTRACT = {
         "gpu_type": "A10G",
     },
     "verifier": {
-        "physical_cpu_cores": 8,
-        "vcpus_equivalent": 16,
-        "memory_mb": 32768,
+        "physical_cpu_cores": 4,
+        "vcpus_equivalent": 8,
+        "memory_mb": 10240,
         "gpu_count": 1,
         "gpu_type": "A10G",
     },
@@ -62,18 +62,18 @@ def test_estimate_preserves_role_and_billing_categories() -> None:
     )
 
     assert payload["by_role"]["cpu_agent"]["quantities"] == {
-        "CPU": 4.0,
-        "Memory": 16.0,
+        "CPU": 2.0,
+        "Memory": 8.0,
         "A10G": 0.0,
     }
-    assert payload["by_role"]["cpu_agent"]["estimated_cost_usd"] == 0.95184
+    assert payload["by_role"]["cpu_agent"]["estimated_cost_usd"] == 0.47592
     assert payload["by_role"]["training_gpu"]["estimated_cost_usd"] == 1.50264
-    assert payload["by_role"]["verifier_gpu"]["estimated_cost_usd"] == 0.050088
-    assert payload["estimated_cost_usd"] == 2.504568
+    assert payload["by_role"]["verifier_gpu"]["estimated_cost_usd"] == 0.0318228
+    assert payload["estimated_cost_usd"] == 2.0103828
     assert payload["by_category_usd"] == {
         "A10G": 0.56916,
-        "CPU": 1.1542176,
-        "Memory": 0.7811904,
+        "CPU": 0.8609328,
+        "Memory": 0.58029,
     }
 
 
@@ -268,7 +268,8 @@ def test_completed_report_is_reopened_when_final_allocation_hour_moves(
 
 
 def test_collection_waits_for_complete_hour_then_persists_provider_report(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = tmp_path / "cost-run"
     state.mkdir()
@@ -488,7 +489,8 @@ def test_collection_waits_for_volume_storage_snapshot(tmp_path: Path) -> None:
 
 
 def test_finalization_does_not_collect_billing_before_other_gates(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     run = {
         "run_id": "cost-run",
@@ -521,7 +523,8 @@ def test_finalization_does_not_collect_billing_before_other_gates(
 
 
 def test_complete_billing_is_uploaded_before_finalized_marker(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     run = {
         "run_id": "cost-run",
@@ -547,9 +550,7 @@ def test_complete_billing_is_uploaded_before_finalized_marker(
             ),
         ]
     )
-    monkeypatch.setattr(
-        sprintctl, "final_conditions", lambda *_args: next(conditions)
-    )
+    monkeypatch.setattr(sprintctl, "final_conditions", lambda *_args: next(conditions))
 
     def collect(_state_dir):
         payload = {"provider_complete": True}
@@ -564,9 +565,7 @@ def test_complete_billing_is_uploaded_before_finalized_marker(
         lambda _run, source, remote: uploads.append((source, remote)),
     )
 
-    complete, _ = sprintctl.finalize(
-        "cost-run", upload=True, include_remote=False
-    )
+    complete, _ = sprintctl.finalize("cost-run", upload=True, include_remote=False)
 
     assert complete is True
     assert uploads[0] == (

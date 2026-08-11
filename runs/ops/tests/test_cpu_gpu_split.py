@@ -2147,8 +2147,13 @@ class LauncherWiringTests(unittest.TestCase):
         self.assertIn("sandbox_timeout_secs=$SANDBOX_TIMEOUT_SECONDS", launcher)
         task = (ROOT / "challenge" / "g1-sprint-100m-lane" / "task.toml").read_text()
         self.assertIn("gpus = 0", task)
-        self.assertIn("cpus = 4", task)
-        self.assertIn("memory_mb = 16384", task)
+        self.assertIn("cpus = 2", task)
+        self.assertIn("memory_mb = 8192", task)
+        verifier = task.split("[verifier.environment]", 1)[1].split("[environment]", 1)[
+            0
+        ]
+        self.assertIn("cpus = 4", verifier)
+        self.assertIn("memory_mb = 10240", verifier)
 
     def test_supervisor_starter_uses_systemd_watchdog_without_secret_in_argv(
         self,

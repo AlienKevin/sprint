@@ -344,5 +344,11 @@ def main() -> int:
 
 if __name__ == "__main__":
     code = main()
-    app.close()
-    sys.exit(code)
+    # This verifier always runs in a disposable process. Isaac Sim 5.1 can
+    # segfault inside SimulationApp.close() after all results have been flushed
+    # on headless Modal A10 workers. Let the OS tear down the isolated process
+    # instead; this preserves an honest exit status without masking execution
+    # failures or accepting incomplete artifacts.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)

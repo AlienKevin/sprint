@@ -4,21 +4,44 @@
 
 Each model/run has an independent resource and queue namespace:
 
-- exactly one supervised CPU agent sandbox (`cpus=4` physical cores,
-  `gpus=0`, 16 GiB);
+- exactly one supervised CPU agent sandbox (`cpus=2` physical cores,
+  `gpus=0`, 8 GiB);
 - at most one active agent-controlled A10G training worker, enforced by the
   host dispatcher across polling cycles and retries;
 - queued training jobs wait behind that worker instead of allocating another;
-- one trusted A10G verifier slot for that run's scoring queue; and
+- one batch-scoped trusted A10G verifier slot shared fairly by all archival
+  scoring queues; and
 - a separate durable Modal Volume, Harbor trial directory, scoring queue key,
   checkpoint namespace, lease namespace, and timeline namespace.
 
-The verifier is benchmark infrastructure, not compute the agent can execute
-inside. It may overlap a training worker, so the platform can briefly have two
-GPUs attributed to a run: one agent-controlled training GPU and one sealed
-scoring GPU. If the desired accounting rule is one GPU total including trusted
-scoring, training and verification need a shared cross-service semaphore; that
-is not the current contract.
+The reviewed verifier source is available to agents and runs on their one
+training GPU for local debugging. Official archival verification remains
+trusted infrastructure and may overlap a training worker, so the platform can
+briefly have two GPUs attributed to a run: one agent-controlled training GPU
+and one sealed scoring GPU.
+
+## Right-sized CPU and memory
+
+The current requests are based on sandbox-local cgroup telemetry retained from
+completed experiments:
+
+- CPU agent: 36,054 samples across 66 runs. P99 CPU was 1.61 Linux scheduler
+  threads (below one Modal physical core), maximum was 3.88 threads, p99 memory
+  was 4.50 GiB, and maximum memory was 7.08 GiB. The contract requests 2 Modal
+  physical cores and 8 GiB.
+- Official verifier: 12,462 samples across 37 runs. P99 CPU was 6.03 Linux
+  scheduler threads (about 3.02 Modal physical cores), while p99 and maximum
+  memory were 7.98 and 8.05 GiB. The contract requests 4 Modal physical cores
+  and 10 GiB.
+
+- Training GPU worker: 56,678 samples across 50 runs. P99 CPU was 10.41
+  scheduler threads (about 5.21 Modal physical cores), p99 memory was 10.29 GiB,
+  and maximum memory was 10.47 GiB. The contract requests 6 physical cores and
+  12 GiB. Rare CPU bursts may throttle rather than forcing every job to reserve
+  eight cores continuously.
+
+Every change to these requests must pass the exact-image training,
+local-verifier, and sealed-verifier canary before an experiment launches.
 
 ## Credential boundary
 

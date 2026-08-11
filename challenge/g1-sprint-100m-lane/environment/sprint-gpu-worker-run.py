@@ -115,8 +115,8 @@ def start_telemetry(run_id: str, job_id: str, attempt: int, lease_id: str) -> No
     os.environ["SPRINT_GPU_JOB_ID"] = job_id
     os.environ["SPRINT_GPU_ATTEMPT"] = str(attempt)
     os.environ["SPRINT_GPU_LEASE_ID"] = lease_id
-    os.environ["SPRINT_REQUESTED_CPU_CORES"] = "8"
-    os.environ["SPRINT_REQUESTED_MEMORY_MIB"] = "32768"
+    os.environ["SPRINT_REQUESTED_CPU_CORES"] = "6"
+    os.environ["SPRINT_REQUESTED_MEMORY_MIB"] = "12288"
     script = Path("/opt/sprint-telemetry.sh")
     if not script.is_file():
         print("telemetry script missing; continuing without sampler", flush=True)

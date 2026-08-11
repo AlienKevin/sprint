@@ -420,8 +420,8 @@ def renderer_source_hash() -> str:
     for path in (
         Path(__file__).resolve(),
         BUILD_SCRIPT,
-        BUILD_SCRIPT.parent / "_lane_chrome" / "scene_lane.js",
-        BUILD_SCRIPT.parent / "_lane_chrome" / "sprint-3d.html",
+        BUILD_SCRIPT.parent / "replay_chrome" / "scene_lane.js",
+        BUILD_SCRIPT.parent / "replay_chrome" / "sprint-3d.html",
     ):
         digest.update(path.name.encode())
         digest.update(b"\0")

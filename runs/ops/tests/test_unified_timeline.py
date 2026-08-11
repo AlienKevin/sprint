@@ -35,9 +35,9 @@ def fixture_run(
         "scoring_max_concurrent": 1,
         "resource_contract": {
             "cpu_agent": {
-                "physical_cpu_cores": 4,
-                "vcpus_equivalent": 8,
-                "memory_mb": 16384,
+                "physical_cpu_cores": 2,
+                "vcpus_equivalent": 4,
+                "memory_mb": 8192,
                 "gpus": 0,
             },
             "training_worker": {
@@ -48,9 +48,9 @@ def fixture_run(
                 "gpu_type": "A10G",
             },
             "verifier": {
-                "physical_cpu_cores": 8,
-                "vcpus_equivalent": 16,
-                "memory_mb": 32768,
+                "physical_cpu_cores": 4,
+                "vcpus_equivalent": 8,
+                "memory_mb": 10240,
                 "gpu_count": 1,
                 "gpu_type": "A10G",
             },
@@ -517,7 +517,7 @@ def test_unified_timeline_is_joined_deduplicated_and_public_safe(
     assert payload["comparison_summary"]["best_result_epoch_ms"] == 1786104027000
     assert payload["comparison_summary"]["time_to_best_ms"] == 27_000
     assert (
-        payload["comparison_summary"]["modal_estimated_cost_at_best_usd"] == 0.02657568
+        payload["comparison_summary"]["modal_estimated_cost_at_best_usd"] == 0.022042568
     )
     assert payload["comparison_summary"]["valid_submission_count"] == 2
     assert payload["comparison_summary"]["tool_call_count"] == 4
@@ -544,15 +544,15 @@ def test_unified_timeline_is_joined_deduplicated_and_public_safe(
     assert resource_event["metrics"]["gpus"][0]["tensor_pipe_active_pct"] == 20.0
     assert (
         payload["resource_usage_summary"]["modal_estimate"]["estimated_cost_usd"]
-        == 0.04640232
+        == 0.038489292
     )
     assert payload["artifacts"][1]["cost_at_submission"]["epoch_ms"] == 1786104022000
     assert payload["artifacts"][1]["cost_at_result"] == {
         "epoch_ms": 1786104027000,
         "api_calculated_usd": None,
-        "modal_tariff_estimated_usd": 0.02657568,
-        "agent_modal_tariff_estimated_usd": 0.0235704,
-        "verifier_measurement_overhead_estimated_usd": 0.00300528,
+        "modal_tariff_estimated_usd": 0.022042568,
+        "agent_modal_tariff_estimated_usd": 0.0201332,
+        "verifier_measurement_overhead_estimated_usd": 0.001909368,
         "total_estimated_usd": None,
         "modal_estimate_kind": "requested_resource_floor",
     }
@@ -727,12 +727,12 @@ def test_request_costs_are_joined_to_performance_on_the_same_clock(
     ]
     assert payload["comparison_summary"]["api_cost_at_best_usd"] == 0.25
     assert payload["artifacts"][1]["cost_at_result"]["api_calculated_usd"] == 0.25
-    assert payload["artifacts"][1]["cost_at_result"]["total_estimated_usd"] == 0.2735704
+    assert payload["artifacts"][1]["cost_at_result"]["total_estimated_usd"] == 0.2701332
     assert (
         payload["artifacts"][1]["cost_at_result"][
             "verifier_measurement_overhead_estimated_usd"
         ]
-        == 0.00300528
+        == 0.001909368
     )
     request = next(
         event for event in payload["events"] if event["kind"] == "model_request_usage"

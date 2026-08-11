@@ -12,9 +12,9 @@
     "sprintbench/sprint_command.py": "88a344c82903ea1a914b053afb1cc1080e8d44c835d9e45d9dac96c1a151513d",
     "sprintbench/sprint_env_cfg.py": "a300c7bebbc97d2a64faf0a1fca25656ead56da513f1a152bf0db65f28dd8961",
     "sprintbench/tasks.py": "8f694377cb3864825d51f1f22265a2b5fed75748a8f874107fd3898121a2ad99",
-    "test.sh": "ec9f4a0142c5157f02cba147c2a6f4f2875bde2299fd4442819418e30e2386a3",
-    "verifier_telemetry.py": "eee1001aefaddb5be135f4de8a935d9114ec77c14ecc0cfb10672be76fa483a9",
-    "verify.py": "4b8ffc89027c5dbd98ede7c4b632d9f7975a9dd30ad58bb5fe8956adf42ce437"
+    "test.sh": "021b7bbe591dea21a3a5aa5a975293a3997b40154af08f4d43d78ff97b3165df",
+    "verifier_telemetry.py": "ca27b4269a1d1f6484da3c88ccea4410bd88667678ba5d2b031b7169b104f60f",
+    "verify.py": "2494310bcf80591c4c4d76185c925275f15883169378d19ac755710c832445fa"
   },
   "schema_version": 1,
   "source": "challenge/g1-sprint-100m-lane/tests"

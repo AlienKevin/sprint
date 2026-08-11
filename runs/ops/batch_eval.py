@@ -109,12 +109,35 @@ def functional_gpu_canary_ready() -> bool:
     except (OSError, json.JSONDecodeError):
         return False
     contexts = warmup.get("contexts", {})
+    cost_equivalence = canary.get("cost_equivalence") or {}
+    cost_comparison = cost_equivalence.get("comparison") or {}
+    compared_components = set((cost_comparison.get("comparisons") or {}).keys())
+    tolerance = cost_comparison.get("tolerance_usd")
+    maximum_delta = cost_comparison.get("max_absolute_delta_usd")
+    cost_proof_valid = bool(
+        cost_equivalence.get("completed")
+        and cost_comparison.get("verified")
+        and isinstance(tolerance, (int, float))
+        and not isinstance(tolerance, bool)
+        and isinstance(maximum_delta, (int, float))
+        and not isinstance(maximum_delta, bool)
+        and 0 <= maximum_delta <= tolerance <= 1e-9
+        and compared_components
+        == {
+            "model_api_usd",
+            "cpu_agent_usd",
+            "training_sandboxes_usd",
+            "total_usd",
+        }
+    )
     return bool(
         warmup.get("completed")
-        and canary.get("schema_version") == 3
+        and canary.get("schema_version") == 4
         and canary.get("completed")
         and canary.get("full_path_verified")
         and canary.get("verifier_equivalence_verified")
+        and canary.get("cost_equivalence_verified")
+        and cost_proof_valid
         and canary.get("image_id") == contexts.get("agent_training", {}).get("image_id")
         and canary.get("verifier_image_id")
         == contexts.get("verifier", {}).get("image_id")
