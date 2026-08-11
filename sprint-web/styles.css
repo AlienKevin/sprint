@@ -215,6 +215,10 @@ main {
 .submission {
   stroke: #050505;
   stroke-width: 2;
+  opacity: 0.48;
+}
+.submission.frontier {
+  opacity: 1;
 }
 .submission.replayable {
   cursor: pointer;

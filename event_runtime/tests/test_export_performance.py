@@ -142,6 +142,9 @@ def test_dashboard_loads_continuous_readouts() -> None:
     timeline_app = (ROOT / "sprint-web/timeline.js").read_text()
     assert "/data/performance/current.json" in app
     assert "continuous_score_mps" in app
+    assert "const plottable=point=>finite(point[xKey])&&finite(point.continuous_score_mps)" in app
+    assert "point[xKey]<=aucCap" not in app
+    assert "submission${onFrontier?' frontier':''}" in app
     assert 'id="cost-scores"' in page
     assert 'id="time-scores"' in page
     assert "auc-bar-row" in app
