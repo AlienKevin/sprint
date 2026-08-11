@@ -60,10 +60,11 @@ RUN python3 /opt/localize_assets.py
 
 # Submission archives policy bytes for blind official scoring. Local verifier
 # execution is explicitly agent-funded through the same one-A10G training queue.
-COPY bin/sprint-submit bin/sprint-board bin/sprint-check bin/sprint-cost bin/sprint-gpu-train \
+COPY bin/event bin/sprint-submit bin/sprint-board bin/sprint-check bin/sprint-cost bin/sprint-gpu-train \
      bin/sprint-verify \
      /usr/local/bin/
-RUN chmod 0755 /usr/local/bin/sprint-submit /usr/local/bin/sprint-board \
+RUN chmod 0755 /usr/local/bin/event \
+                /usr/local/bin/sprint-submit /usr/local/bin/sprint-board \
                 /usr/local/bin/sprint-check /usr/local/bin/sprint-cost \
                 /usr/local/bin/sprint-gpu-train \
                 /usr/local/bin/sprint-verify
