@@ -60,6 +60,22 @@ def test_agent_guidance_is_method_neutral() -> None:
         assert cue not in combined, f"agent guidance contains method cue {cue!r}"
 
 
+def test_event_command_runs_from_its_installed_path(tmp_path: Path) -> None:
+    installed = tmp_path / "usr/local/bin/event"
+    installed.parent.mkdir(parents=True)
+    installed.write_bytes((TASK / "environment/bin/event").read_bytes())
+    environment = {"PYTHONPATH": str(ROOT)}
+    result = subprocess.run(
+        [sys.executable, str(installed), "--help"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "event cost" in result.stdout
+
+
 def test_agent_and_verifier_submission_contracts_match() -> None:
     agent = (TASK / "environment/check_policy.py").read_text()
     verifier = (TASK / "tests/check_submission.py").read_text()

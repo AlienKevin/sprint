@@ -8,9 +8,10 @@ from pathlib import Path
 
 
 sys.path.insert(0, "/opt")
-repository = Path(__file__).resolve().parents[4]
-if (repository / "event_runtime/agent").is_dir():
-    sys.path.insert(0, str(repository))
+for parent in Path(__file__).resolve().parents:
+    if (parent / "event_runtime/agent").is_dir():
+        sys.path.insert(0, str(parent))
+        break
 
 from event_runtime.agent.cli import main  # noqa: E402
 
