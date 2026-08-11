@@ -105,6 +105,15 @@ def test_standing_start_adds_no_blocks_or_track_physics() -> None:
     assert "foot plate" not in source
 
 
+def test_course_has_no_per_rollout_start_perturbation() -> None:
+    source = (TASK / "tests/course/forward_command.py").read_text()
+    assert "ATTEMPT_YAW_OFFSETS" not in source
+    assert "reset_base_by_lane" not in source
+    config = (TASK / "tests/course/environment.py").read_text()
+    assert '"pose_range": {}' in config
+    assert '"velocity_range": {}' in config
+
+
 def test_canonical_standing_start_sets_every_initial_state_field() -> None:
     source = TASK / "tests/course/standing_start.py"
     module_spec = importlib.util.spec_from_file_location("standing_start", source)

@@ -2,14 +2,21 @@
 
 ## Description
 
-Produce a TorchScript policy that runs a Unitree G1 humanoid over 100 metres as quickly as possible in Isaac Lab 2.3.2. Each policy is scored by its best Effective Speed across three rollouts; models are compared by Cost-Adjusted Effective Speed across three independent trials.
+Produce a TorchScript policy that moves a Unitree G1 humanoid through a
+100-metre lane quickly and economically in Isaac Lab 2.3.2. The concise task is
+in `instruction.md`; the complete agent-facing contract is in
+`environment/train/README.md`.
 
 ## Difficulty Explanation
 
-The agent must produce a compliant policy from scratch using one persistent CPU sandbox and at most one A10G training sandbox at a time. The benchmark supplies the robot spawn, policy contract, course rules, local verifier, and cost accounting, but prescribes no training algorithm, reward, terrain, or policy architecture.
+The policy must learn locomotion, remain within the lane, avoid geometric
+self-collision, and balance quality against the API and compute cost required to
+discover it. No training method, reward, terrain, or architecture is prescribed.
 
 ## Verification Explanation
 
-Agents can run the published verifier at `/app/verifier` on their own training allocation. Official submissions are immutable and scored separately without returning results during the run. A rollout must finish within 60 seconds, stay within ±0.61 metres of lane centre, and avoid more than 1 centimetre of non-adjacent padded-body overlap.
-
-For legal distance `d` reached in time `t`, Effective Speed is `d² / (100 m × t)`. The final model comparison averages the best-so-far Effective Speed over a shared aggregate-cost horizon; model API, CPU-agent, and training-sandbox costs are included, while verifier and observability overhead are excluded.
+All rollouts use the same published no-block standing pose. Agents can run the
+published verifier on their own GPU allocation; official scoring archives the
+same policy bytes separately and remains blind. Effective Speed rewards legal
+distance and pace; Cost-Adjusted Effective Speed averages the best score found
+over a shared combined-cost horizon.

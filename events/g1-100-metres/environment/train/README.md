@@ -1,186 +1,128 @@
-# `/app/train` — environment and policy contracts
+# G1 100 metres
 
-The scored course uses full `G1_CFG`, `enabled_self_collisions=True`,
-`contact_offset=0.04`, and `max_depenetration_velocity=10.0`.
+Build and export a TorchScript policy for the frozen Unitree G1 course. This
+directory is the agent-facing source of truth for the start state, policy ABI,
+score, cost, and available commands.
+
+## Course and standing start
 
 Every rollout begins from `no-block-standing-start-v1`, defined exactly in
-`/app/train/standing_start.py`: the stable Isaac Lab 2.3.2 G1 standing pose,
-upright and aligned behind the line, with zero root and joint velocity. The
-100 metres normally uses starting blocks; this event deliberately adds no
-blocks or other track bodies, so the existing ground and contact physics are
-unchanged. Apply `apply_canonical_standing_start()` when constructing a custom
-training scene so local starts match the verifier.
+`standing_start.py`. It follows the standing-start convention—stationary,
+upright, aligned with the lane, and wholly behind the line—but freezes one exact
+G1 root pose, joint pose, heading, and zero-velocity state because athletics
+rules do not define robot joint angles. There are no starting blocks, pedals,
+or extra track bodies, so ground and contact physics are unchanged. Apply
+`apply_canonical_standing_start()` to custom training scenes.
+
+The scored robot uses full `G1_CFG`, self-collisions enabled, a `0.04 m` contact
+offset, zero rest offset, and `10 m/s` maximum depenetration velocity. Create it
+with `make_scored_course_g1_cfg()` from `robot.py`.
 
 This package only ships that robot spawn. Rewards, terrain, and the geometric
 self-collision DQ are still yours (the DQ is verifier-only).
 
 ## Policy interface
 
-The executable interface contract is in `/app/train/spec.py`:
+`spec.py` is authoritative for observation/action shapes, named observation
+fields, action scale, 50 Hz control, and the optional state-reset ABI. Import
+its named constants instead of copying offsets. Export with `torch.jit.save`;
+`event check POLICY.pt` validates the portable CPU contract.
 
-```python
-from train.spec import (
-    ACTION_DIM,
-    ACTION_SCALE,
-    CONTROL_FREQUENCY_HZ,
-    OBSERVATION_DIM,
-    OBSERVATION_FIELDS,
-    OBSERVATION_SLICES,
-)
-```
+## Score
 
-`spec.py` is authoritative for tensor shapes, observation fields, action scale,
-control frequency, and the optional state-reset ABI. Use its named values rather
-than copying offsets or signatures. `event check POLICY.pt` validates the
-exported TorchScript contract before submission.
-
-## Target metric
-
-The benchmark has a policy metric and a model-level target metric.
-
-For one simulator rollout, let `d` be the maximum forward distance from the
-start reached before the earliest of finishing, leaving the lane, or exceeding
-the self-collision limit. Let `t` be the elapsed time when that maximum is first
-reached. The rollout's **Effective Speed** is
+For one rollout, let `d` be the maximum forward distance reached before the
+earliest of finishing, leaving the `±0.61 m` lane, or exceeding `1 cm` of
+non-adjacent padded-body overlap. Let `t` be the first time that distance is
+reached. **Effective Speed** is
 
 ```text
 E = (d / 100 m) × (d / t) = d² / (100 m × t)
 ```
 
-`E` is zero when `d <= 0` or `t <= 0`. For a valid finish, `d = 100 m` and `t`
-is the interpolated finish-crossing time, so `E = 100 m / t`. A submitted
-policy's score is the greatest `E` across its three official rollouts.
+It is zero when `d <= 0` or `t <= 0`. A valid finish has `d = 100 m`, so
+`E = 100 m / t`. A policy score is the highest Effective Speed from three
+official rollouts.
 
-Each model is evaluated by three independent agent trials. At any wall-clock
-time, aggregate cost is the sum of the cumulative costs reported by
-`event cost` for those three trials. At aggregate cost `c`, let `Q(c)` be the
-greatest policy score recorded from any of the three trials by that point.
-`Q(c)` is zero before the first scored policy and holds the best score so far
-between readouts.
-
-For a common budget cutoff `B`, the model's **Cost-Adjusted Effective Speed** is
+Models are compared with three independent agent trials. At combined agent cost
+`c`, `Q(c)` is the highest policy score any of those trials has produced by that
+spending point. For a shared post-experiment cost cutoff `B`, **Cost-Adjusted
+Effective Speed** is
 
 ```text
 CAES(B) = (1 / B) × integral from 0 to B of Q(c) dc
 ```
 
-This is the area under the best-so-far Effective Speed versus aggregate-cost
-curve, divided by `B`. It has units of m/s; higher is better. `B` may be chosen
-after the experiment, but the same `B` must be used for every compared model
-and cannot exceed the aggregate cost observed for any of them. The cumulative
-cost definition, included components, exclusions, and frozen rates are below.
+This is the mean best-so-far Effective Speed over the shared budget horizon. It
+has units of `m/s`; higher is better. The same `B` is used for every model and
+cannot exceed the combined cost observed for any compared model.
 
-## Runtime and GPU jobs
-
-The persistent agent sandbox has 2 physical CPU cores and 8 GiB RAM. GPU work
-runs on a separate A10G worker:
+## Commands
 
 ```bash
-event gpu -- python3 -u /app/train/YOUR_SCRIPT.py
-event gpu status
-event gpu logs
-event gpu wait
+event gpu -- python3 -u /app/train/YOUR_SCRIPT.py  # run GPU work
+event gpu status                                   # job and policy mirror
+event gpu logs JOB_ID                              # worker output
+event gpu wait JOB_ID                              # wait for completion
+event check POLICY.pt                              # validate TorchScript ABI
+event test POLICY.pt                               # run local published verifier
+event archive POLICY.pt --note "..."               # retain immutable candidate
+event history                                      # list archive receipts
+event cost                                         # this trial's cumulative cost JSON
 ```
 
-One GPU job is active per run; additional jobs queue. Workers may be
-preempted and replaced. Write checkpoints under `$SPRINT_GPU_CHECKPOINT_DIR`
-and inspect `$SPRINT_GPU_RESUME` and `$SPRINT_GPU_RESUME_CHECKPOINT` on startup.
-For atomic publication, use `event gpu checkpoint save` or the
-`CheckpointStore` in `/opt/sprint_resilience.py`. A recovery checkpoint must
-contain all mutable state needed to continue the chosen process, including its
-completed cursor. Do not use an exported TorchScript candidate as recovery
-state unless it is independently sufficient to continue that process. A
-replacement attempt with `--resume-arg` fails closed if no valid resumable
-checkpoint exists, so it never silently restarts work.
-Atomically update `progress.json` with `{"policy_path": "/durable/.../policy.pt"}`
-after each complete export. The host mirrors every new reported policy into the
-CPU sandbox, including while training continues, and reports its fresh path as
-`agent_policy_mirror_path` in `event gpu status`; archive that path even
-if the long-lived `/durable` mount has not refreshed yet.
+Only one A10G job runs per trial; later jobs queue. The exact nominal verifier
+is read-only at `/app/verifier` and `event test` runs it on this trial's own GPU
+allocation. Official scoring separately evaluates archived bytes and does not
+return results or traces during the run. At most one archive may be outstanding,
+with a five-minute interval between accepted archives.
 
-The sandbox has no general internet or cloud credentials. PyTorch, Isaac Lab,
-and required assets are preinstalled. The trusted worker redirects stock Isaac
-assets to `/opt/assets` after `AppLauncher` starts; do not restore NVIDIA remote
-asset URLs. Workspace and `/durable/runs/$SPRINT_RUN_ID` survive CPU sandbox
-recreation, but processes and RAM do not. On a relaunched CPU attempt, resume
-from durable state.
+## Durable GPU work
 
-Run `event gpu --help` for the full job and checkpoint interface.
+The CPU agent has 2 physical cores and 8 GiB RAM. GPU jobs have 6 cores, 12 GiB
+RAM, and one A10G. They may be preempted. Save complete mutable training state
+under `$SPRINT_GPU_CHECKPOINT_DIR`; read `$SPRINT_GPU_RESUME` and
+`$SPRINT_GPU_RESUME_CHECKPOINT` on startup. Use
+`event gpu checkpoint save` or `/opt/sprint_resilience.py` for atomic
+publication. A replacement fails closed without a valid resumable checkpoint,
+so work never silently restarts.
 
-## Cumulative agent cost
+Atomically update `progress.json` with a completed candidate path:
 
-Run `event cost` with no arguments. It prints one machine-readable JSON
-document from the trusted host, refreshed on the normal monitor cadence. The
-same deterministic ledger drives the website comparison:
+```json
+{"policy_path": "/durable/.../policy.pt"}
+```
+
+The host mirrors each newly reported policy into the CPU sandbox. Read the
+fresh `agent_policy_mirror_path` from `event gpu status` before archiving. The
+workspace and durable run directory survive CPU recreation; processes and RAM
+do not. The sandbox has no general internet or cloud credentials.
+
+## Cost
+
+`event cost` prints one trusted JSON document for the cost incurred by this one
+agent trial. The same ledger drives the final website:
 
 ```text
 C(t) = C_api(t) + C_cpu_agent(t) + C_training(t)
 C_role(t) = seconds(t) × (cores × CPU_rate + GiB × memory_rate + A10G × GPU_rate)
-C_api(t) = Σ requests Σ token_classes tokens × class_rate / 1,000,000
+C_api(t) = sum(tokens_by_class × class_rate / 1,000,000)
 ```
 
-Reasoning tokens are already included in output tokens and are not charged a
-second time. For GPT-5.6 requests above 272,000 input tokens, all input rates
-are multiplied by 2 and the output rate by 1.5. A10G VRAM is included in the
-GPU price rather than billed separately.
+Reasoning tokens are included in output tokens and are not charged twice. For
+GPT-5.6 requests above 272,000 input tokens, input rates are multiplied by 2
+and output by 1.5. A10G VRAM is included in the GPU price.
 
-The frozen published rates currently exposed in the JSON are:
-
-| component | rate |
+| component | frozen rate |
 |---|---:|
-| physical CPU core | `$0.00003942/s` = `$0.141912/h` |
-| memory | `$0.00000667/GiB/s` = `$0.024012/GiB/h` |
-| A10G (including 24 GiB VRAM) | `$0.000306/s` = `$1.1016/h` |
+| physical CPU core | `$0.141912/h` |
+| memory | `$0.024012/GiB/h` |
+| A10G, including 24 GiB VRAM | `$1.1016/h` |
 | CPU agent: 2 cores + 8 GiB | `$0.475920/h` |
-| training sandbox: 6 cores + 12 GiB + A10G | `$2.241216/h` |
+| training: 6 cores + 12 GiB + A10G | `$2.241216/h` |
 | GPT-5.6 Luna uncached / cached / cache-write / output | `$0.20 / $0.02 / $0.25 / $1.20` per 1M tokens |
-| DeepSeek V4 Flash cache-miss / cache-hit / output | `$0.14 / $0.0028 / $0.28` per 1M tokens |
+| DeepSeek V4 Flash miss / hit / output | `$0.14 / $0.0028 / $0.28` per 1M tokens |
 
-Official verifier, observability/telemetry, website, volume storage, credits,
-discounts, taxes, and invoice adjustments are excluded. The JSON includes its
-timestamp, token counts, allocated seconds, component costs, pricing snapshot
-provenance, and the exact rates applicable to this run.
-
-## Local verification
-
-The exact nominal verifier source is published read-only at `/app/verifier`.
-Queue it on this trial's training A10G with:
-
-```bash
-event test /app/policy.pt
-event gpu logs JOB_ID
-```
-
-This local result is for your own debugging. `event archive` separately retains
-immutable policy bytes for blind official scoring; the official verifier does
-not return its result or trace during the run.
-
-## Import
-
-`/app` is on `PYTHONPATH` when you work from `/app`:
-
-```python
-import sys
-sys.path.insert(0, "/app")
-from train.robot import make_scored_course_g1_cfg
-```
-
-## Embodiment configuration
-
-```python
-cfg.scene.robot = make_scored_course_g1_cfg()
-```
-
-Apply this after any configuration lifecycle that rebuilds `scene.robot`.
-
-## Constants
-
-| setting | value |
-|---|---|
-| asset | `G1_CFG` (full meshes, not `G1_MINIMAL_CFG`) |
-| `enabled_self_collisions` | `True` |
-| `contact_offset` / `rest_offset` | `0.04` / `0.0` |
-| `max_depenetration_velocity` | `10.0` |
-
-See `event check --rules` for gating. This package does not implement the
-geometry pad check.
+Official verifier, observability, website, storage, credits, discounts, taxes,
+and invoice adjustments are excluded. The JSON contains its timestamp, exact
+equation and rates, token counts, allocated seconds, component costs, and
+pricing provenance. Run `event check --rules` for the complete gating contract.

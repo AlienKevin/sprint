@@ -5,7 +5,7 @@
     "course/__init__.py": "a8ffcbb749abdc3ed66585dcd3733a679642ed0056d0a76a81b20c293681b87c",
     "course/assets.py": "c242aea93c15c8c8037f21a902183d3e50f06a546ccef7dc5a91edc666fee8fe",
     "course/environment.py": "4df0e1e09b61fd61444745b4576eae6753f2e847b30695030692c06d55ba3a8c",
-    "course/forward_command.py": "dd6b58e4e76145685c9af2303a98e0c63d4421b6d7504d9f8897f63be9b0ca95",
+    "course/forward_command.py": "4e53f4d4654f5b236053f8e44742d280c7b6d701a329b821df5b85ccf4b6e5c7",
     "course/metrics.py": "c49934babfdfdf8f1739c143d7f5a10a973e690f061131de396c17dfc0ebcf94",
     "course/policy.py": "23d6b87f010c1bf410f429fa5caa6797ff996043c0a0620779e8eef4d23353f3",
     "course/replay.py": "32196f9399059e29b2d11b83c217923a359dcfe3bd32db4bdac5452a57194ebb",
