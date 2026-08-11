@@ -137,11 +137,11 @@ def test_cost_ledger_integrates_requests_and_allocation_intervals() -> None:
 
 
 def test_dashboard_loads_continuous_readouts() -> None:
-    app = (ROOT / "sprint-web/app.js").read_text()
-    page = (ROOT / "sprint-web/index.html").read_text()
-    styles = (ROOT / "sprint-web/styles.css").read_text()
-    timeline_page = (ROOT / "sprint-web/timeline.html").read_text()
-    timeline_app = (ROOT / "sprint-web/timeline.js").read_text()
+    app = (ROOT / "web/app.js").read_text()
+    page = (ROOT / "web/index.html").read_text()
+    styles = (ROOT / "web/styles.css").read_text()
+    timeline_page = (ROOT / "web/timeline.html").read_text()
+    timeline_app = (ROOT / "web/timeline.js").read_text()
     assert "/data/performance/current.json" in app
     assert "continuous_score_mps" in app
     assert "const plottable=point=>finite(point[xKey])&&finite(point.continuous_score_mps)" in app

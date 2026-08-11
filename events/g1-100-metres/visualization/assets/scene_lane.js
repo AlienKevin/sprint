@@ -246,49 +246,31 @@ const ROBOTS=POL.map((p,ci)=>{
     const node=new THREE.Group(); node.name=n;
     const mat=isFoot(n)?footMat:(isDark(n)?jointMat:shell);
     const mesh=new THREE.Mesh(GEO[n], mat);
-    mesh.castShadow=true;node.add(mesh);nodes.push(node);meshes.push(mesh);});
-  LINKS.forEach((n,l)=>{
-    const pi=PARENT_I[l];
-    (pi>=0?nodes[pi]:grp).add(nodes[l]);
-  });
+    mesh.castShadow=true;node.add(mesh);grp.add(node);nodes.push(node);meshes.push(mesh);});
   scene.add(grp); return {grp,nodes,meshes,material:shell};
 });
 
-// ---- interpolation ----
-const qA=new THREE.Quaternion(),qB=new THREE.Quaternion(),qC=new THREE.Quaternion();
-function localQuat(row,l,pi,out){
-  const o=LO(l),po=LO(pi);
-  out.set(row[po+3],row[po+4],row[po+5],row[po+6]).normalize().conjugate();
-  qC.set(row[o+3],row[o+4],row[o+5],row[o+6]).normalize();
-  return out.multiply(qC).normalize();
-}
+// ---- authoritative captured-state playback ----
+const qA=new THREE.Quaternion();
 function poseRobot(rb,p,t,laneY){
   const dt=1/FPS;
-  const tt=Math.min(t,p.freezeT);            // hold exactly on the crossing
-  let i=Math.max(0,Math.floor(tt/dt));
+  const tt=Math.min(t,p.freezeT);
   const last=p.frames.length-1;
-  i=Math.min(i,last-1>0?last-1:0);
-  const j=Math.min(last,i+1), a=Math.min(1,Math.max(0,(tt/dt)-i));
-  const A=p.frames[i],B=p.frames[j];
+  // Hold the latest real simulator state at or before playback time. Never
+  // synthesize a configuration between valid samples: unconstrained joint
+  // interpolation can put a foot through the track or a limb through a body.
+  const i=Math.min(last,Math.max(0,Math.floor((tt+1e-9)/dt)));
+  const A=p.frames[i];
   const sx=p.startX, sy=p.startY;             // align start; keep true lateral
   for(let l=0;l<NL;l++){const o=LO(l);
-    const node=rb.nodes[l],pi=PARENT_I[l];
-    if(pi<0){
-      const px=A[o]+(B[o]-A[o])*a, py=A[o+1]+(B[o+1]-A[o+1])*a, pz=A[o+2]+(B[o+2]-A[o+2])*a;
-      qA.set(A[o+3],A[o+4],A[o+5],A[o+6]).normalize();
-      qB.set(B[o+3],B[o+4],B[o+5],B[o+6]).normalize();
-      qA.slerp(qB,a);
-      // laneY separates seeds for viewing; (py-sy) is the real in-lane lateral
-      node.position.set(px-sx, laneY+(py-sy), pz);
-    }else{
-      const r=REST[LINKS[l]];
-      if(!r) throw new Error('missing rest transform for '+LINKS[l]);
-      node.position.set(r[0],r[1],r[2]);
-      localQuat(A,l,pi,qA); localQuat(B,l,pi,qB); qA.slerp(qB,a);
-    }
+    const node=rb.nodes[l];
+    // Captures contain world-space link transforms. Applying them directly
+    // avoids both temporal interpolation and approximate hierarchy rebuilds.
+    node.position.set(A[o]-sx,laneY+(A[o+1]-sy),A[o+2]);
+    qA.set(A[o+3],A[o+4],A[o+5],A[o+6]).normalize();
     node.quaternion.copy(qA);
   }
-  return (A[1]+(B[1]-A[1])*a)-sx;             // distance run from the start line
+  return A[1]-sx;                             // distance run from the start line
 }
 
 // ---- HUD ----

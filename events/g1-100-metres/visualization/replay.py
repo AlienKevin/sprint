@@ -301,7 +301,7 @@ def capture_to_data(
             "position_unit": "m",
             "quaternion_order": "xyzw",
             "visual_origin": "link_frame",
-            "interpolation": "local_hierarchy",
+            "interpolation": "none_authoritative_sample_hold",
             "dq_display": "freeze_at_first_gate_failure",
         },
     }

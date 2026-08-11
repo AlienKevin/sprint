@@ -33,7 +33,7 @@ from event_runtime.control import run as sprintctl  # noqa: E402
 
 UV = Path(os.environ.get("UV", "/home/ubuntu/.local/bin/uv"))
 HARBOR_PYTHON = ROOT / "harbor/.venv/bin/python3"
-WEB = ROOT / "sprint-web"
+WEB = ROOT / "web"
 BATCH_ROOT = SCRIPT_DIR / "batches"
 WARMUP_MANIFEST = SCRIPT_DIR / "modal-image-warmup.json"
 FUNCTIONAL_CANARY_REPORT = SCRIPT_DIR / "training-gpu-canary.json"

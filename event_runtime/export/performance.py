@@ -32,7 +32,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNS = ROOT / "runs" / "ops"
-WEB = ROOT / "sprint-web"
+WEB = ROOT / "web"
 sys.path.insert(0, str(ROOT))
 from event_runtime.cost import agent as agent_cost  # noqa: E402
 

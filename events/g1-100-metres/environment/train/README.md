@@ -103,30 +103,11 @@ do not. The sandbox has no general internet or cloud credentials.
 
 ## Cost
 
-`event cost` prints one trusted JSON document for the cost incurred by this one
-agent trial. The same ledger drives the final website:
+`event cost` returns the trusted JSON snapshot of this trial's cumulative model
+API, persistent CPU-agent, and training-sandbox cost. It includes the timestamp,
+component totals, exact equation and frozen rates, usage quantities, and pricing
+provenance. The same ledger drives the final website.
 
-```text
-C(t) = C_api(t) + C_cpu_agent(t) + C_training(t)
-C_role(t) = seconds(t) × (cores × CPU_rate + GiB × memory_rate + A10G × GPU_rate)
-C_api(t) = sum(tokens_by_class × class_rate / 1,000,000)
-```
-
-Reasoning tokens are included in output tokens and are not charged twice. For
-GPT-5.6 requests above 272,000 input tokens, input rates are multiplied by 2
-and output by 1.5. A10G VRAM is included in the GPU price.
-
-| component | frozen rate |
-|---|---:|
-| physical CPU core | `$0.141912/h` |
-| memory | `$0.024012/GiB/h` |
-| A10G, including 24 GiB VRAM | `$1.1016/h` |
-| CPU agent: 2 cores + 8 GiB | `$0.475920/h` |
-| training: 6 cores + 12 GiB + A10G | `$2.241216/h` |
-| GPT-5.6 Luna uncached / cached / cache-write / output | `$0.20 / $0.02 / $0.25 / $1.20` per 1M tokens |
-| DeepSeek V4 Flash miss / hit / output | `$0.14 / $0.0028 / $0.28` per 1M tokens |
-
-Official verifier, observability, website, storage, credits, discounts, taxes,
-and invoice adjustments are excluded. The JSON contains its timestamp, exact
-equation and rates, token counts, allocated seconds, component costs, and
-pricing provenance. Run `event check --rules` for the complete gating contract.
+Official verifier, observability, website, and storage costs are excluded, as
+are credits, discounts, taxes, and invoice adjustments. Run
+`event check --rules` for the complete gating contract.

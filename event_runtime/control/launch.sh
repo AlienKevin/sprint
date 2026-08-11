@@ -626,7 +626,7 @@ base = {
         "verifier_image_id": warmup_manifest["contexts"]["verifier"]["image_id"],
         "image_warmup_completed_at_epoch_s": warmup_manifest["completed_at_epoch_s"],
     },
-    "site_dir": str(root_path / "sprint-web"),
+    "site_dir": str(root_path / "web"),
     "vercel_project_id": "prj_dgvTovRNwdSDcefYmo6oXfju9M3p",
     "vercel_org_id": "team_SNgoAcFfHYXYdUIXhj16bGek",
     "vercel_scope": "alienkevins-projects",

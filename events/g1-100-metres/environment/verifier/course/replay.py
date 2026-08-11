@@ -11,7 +11,7 @@ from typing import Any, Sequence
 
 
 SCHEMA_VERSION = 2
-DEFAULT_FPS = 10.0
+DEFAULT_FPS = 50.0
 
 
 def result_dict(result: Any) -> dict[str, Any]:
@@ -70,29 +70,50 @@ class PoseRecorder:
         self.body_names = list(robot.body_names)
         self.sample_every = max(1, round(float(control_hz) / float(fps)))
         self.fps = float(control_hz) / self.sample_every
-        self.frames: list[list[list[float]]] = [
-            [] for _ in range(int(origins.shape[0]))
-        ]
+        self._times: list[float] = []
+        self._positions: list[Any] = []
+        self._quaternions: list[Any] = []
         self._step = 0
 
     def __call__(
         self, t: float, _trace: dict[str, list], _resolved: list[bool]
     ) -> None:
         if self._step % self.sample_every == 0:
-            positions = (
+            # Keep samples on-device during the rollout. At 50 Hz, forcing a
+            # GPU-to-host synchronization here would add one stall per policy
+            # step; payload() transfers only the selected representative lane.
+            self._times.append(round(float(t), 3))
+            self._positions.append(
                 (self.robot.data.body_pos_w - self.origins.unsqueeze(1))
                 .detach()
-                .cpu()
-                .tolist()
+                .clone()
             )
+            self._quaternions.append(
+                self.robot.data.body_quat_w.detach().clone()
+            )
+        self._step += 1
+
+    def payload(self, results: Sequence[Any], *, policy_path: str) -> dict[str, Any]:
+        rows = [result_dict(result) for result in results]
+        selected = representative_index(rows)
+        result = rows[selected]
+        frames: list[list[float]] = []
+        if self._times:
+            import torch
+
+            positions = torch.stack(
+                [sample[selected] for sample in self._positions], dim=0
+            ).cpu().tolist()
             # Isaac stores quaternions wxyz. The renderer contract is xyzw.
-            quaternions = self.robot.data.body_quat_w.detach().cpu().tolist()
-            for env_index, (env_positions, env_quaternions) in enumerate(
-                zip(positions, quaternions, strict=True)
+            quaternions = torch.stack(
+                [sample[selected] for sample in self._quaternions], dim=0
+            ).cpu().tolist()
+            for t, frame_positions, frame_quaternions in zip(
+                self._times, positions, quaternions, strict=True
             ):
-                row = [round(float(t), 3)]
+                row = [t]
                 for position, quaternion in zip(
-                    env_positions, env_quaternions, strict=True
+                    frame_positions, frame_quaternions, strict=True
                 ):
                     px, py, pz = position
                     w, x, y, z = quaternion
@@ -107,13 +128,7 @@ class PoseRecorder:
                             round(float(w), 4),
                         )
                     )
-                self.frames[env_index].append(row)
-        self._step += 1
-
-    def payload(self, results: Sequence[Any], *, policy_path: str) -> dict[str, Any]:
-        rows = [result_dict(result) for result in results]
-        selected = representative_index(rows)
-        result = rows[selected]
+                frames.append(row)
         return {
             "schema_version": SCHEMA_VERSION,
             "lane_gate": {
@@ -124,7 +139,7 @@ class PoseRecorder:
             "body_names": self.body_names,
             "fps": round(self.fps, 6),
             "runs": [result],
-            "frames": [self.frames[selected]],
+            "frames": [frames],
             "representative_lane": selected,
             "failure_modes": failure_modes(result),
             "policy_sha256": hashlib.sha256(Path(policy_path).read_bytes()).hexdigest(),

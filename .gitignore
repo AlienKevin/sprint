@@ -53,6 +53,6 @@ node_modules/
 .agents/
 
 # Sprint-web heavy capture/replay blobs (site HTML kept)
-sprint-web/captures/*.json
-sprint-web/replay/
-sprint-web/data/
+web/captures/*.json
+web/replay/
+web/data/

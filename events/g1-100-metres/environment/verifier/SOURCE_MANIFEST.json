@@ -8,7 +8,7 @@
     "course/forward_command.py": "4e53f4d4654f5b236053f8e44742d280c7b6d701a329b821df5b85ccf4b6e5c7",
     "course/metrics.py": "fe1ff439a7f2e09baac404edf34f1c725b8ed44d33ace328ff044bdcc023483d",
     "course/policy.py": "23d6b87f010c1bf410f429fa5caa6797ff996043c0a0620779e8eef4d23353f3",
-    "course/replay.py": "9f0245d29a29ddd485527c7f24530bff2d4821b44be856222116693e3f9e7b85",
+    "course/replay.py": "be8aee0d953db02e420c42d7753bc2a7636233136d0721e9a56327bb71ee632f",
     "course/rollout.py": "b1cdb134d181b79291c348c76d30bf349d774f7c78e22523be32f8c552a20ed7",
     "course/standing_start.py": "fa9af143ffa403fa6b238783bdc18cd645d1f1eca6a0c3fb7106512d2b7e3c31",
     "course/tasks.py": "0c2aa2e26bee69303018c620837baf788b369ef015bb2b581cc56d3c4b906feb",

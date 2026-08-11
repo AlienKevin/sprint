@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 
 ROOT = Path(__file__).resolve().parents[2]
-WEB_DEFAULT = ROOT / "sprint-web"
+WEB_DEFAULT = ROOT / "web"
 BUILD_SCRIPT = ROOT / "events/g1-100-metres/visualization/replay.py"
 HQ_PATH = ROOT / "events/g1-100-metres/visualization/assets/g1_hq.json"
 PROJECT_ID = "prj_dgvTovRNwdSDcefYmo6oXfju9M3p"

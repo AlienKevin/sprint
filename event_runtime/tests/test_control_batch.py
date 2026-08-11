@@ -948,7 +948,7 @@ def test_public_policy_index_keeps_only_six_newest_runs(tmp_path: Path) -> None:
 
 
 def test_homepage_uses_compact_timeline_index_summaries() -> None:
-    source = (ROOT / "sprint-web" / "app.js").read_text()
+    source = (ROOT / "web" / "app.js").read_text()
     assert "dashboard_artifacts" in source
     assert "await json(tMeta.path)" not in source
     assert "showReadout" in source
@@ -1262,7 +1262,7 @@ def test_provider_auth_alert_does_not_match_decimal_score(
 
 
 def test_website_javascript_parses_and_has_no_legacy_opus_copy() -> None:
-    source = (ROOT / "sprint-web/app.js").read_text()
+    source = (ROOT / "web/app.js").read_text()
     assert "DeepSeek V4 Flash 0731" in source
     assert "GPT‑5.6 Luna" in source
     assert "GPT‑5.6 Sol" in source

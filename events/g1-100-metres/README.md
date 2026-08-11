@@ -16,8 +16,7 @@ architecture is prescribed.
 
 ## Verification Explanation
 
-All rollouts use the same published no-block standing pose. Agents can run the
-published verifier on their own GPU allocation; official scoring archives the
-same policy bytes separately and remains blind. Effective Speed rewards legal
-distance and pace; Cost-Adjusted Effective Speed averages the best score found
-over a shared combined-cost horizon.
+Agents can run the published verifier on their own GPU allocation; official
+scoring archives the same policy bytes separately and remains blind. Effective
+Speed rewards legal distance and pace; Cost-Adjusted Effective Speed averages
+the best score found over a shared combined-cost horizon.
