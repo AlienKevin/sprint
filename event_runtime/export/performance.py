@@ -872,7 +872,7 @@ def main() -> int:
     parser.add_argument(
         "--output",
         type=Path,
-        default=WEB / "data/performance/r8-continuous.json",
+        default=WEB / "data/performance/current.json",
     )
     args = parser.parse_args()
     payload = build(args.batch_prefix, args.output, args.cost_cap)

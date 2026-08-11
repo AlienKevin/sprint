@@ -140,7 +140,7 @@ def test_dashboard_loads_continuous_readouts() -> None:
     styles = (ROOT / "sprint-web/styles.css").read_text()
     timeline_page = (ROOT / "sprint-web/timeline.html").read_text()
     timeline_app = (ROOT / "sprint-web/timeline.js").read_text()
-    assert "/data/performance/r8-continuous.json" in app
+    assert "/data/performance/current.json" in app
     assert "continuous_score_mps" in app
     assert 'id="cost-scores"' in page
     assert 'id="time-scores"' in page
