@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 """Turn a recorded lane into the official time and three gate verdicts.
 
-Sprint intentionally scores only whether the policy reached 100 m inside the
+This event scores only whether the policy reached 100 m inside the
 window, stayed in its lane, and avoided disqualifying self-intersection.  Gait,
 posture, energy, fall, ground-contact, and robustness heuristics are not part of
 the benchmark and are neither computed nor reported here.

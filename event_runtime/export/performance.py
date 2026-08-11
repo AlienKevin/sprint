@@ -66,7 +66,7 @@ def completion_adjusted_speed(distance_m: float, elapsed_s: float) -> float:
 def contract_constants() -> tuple[dict[str, str | None], int, float, float]:
     """Read collision constants from the scorer without importing Isaac/Torch."""
 
-    source = ROOT / "events/g1-100-metres/environment/verifier/sprintbench/rollout.py"
+    source = ROOT / "events/g1-100-metres/environment/verifier/course/rollout.py"
     tree = ast.parse(source.read_text())
     wanted = {
         "G1_BODY_PARENT",
@@ -518,9 +518,9 @@ def publish_frontier_replays(
         raise RuntimeError(f"cannot load replay renderer: {module_path}")
     renderer = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(renderer)
-    hq = load_json(
-        ROOT / "events/g1-100-metres/visualization/assets/g1_hq.json"
-    )["meshes"]
+    hq = load_json(ROOT / "events/g1-100-metres/visualization/assets/g1_hq.json")[
+        "meshes"
+    ]
     replay_dir = WEB / "replay"
     replay_dir.mkdir(parents=True, exist_ok=True)
     for stale in replay_dir.glob("readout-*.html"):

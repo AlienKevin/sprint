@@ -36,11 +36,11 @@ def main() -> int:
     worker_policy = Path("/app") / relative
     script = (
         "set -euo pipefail; "
-        "export TESTS_DIR=/opt/sprint-verifier; "
+        "export TESTS_DIR=/opt/event-verifier; "
         f"export SUBMISSION={shlex.quote(str(worker_policy))}; "
         "export LOGS_DIR=/durable/runs/$SPRINT_RUN_ID/local-verifier/"
         "$SPRINT_GPU_JOB_ID; "
-        "exec bash /opt/sprint-verifier/test.sh"
+        "exec bash /opt/event-verifier/test.sh"
     )
     command = [
         "/usr/local/bin/event",

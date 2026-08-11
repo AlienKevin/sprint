@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Sprint contributors.
 # SPDX-License-Identifier: BSD-3-Clause
-"""A 100 m sprint *evaluation* environment for the Unitree G1.
+"""The G1 100 metres course environment.
 
 This is Isaac Lab's ``Isaac-Velocity-Flat-G1-v0`` with the training machinery
 taken out.  Everything a policy can see or feel is left exactly as it was
@@ -43,9 +43,11 @@ from isaaclab.utils import configclass
 
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
 from isaaclab_assets import G1_CFG
-from isaaclab_tasks.manager_based.locomotion.velocity.config.g1.flat_env_cfg import G1FlatEnvCfg
+from isaaclab_tasks.manager_based.locomotion.velocity.config.g1.flat_env_cfg import (
+    G1FlatEnvCfg,
+)
 
-from .sprint_command import SprintVelocityCommandCfg
+from .forward_command import ForwardVelocityCommandCfg
 from .standing_start import apply_canonical_standing_start
 
 # The course.  100 m with intermediate gates so a policy that never finishes
@@ -92,7 +94,7 @@ def heading_error(env) -> "torch.Tensor":
 class SprintCommandsCfg:
     """One constant forward command per environment, heading pinned to +x."""
 
-    base_velocity = SprintVelocityCommandCfg(
+    base_velocity = ForwardVelocityCommandCfg(
         asset_name="robot",
         # never resample: the command must be constant for the whole time trial
         resampling_time_range=(1.0e9, 1.0e9),
@@ -102,7 +104,7 @@ class SprintCommandsCfg:
         heading_control_stiffness=0.5,
         debug_vis=False,
         speeds=DEFAULT_SPEEDS,
-        ranges=SprintVelocityCommandCfg.Ranges(
+        ranges=ForwardVelocityCommandCfg.Ranges(
             lin_vel_x=(0.0, 0.0),  # unused: the schedule supplies the speed
             lin_vel_y=(0.0, 0.0),
             # kept identical to training, since this clips the heading controller's
@@ -130,12 +132,15 @@ class SprintTerminationsCfg:
     # parent runs is what actually disables it.
     base_contact = DoneTerm(
         func=mdp.illegal_contact,
-        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names="torso_link"), "threshold": 1.0},
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names="torso_link"),
+            "threshold": 1.0,
+        },
     )
 
 
 @configclass
-class G1Sprint100mEnvCfg(G1FlatEnvCfg):
+class G1100MetresEnvCfg(G1FlatEnvCfg):
     """The benchmark environment."""
 
     commands: SprintCommandsCfg = SprintCommandsCfg()
@@ -255,7 +260,8 @@ class G1Sprint100mEnvCfg(G1FlatEnvCfg):
         # impact energy that follows is capped by the actuators, which is the
         # likely reason penetration is hard to reach through this interface.
         robot.spawn.collision_props = sim_utils.CollisionPropertiesCfg(
-            contact_offset=0.04, rest_offset=0.0)
+            contact_offset=0.04, rest_offset=0.0
+        )
         robot.spawn.rigid_props.max_depenetration_velocity = 10.0
         # Stock G1_CFG leaves self-collisions off for speed.  A benchmark that
         # permits any gait cannot: non-adjacent links that pass through each

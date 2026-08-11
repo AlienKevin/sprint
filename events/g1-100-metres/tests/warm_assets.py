@@ -31,7 +31,7 @@ app = AppLauncher(args).app
 
 sys.path.insert(0, "/tests")
 
-from sprintbench.assets import use_local_assets  # noqa: E402
+from course.assets import use_local_assets  # noqa: E402
 
 # Before any isaaclab import that reads the nucleus constants: Isaac Lab
 # interpolates them into config defaults at class-definition time, so a redirect
@@ -44,16 +44,16 @@ import gymnasium as gym  # noqa: E402
 
 import isaaclab_tasks  # noqa: F401,E402
 
-import sprintbench.tasks  # noqa: F401,E402
-from sprintbench.sprint_env_cfg import G1Sprint100mEnvCfg  # noqa: E402
+import course.tasks  # noqa: F401,E402
+from course.environment import G1100MetresEnvCfg  # noqa: E402
 
 
 def main() -> int:
-    cfg = G1Sprint100mEnvCfg()
+    cfg = G1100MetresEnvCfg()
     cfg.scene.num_envs = 1
     cfg.commands.base_velocity.speeds = (1.0,)
     cfg.sim.device = "cpu"
-    env = gym.make("Isaac-Sprint-100m-G1-v0", cfg=cfg)
+    env = gym.make("Isaac-G1-100Metres-v0", cfg=cfg)
     env.reset()
     robot = env.unwrapped.scene["robot"]
     print(f"warmed: {len(robot.body_names)} bodies, {robot.num_joints} joints")

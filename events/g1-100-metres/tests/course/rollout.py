@@ -3,7 +3,7 @@
 """Run one time trial and score it.
 
 This is the single implementation of the trial, shared by the local harness and
-by the challenge verifier.  Keeping one copy is not tidiness: the verifier's
+by the official verifier. Keeping one copy is not tidiness: the verifier's
 whole claim is that it measures the same thing the agent measured, and two
 rollout loops that drift apart quietly break that.
 
@@ -107,8 +107,10 @@ def _is_digit_link(name: str) -> bool:
     # G1 finger links are noisy near the hip/thigh during arm swing; the palm
     # still represents the hand for self-collision.  Digits are excluded so a
     # grazing fingertip cannot DQ an otherwise clean gait.
-    return any(f"_{d}_link" in name for d in
-               ("zero", "one", "two", "three", "four", "five", "six"))
+    return any(
+        f"_{d}_link" in name
+        for d in ("zero", "one", "two", "three", "four", "five", "six")
+    )
 
 
 def load_geometry(path: str, robot, device: str):
@@ -134,9 +136,11 @@ def load_geometry(path: str, robot, device: str):
         bidx += [bid] * len(entry["points"])
     if not pts:
         return None, None, None
-    return (torch.tensor(pts, dtype=torch.float32, device=device),
-            torch.tensor(rads, dtype=torch.float32, device=device),
-            torch.tensor(bidx, dtype=torch.long, device=device))
+    return (
+        torch.tensor(pts, dtype=torch.float32, device=device),
+        torch.tensor(rads, dtype=torch.float32, device=device),
+        torch.tensor(bidx, dtype=torch.long, device=device),
+    )
 
 
 def prepare_self_collision(pts, rad, body, body_names, device: str):
@@ -150,7 +154,7 @@ def prepare_self_collision(pts, rad, body, body_names, device: str):
     id_to_name = {i: body_names[i] for i in present}
     pairs = []
     for i, bi in enumerate(present):
-        for bj in present[i + 1:]:
+        for bj in present[i + 1 :]:
             na, nb = id_to_name[bi], id_to_name[bj]
             if _is_digit_link(na) or _is_digit_link(nb):
                 continue
@@ -178,8 +182,12 @@ def prepare_self_collision(pts, rad, body, body_names, device: str):
     pair_b = torch.tensor([p[1] for p in pairs], dtype=torch.long, device=device)
     compact_ids = torch.tensor(present, dtype=torch.long, device=device)
     id_to_row = {bid: row for row, bid in enumerate(present)}
-    row_a = torch.tensor([id_to_row[p[0]] for p in pairs], dtype=torch.long, device=device)
-    row_b = torch.tensor([id_to_row[p[1]] for p in pairs], dtype=torch.long, device=device)
+    row_a = torch.tensor(
+        [id_to_row[p[0]] for p in pairs], dtype=torch.long, device=device
+    )
+    row_b = torch.tensor(
+        [id_to_row[p[1]] for p in pairs], dtype=torch.long, device=device
+    )
     return {
         "pair_a": pair_a,
         "pair_b": pair_b,
@@ -208,7 +216,9 @@ def max_self_penetration(robot, prep) -> torch.Tensor:
     world_c = math_utils.quat_apply(q, prep["local_c"].expand(n_env, -1, -1)) + t
     world_r = prep["local_r"]
     row_a, row_b = prep["row_a"], prep["row_b"]
-    gap = (world_c[:, row_a] - world_c[:, row_b]).norm(dim=-1) - (world_r[row_a] + world_r[row_b])
+    gap = (world_c[:, row_a] - world_c[:, row_b]).norm(dim=-1) - (
+        world_r[row_a] + world_r[row_b]
+    )
     near = gap < SELF_COLLISION_SPHERE_MARGIN_M
     worst = torch.zeros(n_env, device=robot.device)
     if not near.any():
@@ -239,8 +249,19 @@ def max_self_penetration(robot, prep) -> torch.Tensor:
     return worst.unsqueeze(1)
 
 
-def run_trial(env, policy, speeds, *, gates, distance=100.0, max_seconds=200.0,
-              settle_seconds=1.0, geometry=None, device="cuda:0", on_step=None):
+def run_trial(
+    env,
+    policy,
+    speeds,
+    *,
+    gates,
+    distance=100.0,
+    max_seconds=200.0,
+    settle_seconds=1.0,
+    geometry=None,
+    device="cuda:0",
+    on_step=None,
+):
     """Roll one policy over the course and return a RunResult per lane."""
     unwrapped = env.unwrapped
     robot = unwrapped.scene["robot"]
@@ -251,7 +272,8 @@ def run_trial(env, policy, speeds, *, gates, distance=100.0, max_seconds=200.0,
 
     geom_pts, geom_rad, geom_body = load_geometry(geometry, robot, device)
     self_prep = prepare_self_collision(
-        geom_pts, geom_rad, geom_body, list(robot.body_names), device)
+        geom_pts, geom_rad, geom_body, list(robot.body_names), device
+    )
     if self_prep is None:
         raise RuntimeError("official self-collision geometry is unavailable")
 
@@ -262,8 +284,12 @@ def run_trial(env, policy, speeds, *, gates, distance=100.0, max_seconds=200.0,
     # leading point taken; lateral position and height stay on the base, which
     # is what the lane and fall checks care about.
     import isaaclab.utils.math as _torso_math
-    torso_id = (robot.body_names.index("torso_link")
-                if "torso_link" in robot.body_names else None)
+
+    torso_id = (
+        robot.body_names.index("torso_link")
+        if "torso_link" in robot.body_names
+        else None
+    )
     if geom_pts is not None and torso_id is not None:
         _tmask = geom_body == torso_id
         torso_pts, torso_rad = geom_pts[_tmask], geom_rad[_tmask]
@@ -309,11 +335,14 @@ def run_trial(env, policy, speeds, *, gates, distance=100.0, max_seconds=200.0,
     for step in range(steps + 1):
         pos = robot.data.root_pos_w - origins
         pos[:, 0] = torso_forward() - start_x
-        snapshot = torch.cat([
-            pos[:, :2],
-            robot.data.root_lin_vel_b[:, :1],
-            max_self_penetration(robot, self_prep),
-        ], dim=1)
+        snapshot = torch.cat(
+            [
+                pos[:, :2],
+                robot.data.root_lin_vel_b[:, :1],
+                max_self_penetration(robot, self_prep),
+            ],
+            dim=1,
+        )
         rows = snapshot.tolist()
 
         trace["t"].append(t)
@@ -352,6 +381,10 @@ def run_trial(env, policy, speeds, *, gates, distance=100.0, max_seconds=200.0,
             self_penetration_m=[row[i] for row in trace["self"]],
         )
         for i in range(n)
-    ], {"collision_points": 0 if geom_pts is None else int(geom_pts.shape[0]),
-        "self_collision_pairs": 0 if self_prep is None else int(self_prep["pair_a"].numel()),
-        "control_hz": round(1.0 / dt, 2)}
+    ], {
+        "collision_points": 0 if geom_pts is None else int(geom_pts.shape[0]),
+        "self_collision_pairs": 0
+        if self_prep is None
+        else int(self_prep["pair_a"].numel()),
+        "control_hz": round(1.0 / dt, 2),
+    }

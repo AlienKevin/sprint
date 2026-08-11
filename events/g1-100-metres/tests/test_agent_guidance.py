@@ -78,8 +78,8 @@ def test_published_verifier_is_an_exact_reviewed_source_mirror() -> None:
 
 
 def test_training_and_both_verifiers_share_one_exact_standing_start() -> None:
-    trusted = TASK / "tests/sprintbench/standing_start.py"
-    local = TASK / "environment/verifier/sprintbench/standing_start.py"
+    trusted = TASK / "tests/course/standing_start.py"
+    local = TASK / "environment/verifier/course/standing_start.py"
     training = TASK / "environment/train/standing_start.py"
     assert trusted.read_bytes() == local.read_bytes() == training.read_bytes()
 
@@ -89,10 +89,8 @@ def test_training_and_both_verifiers_share_one_exact_standing_start() -> None:
     assert "ROOT_ANGULAR_VELOCITY_RAD_S = (0.0, 0.0, 0.0)" in source
     assert 'JOINT_VELOCITIES_RAD_S = {".*": 0.0}' in source
 
-    official_cfg = (TASK / "tests/sprintbench/sprint_env_cfg.py").read_text()
-    local_cfg = (
-        TASK / "environment/verifier/sprintbench/sprint_env_cfg.py"
-    ).read_text()
+    official_cfg = (TASK / "tests/course/environment.py").read_text()
+    local_cfg = (TASK / "environment/verifier/course/environment.py").read_text()
     training_robot = (TASK / "environment/train/robot.py").read_text()
     needle = "apply_canonical_standing_start(robot)"
     assert needle in official_cfg
@@ -101,14 +99,14 @@ def test_training_and_both_verifiers_share_one_exact_standing_start() -> None:
 
 
 def test_standing_start_adds_no_blocks_or_track_physics() -> None:
-    source = (TASK / "tests/sprintbench/standing_start.py").read_text().lower()
+    source = (TASK / "tests/course/standing_start.py").read_text().lower()
     assert "startingblock" not in source
     assert "starting_block" not in source
     assert "foot plate" not in source
 
 
 def test_canonical_standing_start_sets_every_initial_state_field() -> None:
-    source = TASK / "tests/sprintbench/standing_start.py"
+    source = TASK / "tests/course/standing_start.py"
     module_spec = importlib.util.spec_from_file_location("standing_start", source)
     assert module_spec is not None and module_spec.loader is not None
     module = importlib.util.module_from_spec(module_spec)
@@ -137,9 +135,9 @@ def test_local_verifier_uses_only_the_trial_training_queue() -> None:
     dockerfile = (TASK / "environment/Dockerfile").read_text()
     assert '"gpu"' in helper
     assert '"--max-attempts",\n        "1"' in helper
-    assert "/opt/sprint-verifier/test.sh" in helper
-    assert "COPY verifier /opt/sprint-verifier" in dockerfile
-    assert "chmod -R a-w /opt/sprint-verifier" in dockerfile
+    assert "/opt/event-verifier/test.sh" in helper
+    assert "COPY verifier /opt/event-verifier" in dockerfile
+    assert "chmod -R a-w /opt/event-verifier" in dockerfile
 
 
 def test_equivalence_gate_accepts_only_matching_canonical_outputs(

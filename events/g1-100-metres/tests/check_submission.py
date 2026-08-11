@@ -5,7 +5,7 @@
 This ships through ``event check`` and ``event archive`` runs it before
 queueing anything, so an interface mistake costs a second rather than a scoring
 round.  The verifier does not run it: by the time a policy reaches the rollout,
-``sprintbench.policy.load_policy`` has already checked the shapes and raises with
+``course.policy.load_policy`` has already checked the shapes and raises with
 the same information.
 
 Two copies exist, ``tests/check_submission.py`` and ``environment/check_policy.py``,

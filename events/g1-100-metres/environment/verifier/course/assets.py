@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Sprint contributors.
 # SPDX-License-Identifier: BSD-3-Clause
-"""Point Isaac at the assets baked into this image instead of the network.
+"""Point Isaac at the event assets baked into this image instead of the network.
 
 Isaac resolves every scene asset, the robot and the ground plane among them, to
 an https URL under a single "nucleus" root and streams it at spawn time,

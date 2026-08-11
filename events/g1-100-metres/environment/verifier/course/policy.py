@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 """Load a policy without depending on the framework that trained it.
 
-The benchmark's contract is a function from the task's observation vector to
+The event contract is a function from the task's observation vector to
 its joint-position action vector.  Rebuilding an RSL-RL actor from the shapes
 in its own state dict keeps that contract honest: nothing here can quietly
 reach into a training runner and reconstruct an environment that differs from

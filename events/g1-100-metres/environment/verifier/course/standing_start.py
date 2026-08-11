@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Sprint contributors.
 # SPDX-License-Identifier: BSD-3-Clause
-"""Canonical no-block start shared by local and official execution.
+"""Canonical no-block standing start shared by every policy rollout.
 
 World Athletics requires blocks for the 100 metres.  Its standing-start rules
 instead constrain contact with the ground and starting line without defining a

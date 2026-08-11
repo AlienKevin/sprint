@@ -1,4 +1,4 @@
-"""Compact, trusted pose replays produced during the sealed verifier rollout."""
+"""Compact, trusted pose replays produced during a course rollout."""
 
 from __future__ import annotations
 
@@ -75,11 +75,16 @@ class PoseRecorder:
         ]
         self._step = 0
 
-    def __call__(self, t: float, _trace: dict[str, list], _resolved: list[bool]) -> None:
+    def __call__(
+        self, t: float, _trace: dict[str, list], _resolved: list[bool]
+    ) -> None:
         if self._step % self.sample_every == 0:
             positions = (
-                self.robot.data.body_pos_w - self.origins.unsqueeze(1)
-            ).detach().cpu().tolist()
+                (self.robot.data.body_pos_w - self.origins.unsqueeze(1))
+                .detach()
+                .cpu()
+                .tolist()
+            )
             # Isaac stores quaternions wxyz. The renderer contract is xyzw.
             quaternions = self.robot.data.body_quat_w.detach().cpu().tolist()
             for env_index, (env_positions, env_quaternions) in enumerate(

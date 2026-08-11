@@ -56,7 +56,7 @@ APP_STARTUP_S = time.perf_counter() - PROCESS_STARTED
 # /tests; agent-funded local checks use its byte-identical read-only mirror.
 sys.path.insert(0, args.tests)
 
-from sprintbench.assets import use_local_assets  # noqa: E402
+from course.assets import use_local_assets  # noqa: E402
 
 # Before any isaaclab import that reads the nucleus constants: Isaac Lab
 # interpolates them into config defaults at class-definition time, so a redirect
@@ -72,10 +72,10 @@ import torch  # noqa: E402
 
 import isaaclab_tasks  # noqa: F401,E402
 
-import sprintbench.tasks  # noqa: F401,E402
-from sprintbench.rollout import run_trial  # noqa: E402
-from sprintbench.replay import PoseRecorder, atomic_write as write_replay  # noqa: E402
-from sprintbench.sprint_env_cfg import GATES_M, G1Sprint100mEnvCfg  # noqa: E402
+import course.tasks  # noqa: F401,E402
+from course.environment import GATES_M, G1100MetresEnvCfg  # noqa: E402
+from course.replay import PoseRecorder, atomic_write as write_replay  # noqa: E402
+from course.rollout import run_trial  # noqa: E402
 
 
 GEOMETRY = None
@@ -127,12 +127,12 @@ def trial(policy_path, runs, *, device="cuda:0", label=""):
     where five sequential rollouts would cost five times over.
     """
     trial_started = time.perf_counter()
-    cfg = G1Sprint100mEnvCfg()
+    cfg = G1100MetresEnvCfg()
     cfg.scene.num_envs = runs
     cfg.sim.device = device
     cfg.episode_length_s = args.max_seconds + 3.0
 
-    env = gym.make("Isaac-Sprint-100m-G1-v0", cfg=cfg)
+    env = gym.make("Isaac-G1-100Metres-v0", cfg=cfg)
     scene_ready = time.perf_counter()
     robot = env.unwrapped.scene["robot"]
     actual_device = str(robot.device)

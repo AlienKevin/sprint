@@ -301,10 +301,10 @@ def main() -> int:
         "assert max(g['util_gpu_pct'] for g in gpus) >= 10\"; "
         f"mkdir -p /warm{remote_root}/agent-verifier; "
         "timeout --signal=TERM --kill-after=30 180 "
-        "python3 /opt/sprint-verifier/verify.py "
+        "python3 /opt/event-verifier/verify.py "
         f"--policy /warm{remote_root}/checkpoints/policy_final.pt "
         f"--logs /warm{remote_root}/agent-verifier "
-        "--tests /opt/sprint-verifier --runs 1 --distance 1 --max-seconds 2 "
+        "--tests /opt/event-verifier --runs 1 --distance 1 --max-seconds 2 "
         "--headless; "
         "echo AGENT_PUBLISHED_VERIFIER_COMPLETED"
     )

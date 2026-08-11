@@ -21,16 +21,16 @@ FILES = (
     Path("verifier_telemetry.py"),
     Path("sprint_gpu_pipeline.py"),
     Path("collision_geometry.json"),
-    Path("sprintbench/__init__.py"),
-    Path("sprintbench/assets.py"),
-    Path("sprintbench/metrics.py"),
-    Path("sprintbench/policy.py"),
-    Path("sprintbench/replay.py"),
-    Path("sprintbench/rollout.py"),
-    Path("sprintbench/sprint_command.py"),
-    Path("sprintbench/sprint_env_cfg.py"),
-    Path("sprintbench/standing_start.py"),
-    Path("sprintbench/tasks.py"),
+    Path("course/__init__.py"),
+    Path("course/assets.py"),
+    Path("course/metrics.py"),
+    Path("course/policy.py"),
+    Path("course/replay.py"),
+    Path("course/rollout.py"),
+    Path("course/forward_command.py"),
+    Path("course/environment.py"),
+    Path("course/standing_start.py"),
+    Path("course/tasks.py"),
 )
 
 
@@ -60,7 +60,7 @@ def main() -> int:
         )
         + "\n"
     )
-    shutil.copy2(SOURCE / "sprintbench/standing_start.py", TRAIN_START)
+    shutil.copy2(SOURCE / "course/standing_start.py", TRAIN_START)
     shutil.copy2(SOURCE / "check_submission.py", CHECK_POLICY)
     return 0
 
