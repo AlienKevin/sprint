@@ -334,6 +334,7 @@ def public_artifact_hashes(web: Path) -> dict[str, str]:
         try:
             paths = [
                 *web.glob("data/batches/*.json"),
+                *web.glob("data/performance/current.json"),
                 *web.glob("data/policies/*.json"),
                 *web.glob("data/timelines/*.json"),
             ]

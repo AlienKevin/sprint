@@ -28,6 +28,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 sys.path.insert(0, str(ROOT))
 
 from event_runtime.export import frontier as frontier_update  # noqa: E402
+from event_runtime.export import performance as performance_export  # noqa: E402
 from event_runtime.control import run as sprintctl  # noqa: E402
 
 
@@ -1031,6 +1032,7 @@ def deployed_batch_current(payload: dict[str, Any]) -> bool:
     ):
         return False
     paths = [WEB / "data" / "batches" / f"{payload['batch_id']}.json"]
+    paths.append(WEB / "data" / "performance" / "current.json")
     for arm in payload["arms"]:
         run_id = arm["run_id"]
         policy = WEB / "data" / "policies" / f"{run_id}.json"
@@ -1044,6 +1046,15 @@ def deployed_batch_current(payload: dict[str, Any]) -> bool:
         and manifest.get(path.relative_to(WEB).as_posix())
         == frontier_update.sha256_file(path)
         for path in paths
+    )
+
+
+def refresh_performance_snapshot(payload: dict[str, Any]) -> None:
+    """Publish the active batch's aggregate chart before a site deployment."""
+
+    performance_export.build(
+        f"{payload['batch_id']}-",
+        WEB / "data" / "performance" / "current.json",
     )
 
 
@@ -1229,10 +1240,33 @@ def monitor_cycle(batch_id: str, *, deploy: bool = True) -> dict[str, Any]:
         public_path = WEB / "data" / "batches" / f"{batch_id}.json"
         atomic_json(public_path, public_batch(payload), mode=0o644)
 
+        performance_ready = True
         if deploy:
             deploy_state = payload.setdefault("deploy", {})
             if deployment_retry_due(deploy_state, now=now):
                 try:
+                    refresh_performance_snapshot(payload)
+                    resolve_alerts(
+                        payload,
+                        run_id="batch",
+                        kind="performance_export",
+                        resolution="subsequent_performance_snapshot_succeeded",
+                    )
+                except Exception as exc:
+                    performance_ready = False
+                    cycle_alerts.append(
+                        {
+                            "run_id": "batch",
+                            "kind": "performance_export",
+                            "source": type(exc).__name__,
+                            "count_in_tail": "1",
+                        }
+                    )
+                try:
+                    if not performance_ready:
+                        raise RuntimeError(
+                            "refusing website deployment with a stale performance snapshot"
+                        )
                     frontier_update.deploy_if_needed(
                         deploy_state,
                         web=WEB,
@@ -1305,6 +1339,7 @@ def monitor_cycle(batch_id: str, *, deploy: bool = True) -> dict[str, Any]:
             and deployment_retry_due(payload.setdefault("deploy", {}), now=now)
         ):
             try:
+                refresh_performance_snapshot(payload)
                 frontier_update.deploy_if_needed(
                     payload.setdefault("deploy", {}),
                     web=WEB,

@@ -74,6 +74,28 @@ def test_terminal_batch_bypasses_live_deploy_debounce() -> None:
     )
 
 
+def test_performance_snapshot_uses_the_active_batch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    web = tmp_path / "web"
+    calls: list[tuple[str, Path]] = []
+    monkeypatch.setattr(batch_eval, "WEB", web)
+    monkeypatch.setattr(
+        batch_eval.performance_export,
+        "build",
+        lambda prefix, output: calls.append((prefix, output)),
+    )
+
+    batch_eval.refresh_performance_snapshot({"batch_id": "event-20260812-r4"})
+
+    assert calls == [
+        (
+            "event-20260812-r4-",
+            web / "data/performance/current.json",
+        )
+    ]
+
+
 def test_final_site_gate_ignores_unrelated_run_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -81,9 +103,10 @@ def test_final_site_gate_ignores_unrelated_run_changes(
     batch_id = "eval"
     run_id = "eval-1"
     batch_file = web / f"data/batches/{batch_id}.json"
+    performance = web / "data/performance/current.json"
     timeline = web / f"data/timelines/{run_id}.json"
     unrelated = web / "data/timelines/other.json"
-    for path in (batch_file, timeline, unrelated):
+    for path in (batch_file, performance, timeline, unrelated):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f"{path.name}\n")
     monkeypatch.setattr(batch_eval, "WEB", web)
@@ -99,6 +122,10 @@ def test_final_site_gate_ignores_unrelated_run_changes(
     }
     assert batch_eval.deployed_batch_current(payload)
     unrelated.write_text("changed elsewhere\n")
+    assert batch_eval.deployed_batch_current(payload)
+    performance.write_text("changed performance\n")
+    assert not batch_eval.deployed_batch_current(payload)
+    performance.write_text("current.json\n")
     assert batch_eval.deployed_batch_current(payload)
     timeline.write_text("changed in this run\n")
     assert not batch_eval.deployed_batch_current(payload)

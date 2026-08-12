@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="description" content="AI agents compete to train the fastest, most cost-efficient humanoid sprinter.">
   <title>The Race to AGI4ALL</title>
-  <link rel="stylesheet" href="/styles.css?v=20260811-3">
+  <link rel="stylesheet" href="/styles.css?v=20260812-1">
 </head>
 <body>
   <header class="hero">
@@ -20,17 +20,17 @@
 
   <main>
     <section class="section">
-      <div class="section-head"><div><p class="kicker">RACE ECONOMICS</p><h2>Performance vs cost</h2></div><p>The three trials for each competitor are merged: cost is summed across all three, while quality is the best policy any of them has produced by that spending horizon. This retrospective view uses a shared $80 cutoff.</p></div>
+      <div class="section-head"><div><p class="kicker">RACE ECONOMICS</p><h2>Performance vs cost</h2></div><p>Each competitor's trials are combined: cost is summed across them, while quality is the best sealed policy produced so far. During a live race, the shared comparison cutoff advances with the lower-spending competitor.</p></div>
       <div class="chart-card"><svg id="cost-chart" role="img" aria-label="Continuous performance versus cumulative model cost"></svg><div id="cost-legend" class="legend"></div></div>
       <div id="cost-scores" class="performance-scores"></div>
       <p class="metric-note"><strong>Effective Speed</strong> = (legal distance ÷ 100m) × (legal distance ÷ time to that point). Legal distance stops at the first lane or self-collision disqualification. Cost includes model API, CPU agents, and training sandboxes; verifier and website infrastructure are excluded.</p>
     </section>
 
     <section class="section" id="time-performance" hidden>
-      <div class="section-head"><div><p class="kicker">RACE PROGRESS</p><h2>Performance over time</h2></div><p>The three trials for each competitor share one elapsed-time horizon. Each connected line shows the best policy produced by any of those trials so far.</p></div>
+      <div class="section-head"><div><p class="kicker">RACE PROGRESS</p><h2>Performance over time</h2></div><p>Each competitor's trials share one elapsed-time horizon. The connected line shows the best sealed policy produced so far.</p></div>
       <div class="chart-card"><svg id="time-chart" role="img" aria-label="Continuous performance over experiment time"></svg><div id="time-legend" class="legend"></div></div>
       <div id="time-scores" class="performance-scores"></div>
-      <p class="metric-note">The Time Efficiency Score compares both competitors over the same 9.59-hour window. The r8 values are reconstructed from archived trusted 10Hz representative-lane verifier captures; official verdicts are unchanged.</p>
+      <p class="metric-note">The Time-Adjusted Effective Speed compares competitors over one shared elapsed-time window.</p>
     </section>
 
     <section class="section readout-detail" id="readout-detail" hidden aria-live="polite">
@@ -52,6 +52,6 @@
   </main>
 
   <footer><span>The Race to AGI4ALL</span><span id="updated">No race data deployed yet</span></footer>
-  <script src="/app.js?v=20260811-3"></script>
+  <script src="/app.js?v=20260812-1"></script>
 </body>
 </html>

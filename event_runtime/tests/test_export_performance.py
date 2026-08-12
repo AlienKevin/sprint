@@ -154,7 +154,7 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "class:'submission-target'" in app
     assert "el.getScreenCTM()" in app
     assert "nearest.distance<=22**2" in app
-    assert "app.js?v=20260811-3" in page
+    assert "app.js?v=20260812-1" in page
     assert "This policy has no archived website replay." in app
     assert 'id="cost-scores"' in page
     assert 'id="time-scores"' in page
@@ -175,10 +175,10 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "background: var(--text)" in styles
     assert 'id="live"' not in page
     assert "$('#live')" not in app
-    assert "AI agents race to train the fastest humanoid at the lowest cost." in page
+    assert "AI agents race to train the fastest humanoid—at the lowest cost." in page
     assert "The Race to AGI4ALL · Race control" in timeline_page
     assert page.index("Performance vs cost") < page.index("Performance over time")
-    assert "representative-lane verifier captures" in page
+    assert "The Time-Adjusted Effective Speed compares competitors" in page
     assert 'id="time-performance" hidden' in page
     assert 'id="readout-detail"' in page
     assert 'id="readout-replay"' in page
@@ -190,6 +190,11 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "cost_auc_mps_at_common_cap" in app
     assert "effective speed (m/s)" in app
     assert "showReadout" in app
+    assert "active_provisional" in app
+    assert "aggregate cost across competitor trials" in app
+    assert "hours_since_agent_launch" in app
+    assert "hours_since_agent launch" not in app
+    assert "best of 3 trials" not in app
 
 
 def test_trusted_pose_capture_index_recovers_renderer_failure_and_cache_hit(

@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
-"""Reconstruct completion-adjusted legal speed for an archived Sprint batch.
+"""Publish performance readouts for an active or completed event batch.
 
-The r8 verifier predates the legal-prefix diagnostics now emitted by the
-official scorer.  Its trusted pose captures nevertheless retain the selected
-representative lane at 10 Hz.  This tool reconstructs, without rerunning a
-policy, the first lane/self-collision DQ, maximum legal forward distance, time
-to that distance, and the continuous score::
+Trusted verifier captures provide the trajectory used to reconstruct the
+first lane or self-collision DQ, maximum legal forward distance, time to that
+distance, and the continuous score::
 
     completion_adjusted_speed_mps = distance_m ** 2 / (100 * elapsed_s)
 
-The result is explicitly labelled as replay-derived rather than an official
-rescore.  Official validity and failed-gate fields remain unchanged.
+Official validity and failed-gate fields remain unchanged.
 """
 
 from __future__ import annotations
@@ -594,6 +591,8 @@ def aggregate_models(
     common_time_cap: float,
     cost_ledgers: dict[str, dict[str, Any]],
     requested_cost_cap: float,
+    *,
+    complete: bool,
 ) -> tuple[list[dict[str, Any]], float]:
     grouped: dict[str, list[dict[str, Any]]] = {}
     for run in output_runs:
@@ -605,12 +604,12 @@ def aggregate_models(
         sum(float(run["summary"]["final_agent_cost_usd"]) for run in runs)
         for runs in grouped.values()
     )
-    if requested_cost_cap > common_observed_cost:
+    if complete and requested_cost_cap > common_observed_cost:
         raise RuntimeError(
             f"requested ${requested_cost_cap:.2f} cap exceeds common observed "
             f"cost ${common_observed_cost:.2f}"
         )
-    common_cost_cap = requested_cost_cap
+    common_cost_cap = min(requested_cost_cap, common_observed_cost)
     output_models: list[dict[str, Any]] = []
     for family, runs in sorted(grouped.items()):
         family_origin_ms = min(
@@ -644,7 +643,11 @@ def aggregate_models(
                     "cumulative_agent_cost_usd": round(aggregate_cost, 6),
                 }
             )
-        best = max(points, key=lambda row: row["continuous_score_mps"])
+        best = max(
+            points,
+            key=lambda row: row["continuous_score_mps"],
+            default=None,
+        )
         missing = sum(len(run["summary"]["missing_readout_indices"]) for run in runs)
         output_models.append(
             {
@@ -663,9 +666,15 @@ def aggregate_models(
                         for point in points
                     ),
                     "missing_pose_capture_count": missing,
-                    "best_continuous_score_mps": best["continuous_score_mps"],
-                    "best_source_run_id": best["source_run_id"],
-                    "best_submission_index": best["submission_index"],
+                    "best_continuous_score_mps": (
+                        None if best is None else best["continuous_score_mps"]
+                    ),
+                    "best_source_run_id": (
+                        None if best is None else best["source_run_id"]
+                    ),
+                    "best_submission_index": (
+                        None if best is None else best["submission_index"]
+                    ),
                     "cost_auc_mps_at_common_cap": step_auc(
                         points, "cumulative_agent_cost_usd", common_cost_cap
                     ),
@@ -685,12 +694,28 @@ def build(batch_prefix: str, output: Path, cost_cap: float = 80.0) -> dict[str, 
     policy_index = load_json(WEB / "data/policies/index.json")
     timeline_index = load_json(WEB / "data/timelines/index.json")
     timeline_by_run = {row["run_id"]: row for row in timeline_index["runs"]}
+    policy_by_run = {row["run_id"]: row for row in policy_index["runs"]}
     selected = sorted(
-        (row for row in policy_index["runs"] if row["run_id"].startswith(batch_prefix)),
+        (
+            row
+            for row in timeline_index["runs"]
+            if row["run_id"].startswith(batch_prefix)
+        ),
         key=lambda row: row["run_id"],
     )
-    if len(selected) != 6:
-        raise RuntimeError(f"expected six {batch_prefix!r} runs, found {len(selected)}")
+    selected_families = [model_family(row.get("model")) for row in selected]
+    family_counts = {
+        family: selected_families.count(family) for family in {"deepseek", "luna"}
+    }
+    if (
+        not selected
+        or len(set(family_counts.values())) != 1
+        or 0 in family_counts.values()
+    ):
+        raise RuntimeError(
+            f"expected equal nonzero DeepSeek and Luna runs for {batch_prefix!r}, "
+            f"found {family_counts}"
+        )
     trusted_captures = trusted_pose_capture_index(
         str(row["run_id"]) for row in selected
     )
@@ -699,17 +724,23 @@ def build(batch_prefix: str, output: Path, cost_cap: float = 80.0) -> dict[str, 
     time_caps: list[float] = []
     prepared: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]] = []
     cost_ledgers: dict[str, dict[str, Any]] = {}
+    complete = True
     for meta in selected:
         timeline_meta = timeline_by_run[meta["run_id"]]
         timeline = load_json(WEB / timeline_meta["path"].removeprefix("/"))
         summary = timeline.get("comparison_summary") or {}
         final_cost = finite_number(summary.get("final_agent_total_cost_usd"))
         wall_ms = finite_number(summary.get("wall_duration_ms"))
-        if final_cost is None or wall_ms is None:
-            raise RuntimeError(f"{meta['run_id']} lacks finalized cost/time summary")
-        cost_caps.append(final_cost)
-        time_caps.append(wall_ms / 3_600_000.0)
         ledger = build_cost_ledger(timeline)
+        if final_cost is None:
+            complete = False
+            final_cost = cumulative_cost_at_epoch(
+                ledger, int((timeline.get("clock") or {})["end_epoch_ms"])
+            )
+        if wall_ms is None:
+            raise RuntimeError(f"{meta['run_id']} lacks a cost/time summary")
+        cost_caps.append(float(final_cost))
+        time_caps.append(wall_ms / 3_600_000.0)
         cost_ledgers[meta["run_id"]] = ledger
         prepared.append((meta, timeline, ledger))
 
@@ -718,7 +749,12 @@ def build(batch_prefix: str, output: Path, cost_cap: float = 80.0) -> dict[str, 
     output_runs: list[dict[str, Any]] = []
     for meta, timeline, cost_ledger in prepared:
         run_id = meta["run_id"]
-        public = load_json(WEB / meta["path"].removeprefix("/"))
+        policy_meta = policy_by_run.get(run_id)
+        public = (
+            load_json(WEB / policy_meta["path"].removeprefix("/"))
+            if policy_meta is not None
+            else {"policies": []}
+        )
         artifacts = {
             int(row["submission_index"]): row
             for row in timeline.get("artifacts", [])
@@ -785,9 +821,10 @@ def build(batch_prefix: str, output: Path, cost_cap: float = 80.0) -> dict[str, 
                 f"{run_id} lacks trusted pose trajectories for submissions "
                 f"{missing}; continuous score publication is fail-closed"
             )
-        if not points:
-            raise RuntimeError(f"{run_id} has no reconstructable policy readouts")
-        best = max(points, key=lambda row: row["continuous_score_mps"])
+        best = max(points, key=lambda row: row["continuous_score_mps"], default=None)
+        current_cost = cumulative_cost_at_epoch(
+            cost_ledger, int((timeline.get("clock") or {})["end_epoch_ms"])
+        )
         output_runs.append(
             {
                 "run_id": run_id,
@@ -798,17 +835,19 @@ def build(batch_prefix: str, output: Path, cost_cap: float = 80.0) -> dict[str, 
                 "summary": {
                     "readout_count": len(points),
                     "missing_readout_indices": missing,
-                    "best_continuous_score_mps": best["continuous_score_mps"],
-                    "best_submission_index": best["submission_index"],
+                    "best_continuous_score_mps": (
+                        None if best is None else best["continuous_score_mps"]
+                    ),
+                    "best_submission_index": (
+                        None if best is None else best["submission_index"]
+                    ),
                     "cost_auc_mps_at_common_cap": step_auc(
                         points, "cumulative_agent_cost_usd", common_cost_cap
                     ),
                     "time_auc_mps_at_common_cap": step_auc(
                         points, "hours_since_agent_launch", common_time_cap
                     ),
-                    "final_agent_cost_usd": (
-                        timeline.get("comparison_summary") or {}
-                    ).get("final_agent_total_cost_usd"),
+                    "final_agent_cost_usd": current_cost,
                     "wall_duration_hours": (
                         float(
                             (timeline.get("comparison_summary") or {}).get(
@@ -822,7 +861,11 @@ def build(batch_prefix: str, output: Path, cost_cap: float = 80.0) -> dict[str, 
         )
 
     output_models, model_cost_cap = aggregate_models(
-        output_runs, common_time_cap, cost_ledgers, cost_cap
+        output_runs,
+        common_time_cap,
+        cost_ledgers,
+        cost_cap,
+        complete=complete,
     )
     publish_policy_replays(
         models=output_models,
@@ -833,6 +876,7 @@ def build(batch_prefix: str, output: Path, cost_cap: float = 80.0) -> dict[str, 
         "schema_version": 2,
         "generated_at": utc_now(),
         "batch_prefix": batch_prefix,
+        "snapshot_status": "completed" if complete else "active_provisional",
         "metric": {
             "name": "effective_speed",
             "technical_name": "completion_adjusted_legal_speed",
@@ -840,7 +884,7 @@ def build(batch_prefix: str, output: Path, cost_cap: float = 80.0) -> dict[str, 
             "unit": "m/s",
             "higher_is_better": True,
             "distance_semantics": "maximum forward distance before first reconstructed lane/self-collision DQ",
-            "provenance": "offline reconstruction from trusted representative-lane 10 Hz verifier pose captures; not an official rescore",
+            "provenance": "reconstruction from trusted 50 Hz verifier pose captures; official verdict fields are unchanged",
             "coverage_policy": "fail closed unless every published policy has an exact trusted pose trajectory; website rendering is not a scoring dependency",
         },
         "cost": {
@@ -848,11 +892,11 @@ def build(batch_prefix: str, output: Path, cost_cap: float = 80.0) -> dict[str, 
             "excludes": ["verifier sandbox", "website", "observability infrastructure"],
             "modal_method": "allocation intervals integrated to each readout timestamp using the pinned published requested-resource tariff; provider billing is retained separately for audit",
             "common_auc_cap_usd": model_cost_cap,
-            "aggregation": "sum cumulative cost across three trials; take best policy quality produced by any trial",
+            "aggregation": "sum cumulative cost across the model's trials; take the best policy quality produced by any trial",
         },
         "time": {
             "common_auc_cap_hours": common_time_cap,
-            "aggregation": "align three trials by elapsed agent time; take best policy quality produced by any trial",
+            "aggregation": "align the model's trials by elapsed agent time; take the best policy quality produced by any trial",
         },
         "models": output_models,
         "runs": output_runs,
@@ -875,9 +919,10 @@ def main() -> int:
     payload = build(args.batch_prefix, args.output, args.cost_cap)
     for run in payload["runs"]:
         summary = run["summary"]
+        best = summary["best_continuous_score_mps"]
         print(
             f"{run['run_id']}: {summary['readout_count']} readouts, "
-            f"best={summary['best_continuous_score_mps']:.4f} m/s, "
+            f"best={'n/a' if best is None else f'{best:.4f} m/s'}, "
             f"cost-AUC={summary['cost_auc_mps_at_common_cap']:.4f} m/s, "
             f"time-AUC={summary['time_auc_mps_at_common_cap']:.4f} m/s"
         )
