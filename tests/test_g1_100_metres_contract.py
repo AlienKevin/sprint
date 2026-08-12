@@ -133,15 +133,15 @@ def test_event_command_runs_from_its_installed_path(tmp_path: Path) -> None:
     assert "event cost" in result.stdout
 
 
-def test_codex_comparison_models_have_one_explicit_tool_contract(
+def test_codex_comparison_models_pin_provider_compatible_tool_contracts(
     tmp_path: Path,
 ) -> None:
     environment = ROOT / "event_runtime/container"
     models = ROOT / "event_runtime/models"
     deepseek = json.loads((models / "deepseek.json").read_text())
     for model in deepseek["models"]:
-        assert model["tool_mode"] == "code_mode_only"
-        assert model["multi_agent_version"] == "v1"
+        assert model["tool_mode"] is None
+        assert model["multi_agent_version"] == "v2"
 
     luna_lock = json.loads((models / "luna.json").read_text())
     assert luna_lock["codex_version"] == "0.147.0"
