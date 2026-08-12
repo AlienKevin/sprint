@@ -29,5 +29,5 @@ agent-visible cost parity. A failed or stale gate blocks launch.
 Run the shared tests with:
 
 ```bash
-uv run --project harbor pytest -q event_runtime/tests events/g1-100-metres/tests
+uv run --project harbor pytest -q event_runtime/tests tests
 ```

@@ -19,10 +19,7 @@ from event_runtime.event import EventLayout, load_event  # noqa: E402
 VERIFIER_ENTRYPOINTS = (
     Path("test.sh"),
     Path("verify.py"),
-    Path("compare_results.py"),
-    Path("verifier_telemetry.py"),
-    Path("sprint_gpu_pipeline.py"),
-    Path("collision_geometry.json"),
+    Path("course/collision_geometry.json"),
 )
 
 

@@ -10,8 +10,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 
-ROOT = Path(__file__).resolve().parents[3]
-TASK = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[1]
+TASK = ROOT / "events/g1-100-metres"
 
 # These are the benchmark-authored guidance surfaces available to the model.
 # Runtime implementation code may necessarily use words such as "rewards" for
@@ -19,9 +19,9 @@ TASK = Path(__file__).resolve().parents[1]
 GUIDANCE = (
     TASK / "instruction.md",
     TASK / "README.md",
-    TASK / "environment/train/README.md",
-    TASK / "environment/train/robot.py",
-    TASK / "environment/train/spec.py",
+    TASK / "environment/README.md",
+    TASK / "environment/robot.py",
+    TASK / "environment/spec.py",
     ROOT / "event_runtime/container/bin/event",
     TASK / "tests/check_submission.py",
     ROOT / "event_runtime/agent/archive.py",
@@ -138,7 +138,7 @@ def test_published_verifier_is_an_exact_reviewed_source_mirror() -> None:
 
 def test_training_and_both_verifiers_share_one_exact_standing_start() -> None:
     trusted = TASK / "tests/course/standing_start.py"
-    training = TASK / "environment/train/standing_start.py"
+    training = TASK / "environment/standing_start.py"
     assert trusted.read_bytes() == training.read_bytes()
 
     source = trusted.read_text()
@@ -148,7 +148,7 @@ def test_training_and_both_verifiers_share_one_exact_standing_start() -> None:
     assert 'JOINT_VELOCITIES_RAD_S = {".*": 0.0}' in source
 
     official_cfg = (TASK / "tests/course/environment.py").read_text()
-    training_robot = (TASK / "environment/train/robot.py").read_text()
+    training_robot = (TASK / "environment/robot.py").read_text()
     needle = "apply_canonical_standing_start(robot)"
     assert needle in official_cfg
     assert needle in training_robot
@@ -233,7 +233,7 @@ def test_local_verifier_uses_only_the_trial_training_queue() -> None:
 def test_equivalence_gate_accepts_only_matching_canonical_outputs(
     tmp_path: Path,
 ) -> None:
-    compare = TASK / "tests/compare_results.py"
+    compare = ROOT / "event_runtime/preflight/compare_results.py"
     agent = tmp_path / "agent.json"
     official = tmp_path / "official.json"
     output = tmp_path / "proof.json"

@@ -24,6 +24,8 @@ from event_runtime.image import (  # noqa: E402
     agent_context_roots,
     agent_image as compose_agent_image,
     context_digest,
+    verifier_context_roots,
+    verifier_image as compose_verifier_image,
 )
 from event_runtime.sync_verifier import materialize_public_verifier  # noqa: E402
 
@@ -203,14 +205,13 @@ def main() -> int:
 
     agent_roots = agent_context_roots(EVENT)
     agent_sha256 = context_digest(*agent_roots)
-    verifier_sha256 = context_digest(VERIFIER_CONTEXT)
+    verifier_roots = verifier_context_roots(EVENT)
+    verifier_sha256 = context_digest(*verifier_roots)
     public_temp = tempfile.TemporaryDirectory(prefix="event-public-verifier-")
     public_verifier = Path(public_temp.name) / "verifier"
     materialize_public_verifier(EVENT, public_verifier)
     agent_image = compose_agent_image(EVENT, public_verifier)
-    verifier_image = modal.Image.from_dockerfile(
-        VERIFIER_CONTEXT / "Dockerfile", context_dir=VERIFIER_CONTEXT
-    )
+    verifier_image = compose_verifier_image(EVENT)
     payload: dict[str, Any] = {
         "schema_version": 1,
         "completed": False,
@@ -223,7 +224,7 @@ def main() -> int:
                 "sha256": agent_sha256,
             },
             "verifier": {
-                "path": str(VERIFIER_CONTEXT),
+                "paths": [str(path) for path in verifier_roots],
                 "sha256": verifier_sha256,
             },
         },
@@ -309,7 +310,7 @@ def main() -> int:
             "mkdir -p /tmp/verifier-telemetry && "
             "SPRINT_REQUESTED_CPU_CORES=4 SPRINT_REQUESTED_MEMORY_MIB=10240 "
             "timeout --preserve-status --signal=TERM --kill-after=5 5 "
-            "python3 /tests/verifier_telemetry.py "
+            "python3 /opt/event_runtime/container/verifier_telemetry.py "
             "--out-dir /tmp/verifier-telemetry --interval-seconds 0.5 && "
             "python3 -c \"import json; p=json.load(open('/tmp/verifier-telemetry/latest.json')); "
             "assert p['resource_accounting_scope'] in ('cgroup-v1','cgroup-v2'); "

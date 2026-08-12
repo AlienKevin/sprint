@@ -12,14 +12,18 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from event_runtime.event import load_event  # noqa: E402
-from event_runtime.image import agent_context_roots, context_digest  # noqa: E402
+from event_runtime.image import (  # noqa: E402
+    agent_context_roots,
+    context_digest,
+    verifier_context_roots,
+)
 
 
 EVENT = load_event(repository_root=ROOT)
 MANIFEST = ROOT / "runs/ops/modal-image-warmup.json"
 CONTEXTS = {
     "agent_training": agent_context_roots(EVENT),
-    "verifier": (EVENT.verifier,),
+    "verifier": verifier_context_roots(EVENT),
 }
 
 

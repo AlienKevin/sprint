@@ -5,7 +5,7 @@ Designed for long bakeoffs where Modal may preempt a GPU worker or Harbor/Codex
 may exit. Remounts the same ``sprint-$RUN_ID`` volume via the original launcher
 config. Prevents restart storms with a host lock + exponential backoff.
 
-Does **not** launch paid bakeoffs by itself — callers pass ``--launch-cmd``
+Does **not** launch paid bakeoffs by itself; callers pass ``--launch-cmd``
 (or use ``--dry-run`` / unit tests with mocks).
 """
 
@@ -236,7 +236,7 @@ def run_loop(
                 continue
 
             # Backoff before relaunch (not before first ever launch if restarts==0
-            # and never launched — still backoff after failures).
+            # and never launched; still backoff after failures).
             failures = int(state.get("consecutive_failures") or 0)
             if failures > 0 or int(state.get("restarts") or 0) > 0:
                 delay = next_backoff_s(

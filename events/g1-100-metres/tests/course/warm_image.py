@@ -37,7 +37,7 @@ from course.assets import use_local_assets  # noqa: E402
 # interpolates them into config defaults at class-definition time, so a redirect
 # afterwards would be too late.
 if not use_local_assets():
-    print("ERROR: no local asset mirror; run localize_assets.py first")
+    print("ERROR: no local asset mirror; run build_assets.py first")
     sys.exit(1)
 
 import gymnasium as gym  # noqa: E402

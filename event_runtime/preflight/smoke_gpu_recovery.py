@@ -146,7 +146,7 @@ def load_status(run: dict[str, Any], job_id: str) -> dict[str, Any]:
 def write_report(path: Path, result: dict[str, Any]) -> None:
     evidence = result["evidence"]
     lines = [
-        f"# Automatic GPU recovery smoke — `{result['run_id']}`",
+        f"# Automatic GPU recovery smoke: `{result['run_id']}`",
         "",
         f"**Verdict: {result['verdict']}**",
         "",

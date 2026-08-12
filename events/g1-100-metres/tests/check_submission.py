@@ -48,7 +48,7 @@ Official verifier gates (a valid 100 m time needs every gating check to pass):
 Trusted verification:
   event archive returns immediately. Official scores/gates are blind during the
   run; event history lists local receipts. event check only validates the
-  TorchScript interface on CPU — it does not run the course. Use event test
+  TorchScript interface on CPU; it does not run the course. Use event test
   for an agent-funded local execution of the published verifier.
 """.strip()
 

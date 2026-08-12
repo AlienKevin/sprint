@@ -18,7 +18,7 @@ import sys
 sys.path.insert(0, "/tests")
 
 # Paths relative to the nucleus root.  Add to this list when the scene starts
-# reaching for something new; warm_assets.py is what catches that omission,
+# reaching for something new; warm_image.py is what catches that omission,
 # because it builds the real scene with the mirror in front of the network.
 MIRRORED = (
     "Isaac/IsaacLab/Robots/Unitree/G1",

@@ -194,7 +194,7 @@ def telemetry_ok(run: dict[str, Any], container_id: str) -> tuple[bool, str]:
 
 def write_report(path: Path, payload: dict[str, Any]) -> None:
     lines = [
-        f"# CPU/GPU split smoke — `{payload['run_id']}`",
+        f"# CPU/GPU split smoke: `{payload['run_id']}`",
         "",
         f"**Verdict: {payload['verdict']}**",
         "",

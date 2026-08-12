@@ -6,8 +6,8 @@ from pathlib import Path
 import pytest
 
 
-ROOT = Path(__file__).resolve().parents[3]
-TASK = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[1]
+TASK = ROOT / "events/g1-100-metres"
 sys.path.insert(0, str(TASK / "tests"))
 
 from course.metrics import evaluate_run  # noqa: E402
@@ -142,7 +142,7 @@ def test_whole_body_lane_extent_includes_collision_radii() -> None:
 def test_lane_geometry_covers_all_major_body_regions() -> None:
     import json
 
-    geometry = json.loads((TASK / "tests" / "collision_geometry.json").read_text())[
+    geometry = json.loads((TASK / "tests/course/collision_geometry.json").read_text())[
         "bodies"
     ]
     required = {

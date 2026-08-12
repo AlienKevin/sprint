@@ -3,14 +3,12 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[3]
-EVENT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
+EVENT = ROOT / "events/g1-100-metres"
 
 
 def test_continuous_scoring_is_blind_rate_limited_and_globally_serialized() -> None:
-    config = tomllib.loads(
-        (EVENT / "task.toml").read_text()
-    )
+    config = tomllib.loads((EVENT / "task.toml").read_text())
     continuous = config["verifier"]["continuous"]
     assert continuous["enabled"] is True
     assert continuous["watch_dir"] == "/app/submissions/queue"

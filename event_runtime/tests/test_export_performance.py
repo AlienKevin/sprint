@@ -144,14 +144,17 @@ def test_dashboard_loads_continuous_readouts() -> None:
     timeline_app = (ROOT / "web/timeline.js").read_text()
     assert "/data/performance/current.json" in app
     assert "continuous_score_mps" in app
-    assert "const plottable=point=>finite(point[xKey])&&finite(point.continuous_score_mps)" in app
+    assert (
+        "const plottable=point=>finite(point[xKey])&&finite(point.continuous_score_mps)"
+        in app
+    )
     assert "point[xKey]<=aucCap" not in app
     assert "submission${onFrontier?' frontier':''}" in app
     assert "class:'submission-hit'" in app
     assert "class:'submission-target'" in app
     assert "el.getScreenCTM()" in app
     assert "nearest.distance<=22**2" in app
-    assert 'app.js?v=20260811-3' in page
+    assert "app.js?v=20260811-3" in page
     assert "This policy has no archived website replay." in app
     assert 'id="cost-scores"' in page
     assert 'id="time-scores"' in page
@@ -172,7 +175,7 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "background: var(--text)" in styles
     assert 'id="live"' not in page
     assert "$('#live')" not in app
-    assert "AI agents race to train the fastest humanoid—at the lowest cost." in page
+    assert "AI agents race to train the fastest humanoid at the lowest cost." in page
     assert "The Race to AGI4ALL · Race control" in timeline_page
     assert page.index("Performance vs cost") < page.index("Performance over time")
     assert "representative-lane verifier captures" in page

@@ -39,10 +39,12 @@ def context_digest(*roots: Path) -> str:
     for root in roots:
         digest.update(root.name.encode())
         digest.update(b"\0")
-        for path in sorted(item for item in root.rglob("*") if item.is_file()):
+        paths = (root,) if root.is_file() else tuple(root.rglob("*"))
+        for path in sorted(item for item in paths if item.is_file()):
             if "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}:
                 continue
-            digest.update(path.relative_to(root).as_posix().encode())
+            relative = path.name if path == root else path.relative_to(root).as_posix()
+            digest.update(relative.encode())
             digest.update(b"\0")
             digest.update(hashlib.sha256(path.read_bytes()).digest())
             digest.update(b"\0")
@@ -52,6 +54,16 @@ def context_digest(*roots: Path) -> str:
 def agent_context_roots(event: EventLayout) -> tuple[Path, ...]:
     """Return every repository root that contributes bytes to the agent image."""
     return event.environment, CONTAINER, MODELS, AGENT, event.verifier
+
+
+def verifier_context_roots(event: EventLayout) -> tuple[Path, ...]:
+    """Return every repository root that contributes bytes to the verifier image."""
+    return (
+        event.verifier,
+        CONTAINER / "verifier_telemetry.py",
+        CONTAINER / "sprint_gpu_pipeline.py",
+        ROOT / "event_runtime" / "preflight" / "compare_results.py",
+    )
 
 
 def agent_image(event: EventLayout, public_verifier: Path) -> modal.Image:
@@ -100,4 +112,31 @@ def agent_image(event: EventLayout, public_verifier: Path) -> modal.Image:
         "/opt/event/check_policy.py; "
         "chmod -R a-w /opt/event-verifier; "
         "ln -sfn /opt/event-verifier /app/verifier",
+    )
+
+
+def verifier_image(event: EventLayout) -> modal.Image:
+    """Build one sealed verifier from event rules and shared telemetry."""
+    image = modal.Image.from_dockerfile(
+        event.verifier / "Dockerfile", context_dir=event.verifier
+    )
+    image = image.add_local_file(
+        CONTAINER / "verifier_telemetry.py",
+        "/opt/event_runtime/container/verifier_telemetry.py",
+        copy=True,
+    )
+    image = image.add_local_file(
+        CONTAINER / "sprint_gpu_pipeline.py",
+        "/opt/event_runtime/container/sprint_gpu_pipeline.py",
+        copy=True,
+    )
+    image = image.add_local_file(
+        ROOT / "event_runtime" / "preflight" / "compare_results.py",
+        "/opt/event_runtime/preflight/compare_results.py",
+        copy=True,
+    )
+    return image.run_commands(
+        "python3 /opt/event_runtime/container/sprint_gpu_pipeline.py "
+        "--build /usr/local/cuda/extras/CUPTI/samples/pm_sampling "
+        "--output /opt/sprint-pm-sampling"
     )

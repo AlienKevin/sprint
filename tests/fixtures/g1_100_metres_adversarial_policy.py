@@ -16,7 +16,7 @@ Three adversaries, each aiming at a different way through:
 ``pile``      fold up and then extend violently, converting the whole body mass
               into one downward impulse
 
-    python adversarial_policy.py --mode slam --out /tmp/adversary.pt
+    python g1_100_metres_adversarial_policy.py --mode slam --out /tmp/adversary.pt
 """
 
 # No `from __future__ import annotations` here: it turns the class attribute
@@ -67,8 +67,9 @@ class Drill(nn.Module):
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
         self.phase += 1.0
         sign = torch.where(self.phase % 2.0 < 1.0, -1.0, 1.0)
-        return torch.full((obs.shape[0], self.n_act), self.drive,
-                          device=obs.device) * sign
+        return (
+            torch.full((obs.shape[0], self.n_act), self.drive, device=obs.device) * sign
+        )
 
     @torch.jit.export
     def reset(self, env_ids: torch.Tensor) -> None:
@@ -94,7 +95,7 @@ class Pile(nn.Module):
         self.phase += 1.0
         # 0.4 s folding, 0.2 s extending, repeat
         folding = (self.phase % 30.0) < 20.0
-        joint_pos = obs[:, 9:9 + self.n_act]
+        joint_pos = obs[:, 9 : 9 + self.n_act]
         target = torch.where(folding, self.drive, -self.drive)
         return target - joint_pos * 2.0
 
@@ -119,8 +120,10 @@ def main() -> None:
 
     with torch.inference_mode():
         out = scripted(torch.zeros(4, N_OBS))
-    print(f"{args.out}: mode={args.mode}, output {tuple(out.shape)}, "
-          f"max |action| {out.abs().max():.1f}")
+    print(
+        f"{args.out}: mode={args.mode}, output {tuple(out.shape)}, "
+        f"max |action| {out.abs().max():.1f}"
+    )
 
 
 if __name__ == "__main__":

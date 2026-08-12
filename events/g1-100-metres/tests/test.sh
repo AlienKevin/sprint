@@ -15,7 +15,7 @@ mkdir -p "$LOGS_DIR"
 # for continuous attempts and the final score.
 TELEMETRY_DIR="$LOGS_DIR/telemetry"
 SPRINT_REQUESTED_CPU_CORES=4 SPRINT_REQUESTED_MEMORY_MIB=10240 \
-  python3 "$TESTS_DIR/verifier_telemetry.py" \
+  python3 /opt/event_runtime/container/verifier_telemetry.py \
     --out-dir "$TELEMETRY_DIR" \
     --interval-seconds "${SPRINT_VERIFIER_TELEMETRY_INTERVAL_S:-5}" &
 TELEMETRY_PID=$!
@@ -64,7 +64,7 @@ details = r.get("failed_gate_details") or {}
 for name in r.get("failed_gates") or []:
     reasons.append(f"{name}: {details[name]}" if name in details else name)
 open(os.path.join(logs, "failure_reason.txt"), "w").write(
-    ("DQ — " + "; ".join(reasons) + "\n") if reasons else ("valid\n" if valid else "no valid run\n")
+    ("DQ: " + "; ".join(reasons) + "\n") if reasons else ("valid\n" if valid else "no valid run\n")
 )
 PYEOF
 }

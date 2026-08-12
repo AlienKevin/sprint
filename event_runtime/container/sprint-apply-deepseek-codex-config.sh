@@ -8,7 +8,7 @@
 # with wire_api=responses, then removes openai_base_url.
 #
 # Auth uses env_key=OPENAI_API_KEY (Harbor already injects the key). Do not
-# write experimental_bearer_token — config.toml is copied into agent logs.
+# write experimental_bearer_token; config.toml is copied into agent logs.
 set -euo pipefail
 
 CODEX_HOME_DIR=${CODEX_HOME:-/tmp/codex-home}

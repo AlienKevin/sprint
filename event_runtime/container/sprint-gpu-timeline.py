@@ -2,17 +2,18 @@
 """GPU-active time accounting for CPU-agent / GPU-worker lane runs.
 
 Phases (enter/exit pairs):
-  gpu_queue_wait      — waiting for a GPU worker (preempt / queue); no util expected
-  gpu_worker_starting — Modal allocating / sandbox booting
-  isaac_starting      — Isaac Lab / sim stack init before train steps
-  gpu_active          — training/inference steps on GPU
-  gpu_idle_assigned   — optional: GPU held but not training
+  gpu_queue_wait      : waiting for a GPU worker (preempt / queue); no util expected
+  gpu_worker_starting : Modal allocating / sandbox booting
+  isaac_starting      : Isaac Lab / sim stack init before train steps
+  gpu_active          : training/inference steps on GPU
+  gpu_idle_assigned   : optional: GPU held but not training
 
 Artifacts (durable + local):
   .../telemetry/gpu_timeline.jsonl
   .../telemetry/gpu_timeline/events/<ts>_<seq>.json   # concurrent-safe shards
   .../telemetry/gpu_time_summary.json
 """
+
 from __future__ import annotations
 
 import argparse
@@ -142,7 +143,9 @@ def _load_events(root: Path) -> list[dict[str, Any]]:
     # Deduplicate by event_id
     seen: set[str] = set()
     unique: list[dict[str, Any]] = []
-    for event in sorted(events, key=lambda e: (e.get("epoch_s") or 0, e.get("event_id") or "")):
+    for event in sorted(
+        events, key=lambda e: (e.get("epoch_s") or 0, e.get("event_id") or "")
+    ):
         eid = str(event.get("event_id") or "")
         if eid and eid in seen:
             continue
@@ -192,8 +195,7 @@ def summarize_events(events: list[dict[str, Any]]) -> dict[str, Any]:
                 {
                     "job_id": job_id or None,
                     "attempt": attempt,
-                    "lease_id": start_event.get("lease_id")
-                    or event.get("lease_id"),
+                    "lease_id": start_event.get("lease_id") or event.get("lease_id"),
                     "phase": phase,
                     "start_epoch_s": start,
                     "end_epoch_s": epoch,
@@ -223,7 +225,9 @@ def summarize_events(events: list[dict[str, Any]]) -> dict[str, Any]:
                 }
             )
 
-    wall = float((last_ts - first_ts) if first_ts is not None and last_ts is not None else 0)
+    wall = float(
+        (last_ts - first_ts) if first_ts is not None and last_ts is not None else 0
+    )
     gpu_wait_s = durations["gpu_queue_wait"]
     gpu_startup_s = durations["gpu_worker_starting"]
     isaac_startup_s = durations["isaac_starting"]
@@ -338,9 +342,7 @@ def summarize_events(events: list[dict[str, Any]]) -> dict[str, Any]:
         "segment_count": len(segments),
         "segments": segments,
         "accounting": {
-            "gpu_active_s": (
-                "sum of closed gpu_active intervals across attempts"
-            ),
+            "gpu_active_s": ("sum of closed gpu_active intervals across attempts"),
             "gpu_active_interval_s": "sum of gpu_active enter/exit intervals",
             "wall_minus_wait_s": (
                 "sum over attempts of max(0, wall - wait - startup - isaac)"

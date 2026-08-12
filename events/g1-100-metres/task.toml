@@ -87,7 +87,7 @@ cpus = 2
 # by `event_runtime.compute`. The durable launcher
 # passes Modal's maximum 86,400-second Sandbox lifetime; the host supervisor
 # recreates this CPU sandbox from the same Volume if its process exits early.
-# Do NOT use Harbor --override-gpus 0 — that would also strip verifier GPUs.
+# Do NOT use Harbor --override-gpus 0; that would also strip verifier GPUs.
 gpus = 0
 memory_mb = 8192
 storage_mb = 61440

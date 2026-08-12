@@ -153,7 +153,7 @@ class CollisionModel:
 
 def collision_model(names: list[str]) -> CollisionModel:
     parents, ancestry, radius_pad, sphere_margin = contract_constants()
-    geometry_path = EVENT.environment / "verifier/collision_geometry.json"
+    geometry_path = EVENT.verifier / "course/collision_geometry.json"
     geometry = load_json(geometry_path)
     bodies: list[BodyGeometry] = []
     for name, entry in geometry["bodies"].items():
@@ -230,7 +230,7 @@ def frame_poses(frames: list[list[float]], body_count: int) -> tuple[np.ndarray,
 def torso_forward_trace(
     names: list[str], positions: np.ndarray, quaternions: np.ndarray
 ) -> np.ndarray:
-    geometry_path = EVENT.environment / "verifier/collision_geometry.json"
+    geometry_path = EVENT.verifier / "course/collision_geometry.json"
     geometry = load_json(geometry_path)["bodies"]["torso_link"]
     body_index = names.index("torso_link")
     points = np.asarray(geometry["points"], dtype=np.float64)

@@ -124,6 +124,7 @@ def load_policy(path: str, obs_dim: int, act_dim: int, device: str):
     # rollout invokes this at the starting gun, after the exact physical reset.
     module_reset = getattr(module, "reset", None)
     if module_reset is not None:
+
         def reset(done_mask):
             module_reset(done_mask.to("cpu"))
 
@@ -228,7 +229,7 @@ def main() -> int:
     global GEOMETRY, LOG
     os.makedirs(args.logs, exist_ok=True)
     LOG = open(os.path.join(args.logs, "results.log"), "w")
-    GEOMETRY = os.path.join(args.tests, "collision_geometry.json")
+    GEOMETRY = os.path.join(args.tests, "course", "collision_geometry.json")
     device = getattr(args, "device", "cuda:0")
 
     PERFORMANCE["cuda"] = {

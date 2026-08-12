@@ -563,7 +563,7 @@ def scan_frontier(
             queued_hashes.add(policy_hash)
 
     # Every fresh verifier now records one representative pose replay. Publish
-    # all unique graded policies—not only successes—so falls, lane exits, and
+    # all unique graded policies, not only successes, so falls, lane exits, and
     # collision failures remain part of the experiment story. Exact duplicate
     # bytes share one replay page by policy hash.
     for record in graded:

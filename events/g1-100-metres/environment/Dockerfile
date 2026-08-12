@@ -55,7 +55,7 @@ RUN python3 -c 'from pathlib import Path; p=Path("/opt/IsaacLab/apps/isaaclab.py
 # The event owns only its agent-facing training contract. Shared commands,
 # durability, telemetry, model adapters, assets, and the public verifier are
 # composed into this base image by event_runtime.image.
-COPY train /app/train
+COPY README.md __init__.py asset_probe.py robot.py spec.py standing_start.py /app/train/
 
 # Keep this late: changing the durability watcher must not rebuild Isaac Sim.
 RUN apt-get update && apt-get install -y --no-install-recommends restic \

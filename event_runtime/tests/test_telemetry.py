@@ -17,12 +17,12 @@ ROOT = Path(__file__).resolve().parents[2]
 TELEMETRY_PY = ROOT / "event_runtime/container/sprint-telemetry.py"
 TELEMETRY_SH = ROOT / "event_runtime/container/sprint-telemetry.sh"
 KEEPALIVE_PY = ROOT / "event_runtime/telemetry/keepalive.py"
-VERIFIER_TELEMETRY_PY = ROOT / "events/g1-100-metres/tests/verifier_telemetry.py"
+VERIFIER_TELEMETRY_PY = ROOT / "event_runtime/container/verifier_telemetry.py"
 PIPELINE_PY = ROOT / "event_runtime/container/sprint_gpu_pipeline.py"
-VERIFIER_PIPELINE_PY = ROOT / "events/g1-100-metres/tests/sprint_gpu_pipeline.py"
 OPS = ROOT / "runs/ops"
 sys.path.insert(0, str(OPS))
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "event_runtime/container"))
 
 from event_runtime.compute import worker as gpu_worker  # noqa: E402
 from event_runtime.telemetry import host as telemetry_host  # noqa: E402
@@ -148,9 +148,6 @@ class TelemetrySamplerTests(unittest.TestCase):
         self.assertEqual(
             set(argv[argv.index("--metrics") + 1].split(",")), set(raw_metrics)
         )
-
-    def test_pipeline_modules_are_identical_across_image_contexts(self) -> None:
-        self.assertEqual(PIPELINE_PY.read_bytes(), VERIFIER_PIPELINE_PY.read_bytes())
 
     def test_gpu_query_parsing_is_independent_of_pipeline_csv_columns(self) -> None:
         sampler = load_module("sprint_telemetry_query_fields", TELEMETRY_PY)
