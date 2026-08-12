@@ -31,7 +31,7 @@ app = AppLauncher(args).app
 
 sys.path.insert(0, "/tests")
 
-from course.assets import use_local_assets  # noqa: E402
+from verifier.assets import use_local_assets  # noqa: E402
 
 # Before any isaaclab import that reads the nucleus constants: Isaac Lab
 # interpolates them into config defaults at class-definition time, so a redirect
@@ -44,8 +44,8 @@ import gymnasium as gym  # noqa: E402
 
 import isaaclab_tasks  # noqa: F401,E402
 
-import course.tasks  # noqa: F401,E402
-from course.environment import G1100MetresEnvCfg  # noqa: E402
+import verifier.tasks  # noqa: F401,E402
+from verifier.environment import G1100MetresEnvCfg  # noqa: E402
 
 
 def main() -> int:

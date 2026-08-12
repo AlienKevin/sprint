@@ -14,7 +14,7 @@ from isaaclab_assets import G1_CFG
 
 from .standing_start import apply_canonical_standing_start
 
-# Frozen with the verifier's ``course.environment`` robot block.
+# Frozen with the verifier's ``verifier.environment`` robot block.
 CONTACT_OFFSET = 0.04
 REST_OFFSET = 0.0
 MAX_DEPENETRATION_VELOCITY = 10.0

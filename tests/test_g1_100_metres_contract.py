@@ -193,7 +193,7 @@ def test_published_verifier_is_an_exact_reviewed_source_mirror() -> None:
 
 
 def test_training_and_both_verifiers_share_one_exact_standing_start() -> None:
-    trusted = TASK / "tests/course/standing_start.py"
+    trusted = TASK / "tests/verifier/standing_start.py"
     training = TASK / "environment/standing_start.py"
     assert trusted.read_bytes() == training.read_bytes()
 
@@ -203,7 +203,7 @@ def test_training_and_both_verifiers_share_one_exact_standing_start() -> None:
     assert "ROOT_ANGULAR_VELOCITY_RAD_S = (0.0, 0.0, 0.0)" in source
     assert 'JOINT_VELOCITIES_RAD_S = {".*": 0.0}' in source
 
-    official_cfg = (TASK / "tests/course/environment.py").read_text()
+    official_cfg = (TASK / "tests/verifier/environment.py").read_text()
     training_robot = (TASK / "environment/robot.py").read_text()
     needle = "apply_canonical_standing_start(robot)"
     assert needle in official_cfg
@@ -211,23 +211,23 @@ def test_training_and_both_verifiers_share_one_exact_standing_start() -> None:
 
 
 def test_standing_start_adds_no_blocks_or_track_physics() -> None:
-    source = (TASK / "tests/course/standing_start.py").read_text().lower()
+    source = (TASK / "tests/verifier/standing_start.py").read_text().lower()
     assert "startingblock" not in source
     assert "starting_block" not in source
     assert "foot plate" not in source
 
 
 def test_course_has_no_per_rollout_start_perturbation() -> None:
-    source = (TASK / "tests/course/forward_command.py").read_text()
+    source = (TASK / "tests/verifier/forward_command.py").read_text()
     assert "ATTEMPT_YAW_OFFSETS" not in source
     assert "reset_base_by_lane" not in source
-    config = (TASK / "tests/course/environment.py").read_text()
+    config = (TASK / "tests/verifier/environment.py").read_text()
     assert '"pose_range": {}' in config
     assert '"velocity_range": {}' in config
 
 
 def test_policy_cannot_choose_a_private_pre_start_pose() -> None:
-    source = (TASK / "tests/course/rollout.py").read_text()
+    source = (TASK / "tests/verifier/rollout.py").read_text()
     settle = source.index("# 1. Initialize PhysX/contact state")
     gun = source.index("# 2. The starting gun")
     release = source.index("# 3. release")
@@ -252,7 +252,7 @@ def test_official_loader_preserves_optional_policy_reset() -> None:
 
 
 def test_canonical_standing_start_sets_every_initial_state_field() -> None:
-    source = TASK / "tests/course/standing_start.py"
+    source = TASK / "tests/verifier/standing_start.py"
     module_spec = importlib.util.spec_from_file_location("standing_start", source)
     assert module_spec is not None and module_spec.loader is not None
     module = importlib.util.module_from_spec(module_spec)

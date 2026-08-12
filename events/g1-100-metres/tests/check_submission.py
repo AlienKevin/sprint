@@ -5,7 +5,7 @@
 This ships through ``event check`` and ``event archive`` runs it before
 queueing anything, so an interface mistake costs a second rather than a scoring
 round.  The verifier does not run it: by the time a policy reaches the rollout,
-``course.policy.load_policy`` has already checked the shapes and raises with
+``verifier.policy.load_policy`` has already checked the shapes and raises with
 the same information.
 
 This source is installed into the agent image as ``event check``, so the agent

@@ -19,7 +19,7 @@ from event_runtime.event import EventLayout, load_event  # noqa: E402
 VERIFIER_ENTRYPOINTS = (
     Path("test.sh"),
     Path("verify.py"),
-    Path("course/collision_geometry.json"),
+    Path("verifier/collision_geometry.json"),
 )
 
 
@@ -29,10 +29,11 @@ def sha256(path: Path) -> str:
 
 def verifier_source_files(source: Path) -> tuple[Path, ...]:
     """Return the public verifier contract without copying event test helpers."""
-    course = tuple(
-        Path("course") / path.name for path in sorted((source / "course").glob("*.py"))
+    implementation = tuple(
+        Path("verifier") / path.name
+        for path in sorted((source / "verifier").glob("*.py"))
     )
-    files = VERIFIER_ENTRYPOINTS + course
+    files = VERIFIER_ENTRYPOINTS + implementation
     missing = [relative for relative in files if not (source / relative).is_file()]
     if missing:
         raise FileNotFoundError(

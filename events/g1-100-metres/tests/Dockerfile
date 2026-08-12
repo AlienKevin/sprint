@@ -70,7 +70,7 @@ RUN chmod +x /tests/test.sh
 # looks fine and still starts; it just cannot verify anything, and the way that
 # surfaces is a submission failing an hour later for a reason that has nothing
 # to do with the policy.
-RUN python3 /tests/course/build_assets.py \
- && python3 /tests/course/warm_image.py
+RUN python3 /tests/verifier/build_assets.py \
+ && python3 /tests/verifier/warm_image.py
 
 WORKDIR /

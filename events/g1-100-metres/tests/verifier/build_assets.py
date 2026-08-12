@@ -5,7 +5,7 @@
 Isaac streams every asset from a nucleus root over https and caches nothing, so
 a verifier with no network cannot build the scene.  This copies the directories
 the evaluation scene reaches for into a local mirror that keeps the same layout
-under the root, which is what lets ``course.assets.use_local_assets`` swap
+under the root, which is what lets ``verifier.assets.use_local_assets`` swap
 the whole root over in one setting rather than overriding paths one at a time.
 
 Run at build time, while there is still a network to copy from.
@@ -43,7 +43,7 @@ app = AppLauncher(parser.parse_args(["--device", "cpu", "--headless"])).app
 
 import omni.client  # noqa: E402
 
-from course.assets import LOCAL_ASSET_ROOT, remote_asset_root  # noqa: E402
+from verifier.assets import LOCAL_ASSET_ROOT, remote_asset_root  # noqa: E402
 
 
 def main() -> int:

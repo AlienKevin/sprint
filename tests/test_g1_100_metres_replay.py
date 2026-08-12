@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TASK_TESTS = ROOT / "events/g1-100-metres/tests"
 sys.path.insert(0, str(TASK_TESTS))
 
-from course.replay import (  # noqa: E402
+from verifier.replay import (  # noqa: E402
     DEFAULT_FPS,
     PoseRecorder,
     atomic_write,
