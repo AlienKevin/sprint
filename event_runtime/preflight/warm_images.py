@@ -261,6 +261,11 @@ def main() -> int:
             command=(
                 "python3 -c 'import torch; print(torch.__version__)' && "
                 "test \"$(codex --version)\" = 'codex-cli 0.147.0' && "
+                "test -x /opt/sprint-codex-exec-wrapper.sh && "
+                "test -x /opt/sprint-apply-deepseek-codex-config.sh && "
+                "test -x /opt/sprint-apply-luna-codex-config.sh && "
+                "test -x /opt/sprint-agent-shell-env.sh && "
+                "echo AGENT_SHELL_ENTRYPOINTS_EXECUTABLE && "
                 "mkdir -p /tmp/cpu-telemetry && "
                 "SPRINT_REQUESTED_CPU_CORES=2 SPRINT_REQUESTED_MEMORY_MIB=8192 "
                 "python3 /opt/sprint-telemetry.py --once --role cpu-agent "
@@ -273,6 +278,7 @@ def main() -> int:
             ),
             cpu=2,
             memory=8192,
+            required_output_substrings=("AGENT_SHELL_ENTRYPOINTS_EXECUTABLE",),
         )
         payload["training_gpu_probe"] = run_sandbox(
             app=app,

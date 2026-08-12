@@ -46,6 +46,39 @@ def test_agent_command_source_is_part_of_image_digest(tmp_path: Path) -> None:
     assert warmer.context_digest(environment, commands) != before
 
 
+def test_agent_image_marks_codex_shell_entrypoints_executable() -> None:
+    source = (ROOT / "event_runtime" / "image.py").read_text()
+    for name in (
+        "sprint-codex-exec-wrapper.sh",
+        "sprint-apply-deepseek-codex-config.sh",
+        "sprint-apply-luna-codex-config.sh",
+        "sprint-agent-shell-env.sh",
+    ):
+        assert f'"/opt/event_runtime/container/{name}' in source
+
+
+def test_image_compositor_is_part_of_both_image_contexts() -> None:
+    from event_runtime.event import load_event
+    from event_runtime.image import agent_context_roots, verifier_context_roots
+
+    event = load_event(repository_root=ROOT)
+    compositor = (ROOT / "event_runtime" / "image.py").resolve()
+
+    assert compositor in agent_context_roots(event)
+    assert compositor in verifier_context_roots(event)
+
+
+def test_warmup_checks_agent_shell_entrypoints() -> None:
+    source = (PREFLIGHT / "warm_images.py").read_text()
+    for name in (
+        "sprint-codex-exec-wrapper.sh",
+        "sprint-apply-deepseek-codex-config.sh",
+        "sprint-apply-luna-codex-config.sh",
+        "sprint-agent-shell-env.sh",
+    ):
+        assert f"test -x /opt/{name}" in source
+
+
 def test_successful_sandbox_uses_returncode_after_wait(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

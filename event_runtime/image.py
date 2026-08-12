@@ -53,7 +53,14 @@ def context_digest(*roots: Path) -> str:
 
 def agent_context_roots(event: EventLayout) -> tuple[Path, ...]:
     """Return every repository root that contributes bytes to the agent image."""
-    return event.environment, CONTAINER, MODELS, AGENT, event.verifier
+    return (
+        event.environment,
+        CONTAINER,
+        MODELS,
+        AGENT,
+        event.verifier,
+        Path(__file__).resolve(),
+    )
 
 
 def verifier_context_roots(event: EventLayout) -> tuple[Path, ...]:
@@ -63,6 +70,7 @@ def verifier_context_roots(event: EventLayout) -> tuple[Path, ...]:
         CONTAINER / "verifier_telemetry.py",
         CONTAINER / "sprint_gpu_pipeline.py",
         ROOT / "event_runtime" / "preflight" / "compare_results.py",
+        Path(__file__).resolve(),
     )
 
 
@@ -109,7 +117,11 @@ def agent_image(event: EventLayout, public_verifier: Path) -> modal.Image:
         "/opt/sprint-codex-luna-model-lock.json; "
         f"{links} "
         "chmod 0755 /opt/event_runtime/container/bin/event "
-        "/opt/event/check_policy.py; "
+        "/opt/event/check_policy.py "
+        "/opt/event_runtime/container/sprint-codex-exec-wrapper.sh "
+        "/opt/event_runtime/container/sprint-apply-deepseek-codex-config.sh "
+        "/opt/event_runtime/container/sprint-apply-luna-codex-config.sh "
+        "/opt/event_runtime/container/sprint-agent-shell-env.sh; "
         "chmod -R a-w /opt/event-verifier; "
         "ln -sfn /opt/event-verifier /app/verifier",
     )
