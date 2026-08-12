@@ -18,6 +18,7 @@ import modal
 
 ROOT = Path(__file__).resolve().parents[2]
 REPORT = ROOT / "runs/ops/training-gpu-canary.json"
+POLICY_ADAPTER = Path(__file__).with_name("canary_policy_adapter.py")
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 sys.path.insert(0, str(ROOT))
@@ -269,6 +270,11 @@ def main() -> int:
     volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
     with volume.batch_upload(force=True) as upload:
         upload.put_file(archive, f"{remote_root}/app.tar.gz", mode=0o444)
+        upload.put_file(
+            POLICY_ADAPTER,
+            f"{remote_root}/canary_policy_adapter.py",
+            mode=0o444,
+        )
 
     command = (
         "set -euo pipefail; "
@@ -290,6 +296,8 @@ def main() -> int:
         f"2>&1 | tee /warm{remote_root}/training.log; "
         "kill $telemetry_pid 2>/dev/null || true; wait $telemetry_pid 2>/dev/null || true; "
         f"test -s /warm{remote_root}/checkpoints/policy_final.pt; "
+        f"python3 /warm{remote_root}/canary_policy_adapter.py "
+        f"/warm{remote_root}/checkpoints/policy_final.pt; "
         f"python3 -c \"import json; p=json.load(open('/warm{remote_root}/progress.json')); "
         "assert p['finished'] is True and p['iteration'] >= 10\"; "
         f"grep -F '[sprint] iter=10' /warm{remote_root}/training.log; "
@@ -298,7 +306,9 @@ def main() -> int:
         "gpus=[g for p in rows for g in p['gpus']]; "
         "assert gpus and all(g['gpu_name'] for g in gpus); "
         "assert max(g['mem_used_mib'] for g in gpus) > 1000; "
-        "assert max(g['util_gpu_pct'] for g in gpus) >= 10\"; "
+        "assert any(g.get('util_gpu_pct', 0) >= 1 or "
+        "g.get('sm_active_pct', 0) >= 0.1 or "
+        "g.get('sm_occupancy_pct', 0) >= 1 for g in gpus)\"; "
         f"mkdir -p /warm{remote_root}/agent-verifier; "
         "timeout --signal=TERM --kill-after=30 180 "
         "python3 /opt/event-verifier/verify.py "

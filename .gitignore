@@ -33,6 +33,7 @@ runs/ops/feedback-verifier/
 runs/ops/modal-image-warmup.json
 runs/ops/training-gpu-canary.json
 runs/ops/verifier-robustness-canary.json
+runs/ops/preflight-inputs/
 runs/ops/*.lock
 runs/ops/*.pid
 runs/ops/*.log
