@@ -586,6 +586,12 @@ def cumulative_cost_at_epoch(ledger: dict[str, Any], epoch_ms: int) -> float:
     return agent_cost.cumulative_cost_at_epoch(ledger, epoch_ms)
 
 
+def run_is_terminal(run_id: str) -> bool:
+    """Return whether the durable run controller has acknowledged shutdown."""
+
+    return (RUNS / run_id / "STOP_ACK.json").is_file()
+
+
 def aggregate_models(
     output_runs: list[dict[str, Any]],
     common_time_cap: float,
@@ -724,7 +730,7 @@ def build(batch_prefix: str, output: Path, cost_cap: float = 80.0) -> dict[str, 
     time_caps: list[float] = []
     prepared: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]] = []
     cost_ledgers: dict[str, dict[str, Any]] = {}
-    complete = True
+    complete = all(run_is_terminal(str(meta["run_id"])) for meta in selected)
     for meta in selected:
         timeline_meta = timeline_by_run[meta["run_id"]]
         timeline = load_json(WEB / timeline_meta["path"].removeprefix("/"))
@@ -733,7 +739,10 @@ def build(batch_prefix: str, output: Path, cost_cap: float = 80.0) -> dict[str, 
         wall_ms = finite_number(summary.get("wall_duration_ms"))
         ledger = build_cost_ledger(timeline)
         if final_cost is None:
-            complete = False
+            if complete:
+                raise RuntimeError(
+                    f"{meta['run_id']} is terminal but lacks a final cost summary"
+                )
             final_cost = cumulative_cost_at_epoch(
                 ledger, int((timeline.get("clock") or {})["end_epoch_ms"])
             )

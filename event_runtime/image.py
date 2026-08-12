@@ -121,7 +121,8 @@ def agent_image(event: EventLayout, public_verifier: Path) -> modal.Image:
         "/opt/event_runtime/container/sprint-codex-exec-wrapper.sh "
         "/opt/event_runtime/container/sprint-apply-deepseek-codex-config.sh "
         "/opt/event_runtime/container/sprint-apply-luna-codex-config.sh "
-        "/opt/event_runtime/container/sprint-agent-shell-env.sh; "
+        "/opt/event_runtime/container/sprint-agent-shell-env.sh "
+        "/opt/event_runtime/container/sprint-trace-mirror.py; "
         "chmod -R a-w /opt/event-verifier; "
         "ln -sfn /opt/event-verifier /app/verifier",
     )

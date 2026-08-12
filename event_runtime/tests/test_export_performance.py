@@ -136,6 +136,22 @@ def test_cost_ledger_integrates_requests_and_allocation_intervals() -> None:
     assert continuous.cumulative_cost_at_epoch(ledger, 5000) == pytest.approx(24.5)
 
 
+def test_run_is_terminal_requires_durable_stop_ack(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(continuous, "RUNS", tmp_path)
+    run = tmp_path / "run-a"
+    run.mkdir()
+
+    assert not continuous.run_is_terminal("run-a")
+
+    (run / "STOP_REQUESTED.json").write_text("{}\n")
+    assert not continuous.run_is_terminal("run-a")
+
+    (run / "STOP_ACK.json").write_text("{}\n")
+    assert continuous.run_is_terminal("run-a")
+
+
 def test_dashboard_loads_continuous_readouts() -> None:
     app = (ROOT / "web/app.js").read_text()
     page = (ROOT / "web/index.html").read_text()
@@ -154,7 +170,7 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "class:'submission-target'" in app
     assert "el.getScreenCTM()" in app
     assert "nearest.distance<=22**2" in app
-    assert "app.js?v=20260812-2" in page
+    assert "app.js?v=20260812-3" in page
     assert "setInterval(refresh,30000)" in app
     assert "visibilitychange" in app
     assert "This policy has no archived website replay." in app
@@ -188,12 +204,13 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert 'id="policy-grid"' not in page
     assert 'id="run-links"' not in page
     assert "Cost-Adjusted Effective Speed" in app
-    assert "Best Cost-Adjusted Effective Speed" in app
+    assert "Best Cost-Adjusted Effective Speed" not in app
     assert "cost_auc_mps_at_common_cap" in app
     assert "effective speed (m/s)" in app
     assert "showReadout" in app
     assert "active_provisional" in app
-    assert "aggregate cost across competitor trials" in app
+    assert "combined active-trial cost" in app
+    assert "best of ${trials}" not in app
     assert "hours_since_agent_launch" in app
     assert "hours_since_agent launch" not in app
     assert "best of 3 trials" not in app

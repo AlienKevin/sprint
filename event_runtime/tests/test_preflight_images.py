@@ -53,6 +53,7 @@ def test_agent_image_marks_codex_shell_entrypoints_executable() -> None:
         "sprint-apply-deepseek-codex-config.sh",
         "sprint-apply-luna-codex-config.sh",
         "sprint-agent-shell-env.sh",
+        "sprint-trace-mirror.py",
     ):
         assert f'"/opt/event_runtime/container/{name}' in source
 
