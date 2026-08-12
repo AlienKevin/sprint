@@ -6,7 +6,8 @@ compute into embodied performance. In the current
 Unitree G1 policies in Isaac Lab and are compared by Cost-Adjusted Effective
 Speed. Results are published at [g1-sprint.vercel.app](https://g1-sprint.vercel.app/).
 
-Agents begin with the [`/app/train` guide](events/g1-100-metres/environment/README.md).
+Agents begin with the [event environment guide](events/g1-100-metres/environment/README.md),
+installed as `/app/train/README.md` inside each agent sandbox.
 Shared orchestration and recovery live in [`event_runtime`](event_runtime/README.md).
 
 ## Setup

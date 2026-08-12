@@ -54,11 +54,67 @@ PERFORMANCE_PRIORS = (
     "reference speed",
 )
 
+REMOVED_REPOSITORY_PATHS = (
+    "challenge/g1-sprint-100m-lane",
+    "challenge/g1-sprint-100m",
+    "events/g1-100-metres/environment/train",
+    "events/g1-100-metres/environment/verifier",
+    "events/g1-100-metres/tools",
+    "events/g1-100-metres/visualization",
+    "sprint-web",
+)
+
+PATH_AUDIT_SUFFIXES = {
+    ".dockerignore",
+    ".json",
+    ".md",
+    ".py",
+    ".sh",
+    ".toml",
+    ".yaml",
+    ".yml",
+}
+
 
 def test_agent_guidance_is_method_neutral() -> None:
     combined = "\n".join(path.read_text().lower() for path in GUIDANCE)
     for cue in (*NAMED_METHOD_CUES, *PERFORMANCE_PRIORS):
         assert cue not in combined, f"agent guidance contains method cue {cue!r}"
+
+
+def test_documented_container_paths_match_the_built_agent_image() -> None:
+    dockerfile = (TASK / "environment/Dockerfile").read_text()
+    image = (ROOT / "event_runtime/image.py").read_text()
+    gpu = (ROOT / "event_runtime/agent/gpu.py").read_text()
+    instruction = (TASK / "instruction.md").read_text()
+    guide = (TASK / "environment/README.md").read_text()
+
+    assert "COPY README.md __init__.py asset_probe.py robot.py spec.py " in dockerfile
+    assert "standing_start.py /app/train/" in dockerfile
+    assert "`/app/train/README.md`" in instruction
+    assert "The writable workspace is `/app`" in guide
+    assert "event gpu -- python3 -u /app/YOUR_SCRIPT.py" in guide
+    assert "/app/train/YOUR_SCRIPT.py" not in guide
+    assert 'AGENT_WORKSPACE_ROOT = Path("/app")' in gpu
+    assert 'submit.add_argument("--workdir", default="/app")' in gpu
+    assert '"ln -sfn /opt/event-verifier /app/verifier"' in image
+
+
+def test_removed_repository_paths_do_not_reappear() -> None:
+    roots = (ROOT / "events", ROOT / "event_runtime", ROOT / "tests", ROOT / "web")
+    paths = [ROOT / "README.md"]
+    for root in roots:
+        paths.extend(root.rglob("*"))
+    for path in paths:
+        if path.resolve() == Path(__file__).resolve():
+            continue
+        if not path.is_file() or path.suffix not in PATH_AUDIT_SUFFIXES:
+            continue
+        if "__pycache__" in path.parts or "public" in path.parts:
+            continue
+        text = path.read_text(errors="replace")
+        for removed in REMOVED_REPOSITORY_PATHS:
+            assert removed not in text, f"{path.relative_to(ROOT)} uses {removed}"
 
 
 def test_event_command_runs_from_its_installed_path(tmp_path: Path) -> None:

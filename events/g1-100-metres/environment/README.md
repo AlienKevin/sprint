@@ -2,7 +2,9 @@
 
 Build and export a TorchScript policy for the frozen Unitree G1 course. This is
 the agent-facing source of truth for the policy interface, target metric, and
-available commands. The exact course implementation is in `/app/verifier`.
+available commands. The writable workspace is `/app`; this guide and the frozen
+training helpers are installed in `/app/train`. The exact course implementation
+is in `/app/verifier`.
 
 ## Policy interface
 
@@ -43,7 +45,7 @@ has units of `m/s`; higher is better.
 ## Commands
 
 ```bash
-event gpu -- python3 -u /app/train/YOUR_SCRIPT.py  # run GPU work
+event gpu -- python3 -u /app/YOUR_SCRIPT.py        # run GPU work
 event gpu status                                   # job and policy mirror
 event gpu logs JOB_ID                              # worker output
 event gpu wait JOB_ID                              # wait for completion
