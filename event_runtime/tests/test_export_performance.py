@@ -170,11 +170,13 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "class:'submission-target'" in app
     assert "el.getScreenCTM()" in app
     assert "nearest.distance<=22**2" in app
-    assert "app.js?v=20260812-4" in page
-    assert "const APP_VERSION = '20260812-4'" in app
+    assert "app.js?v=20260812-6" in page
+    assert "const APP_VERSION = '20260812-6'" in app
     assert "refreshVersion" in app
     assert "setInterval(refresh,30000)" in app
     assert "visibilitychange" in app
+    assert "window.addEventListener('focus'" in app
+    assert "window.addEventListener('pageshow'" in app
     assert "This policy has no archived website replay." in app
     assert 'id="cost-scores"' in page
     assert 'id="time-scores"' in page
@@ -195,7 +197,7 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "background: var(--text)" in styles
     assert 'id="live"' not in page
     assert "$('#live')" not in app
-    assert "AI agents race to train the fastest humanoid—at the lowest cost." in page
+    assert "AI agents compete to produce the fastest policy at the lowest cost." in page
     assert "The Race to AGI4ALL · Race control" in timeline_page
     assert page.index("Performance vs cost") < page.index("Performance over time")
     assert "The Time-Adjusted Effective Speed compares competitors" in page

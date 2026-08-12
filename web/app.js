@@ -1,5 +1,5 @@
 (() => {
-  const APP_VERSION = '20260812-5';
+  const APP_VERSION = '20260812-6';
   const $ = selector => document.querySelector(selector);
   const MODEL = {
     deepseek: {label:'DeepSeek V4 Flash 0731', color:'#4D6BFF', cls:'deepseek'},
@@ -88,5 +88,5 @@
   async function init(){try{await loadSnapshot()}catch(error){$('#updated').textContent=`Data error: ${error.message}`;console.error(error)}}
   async function refresh(){if(state.refreshing||document.hidden)return;state.refreshing=true;try{const performance=await json('/data/performance/current.json'),changed=performance?.generated_at&&performance.generated_at!==state.performance?.generated_at;if(changed)await loadSnapshot()}catch(error){console.warn('Race refresh failed',error)}finally{state.refreshing=false}}
   async function refreshVersion(){try{const deployed=await json('/version.json');if(deployed.version&&deployed.version!==APP_VERSION)window.location.reload()}catch(error){console.warn('Dashboard version check failed',error)}}
-  $('#readout-close').addEventListener('click',()=>{const detail=$('#readout-detail');detail.hidden=true;$('#readout-replay').removeAttribute('src');$('#readout-timeline').removeAttribute('src')});init();setInterval(refresh,30000);setInterval(refreshVersion,30000);document.addEventListener('visibilitychange',()=>{if(!document.hidden){refresh();refreshVersion()}});
+  $('#readout-close').addEventListener('click',()=>{const detail=$('#readout-detail');detail.hidden=true;$('#readout-replay').removeAttribute('src');$('#readout-timeline').removeAttribute('src')});init();setInterval(refresh,30000);setInterval(refreshVersion,30000);document.addEventListener('visibilitychange',()=>{if(!document.hidden){refresh();refreshVersion()}});window.addEventListener('focus',()=>{refresh();refreshVersion()});window.addEventListener('pageshow',()=>{refresh();refreshVersion()});
 })();
