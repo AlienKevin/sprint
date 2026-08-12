@@ -18,7 +18,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 OPS = ROOT / "runs" / "ops"
-ENV = ROOT / "events" / "g1-100-metres" / "environment"
+ENV = ROOT / "event_runtime" / "container"
 sys.path.insert(0, str(OPS))
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ENV))
@@ -28,7 +28,7 @@ from event_runtime.compute import worker as gpu_worker  # noqa: E402
 from event_runtime.control import start_supervisor as start_lane_supervisor  # noqa: E402
 from event_runtime.control import supervisor as supervise_lane  # noqa: E402
 from event_runtime.control import credentials as validate_agent_env  # noqa: E402
-import sprint_resilience as resilience  # noqa: E402
+from event_runtime.container import sprint_resilience as resilience  # noqa: E402
 
 # Timeline module is named with hyphens on disk; load via importlib.
 _spec = importlib.util.spec_from_file_location(

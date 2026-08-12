@@ -16,7 +16,7 @@ from typing import Any
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT = Path(__file__).resolve().parents[2]
 OPS_DIR = ROOT / "runs/ops"
-ENV_DIR = ROOT / "events/g1-100-metres/environment"
+CONTAINER_DIR = ROOT / "event_runtime/container"
 sys.path.insert(0, str(SCRIPT_DIR))
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(OPS_DIR))
@@ -24,7 +24,7 @@ sys.path.insert(0, str(OPS_DIR))
 from event_runtime.control import run as sprintctl  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location(
-    "sprint_gpu_timeline", ENV_DIR / "sprint-gpu-timeline.py"
+    "sprint_gpu_timeline", CONTAINER_DIR / "sprint-gpu-timeline.py"
 )
 timeline = importlib.util.module_from_spec(_spec)
 assert _spec.loader is not None

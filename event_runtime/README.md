@@ -12,10 +12,12 @@ and the website.
 The source tree is organized by responsibility:
 
 - `agent/`: the trial-local `event` command;
+- `container/`: files installed into every agent and training image;
 - `compute/`: metered GPU jobs, checkpoints, and recovery;
 - `control/`: batch launch, stop, supervision, and provider adapters;
 - `cost/`: reproducible trial cost accounting;
 - `preflight/`: image, fleet, and end-to-end launch gates;
+- `models/`: provider-specific catalogs locked to one tool contract;
 - `telemetry/` and `export/`: trusted observation and public artifacts.
 
 Generated state is written under ignored `runs/ops/`; it is not source code.

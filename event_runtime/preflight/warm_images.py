@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -19,11 +20,15 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from event_runtime.event import load_event  # noqa: E402
+from event_runtime.image import (  # noqa: E402
+    agent_context_roots,
+    agent_image as compose_agent_image,
+    context_digest,
+)
+from event_runtime.sync_verifier import materialize_public_verifier  # noqa: E402
 
 
 EVENT = load_event(repository_root=ROOT)
-AGENT_CONTEXT = EVENT.environment
-AGENT_COMMANDS = ROOT / "event_runtime" / "agent"
 VERIFIER_CONTEXT = EVENT.verifier
 MANIFEST = ROOT / "runs/ops/modal-image-warmup.json"
 APP_NAME = "sprint-image-warmup"
@@ -34,22 +39,6 @@ FATAL_SANDBOX_OUTPUT = (
     "ModuleNotFoundError:",
     "Traceback (most recent call last):",
 )
-
-
-def context_digest(*roots: Path) -> str:
-    digest = hashlib.sha256()
-    for root in roots:
-        digest.update(root.name.encode())
-        digest.update(b"\0")
-        for path in sorted(item for item in root.rglob("*") if item.is_file()):
-            if "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}:
-                continue
-            relative = path.relative_to(root).as_posix()
-            digest.update(relative.encode())
-            digest.update(b"\0")
-            digest.update(hashlib.sha256(path.read_bytes()).digest())
-            digest.update(b"\0")
-    return digest.hexdigest()
 
 
 def build_image(
@@ -212,11 +201,13 @@ def main() -> int:
         if isinstance(candidate, dict):
             previous_manifest = candidate
 
-    agent_sha256 = context_digest(AGENT_CONTEXT, AGENT_COMMANDS)
+    agent_roots = agent_context_roots(EVENT)
+    agent_sha256 = context_digest(*agent_roots)
     verifier_sha256 = context_digest(VERIFIER_CONTEXT)
-    agent_image = modal.Image.from_dockerfile(
-        AGENT_CONTEXT / "Dockerfile", context_dir=AGENT_CONTEXT
-    ).add_local_dir(AGENT_COMMANDS, "/opt/event_runtime/agent", copy=True)
+    public_temp = tempfile.TemporaryDirectory(prefix="event-public-verifier-")
+    public_verifier = Path(public_temp.name) / "verifier"
+    materialize_public_verifier(EVENT, public_verifier)
+    agent_image = compose_agent_image(EVENT, public_verifier)
     verifier_image = modal.Image.from_dockerfile(
         VERIFIER_CONTEXT / "Dockerfile", context_dir=VERIFIER_CONTEXT
     )
@@ -228,7 +219,7 @@ def main() -> int:
         "app_name": APP_NAME,
         "contexts": {
             "agent_training": {
-                "paths": [str(AGENT_CONTEXT), str(AGENT_COMMANDS)],
+                "paths": [str(path) for path in agent_roots],
                 "sha256": agent_sha256,
             },
             "verifier": {
@@ -359,6 +350,7 @@ def main() -> int:
     payload["unique_image_count"] = 2
     payload["cleanup"] = "all warmup sandboxes terminated"
     atomic_write(payload)
+    public_temp.cleanup()
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
 

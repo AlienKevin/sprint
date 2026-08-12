@@ -10,11 +10,11 @@ import re
 import statistics
 from pathlib import Path
 
-EVENT_REPLAY = Path(__file__).resolve().parent
+RENDERER_ROOT = Path(__file__).resolve().parent
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 PLAYER_TEMPLATE = REPOSITORY_ROOT / "web/replay-template.html"
-SCENE_SOURCE = EVENT_REPLAY / "scene.js"
-HQ_DEFAULT = EVENT_REPLAY / "g1_hq.json"
+SCENE_SOURCE = RENDERER_ROOT / "scene.js"
+HQ_DEFAULT = RENDERER_ROOT / "g1_hq.json"
 COLS = ["#6E97C4", "#E0A43B", "#B6F24E", "#F2704E"]
 LANE_HALF_WIDTH_M = 0.61
 SCORED_TIMEOUT_S = 60.0

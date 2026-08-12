@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import sys
 from pathlib import Path
@@ -13,30 +12,15 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from event_runtime.event import load_event  # noqa: E402
+from event_runtime.image import agent_context_roots, context_digest  # noqa: E402
 
 
 EVENT = load_event(repository_root=ROOT)
-AGENT_COMMANDS = ROOT / "event_runtime" / "agent"
 MANIFEST = ROOT / "runs/ops/modal-image-warmup.json"
 CONTEXTS = {
-    "agent_training": (EVENT.environment, AGENT_COMMANDS),
+    "agent_training": agent_context_roots(EVENT),
     "verifier": (EVENT.verifier,),
 }
-
-
-def context_digest(*roots: Path) -> str:
-    digest = hashlib.sha256()
-    for root in roots:
-        digest.update(root.name.encode())
-        digest.update(b"\0")
-        for path in sorted(item for item in root.rglob("*") if item.is_file()):
-            if "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}:
-                continue
-            digest.update(path.relative_to(root).as_posix().encode())
-            digest.update(b"\0")
-            digest.update(hashlib.sha256(path.read_bytes()).digest())
-            digest.update(b"\0")
-    return digest.hexdigest()
 
 
 def main() -> int:

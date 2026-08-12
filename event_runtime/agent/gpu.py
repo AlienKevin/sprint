@@ -32,7 +32,7 @@ from pathlib import Path
 sys.path.insert(0, "/opt")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sprint_resilience import CheckpointStore, CompletionJournal
+from event_runtime.container.sprint_resilience import CheckpointStore, CompletionJournal
 
 AGENT_MIRROR_ROOT = Path("/run/sprint-gpu-mirror")
 AGENT_WORKSPACE_ROOT = Path("/app")

@@ -44,12 +44,9 @@ def verifier_source_files(source: Path) -> tuple[Path, ...]:
     return files
 
 
-def sync_event(event: EventLayout) -> Path:
-    """Replace one event's published verifier mirror and return its manifest."""
+def materialize_public_verifier(event: EventLayout, target: Path) -> Path:
+    """Write the reviewed agent-visible verifier into a build-only directory."""
     source = event.verifier
-    target = event.environment / "verifier"
-    train_start = event.environment / "train/standing_start.py"
-    check_policy = event.environment / "check_policy.py"
     if target.exists():
         shutil.rmtree(target)
     manifest: dict[str, str] = {}
@@ -72,16 +69,15 @@ def sync_event(event: EventLayout) -> Path:
         )
         + "\n"
     )
-    shutil.copy2(source / "course/standing_start.py", train_start)
-    shutil.copy2(source / "check_submission.py", check_policy)
     return manifest_path
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--event", help="event name under events/")
+    parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    manifest = sync_event(load_event(args.event))
+    manifest = materialize_public_verifier(load_event(args.event), args.output)
     print(manifest)
     return 0
 

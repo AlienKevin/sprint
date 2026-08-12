@@ -7,7 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 OPS = ROOT / "runs/ops"
-ENV = ROOT / "events/g1-100-metres/environment"
+ENV = ROOT / "event_runtime/container"
 sys.path.insert(0, str(OPS))
 sys.path.insert(0, str(ROOT))
 
@@ -1184,7 +1184,7 @@ def test_claude_tool_use_is_counted_without_exporting_input(tmp_path: Path) -> N
 
 def load_trace_mirror():
     spec = importlib.util.spec_from_file_location(
-        "sprint_trace_mirror", ENV / "sprint-trace-mirror.py"
+        "sprint_trace_mirror", ROOT / "event_runtime/container/sprint-trace-mirror.py"
     )
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None

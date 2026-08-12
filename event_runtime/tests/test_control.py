@@ -623,10 +623,7 @@ while true; do sleep 1; done
             watcher = subprocess.Popen(
                 [
                     "bash",
-                    str(
-                        ROOT
-                        / "events/g1-100-metres/environment/sprint-snapshot-loop.sh"
-                    ),
+                    str(ROOT / "event_runtime/container/sprint-snapshot-loop.sh"),
                     "--run-id",
                     "test-watch",
                     "--agent-kind",
@@ -791,10 +788,7 @@ while True:
             wrapper = subprocess.Popen(
                 [
                     "bash",
-                    str(
-                        ROOT
-                        / "events/g1-100-metres/environment/sprint-codex-exec-wrapper.sh"
-                    ),
+                    str(ROOT / "event_runtime/container/sprint-codex-exec-wrapper.sh"),
                     str(launcher),
                     "exec",
                     "--json",
@@ -812,10 +806,7 @@ while True:
             watcher = subprocess.Popen(
                 [
                     "bash",
-                    str(
-                        ROOT
-                        / "events/g1-100-metres/environment/sprint-snapshot-loop.sh"
-                    ),
+                    str(ROOT / "event_runtime/container/sprint-snapshot-loop.sh"),
                     "--run-id",
                     "test-codex",
                     "--agent-kind",

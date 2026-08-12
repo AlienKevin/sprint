@@ -75,11 +75,8 @@ def test_replay_records_every_50_hz_policy_state() -> None:
 
 
 def test_web_replay_uses_authoritative_sample_hold() -> None:
-    scene = (
-        ROOT
-        / "events/g1-100-metres/replay/scene.js"
-    ).read_text()
-    renderer = (ROOT / "events/g1-100-metres/replay/render.py").read_text()
+    scene = (ROOT / "web/renderers/g1-100-metres/scene.js").read_text()
+    renderer = (ROOT / "web/renderers/g1-100-metres/render.py").read_text()
 
     assert "authoritative captured-state playback" in scene
     assert ".slerp(" not in scene

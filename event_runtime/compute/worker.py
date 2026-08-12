@@ -29,16 +29,13 @@ import modal
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT = Path(__file__).resolve().parents[2]
 OPS_DIR = ROOT / "runs" / "ops"
-ENV_DIR = ROOT / "events" / "g1-100-metres" / "environment"
-DOCKERFILE = ENV_DIR / "Dockerfile"
 
 sys.path.insert(0, str(SCRIPT_DIR))
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(OPS_DIR))
-sys.path.insert(0, str(ENV_DIR))
 from event_runtime.compute import claim as gpu_claim  # noqa: E402
 from event_runtime.control import run as sprintctl  # noqa: E402
-from sprint_resilience import (  # noqa: E402
+from event_runtime.container.sprint_resilience import (  # noqa: E402
     Lease,
     ProbeResult,
     ProbeState,

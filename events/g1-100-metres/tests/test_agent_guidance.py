@@ -5,6 +5,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -21,8 +22,8 @@ GUIDANCE = (
     TASK / "environment/train/README.md",
     TASK / "environment/train/robot.py",
     TASK / "environment/train/spec.py",
-    TASK / "environment/bin/event",
-    TASK / "environment/check_policy.py",
+    ROOT / "event_runtime/container/bin/event",
+    TASK / "tests/check_submission.py",
     ROOT / "event_runtime/agent/archive.py",
     ROOT / "event_runtime/agent/gpu.py",
     ROOT / "event_runtime/agent/test_policy.py",
@@ -63,7 +64,7 @@ def test_agent_guidance_is_method_neutral() -> None:
 def test_event_command_runs_from_its_installed_path(tmp_path: Path) -> None:
     installed = tmp_path / "usr/local/bin/event"
     installed.parent.mkdir(parents=True)
-    installed.write_bytes((TASK / "environment/bin/event").read_bytes())
+    installed.write_bytes((ROOT / "event_runtime/container/bin/event").read_bytes())
     environment = {"PYTHONPATH": str(ROOT)}
     result = subprocess.run(
         [sys.executable, str(installed), "--help"],
@@ -76,14 +77,17 @@ def test_event_command_runs_from_its_installed_path(tmp_path: Path) -> None:
     assert "event cost" in result.stdout
 
 
-def test_codex_comparison_models_have_one_explicit_tool_contract(tmp_path: Path) -> None:
-    environment = TASK / "environment"
-    deepseek = json.loads((environment / "codex-deepseek-models.json").read_text())
+def test_codex_comparison_models_have_one_explicit_tool_contract(
+    tmp_path: Path,
+) -> None:
+    environment = ROOT / "event_runtime/container"
+    models = ROOT / "event_runtime/models"
+    deepseek = json.loads((models / "deepseek.json").read_text())
     for model in deepseek["models"]:
         assert model["tool_mode"] == "code_mode_only"
         assert model["multi_agent_version"] == "v1"
 
-    luna_lock = json.loads((environment / "codex-luna-model-lock.json").read_text())
+    luna_lock = json.loads((models / "luna.json").read_text())
     assert luna_lock["codex_version"] == "0.147.0"
     assert luna_lock["model"]["slug"] == "gpt-5.6-luna"
     assert luna_lock["model"]["tool_mode"] == "code_mode_only"
@@ -91,7 +95,9 @@ def test_codex_comparison_models_have_one_explicit_tool_contract(tmp_path: Path)
 
     codex_home = tmp_path / "codex-home"
     codex_home.mkdir()
-    (codex_home / "config.toml").write_text('[projects."/app"]\ntrust_level = "trusted"\n')
+    (codex_home / "config.toml").write_text(
+        '[projects."/app"]\ntrust_level = "trusted"\n'
+    )
     result = subprocess.run(
         ["bash", str(environment / "sprint-apply-luna-codex-config.sh")],
         check=False,
@@ -100,8 +106,8 @@ def test_codex_comparison_models_have_one_explicit_tool_contract(tmp_path: Path)
         env={
             "PATH": "/usr/bin:/bin",
             "CODEX_HOME": str(codex_home),
-            "SPRINT_CODEX_LUNA_MODEL_LOCK": str(environment / "codex-luna-model-lock.json"),
-            "SPRINT_CODEX_DEEPSEEK_MODELS_JSON": str(environment / "codex-deepseek-models.json"),
+            "SPRINT_CODEX_LUNA_MODEL_LOCK": str(models / "luna.json"),
+            "SPRINT_CODEX_DEEPSEEK_MODELS_JSON": str(models / "deepseek.json"),
         },
     )
     assert result.returncode == 0, result.stderr
@@ -114,28 +120,26 @@ def test_codex_comparison_models_have_one_explicit_tool_contract(tmp_path: Path)
     assert f'model_catalog_json = "{codex_home / "models.json"}"' in config
 
 
-def test_agent_and_verifier_submission_contracts_match() -> None:
-    agent = (TASK / "environment/check_policy.py").read_text()
-    verifier = (TASK / "tests/check_submission.py").read_text()
-    assert agent == verifier
-
-
 def test_published_verifier_is_an_exact_reviewed_source_mirror() -> None:
-    published = TASK / "environment/verifier"
-    manifest = json.loads((published / "SOURCE_MANIFEST.json").read_text())
-    assert manifest["source"] == "events/g1-100-metres/tests"
-    for relative, expected in manifest["files"].items():
-        trusted = TASK / "tests" / relative
-        exposed = published / relative
-        assert exposed.read_bytes() == trusted.read_bytes()
-        assert hashlib.sha256(exposed.read_bytes()).hexdigest() == expected
+    from event_runtime.event import load_event
+    from event_runtime.sync_verifier import materialize_public_verifier
+
+    with tempfile.TemporaryDirectory() as raw:
+        published = Path(raw) / "verifier"
+        materialize_public_verifier(load_event(repository_root=ROOT), published)
+        manifest = json.loads((published / "SOURCE_MANIFEST.json").read_text())
+        assert manifest["source"] == "events/g1-100-metres/tests"
+        for relative, expected in manifest["files"].items():
+            trusted = TASK / "tests" / relative
+            exposed = published / relative
+            assert exposed.read_bytes() == trusted.read_bytes()
+            assert hashlib.sha256(exposed.read_bytes()).hexdigest() == expected
 
 
 def test_training_and_both_verifiers_share_one_exact_standing_start() -> None:
     trusted = TASK / "tests/course/standing_start.py"
-    local = TASK / "environment/verifier/course/standing_start.py"
     training = TASK / "environment/train/standing_start.py"
-    assert trusted.read_bytes() == local.read_bytes() == training.read_bytes()
+    assert trusted.read_bytes() == training.read_bytes()
 
     source = trusted.read_text()
     assert 'CANONICAL_START_NAME = "standard-standing-start-v1"' in source
@@ -144,11 +148,9 @@ def test_training_and_both_verifiers_share_one_exact_standing_start() -> None:
     assert 'JOINT_VELOCITIES_RAD_S = {".*": 0.0}' in source
 
     official_cfg = (TASK / "tests/course/environment.py").read_text()
-    local_cfg = (TASK / "environment/verifier/course/environment.py").read_text()
     training_robot = (TASK / "environment/train/robot.py").read_text()
     needle = "apply_canonical_standing_start(robot)"
     assert needle in official_cfg
-    assert needle in local_cfg
     assert needle in training_robot
 
 
@@ -220,12 +222,12 @@ def test_canonical_standing_start_sets_every_initial_state_field() -> None:
 
 def test_local_verifier_uses_only_the_trial_training_queue() -> None:
     helper = (ROOT / "event_runtime/agent/test_policy.py").read_text()
-    dockerfile = (TASK / "environment/Dockerfile").read_text()
+    image = (ROOT / "event_runtime/image.py").read_text()
     assert '"gpu"' in helper
     assert '"--max-attempts",\n        "1"' in helper
     assert "/opt/event-verifier/test.sh" in helper
-    assert "COPY verifier /opt/event-verifier" in dockerfile
-    assert "chmod -R a-w /opt/event-verifier" in dockerfile
+    assert 'public_verifier, "/opt/event-verifier"' in image
+    assert '"chmod -R a-w /opt/event-verifier; "' in image
 
 
 def test_equivalence_gate_accepts_only_matching_canonical_outputs(

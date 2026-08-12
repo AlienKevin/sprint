@@ -153,9 +153,7 @@ class CollisionModel:
 
 def collision_model(names: list[str]) -> CollisionModel:
     parents, ancestry, radius_pad, sphere_margin = contract_constants()
-    geometry_path = (
-        EVENT.environment / "verifier/collision_geometry.json"
-    )
+    geometry_path = EVENT.environment / "verifier/collision_geometry.json"
     geometry = load_json(geometry_path)
     bodies: list[BodyGeometry] = []
     for name, entry in geometry["bodies"].items():
@@ -232,9 +230,7 @@ def frame_poses(frames: list[list[float]], body_count: int) -> tuple[np.ndarray,
 def torso_forward_trace(
     names: list[str], positions: np.ndarray, quaternions: np.ndarray
 ) -> np.ndarray:
-    geometry_path = (
-        EVENT.environment / "verifier/collision_geometry.json"
-    )
+    geometry_path = EVENT.environment / "verifier/collision_geometry.json"
     geometry = load_json(geometry_path)["bodies"]["torso_link"]
     body_index = names.index("torso_link")
     points = np.asarray(geometry["points"], dtype=np.float64)
@@ -512,13 +508,14 @@ def publish_policy_replays(
 ) -> None:
     """Attach a replay to every scored policy, rendering one when needed."""
 
-    module_path = EVENT.root / "replay/render.py"
+    renderer_root = ROOT / "web" / "renderers" / EVENT.name
+    module_path = renderer_root / "render.py"
     spec = importlib.util.spec_from_file_location("sprint_frontier_replay", module_path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"cannot load replay renderer: {module_path}")
     renderer = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(renderer)
-    hq = load_json(EVENT.root / "replay/g1_hq.json")["meshes"]
+    hq = load_json(renderer_root / "g1_hq.json")["meshes"]
     replay_dir = WEB / "replay"
     replay_dir.mkdir(parents=True, exist_ok=True)
     for stale in replay_dir.glob("readout-*.html"):

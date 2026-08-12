@@ -162,12 +162,11 @@ def test_lane_geometry_covers_all_major_body_regions() -> None:
     assert sum(len(body["points"]) for body in geometry.values()) == 1960
 
 
-def test_agent_and_verifier_contracts_are_identical_and_lean() -> None:
-    agent = (TASK / "environment" / "check_policy.py").read_text()
+def test_submission_contract_has_one_lean_source() -> None:
+    assert not (TASK / "environment" / "check_policy.py").exists()
     verifier = (TASK / "tests" / "check_submission.py").read_text()
-    assert agent == verifier
     for name in OPTIONAL_METRICS:
-        assert name not in agent
+        assert name not in verifier
 
 
 def test_verifier_entrypoint_has_no_optional_sweep_or_reward_fields() -> None:

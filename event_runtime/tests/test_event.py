@@ -6,7 +6,10 @@ from pathlib import Path
 import pytest
 
 from event_runtime.event import load_event
-from event_runtime.sync_verifier import verifier_source_files
+from event_runtime.sync_verifier import (
+    materialize_public_verifier,
+    verifier_source_files,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -32,9 +35,9 @@ def test_unknown_event_fails_closed() -> None:
         load_event("not-an-event", repository_root=ROOT)
 
 
-def test_published_verifier_contract_matches_declared_sources() -> None:
+def test_published_verifier_contract_matches_declared_sources(tmp_path: Path) -> None:
     event = load_event(repository_root=ROOT)
-    manifest = event.environment / "verifier/SOURCE_MANIFEST.json"
+    manifest = materialize_public_verifier(event, tmp_path / "verifier")
     published = json.loads(manifest.read_text())["files"]
     selected = {
         relative.as_posix() for relative in verifier_source_files(event.verifier)

@@ -8,9 +8,8 @@ round.  The verifier does not run it: by the time a policy reaches the rollout,
 ``course.policy.load_policy`` has already checked the shapes and raises with
 the same information.
 
-Two copies exist, ``tests/check_submission.py`` and ``environment/check_policy.py``,
-because Docker build contexts do not reach across directories and the agent and
-verifier images are built from different ones.  Change both.
+This source is installed into the agent image as ``event check``, so the agent
+and verifier enforce one portable policy ABI.
 
 Everything asserted here is something the rollout depends on. A contract that is
 only prose gets interpreted differently by the agent and the verifier, which is

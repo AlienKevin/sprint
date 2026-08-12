@@ -17,14 +17,14 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 OPS = ROOT / "runs" / "ops"
-ENV = ROOT / "events" / "g1-100-metres" / "environment"
+ENV = ROOT / "event_runtime" / "container"
 sys.path.insert(0, str(OPS))
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ENV))
 
 from event_runtime.compute import claim as gpu_claim  # noqa: E402
 from event_runtime.compute import worker as gpu_worker  # noqa: E402
-import sprint_resilience as resilience  # noqa: E402
+from event_runtime.container import sprint_resilience as resilience  # noqa: E402
 
 _worker_spec = importlib.util.spec_from_file_location(
     "sprint_gpu_worker_run_resilience", ENV / "sprint-gpu-worker-run.py"

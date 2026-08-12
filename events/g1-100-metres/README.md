@@ -3,7 +3,7 @@
 ## Description
 
 Produce a TorchScript policy that moves a Unitree G1 humanoid through a
-100-metre lane quickly and economically in Isaac Lab 2.3.2. The concise task is
+100-metre lane quickly and at low cost in Isaac Lab 2.3.2. The concise task is
 in `instruction.md`; the complete agent-facing contract is in
 `environment/train/README.md`.
 

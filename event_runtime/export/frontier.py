@@ -28,7 +28,7 @@ sys.path.insert(0, str(ROOT))
 from event_runtime.event import load_event  # noqa: E402
 
 EVENT = load_event(repository_root=ROOT)
-EVENT_REPLAY = EVENT.root / "replay"
+EVENT_REPLAY = ROOT / "web" / "renderers" / EVENT.name
 BUILD_SCRIPT = EVENT_REPLAY / "render.py"
 HQ_PATH = EVENT_REPLAY / "g1_hq.json"
 SCENE_SOURCE = EVENT_REPLAY / "scene.js"
