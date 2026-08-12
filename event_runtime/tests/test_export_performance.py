@@ -154,7 +154,9 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "class:'submission-target'" in app
     assert "el.getScreenCTM()" in app
     assert "nearest.distance<=22**2" in app
-    assert "app.js?v=20260812-1" in page
+    assert "app.js?v=20260812-2" in page
+    assert "setInterval(refresh,30000)" in app
+    assert "visibilitychange" in app
     assert "This policy has no archived website replay." in app
     assert 'id="cost-scores"' in page
     assert 'id="time-scores"' in page
