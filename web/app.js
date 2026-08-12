@@ -1,4 +1,5 @@
 (() => {
+  const APP_VERSION = '20260812-4';
   const $ = selector => document.querySelector(selector);
   const MODEL = {
     deepseek: {label:'DeepSeek V4 Flash 0731', color:'#4D6BFF', cls:'deepseek'},
@@ -15,7 +16,7 @@
   const fmtTime = ms => finite(ms) ? (ms/3600000).toFixed(1)+' h' : '—';
   const fmtScore = value => finite(value) ? value.toFixed(value < .01 ? 4 : 3) : '—';
   const esc = value => String(value??'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  async function json(path){const response=await fetch(path,{cache:'no-store'});if(!response.ok)throw Error(`${path}: ${response.status}`);return response.json()}
+  async function json(path){const separator=path.includes('?')?'&':'?';const response=await fetch(`${path}${separator}_=${Date.now()}`,{cache:'no-store'});if(!response.ok)throw Error(`${path}: ${response.status}`);return response.json()}
   function svg(tag,attrs={}){const node=document.createElementNS('http://www.w3.org/2000/svg',tag);for(const [key,value] of Object.entries(attrs))node.setAttribute(key,value);return node}
   function continuousChart(target, runs, xKey, xLabel, aucCap=null){
     const el=$(target),width=1000,height=500,p={l:78,r:24,t:28,b:58},selections=[];el.replaceChildren();el.setAttribute('viewBox',`0 0 ${width} ${height}`);
@@ -86,5 +87,6 @@
   async function loadSnapshot(){const [pIndex,tIndex,performance]=await Promise.all([json('/data/policies/index.json').catch(()=>({runs:[]})),json('/data/timelines/index.json').catch(()=>({runs:[]})),json('/data/performance/current.json').catch(()=>null)]);const activeIds=new Set(performance?.runs?.map(run=>run.run_id)||[]),selected=tIndex.runs.filter(row=>activeIds.size?activeIds.has(row.run_id):family(row.model)).sort((a,b)=>`${b.created_at||''}:${b.run_id||''}`.localeCompare(`${a.created_at||''}:${a.run_id||''}`));state.performance=performance;state.runs=selected.map(tMeta=>{const pMeta=pIndex.runs.find(row=>row.run_id===tMeta.run_id),timeline={coverage:{ready:Boolean(tMeta.ready)},comparison_summary:tMeta.comparison_summary||{},resource_usage_summary:tMeta.resource_usage_summary||{},clock:{origin_epoch_ms:tMeta.origin_epoch_ms,end_epoch_ms:tMeta.end_epoch_ms},artifacts:tMeta.dashboard_artifacts||[]};return {...tMeta,...pMeta,timeline}});render()}
   async function init(){try{await loadSnapshot()}catch(error){$('#updated').textContent=`Data error: ${error.message}`;console.error(error)}}
   async function refresh(){if(state.refreshing||document.hidden)return;state.refreshing=true;try{const performance=await json('/data/performance/current.json'),changed=performance?.generated_at&&performance.generated_at!==state.performance?.generated_at;if(changed)await loadSnapshot()}catch(error){console.warn('Race refresh failed',error)}finally{state.refreshing=false}}
-  $('#readout-close').addEventListener('click',()=>{const detail=$('#readout-detail');detail.hidden=true;$('#readout-replay').removeAttribute('src');$('#readout-timeline').removeAttribute('src')});init();setInterval(refresh,30000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh()});
+  async function refreshVersion(){try{const deployed=await json('/version.json');if(deployed.version&&deployed.version!==APP_VERSION)window.location.reload()}catch(error){console.warn('Dashboard version check failed',error)}}
+  $('#readout-close').addEventListener('click',()=>{const detail=$('#readout-detail');detail.hidden=true;$('#readout-replay').removeAttribute('src');$('#readout-timeline').removeAttribute('src')});init();setInterval(refresh,30000);setInterval(refreshVersion,30000);document.addEventListener('visibilitychange',()=>{if(!document.hidden){refresh();refreshVersion()}});
 })();
