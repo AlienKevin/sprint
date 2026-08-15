@@ -15,9 +15,7 @@ its named constants instead of copying offsets. Export with `torch.jit.save`;
 
 ## Target metric
 
-**Optimize Cost-Adjusted Effective Speed (CAES); higher is better.** Effective
-Speed measures one policy, while CAES rewards producing better policies with
-less cumulative agent cost.
+**Optimize Effective Speed; higher is better.**
 
 Each rollout is scored until it finishes, times out, leaves the lane, or
 self-collides. Let `d` be its greatest forward distance before that point,
@@ -27,20 +25,9 @@ capped at `100 m`, and `t` the first time it reaches `d`. **Effective Speed** is
 E = (d / 100 m) × (d / t) = d² / (100 m × t)
 ```
 
-For a valid finish, this simplifies to `100 m / t`. A policy keeps its highest
-Effective Speed from the official rollouts.
-
-Models are compared across independent agent trials. At combined agent cost
-`c`, `Q(c)` is the highest policy score any of those trials has produced by that
-spending point. For a shared post-experiment cost cutoff `B`, **Cost-Adjusted
-Effective Speed** is
-
-```text
-CAES(B) = (1 / B) × integral from 0 to B of Q(c) dc
-```
-
-This is the mean best-so-far Effective Speed over the shared cost horizon. It
-has units of `m/s`; higher is better.
+For a valid finish, this simplifies to `100 m / t`. Each trial has a `$10`
+agent-cost budget. When that budget is exhausted, the trial's final score is
+the highest Effective Speed from the policies it archived by that point.
 
 ## Commands
 

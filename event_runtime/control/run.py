@@ -7,6 +7,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -641,6 +642,38 @@ def request_stop(run_id: str, *, reason: str = "operator_stop") -> dict[str, Any
     }
 
 
+def enforce_agent_cost_budget(
+    run_id: str,
+    state_dir: Path,
+    run: dict[str, Any],
+    cost_payload: dict[str, Any],
+) -> bool:
+    """Request a durable stop once a complete agent-cost snapshot reaches its cap."""
+    budget = run.get("agent_cost_budget_usd")
+    if budget is None:
+        return False
+    if (
+        isinstance(budget, bool)
+        or not isinstance(budget, (int, float))
+        or not math.isfinite(float(budget))
+        or float(budget) <= 0
+    ):
+        raise ValueError(f"invalid agent_cost_budget_usd: {budget!r}")
+    if (state_dir / "STOP_REQUESTED.json").is_file():
+        return False
+    total = cost_payload.get("total_usd")
+    if (
+        cost_payload.get("status") != "complete"
+        or isinstance(total, bool)
+        or not isinstance(total, (int, float))
+        or not math.isfinite(float(total))
+        or float(total) < float(budget)
+    ):
+        return False
+    request_stop(run_id, reason="agent_cost_budget_exhausted")
+    return True
+
+
 def immutable_copy(source: Path, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     fd, raw = tempfile.mkstemp(
@@ -1090,6 +1123,7 @@ def monitor_once(
                         "agent cost mirror failed: "
                         + str(mirror.get("agent_cost_mirror_error") or "unknown")
                     )
+                enforce_agent_cost_budget(run_id, state_dir, run, cost_payload)
             except Exception as exc:  # noqa: BLE001
                 record_controller_error(run_id, exc)
         frontier_path = state_dir / "frontier-state.json"

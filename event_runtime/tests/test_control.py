@@ -420,7 +420,11 @@ class DurableOpsTests(unittest.TestCase):
         self.assertIn("CLAUDE_CODE_OAUTH_TOKEN=[configured]", completed.stdout)
         config = json.loads(completed.stdout)
         self.assertEqual(config["agent_kind"], "claude-code")
-        self.assertFalse(config["automatic_stop"])
+        self.assertTrue(config["automatic_stop"])
+        self.assertEqual(
+            config["automatic_stop_reason"], "agent_cost_budget_exhausted"
+        )
+        self.assertEqual(config["agent_cost_budget_usd"], 10.0)
         self.assertNotIn("stop_after_seconds", config)
         self.assertFalse(state.exists())
 
@@ -458,7 +462,11 @@ class DurableOpsTests(unittest.TestCase):
         self.assertEqual(config["hosted_model_tools_policy"], "disabled")
         self.assertIsNone(config["service_tier"])
         self.assertFalse(config["usage_audit_required"])
-        self.assertFalse(config["automatic_stop"])
+        self.assertTrue(config["automatic_stop"])
+        self.assertEqual(
+            config["automatic_stop_reason"], "agent_cost_budget_exhausted"
+        )
+        self.assertEqual(config["agent_cost_budget_usd"], 10.0)
         self.assertNotIn("stop_after_seconds", config)
         self.assertFalse(state.exists())
 
@@ -1176,6 +1184,43 @@ while True:
             request_stop.assert_called_once_with(
                 "stop-during-build", reason="operator_batch_stop"
             )
+
+    def test_agent_cost_budget_stops_at_complete_ten_dollars(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state_dir = Path(raw)
+            run = {"agent_cost_budget_usd": 10.0}
+            with mock.patch.object(sprintctl, "request_stop") as request_stop:
+                stopped = sprintctl.enforce_agent_cost_budget(
+                    "budget-run",
+                    state_dir,
+                    run,
+                    {"status": "complete", "total_usd": 10.0},
+                )
+            self.assertTrue(stopped)
+            request_stop.assert_called_once_with(
+                "budget-run", reason="agent_cost_budget_exhausted"
+            )
+
+    def test_agent_cost_budget_waits_for_complete_snapshot_and_threshold(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state_dir = Path(raw)
+            run = {"agent_cost_budget_usd": 10.0}
+            with mock.patch.object(sprintctl, "request_stop") as request_stop:
+                incomplete = sprintctl.enforce_agent_cost_budget(
+                    "budget-run",
+                    state_dir,
+                    run,
+                    {"status": "incomplete_api_usage", "total_usd": None},
+                )
+                below = sprintctl.enforce_agent_cost_budget(
+                    "budget-run",
+                    state_dir,
+                    run,
+                    {"status": "complete", "total_usd": 9.999},
+                )
+            self.assertFalse(incomplete)
+            self.assertFalse(below)
+            request_stop.assert_not_called()
 
     def test_monitor_dispatches_gpu_recovery_before_slow_telemetry(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
