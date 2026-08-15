@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT))
 
 from event_runtime.export import frontier as frontier_update  # noqa: E402
 from event_runtime.control import run as sprintctl  # noqa: E402
+from event_runtime.control import render_task  # noqa: E402
 
 
 def write_policy(trial: Path, index: int, name: str, data: bytes) -> Path:
@@ -401,6 +402,7 @@ class DurableOpsTests(unittest.TestCase):
         token = "fake-oauth-value-that-must-never-print-123456789"
         state = OPS / run_id
         env = os.environ.copy()
+        env.pop("AGENT_COST_BUDGET_USD", None)
         env["CLAUDE_CODE_OAUTH_TOKEN"] = token
         completed = subprocess.run(
             [
@@ -433,6 +435,7 @@ class DurableOpsTests(unittest.TestCase):
         key = "fake-openai-key-that-must-never-print-123456789"
         state = OPS / run_id
         env = os.environ.copy()
+        env.pop("AGENT_COST_BUDGET_USD", None)
         env["OPENAI_API_KEY"] = key
         completed = subprocess.run(
             [
@@ -469,6 +472,30 @@ class DurableOpsTests(unittest.TestCase):
         self.assertEqual(config["agent_cost_budget_usd"], 10.0)
         self.assertNotIn("stop_after_seconds", config)
         self.assertFalse(state.exists())
+
+    def test_dry_run_accepts_one_global_budget_override(self) -> None:
+        run_id = f"dry-{uuid.uuid4().hex[:12]}"
+        env = os.environ.copy()
+        env["CLAUDE_CODE_OAUTH_TOKEN"] = (
+            "fake-oauth-value-that-must-never-print-123456789"
+        )
+        env["AGENT_COST_BUDGET_USD"] = "12.5"
+        completed = subprocess.run(
+            [
+                "bash",
+                str(ROOT / "event_runtime/control/launch.sh"),
+                "--dry-run",
+                "--run-id",
+                run_id,
+            ],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        config = json.loads(completed.stdout)
+        self.assertEqual(config["agent_cost_budget_usd"], 12.5)
 
     def test_terra_dry_run_pins_reconstructible_cost_policy(self) -> None:
         run_id = f"dry-{uuid.uuid4().hex[:12]}"
@@ -1221,6 +1248,25 @@ while True:
             self.assertFalse(incomplete)
             self.assertFalse(below)
             request_stop.assert_not_called()
+
+    def test_task_instruction_renders_from_global_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "source"
+            source.mkdir()
+            (source / "instruction.md").write_text(
+                "Work within ${{ agent_cost_budget_usd }}.\n"
+            )
+            (source / "task.toml").write_text("schema_version = '1.3'\n")
+            destination = root / "rendered"
+            rendered = render_task.render_task(source, destination, "12.5")
+            self.assertEqual(
+                (rendered / "instruction.md").read_text(),
+                "Work within $12.5.\n",
+            )
+            self.assertTrue((rendered / "task.toml").is_file())
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                render_task.render_task(source, destination, "10")
 
     def test_monitor_dispatches_gpu_recovery_before_slow_telemetry(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

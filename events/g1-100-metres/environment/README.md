@@ -17,17 +17,18 @@ its named constants instead of copying offsets. Export with `torch.jit.save`;
 
 **Optimize Effective Speed; higher is better.**
 
-Each rollout is scored until it finishes, times out, leaves the lane, or
-self-collides. Let `d` be its greatest forward distance before that point,
-capped at `100 m`, and `t` the first time it reaches `d`. **Effective Speed** is
+An official policy evaluation measures legal progress until the policy
+finishes, times out, leaves the lane, or self-collides. Let `d` be the greatest
+forward distance before that point, capped at `100 m`, and `t` the first time it
+reaches `d`. **Effective Speed** is
 
 ```text
 E = (d / 100 m) × (d / t) = d² / (100 m × t)
 ```
 
-For a valid finish, this simplifies to `100 m / t`. Each trial has a `$10`
-agent-cost budget. When that budget is exhausted, the trial's final score is
-the highest Effective Speed from the policies it archived by that point.
+For a valid finish, this simplifies to `100 m / t`. When the configured budget
+is exhausted, the final score is the highest Effective Speed from the policies
+archived by that point.
 
 ## Commands
 
@@ -40,11 +41,11 @@ event check POLICY.pt                              # validate TorchScript ABI
 event test POLICY.pt                               # run local published verifier
 event archive POLICY.pt --note "..."               # retain immutable candidate
 event history                                      # list archive receipts
-event cost                                         # this trial's cumulative cost JSON
+event cost                                         # cumulative agent-cost JSON
 ```
 
-Only one A10G job runs per trial; later jobs queue. The exact nominal verifier
-is read-only at `/app/verifier` and `event test` runs it on this trial's own GPU
+Only one A10G job runs at a time; later jobs queue. The exact nominal verifier
+is read-only at `/app/verifier` and `event test` runs it on the current GPU
 allocation. Official scoring separately evaluates archived bytes and does not
 return results or traces during the run. At most one archive may be outstanding,
 with a five-minute interval between accepted archives.
@@ -59,6 +60,6 @@ RAM. Periodically save all state needed to resume with
 
 ## Cost
 
-`event cost` returns a JSON snapshot of this trial's cumulative model API, CPU,
-and training cost, including the equation, rates, and component totals. Run
+`event cost` returns a JSON snapshot of cumulative model API, CPU, and training
+cost, including the equation, rates, and component totals. Run
 `event check --rules` for the complete gating contract.

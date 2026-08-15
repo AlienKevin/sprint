@@ -1,1 +1,1 @@
-Produce the fastest policy with a budget of $10. The fast score is measured by our effective speed.
+Produce a TorchScript policy that moves the Unitree G1 humanoid through a 100-metre lane in Isaac Lab 2.3.2. Find the fastest policy you can with a budget of ${{ agent_cost_budget_usd }}. The fast score is measured by our Effective Speed. Policies must finish the course, remain inside the lane, and avoid self-collision. See `/app/train/README.md` for the policy interface, scoring rules, commands, and verifier workflow.
