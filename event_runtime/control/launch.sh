@@ -11,7 +11,6 @@ if [[ -z "$UV" && -x /home/ubuntu/.local/bin/uv ]]; then
   UV=/home/ubuntu/.local/bin/uv
 fi
 CONTROL="$ROOT/event_runtime/control/run.py"
-TASK="$SOURCE_ROOT/events/g1-100-metres"
 MODAL_PROFILE=${MODAL_PROFILE:-kevinli020508}
 SANDBOX_TIMEOUT_SECONDS=86400
 DEPLOY_DEBOUNCE_SECONDS=300
@@ -270,7 +269,6 @@ PY
     exit 1
   }
   HARBOR="$SOURCE_ROOT/harbor"
-  TASK="$SOURCE_ROOT/events/g1-100-metres"
   WARMUP_MANIFEST_PATH="$STATE_DIR/resume-image-provenance.json"
   python3 - "$STATE_DIR/run.json" "$WARMUP_MANIFEST_PATH" <<'PY'
 import json
@@ -301,6 +299,26 @@ os.chmod(temporary, 0o600)
 os.replace(temporary, target)
 PY
 fi
+
+TASK_SOURCE="$SOURCE_ROOT/events/g1-100-metres"
+TASK="$STATE_DIR/rendered-task"
+BUDGET_CONFIG="$SOURCE_ROOT/event_runtime/control/budget.env"
+[[ -f "$BUDGET_CONFIG" ]] || {
+  echo "missing global event budget configuration: $BUDGET_CONFIG" >&2
+  exit 1
+}
+# shellcheck source=/dev/null
+source "$BUDGET_CONFIG"
+AGENT_COST_BUDGET_USD=$(python3 - "$AGENT_COST_BUDGET_USD" <<'PY'
+import math
+import sys
+
+value = float(sys.argv[1])
+if not math.isfinite(value) or value <= 0:
+    raise SystemExit("AGENT_COST_BUDGET_USD must be a positive finite number")
+print(format(value, "g"))
+PY
+)
 
 [[ -d "$HARBOR/src/harbor" ]] || { echo "missing vendored Harbor: $HARBOR" >&2; exit 1; }
 [[ -f "$HARBOR/.sprint-upstream-commit" ]] || {
@@ -401,13 +419,13 @@ print_config() {
     "$AGENT_KIND" "$MODEL" "$ENDPOINT" "$REASONING_EFFORT" "$CODEX_VERSION" \
     "$AGENT_SECRET_NAME" \
     "$SANDBOX_TIMEOUT_SECONDS" "$MODEL_API_HOST" "$MODAL_PROFILE" "$HARBOR" "$HARBOR_COMMIT" \
-    "$HARBOR_BRANCH" "$VOLUMES_JSON" "$KEEPALIVE_JSON" <<'PY'
+    "$HARBOR_BRANCH" "$VOLUMES_JSON" "$KEEPALIVE_JSON" "$AGENT_COST_BUDGET_USD" <<'PY'
 import json
 import sys
 
 (run_id, app, training_app, verifier_app, volume, state, jobs, agent_kind, model, endpoint, effort,
  codex_version, auth_name, sandbox_timeout, model_api_host, profile, harbor, commit, branch,
- volumes, keepalive) = sys.argv[1:]
+ volumes, keepalive, agent_cost_budget) = sys.argv[1:]
 payload = {
     "run_id": run_id,
     "app_name": app,
@@ -421,7 +439,9 @@ payload = {
     "endpoint": endpoint or None,
     "reasoning_effort": effort,
     "codex_version": codex_version if agent_kind == "codex" else None,
-    "automatic_stop": False,
+    "automatic_stop": True,
+    "automatic_stop_reason": "agent_cost_budget_exhausted",
+    "agent_cost_budget_usd": float(agent_cost_budget),
     "sandbox_timeout_seconds": int(sandbox_timeout),
     "sandbox_timeout_role": "modal_maximum_lifetime",
     "cpu_agent": {
@@ -524,6 +544,10 @@ fi
 KEEPALIVE_JSON=$(make_keepalive_json)
 
 mkdir -p "$STATE_DIR" "$JOBS_ROOT" "$SECRET_DIR"
+python3 "$SOURCE_ROOT/event_runtime/control/render_task.py" \
+  --source "$TASK_SOURCE" \
+  --destination "$TASK" \
+  --budget "$AGENT_COST_BUDGET_USD"
 printf '%s=%s\n' "$AGENT_SECRET_NAME" "$AGENT_SECRET" >"$ENV_FILE"
 if [[ -n "$ENDPOINT" ]]; then
   printf 'OPENAI_BASE_URL=%s\n' "$ENDPOINT" >>"$ENV_FILE"
@@ -557,7 +581,8 @@ python3 - "$STATE_DIR/run.json" "$RUN_ID" "$APP_NAME" "$TRAINING_APP_NAME" \
   "$HARBOR_COMMIT" "$HARBOR_BRANCH" "$RESUMING" "$CPU_LAUNCH_ATTEMPT" \
   "$SUPERVISED_LAUNCH" "$STANDING_GPU" "$MODEL_API_HOST" \
   "$PROMPT_TEMPLATE" "$WARMUP_MANIFEST_PATH" "$ROOT" "$BATCH_ID" \
-  "$SOURCE_ROOT" "$SPRINT_SOURCE_COMMIT" <<'PY'
+  "$SOURCE_ROOT" "$SPRINT_SOURCE_COMMIT" "$TASK" \
+  "$AGENT_COST_BUDGET_USD" <<'PY'
 import datetime
 import fcntl
 import hashlib
@@ -570,11 +595,12 @@ import sys
  endpoint, effort, codex_version, sandbox_timeout, debounce, harbor, commit,
  branch, resuming, cpu_attempt, supervised, standing_gpu_flag,
  model_api_host, prompt_template, warmup_manifest_path, root, batch_id, source_root,
- sprint_source_commit) = sys.argv[1:]
+ sprint_source_commit, rendered_task_root, agent_cost_budget) = sys.argv[1:]
 standing_gpu = standing_gpu_flag == "1"
 target = pathlib.Path(path)
 root_path = pathlib.Path(root)
-task_root = pathlib.Path(source_root) / "events/g1-100-metres"
+task_source_root = pathlib.Path(source_root) / "events/g1-100-metres"
+task_root = pathlib.Path(rendered_task_root)
 prompt_path = pathlib.Path(prompt_template)
 warmup_manifest = json.loads(pathlib.Path(warmup_manifest_path).read_text())
 
@@ -607,7 +633,9 @@ base = {
         else model.split("/", 1)[-1]
     ),
     "codex_version": codex_version if agent_kind == "codex" else None,
-    "automatic_stop": False,
+    "automatic_stop": True,
+    "automatic_stop_reason": "agent_cost_budget_exhausted",
+    "agent_cost_budget_usd": float(agent_cost_budget),
     "sandbox_timeout_seconds": int(sandbox_timeout),
     "sandbox_timeout_role": "modal_maximum_lifetime",
     "deploy_debounce_seconds": int(debounce),
@@ -616,10 +644,15 @@ base = {
     "harbor_branch": branch,
     "sprint_source_commit": sprint_source_commit,
     "task_path": str(task_root),
+    "task_source_path": str(task_source_root),
     "evaluation_provenance": {
         "prompt_template_path": prompt_template,
         "prompt_template_sha256": sha256_file(prompt_path),
         "task_toml_sha256": sha256_file(task_root / "task.toml"),
+        "instruction_template_sha256": sha256_file(
+            task_source_root / "instruction.md"
+        ),
+        "rendered_instruction_sha256": sha256_file(task_root / "instruction.md"),
         "agent_training_context_sha256": warmup_manifest["contexts"]["agent_training"]["sha256"],
         "agent_training_image_id": warmup_manifest["contexts"]["agent_training"]["image_id"],
         "verifier_context_sha256": warmup_manifest["contexts"]["verifier"]["sha256"],
@@ -716,6 +749,7 @@ if resuming == "1":
         "reasoning_effort": effort,
         "codex_version": codex_version if agent_kind == "codex" else None,
         "harbor_commit": commit,
+        "agent_cost_budget_usd": float(agent_cost_budget),
     }
     mismatches = {
         key: (payload.get(key), value)
@@ -729,6 +763,8 @@ if resuming == "1":
     provenance_keys = (
         "prompt_template_sha256",
         "task_toml_sha256",
+        "instruction_template_sha256",
+        "rendered_instruction_sha256",
         "agent_training_context_sha256",
         "agent_training_image_id",
         "verifier_context_sha256",
@@ -754,6 +790,7 @@ if resuming == "1":
         "expected_job_path": str(pathlib.Path(jobs) / run_id),
         "harbor_path": harbor,
         "task_path": str(task_root),
+        "task_source_path": str(task_source_root),
         "sprint_source_commit": sprint_source_commit,
         "cpu_launch_attempt": int(cpu_attempt),
         "cpu_launch_history": history,

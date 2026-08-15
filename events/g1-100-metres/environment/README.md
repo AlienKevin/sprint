@@ -15,32 +15,20 @@ its named constants instead of copying offsets. Export with `torch.jit.save`;
 
 ## Target metric
 
-**Optimize Cost-Adjusted Effective Speed (CAES); higher is better.** Effective
-Speed measures one policy, while CAES rewards producing better policies with
-less cumulative agent cost.
+**Optimize Effective Speed; higher is better.**
 
-Each rollout is scored until it finishes, times out, leaves the lane, or
-self-collides. Let `d` be its greatest forward distance before that point,
-capped at `100 m`, and `t` the first time it reaches `d`. **Effective Speed** is
+An official policy evaluation measures legal progress until the policy
+finishes, times out, leaves the lane, or self-collides. Let `d` be the greatest
+forward distance before that point, capped at `100 m`, and `t` the first time it
+reaches `d`. **Effective Speed** is
 
 ```text
 E = (d / 100 m) × (d / t) = d² / (100 m × t)
 ```
 
-For a valid finish, this simplifies to `100 m / t`. A policy keeps its highest
-Effective Speed from the official rollouts.
-
-Models are compared across independent agent trials. At combined agent cost
-`c`, `Q(c)` is the highest policy score any of those trials has produced by that
-spending point. For a shared post-experiment cost cutoff `B`, **Cost-Adjusted
-Effective Speed** is
-
-```text
-CAES(B) = (1 / B) × integral from 0 to B of Q(c) dc
-```
-
-This is the mean best-so-far Effective Speed over the shared cost horizon. It
-has units of `m/s`; higher is better.
+For a valid finish, this simplifies to `100 m / t`. When the configured budget
+is exhausted, the final score is the highest Effective Speed from the policies
+archived by that point.
 
 ## Commands
 
@@ -53,11 +41,11 @@ event check POLICY.pt                              # validate TorchScript ABI
 event test POLICY.pt                               # run local published verifier
 event archive POLICY.pt --note "..."               # retain immutable candidate
 event history                                      # list archive receipts
-event cost                                         # this trial's cumulative cost JSON
+event cost                                         # cumulative agent-cost JSON
 ```
 
-Only one A10G job runs per trial; later jobs queue. The exact nominal verifier
-is read-only at `/app/verifier` and `event test` runs it on this trial's own GPU
+Only one A10G job runs at a time; later jobs queue. The exact nominal verifier
+is read-only at `/app/verifier` and `event test` runs it on the current GPU
 allocation. Official scoring separately evaluates archived bytes and does not
 return results or traces during the run. At most one archive may be outstanding,
 with a five-minute interval between accepted archives.
@@ -72,6 +60,6 @@ RAM. Periodically save all state needed to resume with
 
 ## Cost
 
-`event cost` returns a JSON snapshot of this trial's cumulative model API, CPU,
-and training cost, including the equation, rates, and component totals. Run
+`event cost` returns a JSON snapshot of cumulative model API, CPU, and training
+cost, including the equation, rates, and component totals. Run
 `event check --rules` for the complete gating contract.
