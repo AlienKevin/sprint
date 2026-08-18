@@ -426,6 +426,33 @@ class WorkerAttemptGuardTests(unittest.TestCase):
         self.assertFalse(watchdog.observe({"iteration": 1}, now_epoch_s=649))
         self.assertTrue(watchdog.observe({"iteration": 1}, now_epoch_s=650))
 
+    def test_watchdogs_disable_after_training_reaches_terminal_cursor(self) -> None:
+        job = {
+            "command": [
+                "python3",
+                "train.py",
+                "--max-iterations",
+                "400",
+                "--eval",
+            ]
+        }
+        self.assertEqual(worker_run.infer_job_kind(job), "train")
+        self.assertEqual(worker_run.watchdog_phase(job, {"iteration": 398}), "training")
+        self.assertEqual(
+            worker_run.watchdog_phase(job, {"iteration": 399}), "finalizing"
+        )
+
+    def test_evaluation_and_verifier_jobs_do_not_use_training_watchdogs(self) -> None:
+        evaluation = {"command": ["python3", "/app/eval_policies.py"]}
+        verifier = {
+            "job_kind": "verify",
+            "command": ["bash", "-lc", "exec bash /opt/event-verifier/test.sh"],
+        }
+        self.assertEqual(worker_run.infer_job_kind(evaluation), "evaluate")
+        self.assertEqual(worker_run.watchdog_phase(evaluation, None), "evaluating")
+        self.assertEqual(worker_run.infer_job_kind(verifier), "verify")
+        self.assertEqual(worker_run.watchdog_phase(verifier, None), "verifying")
+
     def test_progress_watchdog_cannot_be_reported_as_success(self) -> None:
         self.assertEqual(
             worker_run.final_attempt_outcome(

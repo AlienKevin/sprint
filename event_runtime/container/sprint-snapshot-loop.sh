@@ -16,6 +16,7 @@ CODEX_HOME_DIR=/tmp/codex-home
 PASSWORD_FILE=""
 RESTIC_BIN=restic
 TRACE_MIRROR_BIN=/opt/sprint-trace-mirror.py
+BUDGET_WATCHDOG_BIN=/opt/sprint-budget-watchdog.py
 CLAUDE_PATTERN=""
 CODEX_PATTERN=""
 EXIT_AFTER_ACK=0
@@ -31,6 +32,7 @@ Options:
   --snapshot-seconds N     Periodic snapshot interval (default: 300).
   --poll-seconds N         Watch interval (default: 2).
   --term-grace-seconds N   SIGINT grace period (default: 90).
+  --budget-watchdog-bin PATH  In-sandbox budget watchdog executable.
 EOF
 }
 
@@ -50,6 +52,7 @@ while (($#)); do
     --root-dir) ROOT_DIR=${2:?}; shift 2 ;;
     --codex-home-dir) CODEX_HOME_DIR=${2:?}; shift 2 ;;
     --restic-bin) RESTIC_BIN=${2:?}; shift 2 ;;
+    --budget-watchdog-bin) BUDGET_WATCHDOG_BIN=${2:?}; shift 2 ;;
     --claude-pattern) CLAUDE_PATTERN=${2:?}; shift 2 ;;
     --codex-pattern) CODEX_PATTERN=${2:?}; shift 2 ;;
     --exit-after-ack) EXIT_AFTER_ACK=1; shift ;;
@@ -258,12 +261,12 @@ find_agent_identity() {
 }
 
 queue_fingerprint() {
-  local queue="$APP_DIR/submissions/queue"
-  if [[ ! -d "$queue" ]]; then
+  local submissions="$APP_DIR/submissions"
+  if [[ ! -d "$submissions" ]]; then
     printf '%s\n' missing
     return
   fi
-  find "$queue" -maxdepth 1 -type f -printf '%f:%s:%T@\n' 2>/dev/null \
+  find "$submissions" -maxdepth 2 -type f -printf '%P:%s:%T@\n' 2>/dev/null \
     | sort | sha256sum | awk '{print $1}'
 }
 
@@ -437,7 +440,8 @@ final_snapshot_and_ack() {
   write_ack "$reason"
   write_heartbeat stop_acknowledged
   log "STOP_ACK written reason=$reason snapshot=$LAST_SNAPSHOT_ID"
-  if ((EXIT_AFTER_ACK)); then
+  if ((EXIT_AFTER_ACK)) || [[ "$reason" == "agent_cost_budget_exhausted" ]] || \
+    [[ "$reason" == "budget_telemetry_unavailable" ]]; then
     exit 0
   fi
   while true; do
@@ -488,7 +492,7 @@ cleanup_watchers() {
 }
 
 signal_watch() {
-  local identity pid pgid deadline watcher_pgid
+  local identity pid pgid deadline watcher_pgid stop_reason
   while true; do
     identity=$(find_agent_identity || true)
     read -r pid pgid <<<"$identity"
@@ -496,11 +500,13 @@ signal_watch() {
       atomic_text "$FIRST_SEEN" "$(date +%s)"$'\n'
     fi
     if [[ -e "$STOP_FILE" && -n "$pid" && ! -e "$STOP_SIGNALLED" ]]; then
-      atomic_text "$STOP_SIGNALLED" "operator_stop"$'\n'
+      stop_reason=$(tr -d '\r\n' <"$STOP_FILE" 2>/dev/null || true)
+      stop_reason=${stop_reason:-operator_stop}
+      atomic_text "$STOP_SIGNALLED" "$stop_reason"$'\n'
       if [[ "$AGENT_KIND" == "codex" ]]; then
-        atomic_text "$EXPECTED_INTERRUPT" "operator_stop"$'\n'
+        atomic_text "$EXPECTED_INTERRUPT" "$stop_reason"$'\n'
       fi
-      log "stopping $AGENT_KIND only reason=operator_stop pid=$pid${pgid:+ pgid=$pgid}"
+      log "stopping $AGENT_KIND only reason=$stop_reason pid=$pid${pgid:+ pgid=$pgid}"
       kill -INT "$pid" 2>/dev/null || true
       deadline=$(($(date +%s) + TERM_GRACE_SECONDS))
       if [[ "$AGENT_KIND" == "codex" ]]; then
@@ -558,21 +564,50 @@ start_telemetry() {
     log "telemetry start failed (non-fatal)"
 }
 
+budget_watchdog_once() {
+  [[ -x "$BUDGET_WATCHDOG_BIN" ]] || {
+    log "budget watchdog missing; failing closed"
+    atomic_text "$STOP_FILE" "budget_telemetry_unavailable"$'\n'
+    return 20
+  }
+  timeout --signal=KILL 15 "$BUDGET_WATCHDOG_BIN" \
+    --run-id "$RUN_ID" \
+    --durable-dir "$DURABLE_DIR" \
+    --runtime-dir "$RUNTIME_DIR" \
+    --codex-home "$CODEX_HOME_DIR" \
+    >>"$LOG_DIR/budget-watchdog.log" 2>&1
+  local status=$?
+  case "$status" in
+    0|10|20) return "$status" ;;
+    *)
+      log "budget watchdog crashed status=$status; failing closed"
+      atomic_text "$STOP_FILE" "budget_telemetry_unavailable"$'\n'
+      return 20
+      ;;
+  esac
+}
+
 signal_watch &
 SIGNAL_WATCH_PID=$!
 trap cleanup_watchers EXIT
 
 start_telemetry
 start_trace_mirror
+budget_watchdog_once || true
 
 last_snapshot_epoch=0
 last_heartbeat_epoch=0
+last_budget_epoch=0
 last_queue=$(queue_fingerprint)
 snapshot startup && last_snapshot_epoch=$(date +%s)
 write_heartbeat waiting_for_agent
 
 while true; do
   now=$(date +%s)
+  if ((now - last_budget_epoch >= 5)); then
+    budget_watchdog_once || true
+    last_budget_epoch=$now
+  fi
   if ((SAW_AGENT == 0)) && [[ -f "$FIRST_SEEN" ]]; then
     first_epoch=$(tr -dc '0-9' <"$FIRST_SEEN")
     [[ -n "$first_epoch" ]] && SAW_AGENT=1
@@ -589,6 +624,9 @@ while true; do
   elif ((SAW_AGENT)); then
     final_reason=$(tr -d '\r\n' <"$STOP_SIGNALLED" 2>/dev/null || true)
     final_snapshot_and_ack "${final_reason:-agent_exit}"
+  elif [[ -e "$STOP_FILE" ]]; then
+    final_reason=$(tr -d '\r\n' <"$STOP_FILE" 2>/dev/null || true)
+    final_snapshot_and_ack "${final_reason:-budget_telemetry_unavailable}"
   fi
 
   queue=$(queue_fingerprint)

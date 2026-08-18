@@ -413,6 +413,48 @@ def progress_cursor(progress: dict | None) -> float | None:
     return None
 
 
+def infer_job_kind(job: dict) -> str:
+    """Return the watchdog contract for one GPU command."""
+    explicit = str(job.get("job_kind") or "auto").strip().lower()
+    if explicit in {"train", "evaluate", "verify"}:
+        return explicit
+    command = [str(part) for part in (job.get("command") or [])]
+    searchable = " ".join(command).lower()
+    script_names = {Path(part).name.lower() for part in command if part.endswith(".py")}
+    if any(name.startswith(("verify", "test")) for name in script_names):
+        return "verify"
+    if any(name.startswith(("eval", "evaluate")) for name in script_names):
+        return "evaluate"
+    if "event-verifier" in searchable or "test.sh" in searchable:
+        return "verify"
+    return "train"
+
+
+def expected_final_cursor(job: dict) -> float | None:
+    """Infer the zero-based terminal training cursor from common CLI flags."""
+    command = [str(part) for part in (job.get("command") or [])]
+    for flag in ("--max-iterations", "--iterations", "--max-steps"):
+        try:
+            raw = command[command.index(flag) + 1]
+            count = int(raw)
+        except (ValueError, IndexError):
+            continue
+        if count > 0:
+            return float(count - 1)
+    return None
+
+
+def watchdog_phase(job: dict, progress: dict | None) -> str:
+    kind = infer_job_kind(job)
+    if kind != "train":
+        return "verifying" if kind == "verify" else "evaluating"
+    cursor = progress_cursor(progress)
+    final_cursor = expected_final_cursor(job)
+    if cursor is not None and final_cursor is not None and cursor >= final_cursor:
+        return "finalizing"
+    return "training"
+
+
 class TrainingProgressWatchdog:
     """Detect a live training loop that republishes one cursor forever."""
 
@@ -464,9 +506,11 @@ def heartbeat_payload(
     progress: object,
     checkpoint: str | None,
     lease_seconds: int,
+    job_kind: str | None = None,
+    phase: str | None = None,
 ) -> dict:
     now = time.time()
-    return {
+    payload = {
         "schema_version": 2,
         "run_id": run_id,
         "job_id": job_id,
@@ -481,6 +525,11 @@ def heartbeat_payload(
         "progress": progress,
         "checkpoint": checkpoint,
     }
+    if job_kind:
+        payload["job_kind"] = job_kind
+    if phase:
+        payload["phase"] = phase
+    return payload
 
 
 def stop_child(proc: subprocess.Popen) -> None:
@@ -492,6 +541,54 @@ def stop_child(proc: subprocess.Popen) -> None:
             os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+
+
+def budget_stop_requested(run_id: str, durable_dir: str = "/durable") -> bool:
+    return (
+        Path(durable_dir) / "runs" / run_id / "BUDGET_STOP_REQUESTED.json"
+    ).is_file()
+
+
+def refresh_budget_stop(run_id: str) -> bool:
+    watchdog = Path("/opt/sprint-budget-watchdog.py")
+    if watchdog.is_file():
+        try:
+            completed = subprocess.run(
+                [
+                    str(watchdog),
+                    "--run-id",
+                    run_id,
+                    "--codex-home",
+                    "/nonexistent-codex-home",
+                    "--runtime-dir",
+                    "/tmp/sprint-budget-runtime",
+                ],
+                check=False,
+                timeout=10,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if completed.returncode not in {0, 10, 20}:
+                raise RuntimeError(
+                    f"budget watchdog exited unexpectedly: {completed.returncode}"
+                )
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            # Accounting uncertainty must terminate work even if this GPU's
+            # independent watchdog is the only surviving budget monitor.
+            marker = Path("/durable") / "runs" / run_id / "BUDGET_STOP_REQUESTED.json"
+            if not marker.exists():
+                write_status(
+                    marker,
+                    {
+                        "schema_version": 1,
+                        "run_id": run_id,
+                        "status": "fail_closed",
+                        "reason": "budget_telemetry_unavailable",
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "checked_at_epoch_s": time.time(),
+                    },
+                )
+    return budget_stop_requested(run_id)
 
 
 def supervise_child(
@@ -627,6 +724,20 @@ def main() -> int:
             lease_seconds=lease_seconds,
         ),
     )
+
+    if refresh_budget_stop(run_id):
+        attempt_record.update(
+            {
+                "status": "terminated",
+                "termination_reason": "agent_cost_budget_exhausted",
+                "exit_code": 0,
+                "finished_at": utc_now(),
+                "finished_at_epoch_s": time.time(),
+            }
+        )
+        write_status(attempt_path, attempt_record)
+        print("budget stop already requested; skipping GPU work", flush=True)
+        return 0
 
     print(
         f"gpu-worker start job={job_id} attempt={attempt} "
@@ -768,6 +879,7 @@ def main() -> int:
             "SPRINT_GPU_RESUME": "1" if checkpoint else "0",
             "SPRINT_GPU_RESUME_CHECKPOINT": checkpoint or "",
             "SPRINT_APP_LAUNCHER_STATE_FILE": str(app_launcher_state_file),
+            "SPRINT_GPU_JOB_KIND": infer_job_kind(job),
         }
     )
     env.update(checkpoint_resume_metadata(checkpoint))
@@ -779,7 +891,9 @@ def main() -> int:
     interrupted = False
     activity_watchdog_fired = False
     progress_watchdog_fired = False
+    budget_watchdog_fired = False
     progress_watchdog = TrainingProgressWatchdog()
+    last_watchdog_phase: str | None = None
     try:
         proc = subprocess.Popen(
             command,
@@ -807,6 +921,8 @@ def main() -> int:
         def update_heartbeat(status: str) -> None:
             nonlocal progress, checkpoint, error
             nonlocal activity_watchdog_fired, progress_watchdog_fired
+            nonlocal budget_watchdog_fired
+            nonlocal last_watchdog_phase
             progress, checkpoint = progress_snapshot(
                 progress_file,
                 checkpoint_dir,
@@ -815,6 +931,12 @@ def main() -> int:
                 # startup/final selection performs full validation.
                 verify_checkpoint=False,
             )
+            phase = watchdog_phase(
+                job, progress if isinstance(progress, dict) else None
+            )
+            if phase != last_watchdog_phase:
+                print(f"GPU job watchdog phase: {phase}", flush=True)
+                last_watchdog_phase = phase
             write_status(
                 heartbeat_path,
                 heartbeat_payload(
@@ -826,6 +948,8 @@ def main() -> int:
                     progress=progress,
                     checkpoint=checkpoint,
                     lease_seconds=lease_seconds,
+                    job_kind=infer_job_kind(job),
+                    phase=phase,
                 ),
             )
             if not lease_owned(status_path, attempt, lease_id):
@@ -842,6 +966,14 @@ def main() -> int:
                 )
                 write_status(attempt_path, attempt_record)
                 raise SystemExit(75)
+            if not budget_watchdog_fired and refresh_budget_stop(run_id):
+                budget_watchdog_fired = True
+                error = "agent cost budget exhausted"
+                print(f"{error}; stopping GPU child", flush=True)
+                stop_child(proc)
+                return
+            if phase != "training":
+                return
             if not activity_watchdog_fired and gpu_activity_stalled(
                 activity_samples,
                 started_epoch_s=started_epoch,
@@ -899,6 +1031,9 @@ def main() -> int:
         progress_watchdog_fired=progress_watchdog_fired,
         retryable_infrastructure_failure=app_launcher_failure,
     )
+    if budget_watchdog_fired:
+        final_status = "terminated"
+        attempt_record["termination_reason"] = "agent_cost_budget_exhausted"
     progress, checkpoint = progress_snapshot(progress_file, checkpoint_dir)
     finished = time.time()
     attempt_record.update(
@@ -927,6 +1062,8 @@ def main() -> int:
             progress=progress,
             checkpoint=checkpoint,
             lease_seconds=lease_seconds,
+            job_kind=infer_job_kind(job),
+            phase="complete" if final_status == "succeeded" else final_status,
         ),
     )
     try:

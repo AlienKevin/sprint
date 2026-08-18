@@ -42,8 +42,8 @@ esac
 case "${OPENAI_BASE_URL:-}" in
   *api.deepseek.com*) want_deepseek=1 ;;
 esac
-case "${SPRINT_MODEL##*/}" in
-  gpt-5.6-luna) want_luna=1 ;;
+case "${SPRINT_MODEL:-}" in
+  */gpt-5.6-luna|gpt-5.6-luna) want_luna=1 ;;
 esac
 previous=
 for argument in "$@"; do
@@ -186,9 +186,11 @@ if [[ -f "$EXPECTED_INTERRUPT" ]]; then
     exit 75
   fi
   stop_ack="$DURABLE_DIR/runs/$RUN_ID/STOP_ACK"
+  expected_reason=$(tr -d '\r\n' <"$EXPECTED_INTERRUPT" 2>/dev/null || true)
+  expected_reason=${expected_reason:-operator_stop}
   deadline=$((SECONDS + STOP_ACK_TIMEOUT_SECONDS))
   while ((SECONDS < deadline)); do
-    if python3 - "$stop_ack" "$RUN_ID" <<'PY'
+    if python3 - "$stop_ack" "$RUN_ID" "$expected_reason" <<'PY'
 import json
 import pathlib
 import sys
@@ -200,7 +202,7 @@ except (OSError, json.JSONDecodeError):
     raise SystemExit(1)
 valid = (
     payload.get("run_id") == sys.argv[2]
-    and payload.get("reason") == "operator_stop"
+    and payload.get("reason") == sys.argv[3]
     and bool(payload.get("final_snapshot_id"))
 )
 raise SystemExit(0 if valid else 1)
@@ -213,7 +215,7 @@ PY
     fi
     sleep 1
   done
-  echo "timed out waiting for durable operator-stop acknowledgement" >&2
+  echo "timed out waiting for durable $expected_reason acknowledgement" >&2
   exit 75
 fi
 exit "$rc"

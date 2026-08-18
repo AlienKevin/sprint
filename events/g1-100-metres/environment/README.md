@@ -39,8 +39,8 @@ event gpu logs JOB_ID                              # worker output
 event gpu wait JOB_ID                              # wait for completion
 event check POLICY.pt                              # validate TorchScript ABI
 event test POLICY.pt                               # run local published verifier
-event archive POLICY.pt --note "..."               # retain immutable candidate
-event history                                      # list archive receipts
+event archive POLICY.pt --note "..."               # durably stage candidate
+event history                                      # inspect Harbor admission
 event cost                                         # cumulative agent-cost JSON
 ```
 

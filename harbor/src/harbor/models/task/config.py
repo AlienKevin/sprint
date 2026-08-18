@@ -598,6 +598,22 @@ class ContinuousVerificationConfig(BaseModel):
             "as <submission-name>.json."
         ),
     )
+    acknowledgments_dir: str = Field(
+        default="/app/submissions/acknowledgments",
+        description=(
+            "Directory in the agent environment where sanitized ingestion "
+            "acknowledgments are written. Acknowledgments never contain scores, "
+            "verification progress, or completion timing."
+        ),
+    )
+    return_acknowledgments_to_agent: bool = Field(
+        default=True,
+        description=(
+            "Return sanitized accepted/rejected ingestion state even when full "
+            "verifier results remain blind. These files are advisory; the trusted "
+            "host ledger remains authoritative."
+        ),
+    )
     return_results_to_agent: bool = Field(
         default=True,
         description=(

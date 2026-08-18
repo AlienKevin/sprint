@@ -11,9 +11,11 @@ def test_continuous_scoring_is_blind_rate_limited_and_globally_serialized() -> N
     config = tomllib.loads((EVENT / "task.toml").read_text())
     continuous = config["verifier"]["continuous"]
     assert continuous["enabled"] is True
-    assert continuous["watch_dir"] == "/app/submissions/queue"
+    assert continuous["watch_dir"] == "/durable/submissions/queue"
     assert continuous["max_concurrent"] == 1
     assert continuous["return_results_to_agent"] is False
+    assert continuous["return_acknowledgments_to_agent"] is True
+    assert continuous["acknowledgments_dir"] == ("/durable/submissions/acknowledgments")
     assert continuous["drain_pending_on_stop"] is True
     assert continuous["continuous_only"] is True
     assert "reuse_matching_result_for_final" not in continuous
@@ -37,3 +39,5 @@ def test_launcher_records_shared_blind_lane_and_rate_limit_provenance() -> None:
     )
     assert '"evaluation_result_policy": "all_blind_archival_submissions"' in launcher
     assert '--ae "SPRINT_SCORING_QUEUE_KEY=${BATCH_ID:-standalone}"' in launcher
+    assert '--ae "SPRINT_SUBMISSIONS_ROOT=/durable/submissions"' in launcher
+    assert '--ae "SPRINT_SUBMISSION_MIN_INTERVAL_SEC=300"' in launcher

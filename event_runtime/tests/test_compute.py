@@ -840,6 +840,67 @@ class ClaimSelectionTests(unittest.TestCase):
             self.assertEqual(status["status"], "succeeded")
             self.assertEqual(latest, "job-1")
 
+    def test_agent_cli_prefers_completed_attempt_over_later_batch_stop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "durable" / "gpu-jobs"
+            mirror = Path(tmp) / "mirror"
+            (root / "status").mkdir(parents=True)
+            (root / "attempts" / "job-1").mkdir(parents=True)
+            (mirror / "status").mkdir(parents=True)
+            (mirror / "status" / "job-1.json").write_text(
+                json.dumps(
+                    {
+                        "job_id": "job-1",
+                        "attempt": 1,
+                        "lease_id": "lease-1",
+                        "status": "terminated",
+                        "terminated_at_epoch_s": 200,
+                    }
+                )
+            )
+            (root / "attempts" / "job-1" / "1.json").write_text(
+                json.dumps(
+                    {
+                        "job_id": "job-1",
+                        "attempt": 1,
+                        "lease_id": "lease-1",
+                        "status": "succeeded",
+                        "finished_at_epoch_s": 100,
+                        "checkpoint": "/durable/model.pt",
+                    }
+                )
+            )
+
+            with mock.patch.object(train_cli, "AGENT_MIRROR_ROOT", mirror):
+                status = train_cli.read_status(root, "job-1")
+
+            self.assertEqual(status["status"], "succeeded")
+            self.assertEqual(status["checkpoint"], "/durable/model.pt")
+            self.assertEqual(
+                status["status_reconciliation"]["selected_source"],
+                "durable_attempt",
+            )
+
+    def test_agent_cli_preserves_fence_that_predates_worker_completion(self) -> None:
+        stopped = {
+            "job_id": "job-1",
+            "attempt": 1,
+            "lease_id": "lease-1",
+            "status": "terminated",
+            "terminated_at_epoch_s": 90,
+        }
+        late_worker = {
+            "job_id": "job-1",
+            "attempt": 1,
+            "lease_id": "lease-1",
+            "status": "succeeded",
+            "finished_at_epoch_s": 100,
+        }
+        status = train_cli.reconcile_status_candidates(
+            [(stopped, "host_mirror"), (late_worker, "durable_attempt")]
+        )
+        self.assertEqual(status["status"], "terminated")
+
     def test_agent_workspace_archive_omits_links_rejected_by_worker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -2027,6 +2088,71 @@ class RetryAndFencingTests(unittest.TestCase):
                                 out = gpu_worker._stop_all_locked(run)
         self.assertEqual(out[0]["status"], "terminated")
         self.assertEqual(order[:2], ["persist:terminated", "terminate"])
+
+    def test_stop_preserves_completed_attempt_and_does_not_terminate(self) -> None:
+        run = {"run_id": "unit"}
+        job = {
+            "job_id": "logical",
+            "status": "running",
+            "attempt": 1,
+            "lease_id": "lease",
+            "sandbox_id": "sb",
+        }
+        attempt = {
+            "job_id": "logical",
+            "status": "succeeded",
+            "attempt": 1,
+            "lease_id": "lease",
+            "exit_code": 0,
+            "finished_at_epoch_s": 100,
+            "checkpoint": "/durable/model.pt",
+        }
+        persisted: list[dict] = []
+        with (
+            mock.patch.object(gpu_worker, "list_job_ids", return_value=["logical"]),
+            mock.patch.object(gpu_worker, "load_job", return_value=job),
+            mock.patch.object(gpu_worker, "load_attempt_record", return_value=attempt),
+            mock.patch.object(
+                gpu_worker,
+                "persist_job",
+                side_effect=lambda _run, payload: (
+                    persisted.append(dict(payload)) or payload
+                ),
+            ),
+            mock.patch.object(gpu_worker, "_terminate_sandbox") as terminate,
+        ):
+            stopped = gpu_worker._stop_all_locked(run)
+        self.assertEqual(stopped, [])
+        self.assertEqual(persisted[-1]["status"], "succeeded")
+        self.assertEqual(persisted[-1]["checkpoint"], "/durable/model.pt")
+        terminate.assert_not_called()
+
+    def test_stop_repairs_previously_overwritten_terminal_registry(self) -> None:
+        run = {"run_id": "unit"}
+        job = {
+            "job_id": "logical",
+            "status": "terminated",
+            "attempt": 1,
+            "lease_id": "lease",
+            "terminated_at_epoch_s": 200,
+        }
+        attempt = {
+            "job_id": "logical",
+            "status": "succeeded",
+            "attempt": 1,
+            "lease_id": "lease",
+            "finished_at_epoch_s": 100,
+            "exit_code": 0,
+        }
+        with (
+            mock.patch.object(gpu_worker, "load_attempt_record", return_value=attempt),
+            mock.patch.object(
+                gpu_worker, "persist_job", side_effect=lambda _run, payload: payload
+            ),
+        ):
+            repaired = gpu_worker.reconcile_terminal_attempt_before_stop(run, job)
+        self.assertEqual(repaired["status"], "succeeded")
+        self.assertEqual(repaired["finished_at_epoch_s"], 100)
 
     def test_reconcile_automatically_retries_lost_running_worker(self) -> None:
         job = {

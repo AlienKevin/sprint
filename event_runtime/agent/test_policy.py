@@ -18,6 +18,35 @@ import subprocess
 from pathlib import Path
 
 
+def build_command(worker_policy: Path, note: str) -> list[str]:
+    """Build the exact public local-verifier GPU command."""
+    script = (
+        "export SPRINT_ISAAC_BOOTSTRAP=/opt/sprint-isaac-bootstrap.py; "
+        "set -euo pipefail; "
+        "export TESTS_DIR=/opt/event-verifier; "
+        f"export SUBMISSION={shlex.quote(str(worker_policy))}; "
+        "export LOGS_DIR=/durable/runs/$SPRINT_RUN_ID/local-verifier/"
+        "$SPRINT_GPU_JOB_ID; "
+        "exec bash /opt/event-verifier/test.sh"
+    )
+    return [
+        "/usr/local/bin/event",
+        "gpu",
+        "--timeout",
+        "900",
+        "--max-attempts",
+        "1",
+        "--job-kind",
+        "verify",
+        "--note",
+        note,
+        "--",
+        "bash",
+        "-lc",
+        script,
+    ]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("policy", help="TorchScript policy below /app")
@@ -34,28 +63,7 @@ def main() -> int:
         parser.error(f"policy not found: {policy}")
 
     worker_policy = Path("/app") / relative
-    script = (
-        "set -euo pipefail; "
-        "export TESTS_DIR=/opt/event-verifier; "
-        f"export SUBMISSION={shlex.quote(str(worker_policy))}; "
-        "export LOGS_DIR=/durable/runs/$SPRINT_RUN_ID/local-verifier/"
-        "$SPRINT_GPU_JOB_ID; "
-        "exec bash /opt/event-verifier/test.sh"
-    )
-    command = [
-        "/usr/local/bin/event",
-        "gpu",
-        "--timeout",
-        "900",
-        "--max-attempts",
-        "1",
-        "--note",
-        args.note,
-        "--",
-        "bash",
-        "-lc",
-        script,
-    ]
+    command = build_command(worker_policy, args.note)
     completed = subprocess.run(command, env=os.environ.copy(), check=False)
     return int(completed.returncode)
 

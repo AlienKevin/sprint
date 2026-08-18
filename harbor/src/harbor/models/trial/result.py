@@ -89,10 +89,12 @@ class ContinuousSubmission(BaseModel):
     scheduler_wait_sec: float | None = None
     scheduler_acquired_at: datetime | None = None
     verification_started_at: datetime | None = None
+    ingestion_attempts: int = 0
     verification_attempts: int = 0
     verification_retry_events: list[dict[str, Any]] = Field(default_factory=list)
     verification_recovery_events: list[dict[str, Any]] = Field(default_factory=list)
     artifact_sha256: str | None = None
+    artifact_size_bytes: int | None = None
     evaluation_fingerprint: str | None = None
     cache_hit: bool = False
     source_evaluation_id: str | None = None

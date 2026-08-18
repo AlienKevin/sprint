@@ -30,6 +30,7 @@ def configure_paths(module, tmp_path: Path) -> None:
     module.QUEUE = str(tmp_path / "submissions" / "queue")
     module.NOTES = str(tmp_path / "submissions" / "notes")
     module.RECEIPTS = str(tmp_path / "submissions" / "receipts")
+    module.ACKNOWLEDGMENTS = str(tmp_path / "submissions" / "acknowledgments")
     module.LOCK = str(tmp_path / "submissions" / "submit.lock")
 
 
@@ -55,8 +56,8 @@ def test_submit_returns_async_receipt_without_designating_final(
 
     assert submit.main() == 0
     output = capsys.readouterr().out
-    assert "queued" in output
-    assert "300 seconds" in output
+    assert "staged locally" in output
+    assert "not accepted until Harbor acknowledges" in output
     assert "event history" in output
     receipts = list(Path(submit.RECEIPTS).glob("*.json"))
     assert len(receipts) == 1
@@ -103,7 +104,7 @@ def test_submission_accepts_after_sixty_prior_receipts(
     monkeypatch.setattr(sys, "argv", ["event archive", str(policy)])
 
     assert submit.main() == 0
-    assert "queued" in capsys.readouterr().out
+    assert "staged locally" in capsys.readouterr().out
     assert len(list(Path(submit.RECEIPTS).glob("*.json"))) == 61
     assert len(list(Path(submit.QUEUE).glob("*.pt"))) == 1
 
@@ -115,6 +116,7 @@ def test_board_lists_receipts_without_reading_official_results(
     receipts = tmp_path / "receipts"
     receipts.mkdir()
     board.RECEIPTS = str(receipts)
+    board.ACKNOWLEDGMENTS = str(tmp_path / "acknowledgments")
     (receipts / "one.json").write_text(
         json.dumps(
             {
@@ -127,9 +129,52 @@ def test_board_lists_receipts_without_reading_official_results(
 
     assert board.main() == 0
     output = capsys.readouterr().out
-    assert "one  chosen  submitted; official result hidden" in output
+    assert "one  chosen  staged locally; awaiting Harbor acknowledgment" in output
     assert "DQ" not in output
     assert "valid" not in output
+
+
+def test_duplicate_staged_policy_is_backpressured(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    submit = load_script("archive.py")
+    configure_paths(submit, tmp_path)
+    monkeypatch.setattr(
+        submit.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    policy = tmp_path / "candidate.pt"
+    policy.write_bytes(b"same-policy")
+    monkeypatch.setattr(sys, "argv", ["event archive", str(policy)])
+    assert submit.main() == 0
+    monkeypatch.setattr(sys, "argv", ["event archive", str(policy)])
+    assert submit.main() == 2
+    assert "identical policy already staged" in capsys.readouterr().err
+    assert len(list(Path(submit.QUEUE).glob("*.pt"))) == 1
+
+
+def test_history_shows_sanitized_acceptance_without_score(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    board = load_script("history.py")
+    receipts = tmp_path / "receipts"
+    acknowledgments = tmp_path / "acknowledgments"
+    receipts.mkdir()
+    acknowledgments.mkdir()
+    board.RECEIPTS = str(receipts)
+    board.ACKNOWLEDGMENTS = str(acknowledgments)
+    (receipts / "one.json").write_text(
+        json.dumps({"submission_id": "one", "queue_name": "one.pt"})
+    )
+    (acknowledgments / "one.pt.json").write_text(
+        json.dumps({"state": "accepted", "accepted": True})
+    )
+    monkeypatch.setattr(sys, "argv", ["event history"])
+    assert board.main() == 0
+    output = capsys.readouterr().out
+    assert "accepted by Harbor; official result hidden" in output
+    assert "reward" not in output
 
 
 def test_finalization_requires_nonempty_host_frozen_policy(tmp_path: Path) -> None:

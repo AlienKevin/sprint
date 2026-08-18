@@ -57,8 +57,10 @@ class FakeAgentEnv:
         self.root = root
         self.watch = root / "queue"
         self.results = root / "results"
+        self.acknowledgments = root / "acknowledgments"
         self.watch.mkdir(parents=True, exist_ok=True)
         self.results.mkdir(parents=True, exist_ok=True)
+        self.acknowledgments.mkdir(parents=True, exist_ok=True)
         self.uploads: list[str] = []
         self.upload_error: Exception | None = None
         self.list_error: Exception | None = None
@@ -84,7 +86,12 @@ class FakeAgentEnv:
         if self.upload_error is not None:
             raise self.upload_error
         name = str(target_path).rsplit("/", 1)[-1]
-        (self.results / name).write_bytes(Path(source_path).read_bytes())
+        destination = (
+            self.acknowledgments
+            if "acknowledgment" in str(target_path)
+            else self.results
+        )
+        (destination / name).write_bytes(Path(source_path).read_bytes())
         self.uploads.append(str(target_path))
 
 
@@ -155,7 +162,14 @@ async def test_submission_is_scored_and_result_returned(tmp_path):
     # The agent gets the result back under the name it submitted.
     returned = json.loads((env.results / "attempt-1.pt.json").read_text())
     assert returned["rewards"]["reward"] == 1.0
-    assert env.uploads == [f"{env.results}/attempt-1.pt.json"]
+    assert env.uploads == [
+        "/app/submissions/acknowledgments/attempt-1.pt.json",
+        f"{env.results}/attempt-1.pt.json",
+    ]
+    acknowledgment = json.loads((env.acknowledgments / "attempt-1.pt.json").read_text())
+    assert acknowledgment["state"] == "accepted"
+    assert acknowledgment["artifact_sha256"] == record.artifact_sha256
+    assert "rewards" not in acknowledgment
 
 
 @pytest.mark.asyncio
@@ -295,6 +309,9 @@ async def test_restart_resumes_retryable_row_from_exact_archived_bytes(tmp_path)
     assert record.verification_recovery_events[0]["artifact_sha256"] == (
         record.artifact_sha256
     )
+    acknowledgment = json.loads((env.acknowledgments / "policy.pt.json").read_text())
+    assert acknowledgment["state"] == "accepted"
+    assert "rewards" not in acknowledgment
 
 
 @pytest.mark.asyncio
@@ -316,6 +333,43 @@ async def test_restart_resumes_interrupted_row_without_duplicate(tmp_path):
     assert calls == 1
     assert len(service.summary.submissions) == 1
     assert service.summary.submissions[0].reward == 0.5
+
+
+@pytest.mark.asyncio
+async def test_restart_reingests_durable_queue_after_pre_download_crash(tmp_path):
+    env = FakeAgentEnv(tmp_path / "env")
+    calls: list[bytes] = []
+
+    async def run_verifier(_key: str, paths) -> VerifierResult:
+        policy = paths.artifacts_dir / "app/submission/policy.pt"
+        calls.append(policy.read_bytes())
+        return VerifierResult(rewards={"reward": 1.0})
+
+    service = _service(tmp_path, env, run_verifier)
+    submitted_at = datetime.now(timezone.utc)
+    record = ContinuousSubmission(
+        name="survived.pt",
+        index=1,
+        submitted_at=submitted_at,
+        accepted=True,
+        accepted_at=submitted_at,
+    )
+    service._ledger.parent.mkdir(parents=True, exist_ok=True)
+    service._ledger.write_text(record.model_dump_json() + "\n")
+    # The queue is on the per-run durable Volume, so it survives even though
+    # the controller died before download_file froze the host artifact.
+    (env.watch / "survived.pt").write_bytes(b"durable-policy")
+
+    async with service.running():
+        await _settle(service)
+
+    assert calls == [b"durable-policy"]
+    recovered = service.summary.submissions[0]
+    assert recovered.ingestion_attempts == 1
+    assert recovered.artifact_sha256
+    assert recovered.reward == 1.0
+    acknowledgment = json.loads((env.acknowledgments / "survived.pt.json").read_text())
+    assert acknowledgment["state"] == "accepted"
 
 
 @pytest.mark.asyncio
@@ -542,6 +596,10 @@ async def test_submissions_past_the_cap_are_rejected_with_a_reason(tmp_path):
     assert rejected.rewards is None
     assert "limit of 2" in rejected.error
     assert json.loads((env.results / "a2.pt.json").read_text())["error"]
+    acknowledgment = json.loads((env.acknowledgments / "a2.pt.json").read_text())
+    assert acknowledgment["state"] == "rejected"
+    assert "limit of 2" in acknowledgment["reason"]
+    assert "rewards" not in acknowledgment
 
 
 @pytest.mark.asyncio
@@ -823,7 +881,11 @@ async def test_blind_mode_returns_no_score_or_completion_signal(tmp_path):
         await _settle(service)
 
     assert list(env.results.iterdir()) == []
-    assert env.uploads == []
+    assert env.uploads == ["/app/submissions/acknowledgments/blind.pt.json"]
+    acknowledgment = json.loads((env.acknowledgments / "blind.pt.json").read_text())
+    assert acknowledgment["state"] == "accepted"
+    assert "rewards" not in acknowledgment
+    assert "finished_at" not in acknowledgment
     record = service.summary.submissions[0]
     assert record.reward == 1.0
     archived = tmp_path / "artifacts" / record.result_path

@@ -30,6 +30,15 @@ def test_equivalent_accepts_millimetre_scale_gpu_physics_jitter() -> None:
     assert 0 < deltas["max_distance_m"] <= 0.002
 
 
+def test_equivalent_accepts_inclusive_two_millimetre_boundary() -> None:
+    matches, deltas = equivalent(
+        result(max_distance_m=0.796), result(max_distance_m=0.794)
+    )
+
+    assert matches is True
+    assert round(deltas["max_distance_m"], 3) == 0.002
+
+
 def test_equivalent_rejects_larger_numeric_difference() -> None:
     matches, _ = equivalent(result(), result(max_distance_m=0.795))
 

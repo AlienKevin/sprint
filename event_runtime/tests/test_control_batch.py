@@ -1144,6 +1144,9 @@ def test_batch_monitor_service_carries_absolute_uv_vercel_and_modal_profile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     commands: list[list[str]] = []
+    config_home = tmp_path / "config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-appear-in-unit")
     monkeypatch.setattr(batch_eval.shutil, "which", lambda name: "/tools/vercel")
     monkeypatch.setattr(
         batch_eval,
@@ -1152,13 +1155,32 @@ def test_batch_monitor_service_carries_absolute_uv_vercel_and_modal_profile(
     )
     monkeypatch.setattr(batch_eval.subprocess, "run", lambda *args, **kwargs: None)
     batch_eval.start_monitor_service("eval", tmp_path / ".env", "profile-a")
-    command = commands[0]
-    assert "--setenv=UV=/home/ubuntu/.local/bin/uv" in command
-    assert "--setenv=MODAL_PROFILE=profile-a" in command
-    path_arg = next(item for item in command if item.startswith("--setenv=PATH="))
-    assert "/tools" in path_arg
-    assert str(batch_eval.HARBOR_PYTHON.parent) in path_arg
-    assert str(batch_eval.HARBOR_PYTHON) in command
+    unit_path = config_home / "systemd/user/sprint-batch-eval-monitor.service"
+    unit = unit_path.read_text()
+    assert 'Environment="UV=/home/ubuntu/.local/bin/uv"' in unit
+    assert 'Environment="MODAL_PROFILE=profile-a"' in unit
+    assert "/tools" in unit
+    assert str(batch_eval.HARBOR_PYTHON.parent) in unit
+    assert str(batch_eval.HARBOR_PYTHON) in unit
+    assert f"WorkingDirectory={batch_eval.ROOT}" in unit
+    assert "Restart=on-failure" in unit
+    assert "WantedBy=default.target" in unit
+    assert "must-not-appear-in-unit" not in unit
+    assert commands == [
+        ["systemctl", "--user", "daemon-reload"],
+        [
+            "systemctl",
+            "--user",
+            "enable",
+            "sprint-batch-eval-monitor.service",
+        ],
+        [
+            "systemctl",
+            "--user",
+            "restart",
+            "sprint-batch-eval-monitor.service",
+        ],
+    ]
 
 
 def test_batch_monitor_reads_live_lane_status_without_duplicate_poll(

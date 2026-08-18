@@ -691,35 +691,61 @@ def start_monitor_service(batch_id: str, env_file: Path, modal_profile: str) -> 
         )
     )
     unit = f"sprint-batch-{batch_id}-monitor"
+    unit_name = f"{unit}.service"
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
+    unit_path = config_home / "systemd" / "user" / unit_name
+
+    def quote(value: str | Path) -> str:
+        raw = str(value)
+        if "\n" in raw or "\r" in raw:
+            raise ValueError("systemd unit values cannot contain newlines")
+        escaped = raw.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
+        return f'"{escaped}"'
+
+    monitor_command = [
+        HARBOR_PYTHON,
+        Path(__file__).resolve(),
+        "monitor",
+        "--batch-id",
+        batch_id,
+        "--env-file",
+        env_file.resolve(),
+        "--modal-profile",
+        modal_profile,
+        "--loop",
+    ]
+    unit_text = "\n".join(
+        [
+            "[Unit]",
+            f"Description=Sprint batch monitor for {batch_id}",
+            "Wants=network-online.target",
+            "After=network-online.target",
+            "",
+            "[Service]",
+            "Type=simple",
+            f"WorkingDirectory={ROOT}",
+            f"Environment={quote(f'PATH={service_path}')}",
+            f"Environment={quote(f'UV={UV.resolve()}')}",
+            f"Environment={quote(f'MODAL_PROFILE={modal_profile}')}",
+            "ExecStart=" + " ".join(quote(item) for item in monitor_command),
+            "Restart=on-failure",
+            "RestartSec=30",
+            "",
+            "[Install]",
+            "WantedBy=default.target",
+            "",
+        ]
+    )
     subprocess.run(
-        ["systemctl", "--user", "stop", f"{unit}.service"],
+        ["systemctl", "--user", "stop", unit_name],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         check=False,
     )
-    run_checked(
-        [
-            "systemd-run",
-            "--user",
-            f"--unit={unit}",
-            "--collect",
-            "--property=Restart=on-failure",
-            "--property=RestartSec=30",
-            f"--setenv=PATH={service_path}",
-            f"--setenv=UV={UV.resolve()}",
-            f"--setenv=MODAL_PROFILE={modal_profile}",
-            str(HARBOR_PYTHON),
-            str(Path(__file__).resolve()),
-            "monitor",
-            "--batch-id",
-            batch_id,
-            "--env-file",
-            str(env_file),
-            "--modal-profile",
-            modal_profile,
-            "--loop",
-        ]
-    )
+    frontier_update.atomic_write_text(unit_path, unit_text, mode=0o600)
+    run_checked(["systemctl", "--user", "daemon-reload"])
+    run_checked(["systemctl", "--user", "enable", unit_name])
+    run_checked(["systemctl", "--user", "restart", unit_name])
 
 
 def launch(

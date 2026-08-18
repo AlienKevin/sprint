@@ -23,13 +23,16 @@ environment_mode = "separate"
 
 # Harbor is the trusted acceptance boundary. Each trial may have one accepted
 # policy outstanding and may accept another no sooner than five minutes after
-# the previous acceptance. Replaying one request ID is idempotent; a new ID with
-# identical bytes is a new submission and is subject to the same limiter.
+# the previous acceptance. Replaying one request ID is idempotent. The public
+# CLI suppresses identical staged/accepted bytes unless the agent explicitly
+# uses --force; a forced new ID remains subject to the trusted-host limiter.
 [verifier.continuous]
 enabled = true
-watch_dir = "/app/submissions/queue"
+watch_dir = "/durable/submissions/queue"
 results_dir = "/app/submissions/results"
 return_results_to_agent = false
+acknowledgments_dir = "/durable/submissions/acknowledgments"
+return_acknowledgments_to_agent = true
 drain_pending_on_stop = true
 # Every accepted policy is part of the benchmark result set. There is no
 # privileged final artifact or separate post-agent verification.

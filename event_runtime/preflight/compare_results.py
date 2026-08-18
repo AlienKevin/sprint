@@ -5,12 +5,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 
 FLOAT_TOLERANCE = 0.002
+DECIMAL_TOLERANCE = Decimal(str(FLOAT_TOLERANCE))
 
 
 def rounded(value: Any) -> float | None:
@@ -64,8 +65,12 @@ def equivalent(
         if left is not None:
             delta = abs(float(left) - float(right))
             deltas[key] = delta
-            if not math.isclose(
-                float(left), float(right), rel_tol=0.0, abs_tol=FLOAT_TOLERANCE
+            # These values have already been rounded to the benchmark's
+            # published millimetre precision.  Decimal avoids rejecting the
+            # inclusive 2 mm boundary because binary float subtraction can
+            # represent 0.796 - 0.794 as 0.0020000000000000018.
+            if Decimal(str(left)) - Decimal(str(right)) > DECIMAL_TOLERANCE or (
+                Decimal(str(right)) - Decimal(str(left)) > DECIMAL_TOLERANCE
             ):
                 return False, deltas
 
@@ -80,11 +85,11 @@ def equivalent(
             if left_item is not None:
                 delta = abs(float(left_item) - float(right_item))
                 deltas[f"{key}[{index}]"] = delta
-                if not math.isclose(
-                    float(left_item),
-                    float(right_item),
-                    rel_tol=0.0,
-                    abs_tol=FLOAT_TOLERANCE,
+                if (
+                    Decimal(str(left_item)) - Decimal(str(right_item))
+                    > DECIMAL_TOLERANCE
+                    or Decimal(str(right_item)) - Decimal(str(left_item))
+                    > DECIMAL_TOLERANCE
                 ):
                     return False, deltas
     return True, deltas

@@ -36,6 +36,7 @@ from event_runtime.container.sprint_resilience import CheckpointStore, Completio
 
 AGENT_MIRROR_ROOT = Path("/run/sprint-gpu-mirror")
 AGENT_WORKSPACE_ROOT = Path("/app")
+TERMINAL_STATUSES = frozenset({"succeeded", "failed", "terminated"})
 
 
 def utc_now() -> str:
@@ -112,15 +113,145 @@ def latest_job_id(root: Path) -> str | None:
     return files[-1].stem if files else None
 
 
-def read_status(root: Path, job_id: str) -> dict:
-    paths = (
-        AGENT_MIRROR_ROOT / "status" / f"{job_id}.json",
-        root / "status" / f"{job_id}.json",
+def _read_status_candidate(path: Path, source: str) -> tuple[dict, str] | None:
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    return (payload, source) if isinstance(payload, dict) else None
+
+
+def _attempt_number(payload: dict) -> int:
+    try:
+        return int(payload.get("attempt") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _event_epoch(payload: dict) -> float:
+    for key in (
+        "finished_at_epoch_s",
+        "terminated_at_epoch_s",
+        "updated_at_epoch_s",
+        "started_at_epoch_s",
+        "dispatched_at_epoch_s",
+        "claimed_at_epoch_s",
+        "created_at_epoch_s",
+    ):
+        try:
+            value = float(payload.get(key) or 0)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return 0.0
+
+
+def _same_attempt(left: dict, right: dict) -> bool:
+    if _attempt_number(left) != _attempt_number(right):
+        return False
+    left_lease = str(left.get("lease_id") or left.get("claim_id") or "")
+    right_lease = str(right.get("lease_id") or right.get("claim_id") or "")
+    return not left_lease or not right_lease or left_lease == right_lease
+
+
+def reconcile_status_candidates(
+    candidates: list[tuple[dict, str]],
+) -> dict:
+    """Resolve mutable delivery mirrors against immutable attempt outcomes.
+
+    A completed worker attempt is authoritative for its lease unless the host
+    fenced that lease before the worker reported completion.  This prevents a
+    later batch-stop pass from rewriting a job that had already succeeded,
+    while preserving a real stop/completion race in favour of the fence.
+    """
+    if not candidates:
+        raise ValueError("no GPU status candidates")
+    summaries = [item for item in candidates if item[1] != "durable_attempt"]
+    attempts = [item for item in candidates if item[1] == "durable_attempt"]
+    source_rank = {"volume_status": 1, "host_mirror": 2}
+    selected, selected_source = max(
+        summaries or attempts,
+        key=lambda item: (
+            _attempt_number(item[0]),
+            str(item[0].get("status") or "") in TERMINAL_STATUSES,
+            _event_epoch(item[0]),
+            source_rank.get(item[1], 3),
+        ),
     )
-    path = next((candidate for candidate in paths if candidate.is_file()), None)
-    if path is None:
+    matching_attempts = [
+        item
+        for item in attempts
+        if _same_attempt(item[0], selected)
+        and str(item[0].get("status") or "") in TERMINAL_STATUSES
+    ]
+    if matching_attempts:
+        attempt, attempt_source = max(
+            matching_attempts,
+            key=lambda item: (_attempt_number(item[0]), _event_epoch(item[0])),
+        )
+        summary_status = str(selected.get("status") or "")
+        fence_epoch = 0.0
+        if summary_status == "terminated":
+            try:
+                fence_epoch = float(
+                    selected.get("terminated_at_epoch_s")
+                    or selected.get("finished_at_epoch_s")
+                    or 0
+                )
+            except (TypeError, ValueError):
+                fence_epoch = 0.0
+        # A fence that predates completion wins. A later operator cleanup does
+        # not mutate the already-durable outcome of this exact lease.
+        if not fence_epoch or fence_epoch >= _event_epoch(attempt):
+            selected, selected_source = attempt, attempt_source
+
+    result = dict(selected)
+    conflicts = [
+        {
+            "source": source,
+            "attempt": _attempt_number(payload),
+            "lease_id": payload.get("lease_id") or payload.get("claim_id"),
+            "status": payload.get("status"),
+        }
+        for payload, source in candidates
+        if (
+            _attempt_number(payload),
+            str(payload.get("lease_id") or payload.get("claim_id") or ""),
+            str(payload.get("status") or ""),
+        )
+        != (
+            _attempt_number(selected),
+            str(selected.get("lease_id") or selected.get("claim_id") or ""),
+            str(selected.get("status") or ""),
+        )
+    ]
+    if conflicts:
+        result["status_reconciliation"] = {
+            "selected_source": selected_source,
+            "conflicts": conflicts,
+        }
+    return result
+
+
+def read_status(root: Path, job_id: str) -> dict:
+    candidates: list[tuple[dict, str]] = []
+    for path, source in (
+        (AGENT_MIRROR_ROOT / "status" / f"{job_id}.json", "host_mirror"),
+        (root / "status" / f"{job_id}.json", "volume_status"),
+    ):
+        candidate = _read_status_candidate(path, source)
+        if candidate is not None:
+            candidates.append(candidate)
+    attempt_dir = root / "attempts" / job_id
+    if attempt_dir.is_dir():
+        for path in attempt_dir.glob("*.json"):
+            candidate = _read_status_candidate(path, "durable_attempt")
+            if candidate is not None:
+                candidates.append(candidate)
+    if not candidates:
         raise SystemExit(f"unknown job: {job_id}")
-    return json.loads(path.read_text())
+    return reconcile_status_candidates(candidates)
 
 
 def pack_sync_dirs(archive_path: Path, sync_dirs: list[Path]) -> list[str]:
@@ -227,6 +358,7 @@ def cmd_submit(args: argparse.Namespace) -> int:
         "checkpoint_protocol": "sprint-v1",
         "resume_arg": args.resume_arg or "",
         "gpu_type": "A10G",
+        "job_kind": args.job_kind,
     }
     # Queue entry (claimed by host dispatcher) + status mirror for the agent.
     atomic_write_json(root / "queue" / f"{job_id}.json", job)
@@ -402,6 +534,12 @@ def main() -> int:
     submit.add_argument("--workdir", default="/app")
     submit.add_argument("--timeout", type=int, default=3600)
     submit.add_argument("--note", default="")
+    submit.add_argument(
+        "--job-kind",
+        choices=("auto", "train", "evaluate", "verify"),
+        default="auto",
+        help="Select phase-aware worker watchdogs (default: infer from command)",
+    )
     submit.add_argument("--max-attempts", type=int, default=3)
     submit.add_argument("--retry-backoff", type=float, default=10)
     submit.add_argument("--retry-backoff-max", type=float, default=120)

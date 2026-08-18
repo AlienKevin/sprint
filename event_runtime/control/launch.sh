@@ -319,6 +319,42 @@ if not math.isfinite(value) or value <= 0:
 print(format(value, "g"))
 PY
 )
+AGENT_COST_SHUTDOWN_RESERVE_USD=$(python3 - \
+  "$AGENT_COST_SHUTDOWN_RESERVE_USD" "$AGENT_COST_BUDGET_USD" "$MODEL" <<'PY'
+import math
+import sys
+
+reserve = float(sys.argv[1])
+budget = float(sys.argv[2])
+model = sys.argv[3].split("/", 1)[-1]
+if not math.isfinite(reserve) or reserve < 0 or reserve >= budget:
+    raise SystemExit(
+        "AGENT_COST_SHUTDOWN_RESERVE_USD must be finite, non-negative, and below the budget"
+    )
+minimum = {"deepseek-v4-flash": 0.55, "gpt-5.6-luna": 0.50}.get(model)
+if minimum is not None and reserve < minimum:
+    raise SystemExit(
+        f"AGENT_COST_SHUTDOWN_RESERVE_USD must be at least {minimum:g} for {model}"
+    )
+print(format(reserve, "g"))
+PY
+)
+# Modal enforces this deadline in its control plane. It is intentionally based
+# on the always-on CPU allocation alone: even if both controller and in-sandbox
+# watchdog disappear, the run cannot remain billable past its CPU-only budget.
+SANDBOX_TIMEOUT_SECONDS=$(python3 - "$SANDBOX_TIMEOUT_SECONDS" \
+  "$AGENT_COST_BUDGET_USD" "$AGENT_COST_SHUTDOWN_RESERVE_USD" <<'PY'
+import math
+import sys
+
+configured = int(sys.argv[1])
+budget = float(sys.argv[2])
+reserve = float(sys.argv[3])
+cpu_rate = 2 * 0.00003942 + 8 * 0.00000667
+budget_deadline = max(60, math.floor((budget - reserve) / cpu_rate))
+print(min(configured, budget_deadline))
+PY
+)
 
 [[ -d "$HARBOR/src/harbor" ]] || { echo "missing vendored Harbor: $HARBOR" >&2; exit 1; }
 [[ -f "$HARBOR/.sprint-upstream-commit" ]] || {
@@ -419,13 +455,14 @@ print_config() {
     "$AGENT_KIND" "$MODEL" "$ENDPOINT" "$REASONING_EFFORT" "$CODEX_VERSION" \
     "$AGENT_SECRET_NAME" \
     "$SANDBOX_TIMEOUT_SECONDS" "$MODEL_API_HOST" "$MODAL_PROFILE" "$HARBOR" "$HARBOR_COMMIT" \
-    "$HARBOR_BRANCH" "$VOLUMES_JSON" "$KEEPALIVE_JSON" "$AGENT_COST_BUDGET_USD" <<'PY'
+  "$HARBOR_BRANCH" "$VOLUMES_JSON" "$KEEPALIVE_JSON" "$AGENT_COST_BUDGET_USD" \
+  "$AGENT_COST_SHUTDOWN_RESERVE_USD" <<'PY'
 import json
 import sys
 
 (run_id, app, training_app, verifier_app, volume, state, jobs, agent_kind, model, endpoint, effort,
  codex_version, auth_name, sandbox_timeout, model_api_host, profile, harbor, commit, branch,
- volumes, keepalive, agent_cost_budget) = sys.argv[1:]
+ volumes, keepalive, agent_cost_budget, shutdown_reserve) = sys.argv[1:]
 payload = {
     "run_id": run_id,
     "app_name": app,
@@ -442,8 +479,15 @@ payload = {
     "automatic_stop": True,
     "automatic_stop_reason": "agent_cost_budget_exhausted",
     "agent_cost_budget_usd": float(agent_cost_budget),
+    "budget_enforcement": {
+        "controller_watchdog": True,
+        "in_sandbox_watchdog": True,
+        "uncertainty_policy": "fail_closed",
+        "shutdown_reserve_usd": float(shutdown_reserve),
+        "durable_stop_marker": "BUDGET_STOP_REQUESTED.json",
+    },
     "sandbox_timeout_seconds": int(sandbox_timeout),
-    "sandbox_timeout_role": "modal_maximum_lifetime",
+    "sandbox_timeout_role": "modal_server_side_budget_backstop",
     "cpu_agent": {
         "physical_cpu_cores": 2,
         "vcpus_equivalent": 4,
@@ -582,7 +626,7 @@ python3 - "$STATE_DIR/run.json" "$RUN_ID" "$APP_NAME" "$TRAINING_APP_NAME" \
   "$SUPERVISED_LAUNCH" "$STANDING_GPU" "$MODEL_API_HOST" \
   "$PROMPT_TEMPLATE" "$WARMUP_MANIFEST_PATH" "$ROOT" "$BATCH_ID" \
   "$SOURCE_ROOT" "$SPRINT_SOURCE_COMMIT" "$TASK" \
-  "$AGENT_COST_BUDGET_USD" <<'PY'
+  "$AGENT_COST_BUDGET_USD" "$AGENT_COST_SHUTDOWN_RESERVE_USD" <<'PY'
 import datetime
 import fcntl
 import hashlib
@@ -595,7 +639,7 @@ import sys
  endpoint, effort, codex_version, sandbox_timeout, debounce, harbor, commit,
  branch, resuming, cpu_attempt, supervised, standing_gpu_flag,
  model_api_host, prompt_template, warmup_manifest_path, root, batch_id, source_root,
- sprint_source_commit, rendered_task_root, agent_cost_budget) = sys.argv[1:]
+ sprint_source_commit, rendered_task_root, agent_cost_budget, shutdown_reserve) = sys.argv[1:]
 standing_gpu = standing_gpu_flag == "1"
 target = pathlib.Path(path)
 root_path = pathlib.Path(root)
@@ -636,8 +680,15 @@ base = {
     "automatic_stop": True,
     "automatic_stop_reason": "agent_cost_budget_exhausted",
     "agent_cost_budget_usd": float(agent_cost_budget),
+    "budget_enforcement": {
+        "controller_watchdog": True,
+        "in_sandbox_watchdog": True,
+        "uncertainty_policy": "fail_closed",
+        "shutdown_reserve_usd": float(shutdown_reserve),
+        "durable_stop_marker": "BUDGET_STOP_REQUESTED.json",
+    },
     "sandbox_timeout_seconds": int(sandbox_timeout),
-    "sandbox_timeout_role": "modal_maximum_lifetime",
+    "sandbox_timeout_role": "modal_server_side_budget_backstop",
     "deploy_debounce_seconds": int(debounce),
     "harbor_path": harbor,
     "harbor_commit": commit,
@@ -750,6 +801,7 @@ if resuming == "1":
         "codex_version": codex_version if agent_kind == "codex" else None,
         "harbor_commit": commit,
         "agent_cost_budget_usd": float(agent_cost_budget),
+        "budget_enforcement": base["budget_enforcement"],
     }
     mismatches = {
         key: (payload.get(key), value)
@@ -829,6 +881,8 @@ PY
 SHARED_AGENT_ENV=(
   --ae "SPRINT_RUN_ID=$RUN_ID"
   --ae "SPRINT_GPU_JOBS_ROOT=/durable/runs/$RUN_ID/gpu-jobs"
+  --ae "SPRINT_SUBMISSIONS_ROOT=/durable/submissions"
+  --ae "SPRINT_SUBMISSION_MIN_INTERVAL_SEC=300"
   --ae "SPRINT_CPU_LAUNCH_ATTEMPT=$CPU_LAUNCH_ATTEMPT"
   --ae "SPRINT_MODEL=$MODEL"
   --ae "SPRINT_SCORING_QUEUE_KEY=${BATCH_ID:-standalone}"

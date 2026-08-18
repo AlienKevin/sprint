@@ -173,9 +173,18 @@ class ContinuousVerificationService:
         self._root.mkdir(parents=True, exist_ok=True)
         recover = self._hydrate_ledger()
         directories = [self._quoted_watch_dir]
+        if self._config.return_acknowledgments_to_agent:
+            directories.append(
+                quote_shell_arg(self._config.acknowledgments_dir, TaskOS.LINUX)
+            )
         if self._config.return_results_to_agent:
             directories.append(quote_shell_arg(self._config.results_dir, TaskOS.LINUX))
         await self._env.exec(f"mkdir -p {' '.join(directories)}")
+        # Re-publish sanitized ingestion state after a controller/environment
+        # restart. The trusted ledger and immutable host artifact are the source;
+        # the agent-visible copy is never read back into scoring state.
+        for record in self._summary.submissions:
+            await self._publish_acknowledgment(record.name, record)
         for record in recover:
             self._spawn(record.name, record=record)
         self._watcher = asyncio.create_task(self._watch())
@@ -333,6 +342,7 @@ class ContinuousVerificationService:
         for record in records:
             if record.rewards is not None:
                 continue
+            artifact_frozen = bool(record.artifact_path and record.artifact_sha256)
             retryable = record.retryable_infrastructure_error or (
                 record.error_type == "DownloadVerifierDirError"
                 or (record.error or "").startswith("DownloadVerifierDirError:")
@@ -342,7 +352,8 @@ class ContinuousVerificationService:
                 continue
             if record.verification_attempts >= self._config.max_verifier_attempts:
                 continue
-            self._validated_archived_artifact(record)
+            if artifact_frozen:
+                self._validated_archived_artifact(record)
             recover.append(record)
         if recover:
             self._logger.warning(
@@ -424,7 +435,10 @@ class ContinuousVerificationService:
     async def _verify(
         self, name: str, *, record: ContinuousSubmission | None = None
     ) -> None:
-        recovering = record is not None
+        recovering = bool(
+            record is not None and record.artifact_path and record.artifact_sha256
+        )
+        resuming_ingestion = record is not None and not recovering
         if record is None:
             async with self._admission_lock:
                 observed_at = _now()
@@ -479,6 +493,14 @@ class ContinuousVerificationService:
             record.retryable_infrastructure_error = False
             self._write_ledger()
         else:
+            if resuming_ingestion:
+                record.finished_at = None
+                record.error = None
+                record.error_type = None
+                record.error_message = None
+                record.retryable_infrastructure_error = False
+            record.ingestion_attempts += 1
+            self._write_ledger()
             try:
                 # Archive before queueing for the verifier. The agent may
                 # overwrite its queue entry while earlier runs are being scored;
@@ -486,6 +508,7 @@ class ContinuousVerificationService:
                 await self._env.download_file(f"{self._config.watch_dir}/{name}", local)
                 record.artifact_path = str(local.relative_to(self._artifacts_dir))
                 record.artifact_sha256 = hashlib.sha256(local.read_bytes()).hexdigest()
+                record.artifact_size_bytes = local.stat().st_size
                 record.evaluation_fingerprint = hashlib.sha256(
                     (
                         self._verification_context + "\0" + record.artifact_sha256
@@ -500,10 +523,13 @@ class ContinuousVerificationService:
                 record.error = f"{type(exc).__name__}: {exc}"
                 record.error_type = type(exc).__name__
                 record.error_message = str(exc)
+                record.retryable_infrastructure_error = True
                 record.finished_at = _now()
+                await self._publish_acknowledgment(name, record)
                 await self._publish(name, record)
                 return
 
+            await self._publish_acknowledgment(name, record)
             if not record.accepted:
                 record.finished_at = _now()
                 record.duration_sec = 0.0
@@ -644,6 +670,47 @@ class ContinuousVerificationService:
         raise AssertionError("unreachable verifier retry loop")
 
     # -- reporting -----------------------------------------------------------
+
+    async def _publish_acknowledgment(
+        self, name: str, record: ContinuousSubmission
+    ) -> None:
+        """Return ingestion/admission state without leaking verifier feedback."""
+        if not self._config.return_acknowledgments_to_agent:
+            return
+        if record.artifact_sha256:
+            state = "accepted" if record.accepted else "rejected"
+        elif record.error:
+            state = "ingestion_failed"
+        else:
+            state = "observed"
+        payload: dict[str, Any] = {
+            "schema_version": 1,
+            "submission_name": name,
+            "state": state,
+            "accepted": bool(record.accepted and record.artifact_sha256),
+            "observed_at": record.submitted_at.isoformat(),
+            "accepted_at": (
+                record.accepted_at.isoformat() if record.accepted_at else None
+            ),
+            "artifact_sha256": record.artifact_sha256,
+            "artifact_size_bytes": record.artifact_size_bytes,
+            "retry_after_sec": record.retry_after_sec,
+        }
+        if state == "rejected":
+            payload["reason"] = record.error or "rejected"
+        elif state == "ingestion_failed":
+            payload["reason"] = "ingestion_failed"
+        local = (
+            self._attempt_paths(record.index, name).trial_dir / "acknowledgment.json"
+        )
+        local.parent.mkdir(parents=True, exist_ok=True)
+        local.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        try:
+            await self._env.upload_file(
+                local, f"{self._config.acknowledgments_dir}/{name}.json"
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning(f"Could not acknowledge {name}: {exc}")
 
     async def _publish(self, name: str, record: ContinuousSubmission) -> None:
         """Archive the result and optionally hand a copy back to the agent."""

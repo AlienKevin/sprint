@@ -423,9 +423,7 @@ class DurableOpsTests(unittest.TestCase):
         config = json.loads(completed.stdout)
         self.assertEqual(config["agent_kind"], "claude-code")
         self.assertTrue(config["automatic_stop"])
-        self.assertEqual(
-            config["automatic_stop_reason"], "agent_cost_budget_exhausted"
-        )
+        self.assertEqual(config["automatic_stop_reason"], "agent_cost_budget_exhausted")
         self.assertEqual(config["agent_cost_budget_usd"], 10.0)
         self.assertNotIn("stop_after_seconds", config)
         self.assertFalse(state.exists())
@@ -466,9 +464,7 @@ class DurableOpsTests(unittest.TestCase):
         self.assertIsNone(config["service_tier"])
         self.assertFalse(config["usage_audit_required"])
         self.assertTrue(config["automatic_stop"])
-        self.assertEqual(
-            config["automatic_stop_reason"], "agent_cost_budget_exhausted"
-        )
+        self.assertEqual(config["automatic_stop_reason"], "agent_cost_budget_exhausted")
         self.assertEqual(config["agent_cost_budget_usd"], 10.0)
         self.assertNotIn("stop_after_seconds", config)
         self.assertFalse(state.exists())
@@ -683,6 +679,8 @@ while true; do sleep 1; done
                     str(fake_root),
                     "--restic-bin",
                     str(fake_restic),
+                    "--budget-watchdog-bin",
+                    "/bin/true",
                     "--claude-pattern",
                     str(dummy).replace(".", r"\."),
                     "--exit-after-ack",
@@ -868,6 +866,8 @@ while True:
                     str(codex_home),
                     "--restic-bin",
                     str(fake_restic),
+                    "--budget-watchdog-bin",
+                    "/bin/true",
                     "--codex-pattern",
                     str(dummy).replace(".", r"\."),
                     "--exit-after-ack",
@@ -1180,6 +1180,49 @@ while True:
                 )
                 self.assertEqual(monitor.call_count, 1)
 
+    def test_stop_signals_cpu_before_waiting_for_gpu_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state_dir = Path(raw)
+            run = {
+                "run_id": "test-stop-order",
+                "agent_kind": "codex",
+                "agent_container_id": "ta-test",
+            }
+            events: list[str] = []
+
+            def signal_cpu(*_args, **_kwargs) -> None:
+                events.append("cpu-signalled")
+
+            def stop_gpu(*_args, **_kwargs) -> list[dict]:
+                self.assertEqual(events, ["cpu-signalled"])
+                events.append("gpu-cleanup")
+                return []
+
+            def fetch_ack(*_args, **_kwargs) -> None:
+                self.assertEqual(events, ["cpu-signalled", "gpu-cleanup"])
+                events.append("ack-fetched")
+                return None
+
+            with (
+                mock.patch.object(sprintctl, "load_run", return_value=(state_dir, run)),
+                mock.patch.object(
+                    sprintctl, "fetch_remote_json", side_effect=fetch_ack
+                ),
+                mock.patch.object(
+                    sprintctl, "discover_agent_container", return_value="ta-test"
+                ),
+                mock.patch.object(sprintctl, "exec_container", side_effect=signal_cpu),
+                mock.patch(
+                    "event_runtime.compute.worker.stop_all", side_effect=stop_gpu
+                ),
+            ):
+                result = sprintctl.request_stop(
+                    "test-stop-order", reason="agent_cost_budget_exhausted"
+                )
+
+            self.assertEqual(events, ["cpu-signalled", "gpu-cleanup", "ack-fetched"])
+            self.assertEqual(result["status"], "requested")
+
     def test_monitor_reapplies_stop_requested_before_sandbox_existed(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             state_dir = Path(raw)
@@ -1211,6 +1254,47 @@ while True:
             request_stop.assert_called_once_with(
                 "stop-during-build", reason="operator_batch_stop"
             )
+
+    def test_monitor_imports_cloud_budget_stop_before_gpu_dispatch(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state_dir = Path(raw)
+            run = {
+                "run_id": "cloud-budget-stop",
+                "agent_kind": "codex",
+                "cpu_agent_gpu_worker": True,
+                "budget_enforcement": {"in_sandbox_watchdog": True},
+            }
+            expected_status = {"run_id": "cloud-budget-stop"}
+            with (
+                mock.patch.object(sprintctl, "load_run", return_value=(state_dir, run)),
+                mock.patch.object(
+                    sprintctl,
+                    "fetch_remote_json",
+                    return_value={"reason": "agent_cost_budget_exhausted"},
+                ),
+                mock.patch.object(sprintctl, "request_stop") as request_stop,
+                mock.patch("event_runtime.compute.worker.dispatch_once") as dispatch,
+                mock.patch("event_runtime.telemetry.host.poll_once"),
+                mock.patch.object(
+                    sprintctl, "discover_job_and_trial", return_value=(None, None)
+                ),
+                mock.patch.object(
+                    sprintctl, "status_snapshot", return_value=expected_status
+                ),
+            ):
+                status = sprintctl.monitor_once(
+                    "cloud-budget-stop", upload=False, include_remote=False
+                )
+
+            self.assertEqual(status, expected_status)
+            marker = json.loads((state_dir / "STOP_REQUESTED.json").read_text())
+            self.assertEqual(marker["reason"], "agent_cost_budget_exhausted")
+            request_stop.assert_called_once_with(
+                "cloud-budget-stop", reason="agent_cost_budget_exhausted"
+            )
+            # Dispatch is still called, but sees the local STOP_REQUESTED marker
+            # and therefore cannot claim or spawn new GPU work.
+            dispatch.assert_called_once_with("cloud-budget-stop")
 
     def test_agent_cost_budget_stops_at_complete_ten_dollars(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

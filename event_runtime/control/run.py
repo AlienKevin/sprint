@@ -10,6 +10,7 @@ import json
 import math
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -594,7 +595,27 @@ def request_stop(run_id: str, *, reason: str = "operator_stop") -> dict[str, Any
     kind = agent_kind(run)
     marker = state_dir / "STOP_REQUESTED.json"
 
-    # Fence GPU leases before signalling the CPU harness. The monitor also
+    # Signal the CPU harness before waiting for the GPU dispatch lock. A
+    # Sandbox.create call can hold that lock for minutes; waiting for it first
+    # would let API and CPU spend continue past the durable budget marker.
+    agent_stop_error = None
+    try:
+        container = discover_agent_container(state_dir, run)
+        if container:
+            exec_container(
+                run,
+                container,
+                "umask 077; printf '%s\\n' "
+                + shlex.quote(str(payload.get("reason") or reason))
+                + " > /run/sprint-stop; chmod 0600 /run/sprint-stop",
+            )
+            if payload.get("container_id") != container:
+                payload["container_id"] = container
+                atomic_write_json(marker, payload, mode=0o600)
+    except Exception as exc:  # noqa: BLE001
+        agent_stop_error = f"{type(exc).__name__}: {exc}"
+
+    # Fence GPU leases after the CPU has received its stop signal. The monitor
     # sees STOP_REQUESTED and repeats this idempotently if this call is cut off.
     gpu_stopped: list[str] = []
     gpu_stop_error = None
@@ -616,27 +637,15 @@ def request_stop(run_id: str, *, reason: str = "operator_stop") -> dict[str, Any
             "status": "acknowledged",
             "agent_kind": kind,
             "ack": ack,
+            "agent_stop_error": agent_stop_error,
             "gpu_workers_stopped": gpu_stopped,
             "gpu_stop_error": gpu_stop_error,
         }
-
-    try:
-        container = discover_agent_container(state_dir, run)
-    except Exception:  # noqa: BLE001
-        container = None
-    if container:
-        exec_container(
-            run,
-            container,
-            "umask 077; : > /run/sprint-stop; chmod 0600 /run/sprint-stop",
-        )
-        if payload.get("container_id") != container:
-            payload["container_id"] = container
-            atomic_write_json(marker, payload, mode=0o600)
     return {
         "status": "requested",
         "agent_kind": kind,
         **payload,
+        "agent_stop_error": agent_stop_error,
         "gpu_workers_stopped": gpu_stopped,
         "gpu_stop_error": gpu_stop_error,
     }
@@ -1057,11 +1066,33 @@ def monitor_once(
 ) -> dict[str, Any]:
     state_dir, run = load_run(run_id)
     Path("/data/.keepalive").touch()
+    # The in-sandbox watchdog writes this marker directly to the shared Modal
+    # Volume. Import it before GPU dispatch so controller recovery cannot start
+    # fresh work after a cloud-side budget stop.
+    stop_marker = state_dir / "STOP_REQUESTED.json"
+    if not stop_marker.is_file() and (run.get("budget_enforcement") or {}).get(
+        "in_sandbox_watchdog"
+    ):
+        try:
+            cloud_stop = fetch_remote_json(
+                state_dir,
+                run,
+                "BUDGET_STOP_REQUESTED.json",
+                "BUDGET_STOP_REQUESTED.remote.json",
+            )
+            if cloud_stop:
+                persist_stop_request(
+                    run_id,
+                    reason=str(
+                        cloud_stop.get("reason") or "agent_cost_budget_exhausted"
+                    ),
+                )
+        except Exception as exc:  # noqa: BLE001
+            record_controller_error(run_id, exc)
     # A stop may be requested while Modal is still resolving the image and no
     # runtime sandbox exists. Keep reapplying the durable request until the
     # actual agent acknowledges it; never mistake an image-build container for
     # the CPU agent or let a post-build sandbox escape an earlier stop.
-    stop_marker = state_dir / "STOP_REQUESTED.json"
     if stop_marker.is_file() and not (state_dir / "STOP_ACK.json").is_file():
         try:
             stop_payload = json.loads(stop_marker.read_text())

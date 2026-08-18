@@ -803,7 +803,9 @@ def ensure_standing_sandbox(run: dict[str, Any]) -> dict[str, Any]:
     sandbox = modal.Sandbox.create(
         "bash",
         "-c",
-        "exec sleep infinity",
+        "while [ ! -e "
+        + shlex.quote(f"/durable/runs/{run['run_id']}/BUDGET_STOP_REQUESTED.json")
+        + " ]; do sleep 2; done",
         app=app,
         image=image,
         gpu="A10G",
@@ -811,7 +813,7 @@ def ensure_standing_sandbox(run: dict[str, Any]) -> dict[str, Any]:
         memory=12288,
         env={"HEADLESS": "1"},
         block_network=True,
-        timeout=int(run.get("sandbox_timeout_secs") or 86400),
+        timeout=int(run.get("sandbox_timeout_seconds") or 86400),
         volumes={"/durable": volume},
         tags={
             "sprint.role": STANDING_TAG_ROLE,
@@ -1470,10 +1472,7 @@ def reconcile_job(
         and int(attempt_record.get("attempt") or 0) == int(job.get("attempt") or 0)
         and str(attempt_record.get("lease_id") or "") == str(job.get("lease_id") or "")
     )
-    if owned_record and str(attempt_record.get("status") or "") in {
-        "succeeded",
-        "failed",
-    }:
+    if owned_record and str(attempt_record.get("status") or "") in gpu_claim.TERMINAL:
         terminal = dict(job)
         terminal.update(
             {
@@ -1581,6 +1580,62 @@ def reconcile_job(
         now=ref,
     )
     return retried, detail
+
+
+def reconcile_terminal_attempt_before_stop(
+    run: dict[str, Any], job: dict[str, Any]
+) -> dict[str, Any]:
+    """Commit an already-finished owned attempt before applying a stop fence."""
+    job_status = str(job.get("status") or "")
+    if job_status not in gpu_claim.OWNED | {"terminated"}:
+        return job
+    try:
+        attempt_record = load_attempt_record(run, job)
+    except Exception:  # noqa: BLE001 - stop must still fence on read outage
+        return job
+    if not attempt_record:
+        return job
+    if (
+        int(attempt_record.get("attempt") or 0) != int(job.get("attempt") or 0)
+        or str(attempt_record.get("lease_id") or "") != str(job.get("lease_id") or "")
+        or str(attempt_record.get("status") or "") not in gpu_claim.TERMINAL
+    ):
+        return job
+    if job_status == "terminated":
+        try:
+            terminated_at = float(
+                job.get("terminated_at_epoch_s") or job.get("finished_at_epoch_s") or 0
+            )
+            attempt_finished_at = float(attempt_record.get("finished_at_epoch_s") or 0)
+        except (TypeError, ValueError):
+            return job
+        # The fence won a real race if it was issued before the worker's final
+        # record. Only repair the historical batch-stop overwrite case where
+        # the immutable attempt had already completed.
+        if (
+            not terminated_at
+            or not attempt_finished_at
+            or terminated_at < attempt_finished_at
+        ):
+            return job
+    payload = dict(job)
+    for key in (
+        "status",
+        "started_at",
+        "started_at_epoch_s",
+        "finished_at",
+        "finished_at_epoch_s",
+        "exit_code",
+        "error",
+        "progress",
+        "checkpoint",
+    ):
+        if key in attempt_record:
+            payload[key] = attempt_record[key]
+    payload["attempt_record"] = attempt_path(
+        str(run["run_id"]), str(job["job_id"]), int(job["attempt"])
+    )
+    return persist_job(run, payload)
 
 
 def list_pending_job_ids(run: dict[str, Any]) -> list[str]:
@@ -1743,7 +1798,12 @@ def operator_stop_requested(state_dir: Path) -> bool:
     if not ack.is_file():
         return False
     try:
-        return json.loads(ack.read_text()).get("reason") == "operator_stop"
+        return json.loads(ack.read_text()).get("reason") in {
+            "operator_stop",
+            "operator_batch_stop",
+            "agent_cost_budget_exhausted",
+            "budget_telemetry_unavailable",
+        }
     except (OSError, json.JSONDecodeError):
         return True
 
@@ -1754,6 +1814,8 @@ def _stop_all_locked(
     stopped: list[dict[str, Any]] = []
     for job_id in list_job_ids(run):
         job = load_job(run, job_id)
+        if job:
+            job = reconcile_terminal_attempt_before_stop(run, job)
         if not job or str(job.get("status") or "") in gpu_claim.TERMINAL:
             continue
         heartbeat = load_heartbeat(run, job)
@@ -1813,6 +1875,7 @@ def terminate_job(run: dict[str, Any], job_id: str) -> dict[str, Any]:
             "job_id": job_id,
             "run_id": run["run_id"],
         }
+        job = reconcile_terminal_attempt_before_stop(run, job)
         if str(job.get("status") or "") in gpu_claim.TERMINAL:
             return job
         payload = dict(job)

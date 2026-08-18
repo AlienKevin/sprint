@@ -14,6 +14,9 @@ ROOT = Path(__file__).resolve().parents[1]
 CONTAINER = ROOT / "event_runtime" / "container"
 MODELS = ROOT / "event_runtime" / "models"
 AGENT = ROOT / "event_runtime" / "agent"
+CODEX_COST = (
+    ROOT / "harbor" / "src" / "harbor" / "agents" / "installed" / "codex_cost.py"
+)
 
 _CONTAINER_LINKS = (
     "sprint-snapshot-loop.sh",
@@ -26,6 +29,7 @@ _CONTAINER_LINKS = (
     "sprint-apply-luna-codex-config.sh",
     "sprint-agent-shell-env.sh",
     "sprint-gpu-worker-run.py",
+    "sprint-budget-watchdog.py",
     "sprint-isaac-bootstrap.py",
     "sprint-gpu-timeline.py",
     "sprint_resilience.py",
@@ -58,6 +62,7 @@ def agent_context_roots(event: EventLayout) -> tuple[Path, ...]:
         CONTAINER,
         MODELS,
         AGENT,
+        CODEX_COST,
         event.verifier,
         Path(__file__).resolve(),
     )
@@ -92,6 +97,11 @@ def agent_image(event: EventLayout, public_verifier: Path) -> modal.Image:
         copy=True,
         ignore=["**/__pycache__/**", "**/*.pyc"],
     )
+    image = image.add_local_file(
+        CODEX_COST,
+        "/opt/sprint-codex-cost.py",
+        copy=True,
+    )
     image = image.add_local_dir(public_verifier, "/opt/event-verifier", copy=True)
     image = image.add_local_file(
         event.verifier / "check_submission.py",
@@ -122,7 +132,8 @@ def agent_image(event: EventLayout, public_verifier: Path) -> modal.Image:
         "/opt/event_runtime/container/sprint-apply-deepseek-codex-config.sh "
         "/opt/event_runtime/container/sprint-apply-luna-codex-config.sh "
         "/opt/event_runtime/container/sprint-agent-shell-env.sh "
-        "/opt/event_runtime/container/sprint-trace-mirror.py; "
+        "/opt/event_runtime/container/sprint-trace-mirror.py "
+        "/opt/event_runtime/container/sprint-budget-watchdog.py; "
         "chmod -R a-w /opt/event-verifier; "
         "ln -sfn /opt/event-verifier /app/verifier",
     )
