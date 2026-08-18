@@ -1707,6 +1707,10 @@ class AgentCredentialBoundaryTests(unittest.TestCase):
             launcher.count("KEEPALIVE_JSON=$(make_keepalive_json)"), 2
         )
         self.assertIn('"gpu_worker_gpus_per_job": 1', launcher)
+        # Both the dry-run contract and durable run contract must record the
+        # tier pinned in the Harbor agent arguments. The in-sandbox budget
+        # watchdog reads the latter to price live OpenAI requests.
+        self.assertEqual(launcher.count('"service_tier": ('), 2)
         self.assertIn(
             '"agent_cloud_control_plane_credentials_injected": False', launcher
         )

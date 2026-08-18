@@ -765,6 +765,13 @@ base = {
     # cache-write pricing correctly.
     "usage_audit_required": agent_kind == "codex" and model.split("/", 1)[-1] in {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "deepseek-v4-flash"},
     "hosted_model_tools_policy": "disabled" if agent_kind == "codex" else None,
+    "service_tier": (
+        "default"
+        if agent_kind == "codex"
+        and model.split("/", 1)[-1]
+        in {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
+        else None
+    ),
     "timeline_bucket_seconds": 60,
     "telemetry_cpu_max_gap_seconds": 45,
     "telemetry_gpu_max_gap_seconds": 45,

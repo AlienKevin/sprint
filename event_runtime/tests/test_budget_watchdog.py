@@ -17,7 +17,14 @@ watchdog = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(watchdog)
 
 
-def write_run(durable: Path, run_id: str, *, budget: float = 10.0) -> Path:
+def write_run(
+    durable: Path,
+    run_id: str,
+    *,
+    budget: float = 10.0,
+    model: str = "deepseek/deepseek-v4-flash",
+    service_tier: str | None = None,
+) -> Path:
     root = durable / "runs" / run_id
     state = root / "state"
     state.mkdir(parents=True)
@@ -26,9 +33,9 @@ def write_run(durable: Path, run_id: str, *, budget: float = 10.0) -> Path:
             {
                 "run_id": run_id,
                 "agent_kind": "codex",
-                "model": "deepseek/deepseek-v4-flash",
+                "model": model,
+                "service_tier": service_tier,
                 "reasoning_effort": "high",
-                "service_tier": None,
                 "usage_audit_required": True,
                 "standing_gpu_worker": False,
                 "agent_cost_budget_usd": budget,
@@ -40,7 +47,7 @@ def write_run(durable: Path, run_id: str, *, budget: float = 10.0) -> Path:
     return root
 
 
-def write_deepseek_request(codex_home: Path) -> None:
+def write_codex_request(codex_home: Path, *, model: str = "deepseek-v4-flash") -> None:
     session = codex_home / "sessions/2026/08/18/rollout.jsonl"
     session.parent.mkdir(parents=True)
     usage = {
@@ -55,7 +62,7 @@ def write_deepseek_request(codex_home: Path) -> None:
         {
             "type": "turn_context",
             "timestamp": "2026-08-18T00:00:00Z",
-            "payload": {"model": "deepseek-v4-flash", "effort": "high"},
+            "payload": {"model": model, "effort": "high"},
         },
         {
             "type": "response_item",
@@ -86,7 +93,7 @@ def test_live_watchdog_prices_api_cpu_and_gpu(tmp_path: Path, monkeypatch) -> No
     runtime = tmp_path / "run"
     codex_home = tmp_path / "codex"
     root = write_run(durable, "unit")
-    write_deepseek_request(codex_home)
+    write_codex_request(codex_home)
     monkeypatch.setenv("SPRINT_CPU_LAUNCH_ATTEMPT", "1")
     watchdog.ensure_cpu_start(root, 1, 1_000)
     events = root / "telemetry/gpu_timeline/events"
@@ -131,6 +138,36 @@ def test_live_watchdog_prices_api_cpu_and_gpu(tmp_path: Path, monkeypatch) -> No
     assert payload["training_allocated_seconds"] == 10
     assert payload["components"]["model_api_usd"] > 0
     assert not (root / "BUDGET_STOP_REQUESTED.json").exists()
+
+
+def test_live_watchdog_prices_pinned_luna_default_tier(
+    tmp_path: Path, monkeypatch
+) -> None:
+    durable = tmp_path / "durable"
+    runtime = tmp_path / "run"
+    codex_home = tmp_path / "codex"
+    root = write_run(
+        durable,
+        "unit",
+        model="openai/gpt-5.6-luna",
+        service_tier="default",
+    )
+    write_codex_request(codex_home, model="gpt-5.6-luna")
+    monkeypatch.setenv("SPRINT_CPU_LAUNCH_ATTEMPT", "1")
+    watchdog.ensure_cpu_start(root, 1, 1_000)
+
+    payload = watchdog.check_once(
+        run_id="unit",
+        durable_dir=durable,
+        runtime_dir=runtime,
+        codex_home=codex_home,
+        pricing_path=PRICING,
+        now=1_100,
+    )
+
+    assert payload["status"] == "within_budget"
+    assert payload["request_count"] == 1
+    assert payload["components"]["model_api_usd"] > 0
 
 
 def test_live_watchdog_stops_before_cap_using_shutdown_reserve(
