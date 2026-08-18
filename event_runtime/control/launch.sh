@@ -541,7 +541,7 @@ fi
 # New evaluations only start from image definitions that were eagerly built
 # and exercised on Modal. A resume consumes the recorded immutable IDs above.
 if (( ! RESUMING )); then
-  if [[ -n "$(git -C "$ROOT" status --porcelain --untracked-files=all -- events harbor runs)" ]]; then
+  if [[ -n "$(git -C "$ROOT" status --porcelain --untracked-files=all -- event_runtime events harbor)" ]]; then
     echo "new evaluations require committed benchmark, Harbor, and launcher source" >&2
     exit 1
   fi

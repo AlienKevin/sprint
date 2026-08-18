@@ -38,6 +38,7 @@ runs/ops/*.lock
 runs/ops/*.pid
 runs/ops/*.log
 runs/ops/batches/
+runs/ops/*/
 runs/monitor-*-telemetry.csv
 runs/.modal-*
 runs/.canary-*

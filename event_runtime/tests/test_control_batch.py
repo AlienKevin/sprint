@@ -31,12 +31,23 @@ def test_event_runtime_state_does_not_dirty_the_source_tree() -> None:
             "git",
             "check-ignore",
             "--quiet",
-            "runs/ops/event-example/model-1/supervisor.json",
+            "runs/ops/arbitrary-batch-name/model-1/supervisor.json",
         ],
         cwd=ROOT,
         check=False,
     )
     assert result.returncode == 0
+
+
+def test_launcher_provenance_guard_checks_source_not_generated_runs() -> None:
+    launcher = (ROOT / "event_runtime/control/launch.sh").read_text()
+    assert (
+        "status --porcelain --untracked-files=all -- event_runtime events harbor"
+        in launcher
+    )
+    assert (
+        "status --porcelain --untracked-files=all -- events harbor runs" not in launcher
+    )
 
 
 def test_batch_matrix_is_exact_six_arm_max_effort_contract() -> None:
