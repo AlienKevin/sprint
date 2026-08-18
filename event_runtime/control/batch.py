@@ -970,6 +970,16 @@ def live_run_monitor_status(run_id: str) -> dict[str, Any] | None:
     delays later arms in the batch.
     """
     state_dir = SCRIPT_DIR / run_id
+    # A stopped lane's monitor normally exits before the batch monitor's next
+    # cycle. Its STOP_ACK is already authoritative local state; do not fall
+    # back to a synchronous Modal Volume download that can hang publication
+    # after the remote App has gone away.
+    if (state_dir / "STOP_ACK.json").is_file():
+        try:
+            _, run = sprintctl.load_run(run_id)
+            return sprintctl.status_snapshot(state_dir, run, include_remote=False)
+        except (OSError, ValueError, json.JSONDecodeError):
+            return None
     try:
         pid = int((state_dir / "monitor.pid").read_text().strip())
     except (OSError, ValueError):

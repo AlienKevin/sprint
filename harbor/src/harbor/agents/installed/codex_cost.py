@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -117,20 +117,35 @@ def pricing_snapshot_for_request(
 ) -> dict[str, Any] | None:
     """Select the dated tariff for a request to a mutable model alias."""
     normalized_model = canonical_model_name(model)
-    if normalized_model == GPT_5_6_LUNA_PRICING["model"]:
+    if normalized_model in {
+        GPT_5_6_LUNA_PRICING["model"],
+        DEEPSEEK_V4_FLASH_PRICING["model"],
+    }:
         if not usage_reported_at:
             return None
         try:
             request_time = datetime.fromisoformat(
                 usage_reported_at.replace("Z", "+00:00")
             )
-            effective_from = datetime.fromisoformat(
-                GPT_5_6_LUNA_PRICING["effective_from"].replace("Z", "+00:00")
-            )
         except ValueError:
             return None
         if request_time.tzinfo is None:
             return None
+        if normalized_model == DEEPSEEK_V4_FLASH_PRICING["model"]:
+            effective_from = datetime.fromisoformat(
+                DEEPSEEK_V4_FLASH_OFF_PEAK_PRICING["effective_from"].replace(
+                    "Z", "+00:00"
+                )
+            )
+            if request_time < effective_from:
+                return DEEPSEEK_V4_FLASH_LEGACY_PRICING
+            utc_hour = request_time.astimezone(timezone.utc).hour
+            if 1 <= utc_hour < 4 or 6 <= utc_hour < 10:
+                return DEEPSEEK_V4_FLASH_PEAK_PRICING
+            return DEEPSEEK_V4_FLASH_OFF_PEAK_PRICING
+        effective_from = datetime.fromisoformat(
+            GPT_5_6_LUNA_PRICING["effective_from"].replace("Z", "+00:00")
+        )
         return (
             GPT_5_6_LUNA_PRICING
             if request_time >= effective_from
@@ -143,9 +158,10 @@ def pricing_snapshot_for_request(
     }.get(normalized_model)
 
 
-# DeepSeek publishes cache-hit, cache-miss, and output prices. Keep the dated
-# model version in the snapshot because the public API name is a moving alias.
-DEEPSEEK_V4_FLASH_PRICING: dict[str, Any] = {
+# DeepSeek publishes cache-hit, cache-miss, and output prices. Its mutable model
+# alias also moved to time-of-day pricing on 2026-08-16. Keep all dated tariffs
+# so historical requests remain reproducible and select peak/off-peak in UTC.
+DEEPSEEK_V4_FLASH_LEGACY_PRICING: dict[str, Any] = {
     "id": "deepseek-v4-flash-0731-2026-08-08",
     "provider": "deepseek",
     "model": "deepseek-v4-flash",
@@ -160,6 +176,38 @@ DEEPSEEK_V4_FLASH_PRICING: dict[str, Any] = {
         "output": "0.28",
     },
 }
+
+DEEPSEEK_V4_FLASH_OFF_PEAK_PRICING: dict[str, Any] = {
+    "id": "deepseek-v4-flash-0731-off-peak-2026-08-16",
+    "provider": "deepseek",
+    "model": "deepseek-v4-flash",
+    "model_version": "DeepSeek-V4-Flash-0731",
+    "currency": "USD",
+    "captured_at": "2026-08-18",
+    "effective_from": "2026-08-16T16:00:00Z",
+    "schedule": "off_peak_except_01_04_and_06_10_utc",
+    "source_url": "https://api-docs.deepseek.com/quick_start/pricing",
+    "unit_tokens": 1_000_000,
+    "rates_usd_per_million_tokens": {
+        "cache_hit_input": "0.007",
+        "cache_miss_input": "0.22",
+        "output": "0.66",
+    },
+}
+
+DEEPSEEK_V4_FLASH_PEAK_PRICING: dict[str, Any] = {
+    **DEEPSEEK_V4_FLASH_OFF_PEAK_PRICING,
+    "id": "deepseek-v4-flash-0731-peak-2026-08-16",
+    "schedule": "01_04_and_06_10_utc",
+    "rates_usd_per_million_tokens": {
+        "cache_hit_input": "0.014",
+        "cache_miss_input": "0.44",
+        "output": "1.32",
+    },
+}
+
+# Backwards-compatible model descriptor for callers that only need the alias.
+DEEPSEEK_V4_FLASH_PRICING = DEEPSEEK_V4_FLASH_OFF_PEAK_PRICING
 
 _USAGE_FIELDS = (
     "input_tokens",
@@ -235,7 +283,12 @@ def build_request_usage_record(
         return record
 
     if normalized_model == DEEPSEEK_V4_FLASH_PRICING["model"]:
-        record["pricing_snapshot_id"] = DEEPSEEK_V4_FLASH_PRICING["id"]
+        pricing = pricing_snapshot_for_request(normalized_model, usage_reported_at)
+        if pricing is None:
+            record["cost_reconstruction_status"] = "incomplete"
+            record["incomplete_reasons"] = ["missing_usage_reported_at_for_pricing"]
+            return record
+        record["pricing_snapshot_id"] = pricing["id"]
         missing = [
             name
             for name in (
@@ -286,7 +339,7 @@ def build_request_usage_record(
             record["cost_reconstruction_status"] = "incomplete"
             record["incomplete_reasons"] = reasons
             return record
-        rates = DEEPSEEK_V4_FLASH_PRICING["rates_usd_per_million_tokens"]
+        rates = pricing["rates_usd_per_million_tokens"]
         components = {
             "cache_miss_input": _usd(
                 ordinary_tokens, rates["cache_miss_input"], Decimal("1")
@@ -456,7 +509,9 @@ def build_usage_audit(
             GPT_5_6_TERRA_PRICING,
             GPT_5_6_LUNA_LEGACY_PRICING,
             GPT_5_6_LUNA_PRICING,
-            DEEPSEEK_V4_FLASH_PRICING,
+            DEEPSEEK_V4_FLASH_LEGACY_PRICING,
+            DEEPSEEK_V4_FLASH_OFF_PEAK_PRICING,
+            DEEPSEEK_V4_FLASH_PEAK_PRICING,
         )
         if snapshot_id == snapshot["id"]
     ]

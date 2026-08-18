@@ -3,7 +3,9 @@ from typing import Any
 import pytest
 
 from harbor.agents.installed.codex_cost import (
-    DEEPSEEK_V4_FLASH_PRICING,
+    DEEPSEEK_V4_FLASH_LEGACY_PRICING,
+    DEEPSEEK_V4_FLASH_OFF_PEAK_PRICING,
+    DEEPSEEK_V4_FLASH_PEAK_PRICING,
     GPT_5_6_LUNA_LEGACY_PRICING,
     GPT_5_6_LUNA_PRICING,
     GPT_5_6_SOL_PRICING,
@@ -228,8 +230,8 @@ def test_non_default_service_tier_is_not_mispriced() -> None:
     ]
 
 
-def test_deepseek_cost_separates_cache_hits_and_misses() -> None:
-    result = build_request_usage_record(
+def deepseek_record(usage_reported_at: str | None) -> dict[str, Any]:
+    return build_request_usage_record(
         api_call_id="api_call_1",
         model="deepseek/deepseek-v4-flash",
         service_tier=None,
@@ -241,15 +243,59 @@ def test_deepseek_cost_separates_cache_hits_and_misses() -> None:
             output=500_000,
             reasoning=300_000,
         ),
-        usage_reported_at="2026-08-08T00:00:00Z",
+        usage_reported_at=usage_reported_at,
         model_context_window=1_000_000,
     )
 
+
+def test_deepseek_legacy_cost_separates_cache_hits_and_misses() -> None:
+    result = deepseek_record("2026-08-16T15:59:59Z")
+
     assert result["ordinary_uncached_input_tokens"] == 1_000_000
-    assert result["pricing_snapshot_id"] == DEEPSEEK_V4_FLASH_PRICING["id"]
+    assert result["pricing_snapshot_id"] == DEEPSEEK_V4_FLASH_LEGACY_PRICING["id"]
     assert result["cost_reconstruction_status"] == "complete"
     # 1M miss*$0.14/M + 2M hit*$0.0028/M + 0.5M output*$0.28/M
     assert result["calculated_cost_usd"] == pytest.approx(0.2856)
+
+
+@pytest.mark.parametrize("timestamp", ["2026-08-17T00:59:59Z", "2026-08-17T04:00:00Z"])
+def test_deepseek_new_off_peak_tariff(timestamp: str) -> None:
+    result = deepseek_record(timestamp)
+
+    assert result["pricing_snapshot_id"] == DEEPSEEK_V4_FLASH_OFF_PEAK_PRICING["id"]
+    # 1M miss*$0.22/M + 2M hit*$0.007/M + 0.5M output*$0.66/M
+    assert result["calculated_cost_usd"] == pytest.approx(0.564)
+
+
+@pytest.mark.parametrize("timestamp", ["2026-08-17T01:00:00Z", "2026-08-17T09:59:59Z"])
+def test_deepseek_new_peak_tariff(timestamp: str) -> None:
+    result = deepseek_record(timestamp)
+
+    assert result["pricing_snapshot_id"] == DEEPSEEK_V4_FLASH_PEAK_PRICING["id"]
+    # 1M miss*$0.44/M + 2M hit*$0.014/M + 0.5M output*$1.32/M
+    assert result["calculated_cost_usd"] == pytest.approx(1.128)
+
+
+def test_deepseek_peak_schedule_uses_utc_for_offset_timestamp() -> None:
+    result = deepseek_record("2026-08-17T03:00:00-03:00")
+
+    assert result["pricing_snapshot_id"] == DEEPSEEK_V4_FLASH_PEAK_PRICING["id"]
+
+
+def test_deepseek_missing_timestamp_fails_closed_at_tariff_boundary() -> None:
+    result = deepseek_record(None)
+
+    assert result["cost_reconstruction_status"] == "incomplete"
+    assert result["incomplete_reasons"] == ["missing_usage_reported_at_for_pricing"]
+
+
+def test_deepseek_cost_separates_cache_hits_and_misses() -> None:
+    result = deepseek_record("2026-08-18T18:00:00Z")
+
+    assert result["ordinary_uncached_input_tokens"] == 1_000_000
+    assert result["pricing_snapshot_id"] == DEEPSEEK_V4_FLASH_OFF_PEAK_PRICING["id"]
+    assert result["cost_reconstruction_status"] == "complete"
+    assert result["calculated_cost_usd"] == pytest.approx(0.564)
 
 
 def test_usage_audit_reconciles_every_billable_bucket() -> None:

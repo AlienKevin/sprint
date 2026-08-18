@@ -27,7 +27,7 @@ STOP_REASON = "agent_cost_budget_exhausted"
 MINIMUM_SAFE_RESERVE_USD = {
     # Pessimistic full-context uncached input + full-context output at the
     # pinned tariff, plus 100 seconds of concurrent CPU/A10G shutdown runway.
-    "deepseek-v4-flash": 0.55,
+    "deepseek-v4-flash": 1.10,
     "gpt-5.6-luna": 0.50,
 }
 

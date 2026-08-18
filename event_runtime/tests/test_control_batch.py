@@ -1218,6 +1218,39 @@ def test_batch_monitor_reads_live_lane_status_without_duplicate_poll(
     assert batch_eval.live_run_monitor_status(run_id) == expected
 
 
+def test_batch_monitor_reads_stopped_lane_locally_without_modal_poll(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = "eval-deepseek-1"
+    state_dir = tmp_path / run_id
+    state_dir.mkdir()
+    (state_dir / "STOP_ACK.json").write_text("{}\n")
+    expected = {
+        "schema_version": 2,
+        "run_id": run_id,
+        "harbor_alive": False,
+        "stop_ack": {"reason": "operator_stop"},
+    }
+    monkeypatch.setattr(batch_eval, "SCRIPT_DIR", tmp_path)
+    monkeypatch.setattr(batch_eval.sprintctl, "load_run", lambda _run_id: (state_dir, {}))
+    monkeypatch.setattr(
+        batch_eval.sprintctl,
+        "status_snapshot",
+        lambda actual_dir, _run, *, include_remote: (
+            expected
+            if actual_dir == state_dir and include_remote is False
+            else pytest.fail("stopped lane must use local status")
+        ),
+    )
+    monkeypatch.setattr(
+        batch_eval.sprintctl,
+        "monitor_once",
+        lambda *_args, **_kwargs: pytest.fail("stopped lane polled Modal"),
+    )
+
+    assert batch_eval.live_run_monitor_status(run_id) == expected
+
+
 def test_batch_monitor_recovers_status_when_run_state_appears(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

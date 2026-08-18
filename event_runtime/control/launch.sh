@@ -320,18 +320,21 @@ print(format(value, "g"))
 PY
 )
 AGENT_COST_SHUTDOWN_RESERVE_USD=$(python3 - \
-  "$AGENT_COST_SHUTDOWN_RESERVE_USD" "$AGENT_COST_BUDGET_USD" "$MODEL" <<'PY'
+  "$AGENT_COST_SHUTDOWN_RESERVE_USD" "$DEEPSEEK_COST_SHUTDOWN_RESERVE_USD" \
+  "$LUNA_COST_SHUTDOWN_RESERVE_USD" "$AGENT_COST_BUDGET_USD" "$MODEL" <<'PY'
 import math
 import sys
 
-reserve = float(sys.argv[1])
-budget = float(sys.argv[2])
-model = sys.argv[3].split("/", 1)[-1]
+generic, deepseek, luna = sys.argv[1:4]
+budget = float(sys.argv[4])
+model = sys.argv[5].split("/", 1)[-1]
+defaults = {"deepseek-v4-flash": deepseek, "gpt-5.6-luna": luna}
+reserve = float(generic or defaults.get(model, luna))
 if not math.isfinite(reserve) or reserve < 0 or reserve >= budget:
     raise SystemExit(
         "AGENT_COST_SHUTDOWN_RESERVE_USD must be finite, non-negative, and below the budget"
     )
-minimum = {"deepseek-v4-flash": 0.55, "gpt-5.6-luna": 0.50}.get(model)
+minimum = {"deepseek-v4-flash": 1.10, "gpt-5.6-luna": 0.50}.get(model)
 if minimum is not None and reserve < minimum:
     raise SystemExit(
         f"AGENT_COST_SHUTDOWN_RESERVE_USD must be at least {minimum:g} for {model}"

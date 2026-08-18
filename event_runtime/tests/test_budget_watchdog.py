@@ -24,6 +24,7 @@ def write_run(
     budget: float = 10.0,
     model: str = "deepseek/deepseek-v4-flash",
     service_tier: str | None = None,
+    reserve: float | None = None,
 ) -> Path:
     root = durable / "runs" / run_id
     state = root / "state"
@@ -40,7 +41,13 @@ def write_run(
                 "standing_gpu_worker": False,
                 "agent_cost_budget_usd": budget,
                 "cpu_launch_attempt": 1,
-                "budget_enforcement": {"shutdown_reserve_usd": 0.6},
+                "budget_enforcement": {
+                    "shutdown_reserve_usd": (
+                        reserve
+                        if reserve is not None
+                        else (1.1 if "deepseek" in model else 0.6)
+                    )
+                },
             }
         )
     )
@@ -179,7 +186,7 @@ def test_live_watchdog_stops_before_cap_using_shutdown_reserve(
     root = write_run(durable, "unit")
     monkeypatch.setenv("SPRINT_CPU_LAUNCH_ATTEMPT", "1")
     watchdog.ensure_cpu_start(root, 1, 1_000)
-    elapsed = 9.4 / watchdog.CPU_USD_PER_SECOND
+    elapsed = 8.9 / watchdog.CPU_USD_PER_SECOND
 
     payload = watchdog.check_once(
         run_id="unit",
