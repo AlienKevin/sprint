@@ -44,6 +44,23 @@ HARBOR_REVISION = "dafb1387151e1c32702963d44fe6c3cea66cf8cb"
 CODEX_VERSION = "0.147.0"
 TRIALS_PER_MODEL = 3
 DEFAULT_FAMILIES = ("deepseek", "luna")
+SUPPORTED_FAMILIES = ("deepseek", "luna", "sol")
+OPENAI_FAMILY_SPECS: dict[str, dict[str, str]] = {
+    "luna": {
+        "model": "openai/gpt-5.6-luna",
+        "model_id": "gpt-5.6-luna",
+        "preset": "@preset/sprint-gpt-5-6-luna-openai-standard",
+        "preset_id": "f06bb802-6122-4e11-8e22-a3476113a3b1",
+        "resolved_model": "openai/gpt-5.6-luna-20260709",
+    },
+    "sol": {
+        "model": "openai/gpt-5.6-sol",
+        "model_id": "gpt-5.6-sol",
+        "preset": "@preset/sprint-gpt-5-6-sol-openai-standard",
+        "preset_id": "798803cc-8d68-4249-b437-c6eb509df833",
+        "resolved_model": "openai/gpt-5.6-sol-20260709",
+    },
+}
 REASONING_EFFORT = "max"
 RUN_HOURS: float | None = None
 POLL_SECONDS = 30
@@ -223,15 +240,27 @@ def matrix(
         raise ValueError("trials per model must be between 1 and 50")
     arms: list[dict[str, Any]] = []
     specs = {
-        "deepseek": ("deepseek/deepseek-v4-flash", "deepseek.sh"),
-        "luna": ("openai/gpt-5.6-luna", "luna.sh"),
+        "deepseek": {
+            "model": "deepseek/deepseek-v4-flash",
+            "wrapper": "deepseek.sh",
+            "resolved_model_version": "DeepSeek-V4-Flash-0731",
+        },
+        **{
+            family: {
+                "model": spec["model"],
+                "wrapper": "openai.sh",
+                "resolved_model_version": spec["model_id"],
+                "openrouter_preset": spec["preset"],
+            }
+            for family, spec in OPENAI_FAMILY_SPECS.items()
+        },
     }
     selected = tuple(dict.fromkeys(families))
     unknown = sorted(set(selected) - set(specs))
     if not selected or unknown:
         raise ValueError(f"invalid model families: {unknown or list(selected)}")
     for family in selected:
-        model, wrapper = specs[family]
+        spec = specs[family]
         for trial in range(1, trials_per_model + 1):
             run_id = f"{batch_id}-{family}-{trial}"
             if not RUN_ID_RE.fullmatch(run_id):
@@ -240,17 +269,18 @@ def matrix(
                 {
                     "run_id": run_id,
                     "family": family,
-                    "model": model,
-                    "resolved_model_version": (
-                        "DeepSeek-V4-Flash-0731"
-                        if family == "deepseek"
-                        else "gpt-5.6-luna"
-                    ),
+                    "model": spec["model"],
+                    "resolved_model_version": spec["resolved_model_version"],
                     "reasoning_effort": REASONING_EFFORT,
                     "codex_version": CODEX_VERSION,
-                    "wrapper": str(MODULE_DIR / "providers" / wrapper),
+                    "wrapper": str(MODULE_DIR / "providers" / spec["wrapper"]),
                     "trial": trial,
                     "status": "planned",
+                    **(
+                        {"openrouter_preset": spec["openrouter_preset"]}
+                        if "openrouter_preset" in spec
+                        else {}
+                    ),
                 }
             )
     return arms
@@ -602,6 +632,7 @@ def preflight(
     required_keys = {
         "deepseek": "OPENROUTER_API_KEY",
         "luna": "OPENROUTER_API_KEY",
+        "sol": "OPENROUTER_API_KEY",
     }
     for family in families:
         name = required_keys[family]
@@ -685,41 +716,53 @@ def preflight(
         ).returncode
         == 0
     )
-    if "luna" in families and check_providers and checks["secret_openrouter_api_key"]:
+    selected_openai_families = tuple(
+        family for family in families if family in OPENAI_FAMILY_SPECS
+    )
+    if (
+        selected_openai_families
+        and check_providers
+        and checks["secret_openrouter_api_key"]
+    ):
         models = provider_models(
             "https://openrouter.ai/api/v1/models", keys["OPENROUTER_API_KEY"]
         )
-        checks["openai_luna_visible"] = "openai/gpt-5.6-luna" in models
-        try:
-            provider_probes["openai_luna"] = provider_inference_probe(
-                "https://openrouter.ai/api/v1/responses",
-                keys["OPENROUTER_API_KEY"],
-                {
-                    "model": "@preset/sprint-gpt-5-6-luna-openai-standard",
-                    "input": "Return OK.",
-                    "reasoning": {"effort": REASONING_EFFORT},
-                    "max_output_tokens": 16,
-                    "store": False,
-                },
-                generation_audit_url="https://openrouter.ai/api/v1/generation",
-            )
-            luna_probe = provider_probes["openai_luna"]
-            checks["openai_luna_inference"] = (
-                luna_probe.get("provider") == "OpenAI"
-                and luna_probe.get("preset_id")
-                == "f06bb802-6122-4e11-8e22-a3476113a3b1"
-                and luna_probe.get("resolved_model") == "openai/gpt-5.6-luna-20260709"
-            )
-            if not checks["openai_luna_inference"]:
-                provider_errors["openai_luna"] = (
-                    "controlled preset response did not identify OpenAI standard"
+        for family in selected_openai_families:
+            spec = OPENAI_FAMILY_SPECS[family]
+            key = f"openai_{family}"
+            checks[f"{key}_visible"] = spec["model"] in models
+            try:
+                provider_probes[key] = provider_inference_probe(
+                    "https://openrouter.ai/api/v1/responses",
+                    keys["OPENROUTER_API_KEY"],
+                    {
+                        "model": spec["preset"],
+                        "input": "Return OK.",
+                        "reasoning": {"effort": REASONING_EFFORT},
+                        "max_output_tokens": 64,
+                        "store": False,
+                    },
+                    generation_audit_url="https://openrouter.ai/api/v1/generation",
                 )
-        except RuntimeError as exc:
-            checks["openai_luna_inference"] = False
-            provider_errors["openai_luna"] = str(exc)
-    elif "luna" in families:
-        checks["openai_luna_visible"] = not check_providers
-        checks["openai_luna_inference"] = not check_providers
+                probe = provider_probes[key]
+                checks[f"{key}_inference"] = (
+                    probe.get("provider") == "OpenAI"
+                    and probe.get("preset_id") == spec["preset_id"]
+                    and probe.get("resolved_model") == spec["resolved_model"]
+                    and probe.get("service_tier") == "default"
+                )
+                if not checks[f"{key}_inference"]:
+                    provider_errors[key] = (
+                        "controlled preset response did not identify OpenAI standard"
+                    )
+            except RuntimeError as exc:
+                checks[f"{key}_inference"] = False
+                provider_errors[key] = str(exc)
+    else:
+        for family in selected_openai_families:
+            key = f"openai_{family}"
+            checks[f"{key}_visible"] = not check_providers
+            checks[f"{key}_inference"] = not check_providers
     if (
         "deepseek" in families
         and check_providers
@@ -964,6 +1007,8 @@ def launch(
             env = dict(base_env)
             env["RUN_ID"] = arm["run_id"]
             env["MODEL"] = arm["model"]
+            if arm.get("openrouter_preset"):
+                env["OPENROUTER_PRESET"] = arm["openrouter_preset"]
             output = run_checked([arm["wrapper"]], env=env)
             arm["status"] = "launched"
             arm["launch_output_sha256"] = hashlib.sha256(output.encode()).hexdigest()
@@ -1628,7 +1673,7 @@ def parser() -> argparse.ArgumentParser:
             command.add_argument(
                 "--families",
                 nargs="+",
-                choices=DEFAULT_FAMILIES,
+                choices=SUPPORTED_FAMILIES,
                 default=list(DEFAULT_FAMILIES),
             )
             command.add_argument(

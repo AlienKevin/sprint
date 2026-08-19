@@ -46,6 +46,20 @@ def test_step_auc_uses_best_so_far_and_common_cap() -> None:
     assert continuous.step_auc(points, "cost", 10.0) == pytest.approx(1.2)
 
 
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [
+        ("deepseek/deepseek-v4-flash", "deepseek"),
+        ("openai/gpt-5.6-luna", "luna"),
+        ("openai/gpt-5.6-sol", "sol"),
+    ],
+)
+def test_model_family_supports_controlled_openrouter_models(
+    model: str, expected: str
+) -> None:
+    assert continuous.model_family(model) == expected
+
+
 def test_frontier_replays_are_union_of_cost_and_time_record_setters() -> None:
     points = [
         {
@@ -170,8 +184,8 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "class:'submission-target'" in app
     assert "el.getScreenCTM()" in app
     assert "nearest.distance<=22**2" in app
-    assert "app.js?v=20260819-4" in page
-    assert "const APP_VERSION = '20260819-4'" in app
+    assert "app.js?v=20260819-5" in page
+    assert "const APP_VERSION = '20260819-5'" in app
     assert "refreshVersion" in app
     assert "setInterval(refresh,30000)" in app
     assert "visibilitychange" in app
@@ -183,12 +197,14 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "auc-bar-row" in app
     assert "color:'#4D6BFF'" in app
     assert "color:'#66D693'" in app
+    assert "color:'#f1c35b'" in app
     assert "--deep: #4D6BFF" in styles
     assert "--luna: #66D693" in styles
     assert "background: var(--cost-cpu)" in styles
     assert "background: var(--cost-training)" in styles
     assert "--deepseek:#4D6BFF" in timeline_page
     assert "--luna:#66D693" in timeline_page
+    assert "--sol:#bdbdb9" in timeline_page
     assert 'id="policy-cost-chart"' in timeline_page
     assert 'id="policy-replay-frame"' in timeline_page
     assert "/data/performance/current.json" in timeline_app

@@ -2308,12 +2308,14 @@ class LauncherWiringTests(unittest.TestCase):
         )
 
     def test_all_model_launchers_default_to_systemd_supervisor(self) -> None:
-        for name in ("luna.sh", "deepseek.sh"):
+        for name in ("openai.sh", "deepseek.sh"):
             text = (ROOT / "event_runtime/control/providers" / name).read_text()
             self.assertIn("start_supervisor.py", text)
             self.assertIn("--supervised-launch", text)
             self.assertIn("CPU_MAX_RESTARTS", text)
             self.assertIn("CPU_MAX_RESTARTS:-50", text)
+        luna = (ROOT / "event_runtime/control/providers/luna.sh").read_text()
+        self.assertIn('providers/openai.sh', luna)
         for name in ("run-opus.sh", "run-terra.sh", "run-lane.sh"):
             self.assertFalse((ROOT / "runs" / name).exists())
         starter = (

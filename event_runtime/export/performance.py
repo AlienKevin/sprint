@@ -573,6 +573,8 @@ def model_family(model: str | None) -> str:
     value = (model or "").lower()
     if "deepseek" in value:
         return "deepseek"
+    if "sol" in value:
+        return "sol"
     if "luna" in value:
         return "luna"
     raise ValueError(f"unsupported model family: {model!r}")
@@ -603,8 +605,15 @@ def aggregate_models(
     grouped: dict[str, list[dict[str, Any]]] = {}
     for run in output_runs:
         grouped.setdefault(model_family(run.get("model")), []).append(run)
-    if set(grouped) != {"deepseek", "luna"}:
-        raise RuntimeError(f"expected DeepSeek and Luna runs, found {sorted(grouped)}")
+    if len(grouped) < 2:
+        raise RuntimeError(
+            f"expected at least two model families, found {sorted(grouped)}"
+        )
+    family_sizes = {family: len(runs) for family, runs in grouped.items()}
+    if len(set(family_sizes.values())) != 1:
+        raise RuntimeError(
+            f"expected equal trial counts across model families, found {family_sizes}"
+        )
 
     common_observed_cost = min(
         sum(float(run["summary"]["final_agent_cost_usd"]) for run in runs)
@@ -711,15 +720,17 @@ def build(batch_prefix: str, output: Path, cost_cap: float = 80.0) -> dict[str, 
     )
     selected_families = [model_family(row.get("model")) for row in selected]
     family_counts = {
-        family: selected_families.count(family) for family in {"deepseek", "luna"}
+        family: selected_families.count(family) for family in set(selected_families)
     }
     if (
         not selected
+        or len(family_counts) < 2
         or len(set(family_counts.values())) != 1
         or 0 in family_counts.values()
     ):
         raise RuntimeError(
-            f"expected equal nonzero DeepSeek and Luna runs for {batch_prefix!r}, "
+            f"expected equal nonzero runs from at least two model families for "
+            f"{batch_prefix!r}, "
             f"found {family_counts}"
         )
     trusted_captures = trusted_pose_capture_index(

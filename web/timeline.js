@@ -6,7 +6,7 @@
   let data = null, index = null, performance = null, view = null, dragging = null, cursor = null;
   const layers = Object.fromEntries([...document.querySelectorAll('[data-layer]')].map(x => [x.dataset.layer, x.checked]));
   const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  const family = model => String(model||'').toLowerCase().includes('deepseek') ? 'deepseek' : 'luna';
+  const family = model => {const value=String(model||'').toLowerCase();return value.includes('deepseek')?'deepseek':value.includes('gpt-5.6-sol')?'sol':'luna'};
   const setModelAccent = model => document.documentElement.style.setProperty('--model-accent',css(`--${family(model)}`));
   const colors = {cpu:css('--cpu'),trainingGpu:css('--training-gpu'),trainingMem:css('--training-mem'),verifierGpu:css('--verifier-gpu'),verifierMem:css('--verifier-mem'),sm:css('--sm'),occupancy:css('--occupancy'),tensor:css('--tensor'),fp32:css('--fp32'),fp16:css('--fp16'),dram:css('--dram'),tools:css('--tool'),trace:css('--trace'),danger:css('--danger'),ok:css('--ok'),line:css('--line'),muted:css('--muted'),text:css('--text')};
   const pad = {left:126,right:24,top:28,bottom:38};

@@ -38,7 +38,7 @@ DRY_RUN=0
 START_MONITOR=1
 SUPERVISED_LAUNCH=0
 DEEPSEEK_OPENROUTER_PRESET=${DEEPSEEK_OPENROUTER_PRESET:-@preset/sprint-deepseek-v4-flash-0731-official}
-LUNA_OPENROUTER_PRESET=${LUNA_OPENROUTER_PRESET:-@preset/sprint-gpt-5-6-luna-openai-standard}
+OPENAI_OPENROUTER_PRESET=${SPRINT_OPENROUTER_PRESET:-}
 
 usage() {
   cat <<'EOF'
@@ -1037,11 +1037,24 @@ else
       --ae "SPRINT_DEEPSEEK_PRICING_SNAPSHOT=$DEEPSEEK_PRICING_SNAPSHOT_JSON"
     )
   fi
-  if [[ "${MODEL#*/}" == "gpt-5.6-luna" ]]; then
-    AGENT_HARBOR_ARGS+=(
-      --ae "SPRINT_CODEX_LUNA_MODEL=$LUNA_OPENROUTER_PRESET"
-    )
-  fi
+  case "${MODEL#*/}" in
+    gpt-5.6-luna)
+      OPENAI_OPENROUTER_PRESET=${OPENAI_OPENROUTER_PRESET:-@preset/sprint-gpt-5-6-luna-openai-standard}
+      AGENT_HARBOR_ARGS+=(
+        --ae "SPRINT_CODEX_OPENAI_MODEL=$OPENAI_OPENROUTER_PRESET"
+        --ae "SPRINT_CODEX_OPENAI_MODEL_ID=gpt-5.6-luna"
+        --ae "SPRINT_CODEX_OPENAI_MODEL_LOCK=/opt/sprint-codex-luna-model-lock.json"
+      )
+      ;;
+    gpt-5.6-sol)
+      OPENAI_OPENROUTER_PRESET=${OPENAI_OPENROUTER_PRESET:-@preset/sprint-gpt-5-6-sol-openai-standard}
+      AGENT_HARBOR_ARGS+=(
+        --ae "SPRINT_CODEX_OPENAI_MODEL=$OPENAI_OPENROUTER_PRESET"
+        --ae "SPRINT_CODEX_OPENAI_MODEL_ID=gpt-5.6-sol"
+        --ae "SPRINT_CODEX_OPENAI_MODEL_LOCK=/opt/sprint-codex-sol-model-lock.json"
+      )
+      ;;
+  esac
   if [[ "${MODEL#*/}" == "gpt-5.6-sol" || "${MODEL#*/}" == "gpt-5.6-terra" || "${MODEL#*/}" == "gpt-5.6-luna" ]]; then
     # Pin standard pricing. Leaving this unset lets Codex/project defaults pick
     # another service tier, which cannot be reconstructed from token counts.

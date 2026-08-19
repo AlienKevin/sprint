@@ -5,6 +5,7 @@ import datetime as dt
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import sys
 import urllib.error
@@ -149,6 +150,81 @@ def test_batch_matrix_can_launch_three_deepseek_trials_only() -> None:
     assert {row["family"] for row in rows} == {"deepseek"}
     assert [row["trial"] for row in rows] == [1, 2, 3]
     assert {row["model"] for row in rows} == {"deepseek/deepseek-v4-flash"}
+
+
+def test_batch_matrix_can_launch_three_luna_and_three_sol_trials() -> None:
+    rows = batch_eval.matrix(
+        "eval-openai",
+        families=("luna", "sol"),
+    )
+    assert len(rows) == 6
+    assert {row["family"] for row in rows} == {"luna", "sol"}
+    assert {row["wrapper"] for row in rows} == {
+        str(ROOT / "event_runtime/control/providers/openai.sh")
+    }
+    assert {row["model"] for row in rows if row["family"] == "luna"} == {
+        "openai/gpt-5.6-luna"
+    }
+    assert {row["model"] for row in rows if row["family"] == "sol"} == {
+        "openai/gpt-5.6-sol"
+    }
+    assert {row["openrouter_preset"] for row in rows} == {
+        "@preset/sprint-gpt-5-6-luna-openai-standard",
+        "@preset/sprint-gpt-5-6-sol-openai-standard",
+    }
+    assert [row["trial"] for row in rows if row["family"] == "sol"] == [1, 2, 3]
+
+
+def test_sol_model_lock_preserves_exact_codex_contract() -> None:
+    lock = json.loads((ROOT / "event_runtime/models/sol.json").read_text())
+    model = lock["model"]
+    assert lock["source"].startswith("openai/codex rust-v0.147.0")
+    assert lock["codex_version"] == "0.147.0"
+    assert lock["model_messages_sha256"] == (
+        "e1ab3222ab4ceb4196f381138bf63232456419dba5a03bc276137a323e4134aa"
+    )
+    assert model["slug"] == "gpt-5.6-sol"
+    assert model["tool_mode"] == "code_mode_only"
+    assert model["multi_agent_version"] == "v2"
+    assert model["context_window"] == 272000
+    assert model["max_context_window"] == 272000
+    assert [row["effort"] for row in model["supported_reasoning_levels"]][-1] == "ultra"
+
+
+def test_generic_openai_catalog_installer_supports_sol(tmp_path: Path) -> None:
+    codex_home = tmp_path / "codex-home"
+    env = {
+        **os.environ,
+        "CODEX_HOME": str(codex_home),
+        "SPRINT_CODEX_OPENAI_MODEL_LOCK": str(ROOT / "event_runtime/models/sol.json"),
+        "SPRINT_CODEX_OPENAI_MODEL_ID": "gpt-5.6-sol",
+        "SPRINT_CODEX_OPENAI_MODEL": "@preset/test-sol",
+        "SPRINT_CODEX_OPENAI_BASE_URL": "http://127.0.0.1:18080/api/v1",
+        "SPRINT_CODEX_DEEPSEEK_MODELS_JSON": str(
+            ROOT / "event_runtime/models/deepseek.json"
+        ),
+    }
+    subprocess.run(
+        [
+            "bash",
+            str(
+                ROOT
+                / "event_runtime/container/sprint-apply-openai-codex-config.sh"
+            ),
+        ],
+        env=env,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    catalog = json.loads((codex_home / "models.json").read_text())
+    model = catalog["models"][0]
+    assert model["slug"] == "@preset/test-sol"
+    assert model["multi_agent_version"] == "v2"
+    config = (codex_home / "config.toml").read_text()
+    assert 'model = "@preset/test-sol"' in config
+    assert 'wire_api = "responses"' in config
 
 
 @pytest.mark.parametrize("trials_per_model", [2, 5])

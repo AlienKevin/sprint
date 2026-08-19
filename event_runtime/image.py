@@ -27,6 +27,7 @@ _CONTAINER_LINKS = (
     "sprint-codex-exec-wrapper.sh",
     "sprint-openrouter-ledger-proxy.py",
     "sprint-apply-deepseek-codex-config.sh",
+    "sprint-apply-openai-codex-config.sh",
     "sprint-apply-luna-codex-config.sh",
     "sprint-agent-shell-env.sh",
     "sprint-gpu-worker-run.py",
@@ -126,12 +127,15 @@ def agent_image(event: EventLayout, public_verifier: Path) -> modal.Image:
         "/opt/sprint-codex-deepseek-models.json; "
         "ln -sf /opt/event_runtime/models/luna.json "
         "/opt/sprint-codex-luna-model-lock.json; "
+        "ln -sf /opt/event_runtime/models/sol.json "
+        "/opt/sprint-codex-sol-model-lock.json; "
         f"{links} "
         "chmod 0755 /opt/event_runtime/container/bin/event "
         "/opt/event/check_policy.py "
         "/opt/event_runtime/container/sprint-codex-exec-wrapper.sh "
         "/opt/event_runtime/container/sprint-openrouter-ledger-proxy.py "
         "/opt/event_runtime/container/sprint-apply-deepseek-codex-config.sh "
+        "/opt/event_runtime/container/sprint-apply-openai-codex-config.sh "
         "/opt/event_runtime/container/sprint-apply-luna-codex-config.sh "
         "/opt/event_runtime/container/sprint-agent-shell-env.sh "
         "/opt/event_runtime/container/sprint-trace-mirror.py "

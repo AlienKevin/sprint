@@ -92,6 +92,7 @@ PY
   fi
   export SPRINT_CODEX_DEEPSEEK_BASE_URL="$OPENROUTER_PROXY_BASE_URL"
   export SPRINT_CODEX_LUNA_BASE_URL="$OPENROUTER_PROXY_BASE_URL"
+  export SPRINT_CODEX_OPENAI_BASE_URL="$OPENROUTER_PROXY_BASE_URL"
   export OPENAI_BASE_URL="$OPENROUTER_PROXY_BASE_URL"
 }
 
@@ -99,12 +100,12 @@ if [[ "${SPRINT_OPENROUTER_LEDGER_REQUIRED:-0}" == "1" ]]; then
   start_openrouter_proxy
 fi
 
-# Install a static model catalog for the two comparison models. DeepSeek needs
-# its custom provider definition; Luna needs an explicit copy of the catalog
-# bundled with pinned Codex 0.147.0 so a backend refresh cannot change tools or
-# collaboration semantics during the experiment.
+# Install a static model catalog for every controlled comparison model.
+# DeepSeek needs its custom provider definition; OpenAI models use their exact
+# Codex 0.147.0 entries so backend refreshes cannot change tool or collaboration
+# semantics during the experiment.
 want_deepseek=0
-want_luna=0
+want_openai=0
 case "${SPRINT_CODEX_PROVIDER:-}" in
   deepseek|DeepSeek|DEEPSEEK) want_deepseek=1 ;;
 esac
@@ -112,17 +113,17 @@ case "${OPENAI_BASE_URL:-}" in
   *api.deepseek.com*) want_deepseek=1 ;;
 esac
 case "${SPRINT_MODEL:-}" in
-  */gpt-5.6-luna|gpt-5.6-luna) want_luna=1 ;;
+  */gpt-5.6-luna|gpt-5.6-luna|*/gpt-5.6-sol|gpt-5.6-sol) want_openai=1 ;;
 esac
 previous=
 for argument in "$@"; do
   if [[ "$previous" == "--model" || "$previous" == "-m" ]]; then
-    [[ "$argument" == "gpt-5.6-luna" ]] && want_luna=1
+    [[ "$argument" == "gpt-5.6-luna" || "$argument" == "gpt-5.6-sol" ]] && want_openai=1
     previous=
     continue
   fi
   case "$argument" in
-    --model=gpt-5.6-luna) want_luna=1 ;;
+    --model=gpt-5.6-luna|--model=gpt-5.6-sol) want_openai=1 ;;
     --model|-m) previous=$argument ;;
   esac
 done
@@ -161,18 +162,18 @@ if ((want_deepseek)); then
     echo "DeepSeek Codex apply script missing: $apply" >&2
     exit 1
   fi
-elif ((want_luna)); then
-  apply=${SPRINT_APPLY_LUNA_CODEX_CONFIG:-/opt/sprint-apply-luna-codex-config.sh}
+elif ((want_openai)); then
+  apply=${SPRINT_APPLY_OPENAI_CODEX_CONFIG:-/opt/sprint-apply-openai-codex-config.sh}
   if [[ ! -x "$apply" && -f "$apply" ]]; then
     chmod +x "$apply" 2>/dev/null || true
   fi
   if [[ -f "$apply" ]]; then
     bash "$apply" || {
-      echo "failed to apply pinned Luna Codex config via $apply" >&2
+      echo "failed to apply pinned OpenAI Codex config via $apply" >&2
       exit 1
     }
   else
-    echo "pinned Luna Codex apply script missing: $apply" >&2
+    echo "pinned OpenAI Codex apply script missing: $apply" >&2
     exit 1
   fi
 fi

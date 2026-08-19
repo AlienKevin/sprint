@@ -263,6 +263,7 @@ def main() -> int:
                 "test \"$(codex --version)\" = 'codex-cli 0.147.0' && "
                 "test -x /opt/sprint-codex-exec-wrapper.sh && "
                 "test -x /opt/sprint-apply-deepseek-codex-config.sh && "
+                "test -x /opt/sprint-apply-openai-codex-config.sh && "
                 "test -x /opt/sprint-apply-luna-codex-config.sh && "
                 "test -x /opt/sprint-agent-shell-env.sh && "
                 "echo AGENT_SHELL_ENTRYPOINTS_EXECUTABLE && "

@@ -1,5 +1,5 @@
 (() => {
-  const APP_VERSION = '20260819-4';
+  const APP_VERSION = '20260819-5';
   const $ = selector => document.querySelector(selector);
   const MODEL = {
     deepseek: {label:'DeepSeek V4 Flash 0731', color:'#4D6BFF', cls:'deepseek'},
@@ -70,17 +70,17 @@
     return {value:finite(estimated)?estimated:0,basis:'Modal tariff estimate'};
   }
   function renderResources(){
-    const rows=state.runs.filter(run=>['deepseek','luna'].includes(family(run.model))).map(run=>{
+    const order=['deepseek','luna','sol'],rows=state.runs.filter(run=>order.includes(family(run.model))).map(run=>{
       const api=Number(run.timeline?.comparison_summary?.final_api_cost_usd),cpu=modalRoleCost(run,'cpu_agent'),training=modalRoleCost(run,'training_gpu');
       const apiBasis=(run.timeline?.usage_summary?.calculated_api_usage_cost_basis||[]).includes('openrouter_reported_cost')?'OpenRouter reported request cost':'reconstructed at published list price';
       const parts=[{key:'api',label:'Model API',value:finite(api)?api:0,basis:apiBasis},{key:'cpu',label:'CPU agent',...cpu},{key:'training',label:'Training sandbox',...training}];
       return {run,family:family(run.model),trial:trialNumber(run),parts,total:parts.reduce((sum,part)=>sum+part.value,0)};
-    }).sort((a,b)=>['deepseek','luna'].indexOf(a.family)-['deepseek','luna'].indexOf(b.family)||(a.trial||0)-(b.trial||0));
+    }).sort((a,b)=>order.indexOf(a.family)-order.indexOf(b.family)||(a.trial||0)-(b.trial||0));
     if(!rows.length){$('#resource-bars').innerHTML='<p class="empty">Costs appear as trials start.</p>';return}
     const max=Math.max(.01,...rows.map(row=>row.total));
     const legend=`<div class="cost-legend"><span><i class="api"></i>Model API</span><span><i class="cpu"></i>CPU agent</span><span><i class="training"></i>Training sandbox</span></div><p class="cost-note">${rows.length} active trial total${rows.length===1?'':'s'} · verifier sandbox excluded · Modal charges are pre-credit</p>`;
     const bars=rows.map((row,index)=>{
-      const model=row.family==='deepseek'?'DeepSeek':'Luna',trial=row.trial??index+1;
+      const model=MODEL[row.family]?.label||row.family,trial=row.trial??index+1;
       const segments=row.parts.map(part=>`<i class="cost-segment ${part.key}" style="width:${100*part.value/max}%" title="${esc(part.label)}: ${part.value.toFixed(2)} USD · ${esc(part.basis)}"></i>`).join('');
       const breakdown=row.parts.map(part=>`${part.label} $${part.value.toFixed(2)}`).join(', ');
       return `<div class="cost-trial-row ${row.family}"><span class="cost-trial-label"><strong>${model} ${trial}</strong><small>${esc(row.run.run_id)}</small></span><div class="cost-stack" role="img" aria-label="${model} trial ${trial}: ${esc(breakdown)}; verifier sandbox excluded">${segments}</div><b>$${row.total.toFixed(2)}</b></div>`;
