@@ -363,8 +363,10 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "class:'submission-target'" in app
     assert "el.getScreenCTM()" in app
     assert "nearest.distance<=22**2" in app
-    assert "app.js?v=20260819-5" in page
-    assert "const APP_VERSION = '20260819-5'" in app
+    assert "app.js?v=20260819-6" in page
+    assert "const APP_VERSION = '20260819-6'" in app
+    assert "state.timelineUpdatedAt=tIndex.updated_at||null" in app
+    assert "Date.parse(snapshotUpdatedAt(batch)||'')" in app
     assert "refreshVersion" in app
     assert "setInterval(refresh,30000)" in app
     assert "visibilitychange" in app
