@@ -2784,6 +2784,21 @@ class AgentGpuCliTests(unittest.TestCase):
             "event gpu get job-1 /app/policy.pt",
         )
 
+    def test_non_policy_output_does_not_claim_a_policy_mirror_is_syncing(self) -> None:
+        payload = {
+            "status": "succeeded",
+            "output_paths": ["/app/diagnostics.json"],
+            "progress": {
+                "output_artifacts": [
+                    {"source_path": "/app/diagnostics.json", "size_bytes": 42}
+                ]
+            },
+        }
+
+        enriched = train_cli.status_with_artifact_retrieval(payload, "job-1")
+
+        self.assertNotIn("artifact_retrieval", enriched)
+
     def test_logs_end_with_artifact_retrieval_command(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw) / "gpu-jobs"

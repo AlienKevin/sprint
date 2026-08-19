@@ -38,6 +38,7 @@ AGENT_MIRROR_ROOT = Path("/run/sprint-gpu-mirror")
 AGENT_WORKSPACE_ROOT = Path("/app")
 TERMINAL_STATUSES = frozenset({"succeeded", "failed", "terminated"})
 MAX_OUTPUT_ARTIFACTS = 8
+MIRRORED_POLICY_SUFFIXES = frozenset({".pt", ".pth"})
 
 
 def utc_now() -> str:
@@ -506,7 +507,11 @@ def artifact_destination(payload: dict) -> str | None:
                 candidates.append(str(record.get("source_path") or ""))
     for raw in candidates:
         path = Path(raw)
-        if path.is_absolute() and path.is_relative_to(AGENT_WORKSPACE_ROOT):
+        if (
+            path.suffix in MIRRORED_POLICY_SUFFIXES
+            and path.is_absolute()
+            and path.is_relative_to(AGENT_WORKSPACE_ROOT)
+        ):
             if not mirror_name or path.name == mirror_name:
                 return str(path)
     if mirror_name:
@@ -518,13 +523,17 @@ def artifact_expected(payload: dict) -> bool:
     """Whether a terminal job declared an artifact that may still be syncing."""
     if str(payload.get("status") or "") != "succeeded":
         return False
-    if payload.get("output_paths"):
+    if any(
+        Path(str(raw)).suffix in MIRRORED_POLICY_SUFFIXES
+        for raw in payload.get("output_paths") or []
+    ):
         return True
     progress = payload.get("progress")
-    return isinstance(progress, dict) and bool(
-        progress.get("output_artifacts")
-        or progress.get("policy_path")
-        or progress.get("policy")
+    if not isinstance(progress, dict):
+        return False
+    return any(
+        Path(str(progress.get(key) or "")).suffix in MIRRORED_POLICY_SUFFIXES
+        for key in ("policy_path", "policy")
     )
 
 
