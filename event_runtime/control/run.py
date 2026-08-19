@@ -1057,6 +1057,14 @@ def budget_pulse_alive(state_dir: Path) -> bool:
     return process_alive(pid, "budget-pulse")
 
 
+def gpu_dispatch_loop_alive(state_dir: Path) -> bool:
+    try:
+        pid = int((state_dir / "gpu-dispatch-loop.pid").read_text().strip())
+    except (OSError, ValueError):
+        return False
+    return process_alive(pid, "gpu-dispatch-loop")
+
+
 def refresh_agent_cost_snapshot(
     run_id: str,
     state_dir: Path,
@@ -1318,7 +1326,7 @@ def monitor_once(
     # Dispatch before telemetry: Modal Volume scans/uploads are intentionally
     # best-effort and can take close to their one-minute timeout.  A dead lease
     # must be fenced/retried without waiting behind observability I/O.
-    if run.get("cpu_agent_gpu_worker"):
+    if run.get("cpu_agent_gpu_worker") and not gpu_dispatch_loop_alive(state_dir):
         try:
             from event_runtime.compute import worker as gpu_worker
 
@@ -2257,6 +2265,51 @@ def budget_pulse_loop(run_id: str, poll_seconds: int) -> int:
                 pid_path.unlink(missing_ok=True)
 
 
+def gpu_dispatch_loop(run_id: str, poll_seconds: int) -> int:
+    """Reconcile and dispatch GPU jobs independently of observability I/O."""
+
+    state_dir, run = load_run(run_id)
+    if not run.get("cpu_agent_gpu_worker"):
+        return 0
+    with file_lock(state_dir / "gpu-dispatch-loop.lock", blocking=False) as acquired:
+        if not acquired:
+            print(f"GPU dispatch loop already running for {run_id}", file=sys.stderr)
+            return 2
+        pid_path = state_dir / "gpu-dispatch-loop.pid"
+        own_pid = os.getpid()
+        atomic_write_text(pid_path, f"{own_pid}\n", 0o600)
+        try:
+            while not (
+                (state_dir / "FINALIZED.json").is_file()
+                or (state_dir / "STOP_ACK.json").is_file()
+                or run_results_finished(state_dir, run)
+            ):
+                started = time.monotonic()
+                try:
+                    from event_runtime.compute import worker as gpu_worker
+
+                    payload = gpu_worker.dispatch_once(run_id)
+                except Exception as exc:  # noqa: BLE001
+                    record_controller_error(run_id, exc)
+                    payload = {
+                        "run_id": run_id,
+                        "updated_at": utc_now(),
+                        "status": "gpu_dispatch_error",
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                print(json.dumps(payload, sort_keys=True), flush=True)
+                elapsed = time.monotonic() - started
+                time.sleep(max(1.0, float(poll_seconds) - elapsed))
+            return 0
+        finally:
+            try:
+                registered = int(pid_path.read_text().strip())
+            except (OSError, ValueError):
+                registered = None
+            if registered == own_pid:
+                pid_path.unlink(missing_ok=True)
+
+
 def download_run_volume(
     state_dir: Path, run: dict[str, Any], destination: Path
 ) -> Path:
@@ -2373,6 +2426,7 @@ def build_parser() -> argparse.ArgumentParser:
         "finalize",
         "monitor",
         "budget-pulse",
+        "gpu-dispatch-loop",
         "wait",
         "check",
         "recover",
@@ -2382,7 +2436,7 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         command = sub.add_parser(name)
         command.add_argument("--run-id", required=True)
-        if name in {"monitor", "budget-pulse", "wait"}:
+        if name in {"monitor", "budget-pulse", "gpu-dispatch-loop", "wait"}:
             command.add_argument("--poll-seconds", type=int, default=POLL_SECONDS)
         if name == "wait":
             command.add_argument(
@@ -2413,6 +2467,8 @@ def main() -> int:
             return monitor_loop(args.run_id, args.poll_seconds)
         elif args.command == "budget-pulse":
             return budget_pulse_loop(args.run_id, args.poll_seconds)
+        elif args.command == "gpu-dispatch-loop":
+            return gpu_dispatch_loop(args.run_id, args.poll_seconds)
         elif args.command == "wait":
             return wait_for_run(args.run_id, args.timeout_seconds, args.poll_seconds)
         elif args.command == "finalize":

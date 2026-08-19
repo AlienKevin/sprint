@@ -397,6 +397,36 @@ class DurableOpsTests(unittest.TestCase):
             pulse.assert_not_called()
             self.assertFalse((state / "budget-pulse.pid").exists())
 
+    def test_gpu_dispatch_loop_registers_and_dispatches_independently(self) -> None:
+        from event_runtime.compute import worker as gpu_worker
+
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            run = {"run_id": "dispatch-run", "cpu_agent_gpu_worker": True}
+            observed: list[str] = []
+
+            @contextlib.contextmanager
+            def owned_lock(_path: Path, *, blocking: bool = True):
+                self.assertFalse(blocking)
+                yield True
+
+            def dispatch(_run_id: str) -> dict:
+                observed.append((state / "gpu-dispatch-loop.pid").read_text().strip())
+                (state / "FINALIZED.json").write_text("{}\n")
+                return {"run_id": "dispatch-run"}
+
+            with (
+                mock.patch.object(sprintctl, "load_run", return_value=(state, run)),
+                mock.patch.object(sprintctl, "file_lock", side_effect=owned_lock),
+                mock.patch.object(sprintctl, "run_results_finished", return_value=False),
+                mock.patch.object(gpu_worker, "dispatch_once", side_effect=dispatch),
+                mock.patch.object(sprintctl.time, "sleep"),
+            ):
+                self.assertEqual(sprintctl.gpu_dispatch_loop("dispatch-run", 5), 0)
+
+            self.assertEqual(observed, [str(os.getpid())])
+            self.assertFalse((state / "gpu-dispatch-loop.pid").exists())
+
     def test_budget_watchdog_prefers_live_agent_sandbox(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             state = Path(raw)
@@ -1901,6 +1931,36 @@ while True:
 
             self.assertEqual(status, expected_status)
             self.assertEqual(order, ["dispatch", "telemetry"])
+
+    def test_monitor_leaves_dispatch_to_healthy_dedicated_loop(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state_dir = Path(raw)
+            run = {
+                "run_id": "dedicated-dispatch",
+                "agent_kind": "codex",
+                "cpu_agent_gpu_worker": True,
+            }
+            expected_status = {"run_id": "dedicated-dispatch"}
+            with (
+                mock.patch.object(sprintctl, "load_run", return_value=(state_dir, run)),
+                mock.patch.object(
+                    sprintctl, "gpu_dispatch_loop_alive", return_value=True
+                ),
+                mock.patch("event_runtime.compute.worker.dispatch_once") as dispatch,
+                mock.patch("event_runtime.telemetry.host.poll_once"),
+                mock.patch.object(
+                    sprintctl, "discover_job_and_trial", return_value=(None, None)
+                ),
+                mock.patch.object(
+                    sprintctl, "status_snapshot", return_value=expected_status
+                ),
+            ):
+                status = sprintctl.monitor_once(
+                    "dedicated-dispatch", upload=False, include_remote=False
+                )
+
+            self.assertEqual(status, expected_status)
+            dispatch.assert_not_called()
 
     def test_status_reports_explicit_agent_kind(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

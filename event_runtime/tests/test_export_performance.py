@@ -119,6 +119,68 @@ def test_completed_comparison_rejects_explicit_unobserved_cost_cap() -> None:
         )
 
 
+def test_single_family_snapshot_uses_its_observed_cost_cap() -> None:
+    runs = [
+        {
+            "run_id": "batch-luna-1",
+            "model": "openai/gpt-5.6-luna",
+            "points": [],
+            "summary": {
+                "final_agent_cost_usd": 4.25,
+                "missing_readout_indices": [],
+            },
+        },
+        {
+            "run_id": "batch-luna-2",
+            "model": "openai/gpt-5.6-luna",
+            "points": [],
+            "summary": {
+                "final_agent_cost_usd": 5.75,
+                "missing_readout_indices": [],
+            },
+        },
+    ]
+    ledgers = {
+        "batch-luna-1": {"origin_epoch_ms": 0},
+        "batch-luna-2": {"origin_epoch_ms": 0},
+    }
+
+    models, cap = continuous.aggregate_models(
+        runs,
+        common_time_cap=1.0,
+        cost_ledgers=ledgers,
+        requested_cost_cap=None,
+        complete=False,
+    )
+
+    assert [model["family"] for model in models] == ["luna"]
+    assert cap == pytest.approx(10.0)
+
+
+def test_cli_prints_empty_single_family_snapshot(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    payload = {
+        "runs": [],
+        "models": [
+            {
+                "family": "luna",
+                "summary": {
+                    "readout_count": 0,
+                    "best_continuous_score_mps": None,
+                    "cost_auc_mps_at_common_cap": 0.0,
+                    "time_auc_mps_at_common_cap": 0.0,
+                },
+            }
+        ],
+    }
+    monkeypatch.setattr(continuous, "build", lambda *_args, **_kwargs: payload)
+    monkeypatch.setattr(sys, "argv", ["performance.py"])
+
+    assert continuous.main() == 0
+    assert "luna: 0 merged readouts, best=n/a" in capsys.readouterr().out
+
+
 @pytest.mark.parametrize(
     ("model", "expected"),
     [

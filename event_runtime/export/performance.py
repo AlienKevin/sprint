@@ -605,10 +605,8 @@ def aggregate_models(
     grouped: dict[str, list[dict[str, Any]]] = {}
     for run in output_runs:
         grouped.setdefault(model_family(run.get("model")), []).append(run)
-    if len(grouped) < 2:
-        raise RuntimeError(
-            f"expected at least two model families, found {sorted(grouped)}"
-        )
+    if not grouped:
+        raise RuntimeError("expected at least one model family")
     family_sizes = {family: len(runs) for family, runs in grouped.items()}
     if len(set(family_sizes.values())) != 1:
         raise RuntimeError(
@@ -743,12 +741,11 @@ def build(
     }
     if (
         not selected
-        or len(family_counts) < 2
         or len(set(family_counts.values())) != 1
         or 0 in family_counts.values()
     ):
         raise RuntimeError(
-            f"expected equal nonzero runs from at least two model families for "
+            f"expected equal nonzero runs from one or more model families for "
             f"{batch_prefix!r}, "
             f"found {family_counts}"
         )
@@ -984,9 +981,10 @@ def main() -> int:
         )
     for model in payload["models"]:
         summary = model["summary"]
+        best = summary["best_continuous_score_mps"]
         print(
             f"{model['family']}: {summary['readout_count']} merged readouts, "
-            f"best={summary['best_continuous_score_mps']:.4f} m/s, "
+            f"best={'n/a' if best is None else f'{best:.4f} m/s'}, "
             f"cost-AUC={summary['cost_auc_mps_at_common_cap']:.4f} m/s, "
             f"time-AUC={summary['time_auc_mps_at_common_cap']:.4f} m/s"
         )

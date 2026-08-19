@@ -1149,6 +1149,10 @@ if ((START_MONITOR)); then
   start_controller_worker \
     pulse "$STATE_DIR/budget-pulse.log" "$STATE_DIR/budget-pulse.pid" \
     budget-pulse --run-id "$RUN_ID" --poll-seconds 15
+  start_controller_worker \
+    gpu-dispatch "$STATE_DIR/gpu-dispatch-loop.log" \
+    "$STATE_DIR/gpu-dispatch-loop.pid" \
+    gpu-dispatch-loop --run-id "$RUN_ID" --poll-seconds 5
 fi
 
 printf '%s\n' "$$" >"$STATE_DIR/harbor.pid"
