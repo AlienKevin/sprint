@@ -1108,7 +1108,8 @@ def test_homepage_uses_compact_timeline_index_summaries() -> None:
     assert "/data/batches/current.json" in source
     assert "renderExperimentTracker" in source
     assert "cache read" in source
-    assert "submitted · ${row.rendered} rendered" in source
+    assert "${row.submitted} submitted</b>" in source
+    assert "Total cost" in source
     assert "await json(tMeta.path)" not in source
     assert "showReadout" in source
     assert "readout-timeline" in source
