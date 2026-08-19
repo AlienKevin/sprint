@@ -705,19 +705,36 @@ def aggregate_models(
     return output_models, common_cost_cap
 
 
-def build(batch_prefix: str, output: Path, cost_cap: float = 80.0) -> dict[str, Any]:
+def build(
+    batch_prefix: str,
+    output: Path,
+    cost_cap: float = 80.0,
+    *,
+    run_ids: Iterable[str] | None = None,
+) -> dict[str, Any]:
     policy_index = load_json(WEB / "data/policies/index.json")
     timeline_index = load_json(WEB / "data/timelines/index.json")
     timeline_by_run = {row["run_id"]: row for row in timeline_index["runs"]}
     policy_by_run = {row["run_id"]: row for row in policy_index["runs"]}
+    requested_run_ids = set(run_ids or ())
     selected = sorted(
         (
             row
             for row in timeline_index["runs"]
-            if row["run_id"].startswith(batch_prefix)
+            if (
+                row["run_id"] in requested_run_ids
+                if requested_run_ids
+                else row["run_id"].startswith(batch_prefix)
+            )
         ),
         key=lambda row: row["run_id"],
     )
+    missing_run_ids = requested_run_ids - {row["run_id"] for row in selected}
+    if missing_run_ids:
+        raise RuntimeError(
+            "comparison runs are missing from the public timeline index: "
+            + ", ".join(sorted(missing_run_ids))
+        )
     selected_families = [model_family(row.get("model")) for row in selected]
     family_counts = {
         family: selected_families.count(family) for family in set(selected_families)

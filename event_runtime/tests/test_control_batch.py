@@ -90,12 +90,12 @@ def test_performance_snapshot_uses_the_active_batch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     web = tmp_path / "web"
-    calls: list[tuple[str, Path]] = []
+    calls: list[tuple[str, Path, dict[str, object]]] = []
     monkeypatch.setattr(batch_eval, "WEB", web)
     monkeypatch.setattr(
         batch_eval.performance_export,
         "build",
-        lambda prefix, output: calls.append((prefix, output)),
+        lambda prefix, output, **kwargs: calls.append((prefix, output, kwargs)),
     )
 
     batch_eval.refresh_performance_snapshot({"batch_id": "event-20260812-r4"})
@@ -104,6 +104,65 @@ def test_performance_snapshot_uses_the_active_batch(
         (
             "event-20260812-r4-",
             web / "data/performance/current.json",
+            {"run_ids": []},
+        )
+    ]
+
+
+def test_single_family_replacement_uses_coexisting_comparison_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    web = tmp_path / "web"
+    batches = tmp_path / "batches"
+    batches.mkdir()
+    calls: list[tuple[str, Path, dict[str, object]]] = []
+    monkeypatch.setattr(batch_eval, "WEB", web)
+    monkeypatch.setattr(batch_eval, "BATCH_ROOT", batches)
+    monkeypatch.setattr(
+        batch_eval.performance_export,
+        "build",
+        lambda prefix, output, **kwargs: calls.append((prefix, output, kwargs)),
+    )
+    batch_eval.atomic_json(
+        batch_eval.batch_path("comparison"),
+        {
+            "batch_id": "comparison",
+            "updated_at": "now",
+            "status": "running",
+            "reasoning_effort": "max",
+            "codex_version": "0.147.0",
+            "run_hours": None,
+            "arms": [
+                {"run_id": "comparison-luna-1", "family": "luna"},
+                {"run_id": "comparison-sol-1", "family": "sol"},
+            ],
+        },
+    )
+
+    batch_eval.refresh_performance_snapshot(
+        {
+            "batch_id": "replacement",
+            "coexist_batch_ids": ["comparison"],
+            "updated_at": "now",
+            "status": "running",
+            "reasoning_effort": "max",
+            "codex_version": "0.147.0",
+            "run_hours": None,
+            "arms": [{"run_id": "replacement-luna-1", "family": "luna"}],
+        }
+    )
+
+    assert calls == [
+        (
+            "replacement-",
+            web / "data/performance/current.json",
+            {
+                "run_ids": [
+                    "comparison-luna-1",
+                    "comparison-sol-1",
+                    "replacement-luna-1",
+                ]
+            },
         )
     ]
 
@@ -937,6 +996,88 @@ def test_write_public_batch_updates_active_pointer(
     assert historical == tmp_path / "web/data/batches/eval.json"
     current = tmp_path / "web/data/batches/current.json"
     assert json.loads(historical.read_text()) == json.loads(current.read_text())
+
+
+def test_write_public_batch_tracks_explicitly_coexisting_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(batch_eval, "WEB", tmp_path / "web")
+    monkeypatch.setattr(batch_eval, "BATCH_ROOT", tmp_path / "batches")
+    (tmp_path / "batches").mkdir()
+    base = {
+        "batch_id": "base",
+        "updated_at": "2026-08-19T00:00:00Z",
+        "status": "running",
+        "reasoning_effort": "max",
+        "codex_version": "0.147.0",
+        "run_hours": None,
+        "arms": [{"run_id": "base-sol-1", "family": "sol"}],
+    }
+    replacement = {
+        **base,
+        "batch_id": "replacement",
+        "coexist_batch_ids": ["base"],
+        "arms": [{"run_id": "replacement-luna-1", "family": "luna"}],
+    }
+    batch_eval.atomic_json(batch_eval.batch_path("base"), base)
+
+    historical = batch_eval.write_public_batch(replacement)
+
+    assert [arm["run_id"] for arm in json.loads(historical.read_text())["arms"]] == [
+        "replacement-luna-1"
+    ]
+    current = json.loads(
+        (tmp_path / "web/data/batches/current.json").read_text()
+    )
+    assert current["tracked_batch_ids"] == ["base", "replacement"]
+    assert [arm["run_id"] for arm in current["arms"]] == [
+        "base-sol-1",
+        "replacement-luna-1",
+    ]
+
+
+def test_tracking_batch_excludes_budget_telemetry_failure_replaced_lane(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(batch_eval, "BATCH_ROOT", tmp_path / "batches")
+    (tmp_path / "batches").mkdir()
+    base = {
+        "batch_id": "base",
+        "updated_at": "now",
+        "status": "running",
+        "reasoning_effort": "max",
+        "codex_version": "0.147.0",
+        "run_hours": None,
+        "arms": [
+            {
+                "run_id": "base-luna-1",
+                "family": "luna",
+                "stop_ack": {"reason": "budget_telemetry_unavailable"},
+            },
+            {"run_id": "base-sol-1", "family": "sol"},
+        ],
+    }
+    replacement = {
+        **base,
+        "batch_id": "replacement",
+        "coexist_batch_ids": ["base"],
+        "arms": [{"run_id": "replacement-luna-1", "family": "luna"}],
+    }
+    batch_eval.atomic_json(batch_eval.batch_path("base"), base)
+
+    current = batch_eval.public_tracking_batch(replacement)
+
+    assert [arm["run_id"] for arm in current["arms"]] == [
+        "base-sol-1",
+        "replacement-luna-1",
+    ]
+    assert current["excluded_arms"] == [
+        {
+            "run_id": "base-luna-1",
+            "reason": "budget_telemetry_unavailable",
+            "source_batch_id": "base",
+        }
+    ]
 
 
 def test_batches_are_operator_stopped_without_a_fixed_deadline() -> None:

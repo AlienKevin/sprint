@@ -1327,12 +1327,80 @@ def public_batch(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def public_tracking_batch(payload: dict[str, Any]) -> dict[str, Any]:
+    """Combine explicitly coexisting batches for the active site pointer.
+
+    Replacement lanes are deliberately launched in a new immutable batch so a
+    failed lane remains auditable.  The website's active pointer should still
+    show the replacement beside the comparison it belongs to.  Only batch IDs
+    explicitly admitted by preflight are included, and each historical batch
+    record remains unchanged.
+    """
+
+    current = public_batch(payload)
+    coexist_ids = payload.get("coexist_batch_ids") or []
+    if not coexist_ids:
+        return current
+
+    batch_payloads: list[dict[str, Any]] = []
+    for batch_id in coexist_ids:
+        if not isinstance(batch_id, str) or not batch_id:
+            continue
+        try:
+            batch_payloads.append(read_batch(batch_id))
+        except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+    batch_payloads.append(payload)
+
+    arms_by_run: dict[str, dict[str, Any]] = {}
+    excluded_arms: list[dict[str, Any]] = []
+    alerts: list[dict[str, Any]] = []
+    for batch_payload in batch_payloads:
+        batch = public_batch(batch_payload)
+        raw_arms = {
+            arm.get("run_id"): arm
+            for arm in batch_payload.get("arms", [])
+            if isinstance(arm, dict) and arm.get("run_id")
+        }
+        for arm in batch.get("arms", []):
+            run_id = arm.get("run_id")
+            if isinstance(run_id, str) and run_id:
+                stop_reason = (
+                    (raw_arms.get(run_id, {}).get("stop_ack") or {}).get("reason")
+                )
+                if stop_reason == "budget_telemetry_unavailable":
+                    excluded_arms.append(
+                        {
+                            "run_id": run_id,
+                            "reason": stop_reason,
+                            "source_batch_id": batch.get("batch_id"),
+                        }
+                    )
+                    continue
+                arms_by_run[run_id] = arm
+        alerts.extend(batch.get("alerts", []))
+
+    current["tracked_batch_ids"] = [
+        batch["batch_id"]
+        for batch in map(public_batch, batch_payloads)
+        if batch.get("batch_id")
+    ]
+    current["arms"] = list(arms_by_run.values())
+    current["excluded_arms"] = excluded_arms
+    current["alerts"] = alerts[-100:]
+    return current
+
+
 def write_public_batch(payload: dict[str, Any]) -> Path:
     """Publish both the immutable batch record and the active-batch pointer."""
     public = public_batch(payload)
     public_path = WEB / "data" / "batches" / f"{payload['batch_id']}.json"
     atomic_json(public_path, public, mode=0o644)
-    atomic_json(WEB / "data" / "batches" / "current.json", public, mode=0o644)
+    atomic_json(
+        WEB / "data" / "batches" / "current.json",
+        public_tracking_batch(payload),
+        mode=0o644,
+    )
     return public_path
 
 
@@ -1397,9 +1465,17 @@ def deployed_batch_current(payload: dict[str, Any]) -> bool:
 def refresh_performance_snapshot(payload: dict[str, Any]) -> None:
     """Publish the active batch's aggregate chart before a site deployment."""
 
+    if payload.get("coexist_batch_ids"):
+        tracking = public_tracking_batch(payload)
+        run_ids = [arm["run_id"] for arm in tracking["arms"]]
+    else:
+        run_ids = [
+            arm["run_id"] for arm in payload.get("arms", []) if arm.get("run_id")
+        ]
     performance_export.build(
         f"{payload['batch_id']}-",
         WEB / "data" / "performance" / "current.json",
+        run_ids=run_ids,
     )
 
 
