@@ -890,10 +890,14 @@ def normalize_job_command(job: dict[str, Any]) -> dict[str, Any]:
 
 
 def load_job(run: dict[str, Any], job_id: str) -> dict[str, Any] | None:
-    """Load job state. Prefer status/ (canonical) over queue/ (enqueue snapshot).
+    """Load the canonical host record or an unclaimed enqueue snapshot.
 
-    Queue files stay at status=pending after claim; reading them first caused
-    dispatch_once to re-spawn the same job forever and never reach later jobs.
+    Once claimed, the host registry wins over every agent-visible mirror, so a
+    stale queue file cannot respawn the job.  Before claim there is no host
+    record and the immutable queue document is authoritative.  Read that
+    before the mutable status mirror: a slow status writer must not prevent a
+    newly submitted job from entering the dispatcher.  Status remains a
+    recovery fallback for legacy/status-only jobs.
     """
     # Once claimed, the host registry is authoritative.  Volume status and
     # queue files are agent-visible delivery mirrors and may disappear before
@@ -903,9 +907,9 @@ def load_job(run: dict[str, Any], job_id: str) -> dict[str, Any] | None:
     if local is not None:
         return local
     prefix = jobs_prefix(str(run["run_id"]))
-    text = sprintctl.volume_get_text(run, f"{prefix}/status/{job_id}.json")
+    text = sprintctl.volume_get_text(run, f"{prefix}/queue/{job_id}.json")
     if text is None:
-        text = sprintctl.volume_get_text(run, f"{prefix}/queue/{job_id}.json")
+        text = sprintctl.volume_get_text(run, f"{prefix}/status/{job_id}.json")
     if text is None:
         return None
     try:

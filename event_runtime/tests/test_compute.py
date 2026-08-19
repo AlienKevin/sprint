@@ -1284,6 +1284,28 @@ class HostJobRegistryTests(unittest.TestCase):
 
             self.assertEqual(payload["status"], "retry_wait")
 
+    def test_unclaimed_job_prefers_immutable_queue_over_status_mirror(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            run = {"run_id": "run-1", "state_dir": raw}
+            requested: list[str] = []
+
+            def get(_run: dict, remote: str) -> str | None:
+                requested.append(remote)
+                if "/queue/" in remote:
+                    return json.dumps({"job_id": "job-1", "status": "pending"})
+                raise AssertionError("status mirror must not delay an unclaimed job")
+
+            with mock.patch.object(
+                gpu_worker.sprintctl, "volume_get_text", side_effect=get
+            ):
+                payload = gpu_worker.load_job(run, "job-1")
+
+        self.assertEqual(payload, {"job_id": "job-1", "status": "pending"})
+        self.assertEqual(
+            requested,
+            ["runs/run-1/gpu-jobs/queue/job-1.json"],
+        )
+
     def test_list_retains_host_job_after_agent_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             run = {"run_id": "run-1", "state_dir": raw}
