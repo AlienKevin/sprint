@@ -2249,6 +2249,22 @@ class Builder:
             "cpu_agent": {
                 "allocation_count": len(cpu_intervals),
                 "allocated_ms": allocated_by_role["cpu_agent"],
+                # STOP_ACK can precede controller cleanup and the timeline's
+                # final export timestamp. Preserve the reconciled allocation
+                # interval so downstream cost curves stop CPU billing at the
+                # same boundary as the live budget ledger.
+                "intervals": [
+                    {
+                        key: interval.get(key)
+                        for key in (
+                            "cpu_attempt",
+                            "start_epoch_ms",
+                            "end_epoch_ms",
+                        )
+                        if interval.get(key) is not None
+                    }
+                    for interval in cpu_intervals
+                ],
             },
             "training_gpu": {
                 "allocation_count": len(training_intervals),

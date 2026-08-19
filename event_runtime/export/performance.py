@@ -598,7 +598,7 @@ def aggregate_models(
     output_runs: list[dict[str, Any]],
     common_time_cap: float,
     cost_ledgers: dict[str, dict[str, Any]],
-    requested_cost_cap: float,
+    requested_cost_cap: float | None,
     *,
     complete: bool,
 ) -> tuple[list[dict[str, Any]], float]:
@@ -619,6 +619,8 @@ def aggregate_models(
         sum(float(run["summary"]["final_agent_cost_usd"]) for run in runs)
         for runs in grouped.values()
     )
+    if requested_cost_cap is None:
+        requested_cost_cap = common_observed_cost
     if complete and requested_cost_cap > common_observed_cost:
         raise RuntimeError(
             f"requested ${requested_cost_cap:.2f} cap exceeds common observed "
@@ -708,7 +710,7 @@ def aggregate_models(
 def build(
     batch_prefix: str,
     output: Path,
-    cost_cap: float = 80.0,
+    cost_cap: float | None = None,
     *,
     run_ids: Iterable[str] | None = None,
 ) -> dict[str, Any]:
@@ -946,7 +948,12 @@ def build(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--batch-prefix", default="sprint-20260810-r8-")
-    parser.add_argument("--cost-cap", type=float, default=80.0)
+    parser.add_argument(
+        "--cost-cap",
+        type=float,
+        default=None,
+        help="optional AUC cost cap; defaults to the common observed model cost",
+    )
     parser.add_argument(
         "--output",
         type=Path,

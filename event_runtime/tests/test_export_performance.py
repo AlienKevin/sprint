@@ -46,6 +46,79 @@ def test_step_auc_uses_best_so_far_and_common_cap() -> None:
     assert continuous.step_auc(points, "cost", 10.0) == pytest.approx(1.2)
 
 
+def test_completed_comparison_defaults_to_common_observed_cost_cap() -> None:
+    runs = [
+        {
+            "run_id": "batch-luna-1",
+            "model": "openai/gpt-5.6-luna",
+            "points": [],
+            "summary": {
+                "final_agent_cost_usd": 9.9,
+                "missing_readout_indices": [],
+            },
+        },
+        {
+            "run_id": "batch-sol-1",
+            "model": "openai/gpt-5.6-sol",
+            "points": [],
+            "summary": {
+                "final_agent_cost_usd": 10.0,
+                "missing_readout_indices": [],
+            },
+        },
+    ]
+    ledgers = {
+        "batch-luna-1": {"origin_epoch_ms": 0},
+        "batch-sol-1": {"origin_epoch_ms": 0},
+    }
+
+    _, cap = continuous.aggregate_models(
+        runs,
+        common_time_cap=1.0,
+        cost_ledgers=ledgers,
+        requested_cost_cap=None,
+        complete=True,
+    )
+
+    assert cap == pytest.approx(9.9)
+
+
+def test_completed_comparison_rejects_explicit_unobserved_cost_cap() -> None:
+    runs = [
+        {
+            "run_id": "batch-luna-1",
+            "model": "openai/gpt-5.6-luna",
+            "points": [],
+            "summary": {
+                "final_agent_cost_usd": 9.9,
+                "missing_readout_indices": [],
+            },
+        },
+        {
+            "run_id": "batch-sol-1",
+            "model": "openai/gpt-5.6-sol",
+            "points": [],
+            "summary": {
+                "final_agent_cost_usd": 10.0,
+                "missing_readout_indices": [],
+            },
+        },
+    ]
+    ledgers = {
+        "batch-luna-1": {"origin_epoch_ms": 0},
+        "batch-sol-1": {"origin_epoch_ms": 0},
+    }
+
+    with pytest.raises(RuntimeError, match="cap exceeds common observed cost"):
+        continuous.aggregate_models(
+            runs,
+            common_time_cap=1.0,
+            cost_ledgers=ledgers,
+            requested_cost_cap=10.1,
+            complete=True,
+        )
+
+
 @pytest.mark.parametrize(
     ("model", "expected"),
     [
@@ -148,6 +221,50 @@ def test_cost_ledger_integrates_requests_and_allocation_intervals() -> None:
     assert continuous.cumulative_cost_at_epoch(ledger, 500) == pytest.approx(0.5)
     assert continuous.cumulative_cost_at_epoch(ledger, 2500) == pytest.approx(18.0)
     assert continuous.cumulative_cost_at_epoch(ledger, 5000) == pytest.approx(24.5)
+
+
+def test_cost_ledger_stops_cpu_at_reconciled_allocation_end() -> None:
+    timeline = {
+        "clock": {"origin_epoch_ms": 0, "end_epoch_ms": 5000},
+        "events": [{"kind": "cpu_allocated", "epoch_ms": 0}],
+        "resource_usage_summary": {
+            "cpu_agent": {
+                "allocated_ms": 3000,
+                "intervals": [{"start_epoch_ms": 0, "end_epoch_ms": 3000}],
+            },
+            "training_gpu": {"allocated_ms": 0, "intervals": []},
+            "resource_contract": {
+                "cpu_agent": {
+                    "physical_cpu_cores": 1,
+                    "memory_mb": 0,
+                    "gpu_count": 0,
+                },
+                "training_worker": {
+                    "physical_cpu_cores": 0,
+                    "memory_mb": 0,
+                    "gpu_count": 0,
+                },
+            },
+            "modal_estimate": {
+                "pricing_snapshot": {
+                    "rates_usd_per_second": {
+                        "CPU": "1",
+                        "Memory": "0",
+                        "A10G": "10",
+                    }
+                },
+                "by_role": {
+                    "cpu_agent": {"estimated_cost_usd": 3},
+                    "training_gpu": {"estimated_cost_usd": 0},
+                },
+            },
+        },
+    }
+
+    ledger = continuous.build_cost_ledger(timeline)
+
+    assert continuous.cumulative_cost_at_epoch(ledger, 2000) == pytest.approx(2.0)
+    assert continuous.cumulative_cost_at_epoch(ledger, 5000) == pytest.approx(3.0)
 
 
 def test_run_is_terminal_requires_durable_stop_ack(

@@ -48,6 +48,22 @@ def build_cost_ledger(timeline: dict[str, Any]) -> dict[str, Any]:
     ]
     if not cpu_starts:
         raise RuntimeError("CPU allocation lifecycle is missing")
+    reconciled_cpu_intervals = (resources.get("cpu_agent") or {}).get("intervals")
+    if isinstance(reconciled_cpu_intervals, list):
+        cpu_intervals = sorted(
+            (
+                int(interval["start_epoch_ms"]),
+                max(
+                    int(interval["start_epoch_ms"]),
+                    int(interval.get("end_epoch_ms") or end_epoch_ms),
+                ),
+            )
+            for interval in reconciled_cpu_intervals
+            if isinstance(interval, dict)
+            and isinstance(interval.get("start_epoch_ms"), int)
+        )
+    else:
+        cpu_intervals = [(min(cpu_starts), end_epoch_ms)]
     reconciled_intervals = (resources.get("training_gpu") or {}).get("intervals")
     if isinstance(reconciled_intervals, list):
         training_intervals = sorted(
@@ -83,6 +99,7 @@ def build_cost_ledger(timeline: dict[str, Any]) -> dict[str, Any]:
         "origin_epoch_ms": int(timeline["clock"]["origin_epoch_ms"]),
         "end_epoch_ms": end_epoch_ms,
         "cpu_start_epoch_ms": min(cpu_starts),
+        "cpu_intervals": cpu_intervals,
         "cpu_usd_per_second": _role_rate(contract, "cpu_agent", rates),
         "training_intervals": training_intervals,
         "training_usd_per_second": _role_rate(contract, "training_worker", rates),
@@ -107,7 +124,16 @@ def cumulative_cost_components_at_epoch(
     api_cost = sum(
         cost for event_ms, cost in ledger["api_events"] if event_ms <= cutoff
     )
-    cpu_ms = max(0, cutoff - int(ledger["cpu_start_epoch_ms"]))
+    cpu_intervals = ledger.get("cpu_intervals")
+    if not isinstance(cpu_intervals, list):
+        cpu_intervals = [
+            (int(ledger["cpu_start_epoch_ms"]), int(ledger["end_epoch_ms"]))
+        ]
+    cpu_ms = sum(
+        max(0, min(cutoff, int(end_ms)) - int(start_ms))
+        for start_ms, end_ms in cpu_intervals
+        if cutoff > int(start_ms)
+    )
     training_ms = sum(
         max(0, min(cutoff, end_ms) - start_ms)
         for start_ms, end_ms in ledger["training_intervals"]
