@@ -40,6 +40,14 @@ GPU_PIPELINE_FIELDS = (
     "fp16_instruction_pct_of_peak_active",
     "dram_throughput_pct",
 )
+GPU_PIPELINE_FIELD_GROUPS = {
+    "sm_active_pct": {0, 2},
+    "sm_occupancy_pct": {1, 2},
+    "tensor_pipe_active_pct": {1},
+    "fp32_fma_pipe_active_pct": {0},
+    "fp16_instruction_pct_of_peak_active": {2},
+    "dram_throughput_pct": {0, 1, 2},
+}
 
 
 def parse_epoch_ms(value: Any) -> int | None:
@@ -1351,6 +1359,7 @@ class Builder:
         *,
         max_gap_ms: int,
         match_fields: tuple[str, ...] = (),
+        allow_empty_within_gap: bool = False,
     ) -> list[dict[str, Any]]:
         coverage: list[dict[str, Any]] = []
         for interval in intervals:
@@ -1373,7 +1382,14 @@ class Builder:
             if matching:
                 gaps.extend(b - a for a, b in zip(matching, matching[1:]))
                 gaps.append(end - matching[-1])
-            worst_gap = max(gaps) if gaps else None
+            interval_gap = end - start if end is not None else None
+            worst_gap = (
+                max(gaps)
+                if gaps
+                else interval_gap
+                if allow_empty_within_gap
+                else None
+            )
             coverage.append(
                 {
                     **interval,
@@ -1381,13 +1397,114 @@ class Builder:
                     "max_gap_ms": worst_gap,
                     "covered": bool(
                         end is not None
-                        and matching
+                        and (matching or allow_empty_within_gap)
                         and worst_gap is not None
                         and worst_gap <= max_gap_ms
                     ),
                 }
             )
         return coverage
+
+    @classmethod
+    def _pipeline_metric_coverage(
+        cls,
+        intervals: list[dict[str, Any]],
+        samples: list[dict[str, Any]],
+        *,
+        max_gap_ms: int,
+        match_fields: tuple[str, ...],
+        allow_empty_within_gap: bool,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Measure accountable collector attempts inside sampler windows.
+
+        Pipeline groups rotate only after the base GPU sampler starts. Allocation
+        startup is therefore covered by the base metric gate, while each
+        pipeline field is checked between the first and last base samples. A
+        CUPTI attempt that explicitly reports unavailable still proves the
+        collector ran at that timestamp; successful measurement counts remain
+        separate so missing values are visible rather than fabricated.
+        """
+        scoped_intervals: list[dict[str, Any]] = []
+        for interval in intervals:
+            matching_times = sorted(
+                sample["epoch_ms"]
+                for sample in samples
+                if interval["end_epoch_ms"] is not None
+                and interval["start_epoch_ms"]
+                <= sample["epoch_ms"]
+                <= interval["end_epoch_ms"]
+                and not any(
+                    interval.get(field) is not None
+                    and sample.get(field) != interval.get(field)
+                    for field in match_fields
+                )
+            )
+            scoped = dict(interval)
+            scoped["allocation_start_epoch_ms"] = interval["start_epoch_ms"]
+            scoped["allocation_end_epoch_ms"] = interval["end_epoch_ms"]
+            if matching_times:
+                scoped["start_epoch_ms"] = matching_times[0]
+                scoped["end_epoch_ms"] = matching_times[-1]
+            scoped_intervals.append(scoped)
+
+        result: dict[str, list[dict[str, Any]]] = {}
+        for field in GPU_PIPELINE_FIELDS:
+            groups = GPU_PIPELINE_FIELD_GROUPS[field]
+
+            def gpu_attempted(sample: dict[str, Any]) -> bool:
+                return any(
+                    gpu.get(field) is not None
+                    or gpu.get("pipeline_metrics_group") in groups
+                    for gpu in ((sample.get("metrics") or {}).get("gpus") or [])
+                    if isinstance(gpu, dict)
+                )
+
+            def gpu_measured(sample: dict[str, Any]) -> bool:
+                return any(
+                    gpu.get(field) is not None
+                    for gpu in ((sample.get("metrics") or {}).get("gpus") or [])
+                    if isinstance(gpu, dict)
+                )
+
+            attempts = [sample for sample in samples if gpu_attempted(sample)]
+            measurements = [sample for sample in samples if gpu_measured(sample)]
+            field_coverage = cls._metric_coverage(
+                scoped_intervals,
+                attempts,
+                max_gap_ms=max_gap_ms,
+                match_fields=match_fields,
+                allow_empty_within_gap=allow_empty_within_gap,
+            )
+            for item in field_coverage:
+                coverage_start = item["start_epoch_ms"]
+                coverage_end = item["end_epoch_ms"]
+                measurement_count = sum(
+                    coverage_end is not None
+                    and coverage_start <= sample["epoch_ms"] <= coverage_end
+                    and not any(
+                        item.get(match_field) is not None
+                        and sample.get(match_field) != item.get(match_field)
+                        for match_field in match_fields
+                    )
+                    for sample in measurements
+                )
+                item["coverage_start_epoch_ms"] = coverage_start
+                item["coverage_end_epoch_ms"] = coverage_end
+                item["start_epoch_ms"] = item.pop("allocation_start_epoch_ms")
+                item["end_epoch_ms"] = item.pop("allocation_end_epoch_ms")
+                item["measurement_count"] = measurement_count
+                item["unavailable_attempt_count"] = max(
+                    0, int(item["sample_count"]) - measurement_count
+                )
+                if (
+                    item["covered"]
+                    and measurement_count == 0
+                    and coverage_end is not None
+                    and coverage_end - coverage_start > max_gap_ms
+                ):
+                    item["covered"] = False
+            result[field] = field_coverage
+        return result
 
     def finalize(self) -> dict[str, Any]:
         trace_order = {"tool_call": 0, "tool_result": 1}
@@ -1669,6 +1786,7 @@ class Builder:
             training_samples,
             max_gap_ms=max_gap_ms,
             match_fields=("gpu_job_id", "gpu_attempt"),
+            allow_empty_within_gap=True,
         )
         verifier_coverage = self._metric_coverage(
             verifier_intervals,
@@ -1680,40 +1798,33 @@ class Builder:
             int(self.run.get("telemetry_gpu_pipeline_max_gap_seconds") or 45) * 1000
         )
 
-        def pipeline_coverage(
-            intervals: list[dict[str, Any]],
-            samples: list[dict[str, Any]],
-            *,
-            match_fields: tuple[str, ...],
-        ) -> dict[str, list[dict[str, Any]]]:
-            return {
-                field: self._metric_coverage(
-                    intervals,
-                    [
-                        sample
-                        for sample in samples
-                        if any(
-                            gpu.get(field) is not None
-                            for gpu in ((sample.get("metrics") or {}).get("gpus") or [])
-                            if isinstance(gpu, dict)
-                        )
-                    ],
-                    max_gap_ms=pipeline_max_gap_ms,
-                    match_fields=match_fields,
-                )
-                for field in GPU_PIPELINE_FIELDS
-            }
-
-        training_pipeline_coverage = pipeline_coverage(
+        training_pipeline_coverage = self._pipeline_metric_coverage(
             training_intervals,
             training_samples,
+            max_gap_ms=pipeline_max_gap_ms,
             match_fields=("gpu_job_id", "gpu_attempt"),
+            allow_empty_within_gap=True,
         )
-        verifier_pipeline_coverage = pipeline_coverage(
+        verifier_pipeline_coverage = self._pipeline_metric_coverage(
             verifier_intervals,
             verifier_samples,
+            max_gap_ms=pipeline_max_gap_ms,
             match_fields=("evaluation_id",),
+            allow_empty_within_gap=False,
         )
+        for role, samples in (
+            ("training", training_samples),
+            ("verifier", verifier_samples),
+        ):
+            self.counts[f"{role}_gpu_pipeline_unavailable_samples"] = sum(
+                any(
+                    gpu.get("pipeline_metrics_source")
+                    and gpu.get("pipeline_metrics_status") != "ok"
+                    for gpu in ((sample.get("metrics") or {}).get("gpus") or [])
+                    if isinstance(gpu, dict)
+                )
+                for sample in samples
+            )
         training_expected = bool(training_intervals)
         verifier_expected = bool(verifier_evaluation_intervals)
         verifier_evaluation_ids = {
@@ -1859,6 +1970,12 @@ class Builder:
             self.warnings.append(
                 "verifier GPU telemetry does not cover every scoring interval"
             )
+        for role in ("training", "verifier"):
+            unavailable = self.counts[f"{role}_gpu_pipeline_unavailable_samples"]
+            if unavailable:
+                self.warnings.append(
+                    f"{unavailable} {role} GPU pipeline samples recorded an explicit collector failure"
+                )
         if not requirements.get("cgroup_scoped_cpu_memory", True):
             self.warnings.append(
                 "CPU or memory telemetry used host-wide fallback counters instead of cgroup-local counters"

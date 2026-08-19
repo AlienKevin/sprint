@@ -1089,6 +1089,89 @@ def test_training_gpu_samples_do_not_satisfy_verifier_coverage(tmp_path: Path) -
     assert coverage["ready"] is False
 
 
+def test_short_training_allocation_without_sample_stays_within_gap_budget() -> None:
+    coverage = unified_timeline.Builder._metric_coverage(
+        [
+            {
+                "start_epoch_ms": 1_000,
+                "end_epoch_ms": 30_000,
+                "gpu_job_id": "startup-failure",
+                "gpu_attempt": 1,
+            }
+        ],
+        [],
+        max_gap_ms=45_000,
+        match_fields=("gpu_job_id", "gpu_attempt"),
+        allow_empty_within_gap=True,
+    )
+    assert coverage == [
+        {
+            "start_epoch_ms": 1_000,
+            "end_epoch_ms": 30_000,
+            "gpu_job_id": "startup-failure",
+            "gpu_attempt": 1,
+            "sample_count": 0,
+            "max_gap_ms": 29_000,
+            "covered": True,
+        }
+    ]
+
+
+def test_pipeline_coverage_counts_explicit_failed_attempts_without_values() -> None:
+    interval = {
+        "start_epoch_ms": 0,
+        "end_epoch_ms": 100_000,
+        "gpu_job_id": "job-one",
+        "gpu_attempt": 1,
+    }
+    samples = []
+    for epoch_ms, group, status in (
+        (10_000, 0, "ok"),
+        (20_000, 1, "ok"),
+        (30_000, 2, "ok"),
+        (40_000, 0, "unavailable"),
+        (50_000, 1, "unavailable"),
+        (60_000, 2, "unavailable"),
+        (70_000, 0, "ok"),
+        (80_000, 1, "ok"),
+        (90_000, 2, "ok"),
+    ):
+        gpu = {
+            "pipeline_metrics_source": "cupti-pm-sampling",
+            "pipeline_metrics_group": group,
+            "pipeline_metrics_status": status,
+        }
+        if status == "ok":
+            for field, groups in unified_timeline.GPU_PIPELINE_FIELD_GROUPS.items():
+                if group in groups:
+                    gpu[field] = 1.0
+        samples.append(
+            {
+                "epoch_ms": epoch_ms,
+                "gpu_job_id": "job-one",
+                "gpu_attempt": 1,
+                "metrics": {"gpus": [gpu]},
+            }
+        )
+
+    coverage = unified_timeline.Builder._pipeline_metric_coverage(
+        [interval],
+        samples,
+        max_gap_ms=45_000,
+        match_fields=("gpu_job_id", "gpu_attempt"),
+        allow_empty_within_gap=True,
+    )
+
+    assert all(rows[0]["covered"] for rows in coverage.values())
+    tensor = coverage["tensor_pipe_active_pct"][0]
+    assert tensor["measurement_count"] == 2
+    assert tensor["unavailable_attempt_count"] == 1
+    assert tensor["coverage_start_epoch_ms"] == 10_000
+    assert tensor["coverage_end_epoch_ms"] == 90_000
+    assert tensor["start_epoch_ms"] == 0
+    assert tensor["end_epoch_ms"] == 100_000
+
+
 def test_single_out_of_window_verifier_sample_fails_coverage(tmp_path: Path) -> None:
     state = fixture_run(tmp_path, training_lifecycle=False)
     for path in state.rglob("verifier/telemetry/samples.jsonl"):
