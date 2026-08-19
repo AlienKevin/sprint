@@ -140,6 +140,10 @@ def test_codex_comparison_models_pin_provider_compatible_tool_contracts(
     models = ROOT / "event_runtime/models"
     deepseek = json.loads((models / "deepseek.json").read_text())
     for model in deepseek["models"]:
+        # DeepSeek/OpenRouter accepts standard function tools, not the
+        # OpenAI-specific freeform `custom` tool schema.
+        assert model["apply_patch_tool_type"] == "function"
+        assert model["shell_type"] == "shell_command"
         assert model["tool_mode"] is None
         assert model["multi_agent_version"] == "v2"
 
