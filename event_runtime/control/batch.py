@@ -1160,6 +1160,8 @@ def public_batch(payload: dict[str, Any]) -> dict[str, Any]:
                     "launched_at",
                     "deadline_at",
                     "finalized_at",
+                    "last_monitor_at",
+                    "stop_requested_at",
                     "ledger",
                     "snapshot_heartbeat_ok",
                     "frontier_worker_alive",
@@ -1170,6 +1172,15 @@ def public_batch(payload: dict[str, Any]) -> dict[str, Any]:
         ],
         "alerts": payload.get("alerts", [])[-100:],
     }
+
+
+def write_public_batch(payload: dict[str, Any]) -> Path:
+    """Publish both the immutable batch record and the active-batch pointer."""
+    public = public_batch(payload)
+    public_path = WEB / "data" / "batches" / f"{payload['batch_id']}.json"
+    atomic_json(public_path, public, mode=0o644)
+    atomic_json(WEB / "data" / "batches" / "current.json", public, mode=0o644)
+    return public_path
 
 
 def resolve_alerts(
@@ -1209,7 +1220,10 @@ def deployed_batch_current(payload: dict[str, Any]) -> bool:
         manifest, dict
     ):
         return False
-    paths = [WEB / "data" / "batches" / f"{payload['batch_id']}.json"]
+    paths = [
+        WEB / "data" / "batches" / f"{payload['batch_id']}.json",
+        WEB / "data" / "batches" / "current.json",
+    ]
     paths.append(WEB / "data" / "performance" / "current.json")
     for arm in payload["arms"]:
         run_id = arm["run_id"]
@@ -1415,8 +1429,7 @@ def monitor_cycle(batch_id: str, *, deploy: bool = True) -> dict[str, Any]:
                 payload.setdefault("alerts", []).append(alert)
                 known.add(key)
         payload["updated_at"] = utc_now()
-        public_path = WEB / "data" / "batches" / f"{batch_id}.json"
-        atomic_json(public_path, public_batch(payload), mode=0o644)
+        write_public_batch(payload)
 
         performance_ready = True
         if deploy:
@@ -1510,7 +1523,7 @@ def monitor_cycle(batch_id: str, *, deploy: bool = True) -> dict[str, Any]:
         all_finalized = finalized == len(payload["arms"])
         payload["status"] = "complete" if all_finalized else "running"
         payload["updated_at"] = utc_now()
-        atomic_json(public_path, public_batch(payload), mode=0o644)
+        write_public_batch(payload)
         if (
             deploy
             and all_finalized
@@ -1537,7 +1550,7 @@ def monitor_cycle(batch_id: str, *, deploy: bool = True) -> dict[str, Any]:
         if all_finalized and not deployed_current:
             payload["status"] = "finalizing_site"
             payload["updated_at"] = utc_now()
-            atomic_json(public_path, public_batch(payload), mode=0o644)
+            write_public_batch(payload)
         known = {
             (item.get("run_id"), item.get("kind"), item.get("source"))
             for item in payload.get("alerts", [])

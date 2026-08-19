@@ -565,6 +565,7 @@ def test_unified_timeline_is_joined_deduplicated_and_public_safe(
     index = json.loads((web / "data" / "timelines" / "index.json").read_text())
     assert index["runs"][0]["path"] == "/data/timelines/timeline-fixture.json"
     assert index["runs"][0]["comparison_summary"]["best_100m_s"] == 48.0
+    assert index["runs"][0]["usage_summary"] == payload["usage_summary"]
     assert index["runs"][0]["dashboard_artifacts"] == [
         {
             "submission_index": artifact.get("submission_index"),

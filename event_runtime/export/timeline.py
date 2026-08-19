@@ -2370,6 +2370,7 @@ def build_timeline(
             "end_epoch_ms": payload["clock"]["end_epoch_ms"],
             "artifact_count": len(payload["artifacts"]),
             "event_count": len(payload["events"]),
+            "usage_summary": payload["usage_summary"],
             "comparison_summary": payload["comparison_summary"],
             "resource_usage_summary": payload["resource_usage_summary"],
             "dashboard_artifacts": [

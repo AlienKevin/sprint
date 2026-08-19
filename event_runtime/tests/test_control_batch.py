@@ -114,10 +114,11 @@ def test_final_site_gate_ignores_unrelated_run_changes(
     batch_id = "eval"
     run_id = "eval-1"
     batch_file = web / f"data/batches/{batch_id}.json"
+    current_batch = web / "data/batches/current.json"
     performance = web / "data/performance/current.json"
     timeline = web / f"data/timelines/{run_id}.json"
     unrelated = web / "data/timelines/other.json"
-    for path in (batch_file, performance, timeline, unrelated):
+    for path in (batch_file, current_batch, performance, timeline, unrelated):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f"{path.name}\n")
     monkeypatch.setattr(batch_eval, "WEB", web)
@@ -788,6 +789,27 @@ def test_public_batch_never_contains_secrets_or_host_paths() -> None:
     assert "/private" not in encoded
 
 
+def test_write_public_batch_updates_active_pointer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(batch_eval, "WEB", tmp_path / "web")
+    payload = {
+        "batch_id": "eval",
+        "updated_at": "2026-08-19T00:00:00Z",
+        "status": "running",
+        "reasoning_effort": "max",
+        "codex_version": "0.147.0",
+        "run_hours": None,
+        "arms": [],
+    }
+
+    historical = batch_eval.write_public_batch(payload)
+
+    assert historical == tmp_path / "web/data/batches/eval.json"
+    current = tmp_path / "web/data/batches/current.json"
+    assert json.loads(historical.read_text()) == json.loads(current.read_text())
+
+
 def test_batches_are_operator_stopped_without_a_fixed_deadline() -> None:
     assert batch_eval.RUN_HOURS is None
 
@@ -1082,6 +1104,11 @@ def test_public_policy_index_keeps_only_six_newest_runs(tmp_path: Path) -> None:
 def test_homepage_uses_compact_timeline_index_summaries() -> None:
     source = (ROOT / "web" / "app.js").read_text()
     assert "dashboard_artifacts" in source
+    assert "usage_summary" in source
+    assert "/data/batches/current.json" in source
+    assert "renderExperimentTracker" in source
+    assert "cache read" in source
+    assert "submitted · ${row.rendered} rendered" in source
     assert "await json(tMeta.path)" not in source
     assert "showReadout" in source
     assert "readout-timeline" in source
