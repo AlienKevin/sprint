@@ -557,6 +557,57 @@ def fetch_remote_json(
     return payload
 
 
+def fetch_budget_watchdog(
+    state_dir: Path, run: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Read the live watchdog without depending on Volume control-plane sync.
+
+    The budget watchdog writes into the agent sandbox's mounted durable path.
+    Reading that path with ``container exec`` avoids transient misses when the
+    artifact monitor is concurrently downloading from the same Modal Volume.
+    Volume download remains the startup/restart fallback, and the last local
+    copy lets a single control-plane miss preserve the pulse's freshness
+    guarantee (the caller still rejects snapshots older than 60 seconds).
+    """
+    local_path = state_dir / "telemetry" / "budget-watchdog.json"
+    remote_name = "budget/watchdog.json"
+    remote_path = f"/durable/runs/{run['run_id']}/{remote_name}"
+    container_id = run.get("agent_container_id")
+    if isinstance(container_id, str) and container_id.startswith("ta-"):
+        try:
+            result = exec_container(
+                run,
+                container_id,
+                f"cat -- {shlex.quote(remote_path)}",
+                check=False,
+                timeout=20,
+            )
+        except subprocess.TimeoutExpired:
+            result = None
+        if result is not None and result.returncode == 0:
+            try:
+                payload = json.loads(result.stdout or "")
+            except json.JSONDecodeError:
+                payload = None
+            if isinstance(payload, dict):
+                atomic_write_json(local_path, payload, mode=0o600)
+                return payload
+
+    payload = fetch_remote_json(
+        state_dir,
+        run,
+        remote_name,
+        "telemetry/budget-watchdog.json",
+    )
+    if isinstance(payload, dict):
+        return payload
+    try:
+        cached = json.loads(local_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    return cached if isinstance(cached, dict) else None
+
+
 def process_alive(pid: int | None, needle: str | None = None) -> bool:
     if not pid or pid <= 1:
         return False
@@ -1924,14 +1975,11 @@ def budget_pulse_once(run_id: str, *, now: float | None = None) -> dict[str, Any
     """Refresh the trusted budget mirror without waiting for artifact sync."""
     state_dir, run = load_run(run_id)
     ref = time.time() if now is None else float(now)
-    canonical = fetch_remote_json(
-        state_dir,
-        run,
-        "budget/watchdog.json",
-        "telemetry/budget-watchdog.json",
-    )
+    canonical = fetch_budget_watchdog(state_dir, run)
     if not isinstance(canonical, dict) or canonical.get("schema_version") != 2:
         raise RuntimeError("budget pulse has no valid in-sandbox watchdog snapshot")
+    if canonical.get("run_id") != run_id:
+        raise RuntimeError("budget pulse watchdog run ID mismatch")
     checked_at = canonical.get("checked_at_epoch_s")
     if not isinstance(checked_at, (int, float)) or isinstance(checked_at, bool):
         raise RuntimeError("budget pulse watchdog timestamp is missing")

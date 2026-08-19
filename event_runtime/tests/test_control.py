@@ -124,7 +124,7 @@ class DurableOpsTests(unittest.TestCase):
                     sprintctl, "load_run", return_value=(state, run)
                 ),
                 mock.patch.object(
-                    sprintctl, "fetch_remote_json", return_value=canonical
+                    sprintctl, "fetch_budget_watchdog", return_value=canonical
                 ) as fetch,
                 mock.patch.object(
                     sprintctl, "build_unified_timeline", return_value={"events": []}
@@ -170,7 +170,7 @@ class DurableOpsTests(unittest.TestCase):
                 ),
                 mock.patch.object(
                     sprintctl,
-                    "fetch_remote_json",
+                    "fetch_budget_watchdog",
                     return_value={
                         "schema_version": 2,
                         "run_id": "pulse-run",
@@ -181,6 +181,56 @@ class DurableOpsTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(RuntimeError, "snapshot is stale"):
                     sprintctl.budget_pulse_once("pulse-run", now=1000.0)
+
+    def test_budget_watchdog_prefers_live_agent_sandbox(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            run = {
+                "run_id": "pulse-run",
+                "agent_container_id": "ta-agent",
+            }
+            canonical = {
+                "schema_version": 2,
+                "run_id": "pulse-run",
+                "checked_at_epoch_s": 1000.0,
+            }
+            completed = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout=json.dumps(canonical), stderr=""
+            )
+            with (
+                mock.patch.object(
+                    sprintctl, "exec_container", return_value=completed
+                ) as execute,
+                mock.patch.object(sprintctl, "fetch_remote_json") as volume,
+            ):
+                observed = sprintctl.fetch_budget_watchdog(state, run)
+
+            self.assertEqual(observed, canonical)
+            execute.assert_called_once()
+            volume.assert_not_called()
+            self.assertEqual(
+                json.loads((state / "telemetry/budget-watchdog.json").read_text()),
+                canonical,
+            )
+
+    def test_budget_watchdog_uses_fresh_local_copy_after_remote_miss(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            local = state / "telemetry/budget-watchdog.json"
+            local.parent.mkdir(parents=True)
+            canonical = {
+                "schema_version": 2,
+                "run_id": "pulse-run",
+                "checked_at_epoch_s": 1000.0,
+            }
+            local.write_text(json.dumps(canonical))
+            with mock.patch.object(
+                sprintctl, "fetch_remote_json", return_value=None
+            ):
+                observed = sprintctl.fetch_budget_watchdog(
+                    state, {"run_id": "pulse-run"}
+                )
+            self.assertEqual(observed, canonical)
 
     def test_final_sync_imports_authoritative_durable_gpu_telemetry_once(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
