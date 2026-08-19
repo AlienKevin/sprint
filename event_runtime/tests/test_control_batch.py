@@ -654,16 +654,18 @@ def test_provider_inference_probe_audits_eventual_openrouter_generation(
         calls += 1
         if calls == 1:
             assert timeout == 120
-            return io.BytesIO(
+            response = io.BytesIO(
                 json.dumps(
                     {
-                        "id": "gen_test",
+                        "id": "resp_test",
                         "model": "deepseek/deepseek-v4-flash-0731",
                         "status": "completed",
                         "usage": {"cost": 0.001},
                     }
                 ).encode()
             )
+            response.headers = {"X-Generation-Id": "gen_test"}
+            return response
         assert timeout == 30
         assert "id=gen_test" in request.full_url
         if calls == 2:
@@ -695,6 +697,8 @@ def test_provider_inference_probe_audits_eventual_openrouter_generation(
     )
 
     assert result["provider"] == "DeepSeek"
+    assert result["request_id"] == "resp_test"
+    assert result["generation_id"] == "gen_test"
     assert result["resolved_model"] == "deepseek/deepseek-v4-flash-20260731"
     assert result["preset_id"] == "preset-fixture"
     assert result["provider_reported_total_cost_usd"] == 0.001

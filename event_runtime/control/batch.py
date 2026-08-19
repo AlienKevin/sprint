@@ -329,9 +329,16 @@ def provider_inference_probe(
         },
     )
     result: Any = None
+    generation_id: str | None = None
     for attempt in range(PROVIDER_INFERENCE_ATTEMPTS):
         try:
             with urllib.request.urlopen(request, timeout=120) as response:
+                headers = getattr(response, "headers", None)
+                raw_generation_id = (
+                    headers.get("X-Generation-Id") if headers is not None else None
+                )
+                if raw_generation_id:
+                    generation_id = str(raw_generation_id).strip() or None
                 result = json.load(response)
             break
         except urllib.error.HTTPError as exc:
@@ -367,10 +374,11 @@ def provider_inference_probe(
         raise RuntimeError("provider inference response lacked a request ID")
     generation: dict[str, Any] = {}
     if generation_audit_url:
+        audit_id = generation_id or str(result["id"])
         audit_url = (
             generation_audit_url
             + "?"
-            + urllib.parse.urlencode({"id": str(result["id"])})
+            + urllib.parse.urlencode({"id": audit_id})
         )
         audit_request = urllib.request.Request(
             audit_url,
@@ -410,6 +418,7 @@ def provider_inference_probe(
         "checked_at": utc_now(),
         "endpoint": url,
         "request_id": str(result["id"]),
+        "generation_id": generation_id,
         "response_model": str(result.get("model", "")),
         "status": str(result.get("status", result.get("object", ""))),
         "service_tier": result.get("service_tier"),
