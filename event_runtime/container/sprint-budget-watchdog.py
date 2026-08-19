@@ -66,7 +66,7 @@ def recover_openrouter_generation(
 
 
 def openrouter_api_cost(
-    run_root: Path, *, run_id: str, api_key: str
+    run_root: Path, *, run_id: str, api_key: str | None
 ) -> tuple[float, int, int]:
     """Sum exact OpenRouter charges, recovering interrupted streams by ID."""
     requests_dir = run_root / "api-usage" / "requests"
@@ -93,9 +93,14 @@ def openrouter_api_cost(
             completed += 1
             continue
         generation_id = record.get("generation_id")
+        state = record.get("state")
+        if state == "cost_recovery_required" and not api_key:
+            raise BudgetTelemetryError(
+                "OpenRouter charge recovery requires controller credentials"
+            )
         recovered = (
             recover_openrouter_generation(str(generation_id), api_key)
-            if generation_id and record.get("state") == "cost_recovery_required"
+            if generation_id and state == "cost_recovery_required" and api_key
             else None
         )
         recovered_cost = recovered.get("total_cost") if recovered else None
@@ -119,6 +124,8 @@ def openrouter_api_cost(
             total += float(recovered_cost)
             completed += 1
             continue
+        if state not in {"in_flight", "cost_recovery_required"}:
+            raise BudgetTelemetryError(f"invalid OpenRouter ledger state: {path}")
         pending += 1
     return total, completed, pending
 
@@ -410,9 +417,13 @@ def check_once(
         raise BudgetTelemetryError("live API pricing is unsupported for this run")
     if enforcement.get("api_cost_source") == "openrouter_reported_per_request":
         require_live_openrouter_proxy(runtime_dir)
-        api_key = os.environ.get("OPENAI_API_KEY", "")
-        if len(api_key) < 16:
-            raise BudgetTelemetryError("OpenRouter API key is unavailable")
+        # The API key is deliberately scoped to the agent exec and controller,
+        # not the sandbox keepalive. Completed response charges are already in
+        # the durable proxy ledger and need no credential. An interrupted
+        # response still fails closed here until the credentialed controller
+        # can recover its exact OpenRouter generation charge.
+        raw_api_key = os.environ.get("OPENAI_API_KEY", "")
+        api_key = raw_api_key if len(raw_api_key) >= 16 else None
         api_usd, requests, pending_requests = openrouter_api_cost(
             run_root, run_id=run_id, api_key=api_key
         )

@@ -240,6 +240,71 @@ def test_live_watchdog_uses_openrouter_reported_cost_as_ground_truth(
     assert payload["budget_remaining_usd"] == pytest.approx(9.25)
 
 
+def test_openrouter_watchdog_bootstraps_without_agent_scoped_api_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    durable = tmp_path / "durable"
+    runtime = tmp_path / "run"
+    root = write_run(
+        durable,
+        "unit",
+        api_cost_source="openrouter_reported_per_request",
+    )
+    write_openrouter_cost(root, cost=0.75)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    watchdog.ensure_cpu_start(root, 1, 1_000)
+
+    payload = watchdog.check_once(
+        run_id="unit",
+        durable_dir=durable,
+        runtime_dir=runtime,
+        codex_home=tmp_path / "codex",
+        pricing_path=PRICING,
+        now=1_000,
+    )
+
+    assert payload["status"] == "within_budget"
+    assert payload["components"]["model_api"]["cost_usd"] == 0.75
+
+
+def test_openrouter_watchdog_fails_closed_on_unrecoverable_charge_without_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    durable = tmp_path / "durable"
+    runtime = tmp_path / "run"
+    root = write_run(
+        durable,
+        "unit",
+        api_cost_source="openrouter_reported_per_request",
+    )
+    record = root / "api-usage/requests/request.json"
+    record.parent.mkdir(parents=True)
+    record.write_text(
+        json.dumps(
+            {
+                "run_id": "unit",
+                "state": "cost_recovery_required",
+                "generation_id": "gen-recover",
+                "provider_reported_cost_usd": None,
+            }
+        )
+    )
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    with pytest.raises(
+        watchdog.BudgetTelemetryError,
+        match="requires controller credentials",
+    ):
+        watchdog.check_once(
+            run_id="unit",
+            durable_dir=durable,
+            runtime_dir=runtime,
+            codex_home=tmp_path / "codex",
+            pricing_path=PRICING,
+            now=1_000,
+        )
+
+
 def test_live_watchdog_fails_closed_if_codex_outlives_cost_proxy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
