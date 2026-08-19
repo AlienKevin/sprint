@@ -2024,9 +2024,18 @@ def cleanup_orphaned_training_sandboxes(run: dict[str, Any]) -> list[dict[str, A
 
     try:
         import modal
+    except Exception as exc:  # noqa: BLE001
+        return [
+            {"action": "orphan_audit_error", "error": f"{type(exc).__name__}: {exc}"}
+        ]
 
+    try:
         app = modal.App.lookup(app_name, create_if_missing=False)
         sandboxes = list(modal.Sandbox.list(app_id=str(app.app_id)))
+    except modal.exception.NotFoundError:
+        # The per-run training App is created lazily with the first GPU job.
+        # Its absence before then means there can be no orphaned sandboxes.
+        return []
     except Exception as exc:  # noqa: BLE001
         return [
             {"action": "orphan_audit_error", "error": f"{type(exc).__name__}: {exc}"}

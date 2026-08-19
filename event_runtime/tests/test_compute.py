@@ -1845,6 +1845,21 @@ class GpuConcurrencyLimitTests(unittest.TestCase):
             gpu_worker.cleanup_orphaned_training_sandboxes({"run_id": "unit"}), []
         )
 
+    def test_orphan_audit_treats_missing_lazy_training_app_as_empty(self) -> None:
+        run = {"run_id": "unit", "training_app_name": "unit-training"}
+        with (
+            mock.patch.object(gpu_worker, "list_job_ids", return_value=[]),
+            mock.patch(
+                "modal.App.lookup",
+                side_effect=gpu_worker.modal.exception.NotFoundError(
+                    "training app not created yet"
+                ),
+            ),
+        ):
+            actions = gpu_worker.cleanup_orphaned_training_sandboxes(run)
+
+        self.assertEqual(actions, [])
+
     def test_running_job_keeps_second_job_queued(self) -> None:
         jobs = {
             "active": {
