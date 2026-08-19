@@ -1632,10 +1632,14 @@ def final_conditions(
     stop_was_requested = (state_dir / "STOP_REQUESTED.json").is_file()
     conditions: dict[str, bool] = {
         # Natural completion has no controller stop to acknowledge. A run that
-        # did receive a stop request must still prove that the CPU sandbox
-        # observed it before the host seals the archive.
+        # did receive a stop request must prove either that the CPU sandbox
+        # observed it or that Harbor sealed both terminal result records. The
+        # latter covers the narrow race where an already-exiting agent finishes
+        # before it can acknowledge a late fail-closed telemetry stop.
         "stop_ack": (
-            not stop_was_requested or (state_dir / "STOP_ACK.json").is_file()
+            not stop_was_requested
+            or (state_dir / "STOP_ACK.json").is_file()
+            or run_results_finished(state_dir, run)
         ),
         "job_found": job is not None,
         "trial_found": trial is not None,

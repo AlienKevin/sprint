@@ -675,6 +675,12 @@ class DurableOpsTests(unittest.TestCase):
                 _complete, conditions, _details = sprintctl.final_conditions(
                     state, run
                 )
+                self.assertTrue(conditions["stop_ack"])
+
+                (job / "result.json").write_text("{}\n")
+                _complete, conditions, _details = sprintctl.final_conditions(
+                    state, run
+                )
                 self.assertFalse(conditions["stop_ack"])
 
     def test_stale_finalized_file_is_rechecked(self) -> None:
