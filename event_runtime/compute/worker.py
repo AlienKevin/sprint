@@ -2270,16 +2270,6 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
                 source="dispatch",
                 claim_id=claim_id,
             )
-            _timeline_event(
-                run,
-                claimed,
-                phase="gpu_lifecycle",
-                action="instant",
-                event="gpu_allocated"
-                if int(claimed.get("attempt") or 1) == 1
-                else "gpu_reallocated",
-                retry_reason=claimed.get("retry_reason"),
-            )
             try:
                 claimed = pin_work_archive(run, claimed)
                 persist_job(run, claimed)
@@ -2305,6 +2295,17 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
                     )
                     continue
                 payload = mark_dispatched(run, latest or claimed, sandbox_id)
+                _timeline_event(
+                    run,
+                    payload,
+                    phase="gpu_lifecycle",
+                    action="instant",
+                    event="gpu_allocated"
+                    if int(payload.get("attempt") or 1) == 1
+                    else "gpu_reallocated",
+                    retry_reason=payload.get("retry_reason"),
+                    lifecycle_boundary="sandbox_created",
+                )
                 budget_mirror: dict[str, Any] = {
                     "gpu_budget_mirror": "awaiting_controller_snapshot"
                 }

@@ -637,7 +637,7 @@ def test_durable_gpu_lifecycle_copy_is_deduplicated_by_event_id(
     assert payload["resource_usage_summary"]["training_gpu"]["allocation_count"] == 2
 
 
-def test_final_verifier_handoff_closes_supervised_cpu_allocation(
+def test_stop_ack_closes_supervised_cpu_allocation(
     tmp_path: Path,
 ) -> None:
     state = fixture_run(tmp_path)
@@ -659,10 +659,10 @@ def test_final_verifier_handoff_closes_supervised_cpu_allocation(
     assert cpu == [
         {
             "start_epoch_ms": 1786104001000,
-            "end_epoch_ms": 1786104030000,
+            "end_epoch_ms": 1786104020000,
             "cpu_attempt": 1,
             "sample_count": 1,
-            "max_gap_ms": 20000,
+            "max_gap_ms": 10000,
             "covered": True,
         }
     ]
@@ -967,6 +967,70 @@ def test_host_registry_closes_missing_training_terminal_event(tmp_path: Path) ->
     assert recovered[0]["lifecycle_recovered"] is True
     assert recovered[0]["lifecycle_recovery_source"] == "host_job_registry"
     assert payload["coverage"]["requirements"]["training_gpu_lifecycle"] is True
+    assert payload["coverage"]["requirements"]["training_gpu_metrics"] is True
+
+
+def test_host_registry_clamps_legacy_pre_spawn_training_interval(
+    tmp_path: Path,
+) -> None:
+    state = fixture_run(tmp_path)
+    lifecycle_path = state / "telemetry" / "gpu_timeline.jsonl"
+    rows = [
+        {
+            "event_id": "legacy-start",
+            "epoch_s": 1786104000,
+            "phase": "gpu_lifecycle",
+            "action": "instant",
+            "job_id": "short-lived",
+            "attempt": 1,
+            "detail": {"event": "gpu_allocated"},
+        },
+        {
+            "event_id": "legacy-end",
+            "epoch_s": 1786104101,
+            "phase": "gpu_lifecycle",
+            "action": "instant",
+            "job_id": "short-lived",
+            "attempt": 1,
+            "detail": {"event": "gpu_released"},
+        },
+    ]
+    write_jsonl(lifecycle_path, rows)
+    registry = state / "gpu-job-registry" / "short-lived.json"
+    registry.parent.mkdir(parents=True)
+    registry.write_text(
+        json.dumps(
+            {
+                "job_id": "short-lived",
+                "attempt": 1,
+                "status": "terminated",
+                "dispatched_at_epoch_s": 1786104045,
+                "terminated_at_epoch_s": 1786104057,
+                "termination_reason": "operator_stop",
+            }
+        )
+    )
+
+    payload = unified_timeline.build_timeline(state)
+
+    coverage = payload["coverage"]["gpu_metric_coverage"]["training"]
+    assert coverage == [
+        {
+            "start_epoch_ms": 1786104045000,
+            "end_epoch_ms": 1786104057000,
+            "gpu_job_id": "short-lived",
+            "gpu_attempt": 1,
+            "raw_start_epoch_ms": 1786104000000,
+            "raw_end_epoch_ms": 1786104101000,
+            "lifecycle_bounds_source": "host_job_registry",
+            "sample_count": 0,
+            "max_gap_ms": 12000,
+            "covered": True,
+        }
+    ]
+    counts = payload["coverage"]["counts"]
+    assert counts["gpu_registry_start_bounds_applied"] == 1
+    assert counts["gpu_registry_end_bounds_applied"] == 1
     assert payload["coverage"]["requirements"]["training_gpu_metrics"] is True
 
 

@@ -188,6 +188,7 @@ class Builder:
         self._trace_record_hashes: set[str] = set()
         self._metric_keys: set[str] = set()
         self._artifact_ids: set[str] = set()
+        self._gpu_registry_bounds: dict[tuple[str, int], dict[str, int]] = {}
         self.final_verifier_rewards: dict[str, Any] = {}
         self.final_verifier_finished_at: str | None = None
 
@@ -658,7 +659,36 @@ class Builder:
                 if not isinstance(record, dict):
                     continue
                 attempt = record.get("attempt")
+                dispatched_at = parse_epoch_ms(
+                    record.get("dispatched_at_epoch_s")
+                    or record.get("dispatched_at")
+                )
+                terminal_values = [
+                    parse_epoch_ms(record.get(key))
+                    for key in (
+                        "finished_at_epoch_s",
+                        "terminated_at_epoch_s",
+                        "finished_at",
+                        "terminated_at",
+                    )
+                ]
+                terminal_values = [value for value in terminal_values if value]
+                if isinstance(attempt, int) and attempt > 0:
+                    bounds = self._gpu_registry_bounds.setdefault(
+                        (job_id, attempt), {}
+                    )
+                    if dispatched_at is not None:
+                        bounds["start_epoch_ms"] = max(
+                            dispatched_at, bounds.get("start_epoch_ms", dispatched_at)
+                        )
+                    if terminal_values:
+                        terminal_at = min(terminal_values)
+                        bounds["end_epoch_ms"] = min(
+                            terminal_at, bounds.get("end_epoch_ms", terminal_at)
+                        )
                 finished_at = record.get("finished_at") or record.get("terminated_at")
+                if not finished_at and terminal_values:
+                    finished_at = iso_from_ms(min(terminal_values))
                 if not isinstance(attempt, int) or attempt <= 0 or not finished_at:
                     continue
                 key = (job_id, attempt)
@@ -698,6 +728,52 @@ class Builder:
                 )
                 existing.add(key)
                 self.counts["gpu_registry_terminal_events"] += 1
+
+    def clamp_training_intervals_to_registry(
+        self, intervals: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Use provider-backed registry bounds to remove controller overhead.
+
+        Legacy controllers emitted ``gpu_allocated`` before ``Sandbox.create``
+        and could emit ``gpu_released`` well after the sandbox had exited.  The
+        append-only host registry records the tighter post-create dispatch and
+        terminal timestamps, so it is authoritative when it narrows (never
+        widens) a paired lifecycle interval.
+        """
+        result: list[dict[str, Any]] = []
+        for interval in intervals:
+            item = dict(interval)
+            key = (str(item.get("gpu_job_id") or ""), int(item.get("gpu_attempt") or 0))
+            bounds = self._gpu_registry_bounds.get(key)
+            if not bounds:
+                result.append(item)
+                continue
+            raw_start = int(item["start_epoch_ms"])
+            raw_end = item.get("end_epoch_ms")
+            start = max(raw_start, bounds.get("start_epoch_ms", raw_start))
+            end = raw_end
+            if bounds.get("end_epoch_ms") is not None:
+                end = (
+                    bounds["end_epoch_ms"]
+                    if end is None
+                    else min(int(end), bounds["end_epoch_ms"])
+                )
+            if end is not None and int(end) < start:
+                self.counts["gpu_registry_invalid_lifecycle_bounds"] += 1
+                result.append(item)
+                continue
+            if start != raw_start:
+                item["raw_start_epoch_ms"] = raw_start
+                item["start_epoch_ms"] = start
+                self.counts["gpu_registry_start_bounds_applied"] += 1
+            if end != raw_end:
+                item["raw_end_epoch_ms"] = raw_end
+                item["end_epoch_ms"] = end
+                self.counts["gpu_registry_end_bounds_applied"] += 1
+            if start != raw_start or end != raw_end:
+                item["lifecycle_bounds_source"] = "host_job_registry"
+            result.append(item)
+        return result
 
     def close_orphaned_gpu_lifecycle(self) -> None:
         """Conservatively close legacy pre-registry allocation intervals.
@@ -1735,14 +1811,20 @@ class Builder:
         cpu_intervals = self._paired_intervals(
             self.events,
             start_kinds={"cpu_allocated", "cpu_reallocated"},
-            end_kinds={"cpu_interrupted", "cpu_released"},
+            # STOP_ACK is the exact boundary at which the supervised agent
+            # process and its sampler have stopped. Controller/Harbor cleanup
+            # may finish later, but that tail is no longer CPU-agent work and
+            # cannot legitimately produce cpu-agent samples.
+            end_kinds={"stop_acknowledged", "cpu_interrupted", "cpu_released"},
             key_fields=("cpu_attempt",),
         )
-        training_intervals = self._paired_intervals(
-            self.events,
-            start_kinds={"gpu_allocated", "gpu_reallocated"},
-            end_kinds={"gpu_preempted", "gpu_released"},
-            key_fields=("gpu_job_id", "gpu_attempt"),
+        training_intervals = self.clamp_training_intervals_to_registry(
+            self._paired_intervals(
+                self.events,
+                start_kinds={"gpu_allocated", "gpu_reallocated"},
+                end_kinds={"gpu_preempted", "gpu_released"},
+                key_fields=("gpu_job_id", "gpu_attempt"),
+            )
         )
         verifier_evaluation_intervals = self._paired_intervals(
             self.events,
