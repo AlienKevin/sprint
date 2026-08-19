@@ -998,6 +998,29 @@ def test_write_public_batch_updates_active_pointer(
     assert json.loads(historical.read_text()) == json.loads(current.read_text())
 
 
+def test_write_public_batch_ignores_observer_only_timestamp_refresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(batch_eval, "WEB", tmp_path / "web")
+    payload = {
+        "batch_id": "eval",
+        "updated_at": "2026-08-19T00:00:00Z",
+        "status": "running",
+        "reasoning_effort": "max",
+        "codex_version": "0.147.0",
+        "run_hours": None,
+        "arms": [{"run_id": "eval-1", "last_monitor_at": "first"}],
+    }
+    path = batch_eval.write_public_batch(payload)
+    first = path.read_bytes()
+    payload["updated_at"] = "2026-08-19T00:01:00Z"
+    payload["arms"][0]["last_monitor_at"] = "second"
+
+    batch_eval.write_public_batch(payload)
+
+    assert path.read_bytes() == first
+
+
 def test_write_public_batch_tracks_explicitly_coexisting_runs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1587,6 +1610,14 @@ def test_run_checked_preserves_failure_output() -> None:
     with pytest.raises(RuntimeError, match="renderer diagnostic"):
         frontier_update.run_checked(
             [sys.executable, "-c", "print('renderer diagnostic'); raise SystemExit(9)"]
+        )
+
+
+def test_run_checked_bounds_stalled_commands() -> None:
+    with pytest.raises(RuntimeError, match="command timed out after 0.01s"):
+        frontier_update.run_checked(
+            [sys.executable, "-c", "import time; time.sleep(10)"],
+            timeout_seconds=0.01,
         )
 
 

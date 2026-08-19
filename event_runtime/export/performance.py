@@ -941,6 +941,18 @@ def build(
         "runs": output_runs,
     }
     output.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        previous = load_json(output)
+    except (OSError, json.JSONDecodeError):
+        previous = None
+    previous_material = (
+        {key: value for key, value in previous.items() if key != "generated_at"}
+        if isinstance(previous, dict)
+        else None
+    )
+    material = {key: value for key, value in payload.items() if key != "generated_at"}
+    if previous_material == material:
+        return previous
     output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
     return payload
 

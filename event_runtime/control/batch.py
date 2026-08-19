@@ -116,6 +116,33 @@ def atomic_json(path: Path, payload: Any, mode: int = 0o600) -> None:
     frontier_update.atomic_write_json(path, payload, mode=mode)
 
 
+def _public_material_state(value: Any) -> Any:
+    """Remove observer-only clocks before deciding whether to republish."""
+    if isinstance(value, dict):
+        return {
+            key: _public_material_state(item)
+            for key, item in value.items()
+            if key not in {"updated_at", "last_monitor_at"}
+        }
+    if isinstance(value, list):
+        return [_public_material_state(item) for item in value]
+    return value
+
+
+def atomic_public_json(path: Path, payload: Any) -> bool:
+    """Write a public snapshot only when user-visible state has changed."""
+    try:
+        previous = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        previous = None
+    if previous is not None and _public_material_state(previous) == _public_material_state(
+        payload
+    ):
+        return False
+    atomic_json(path, payload, mode=0o644)
+    return True
+
+
 def load_env(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     for raw in path.read_text().splitlines():
@@ -1420,11 +1447,10 @@ def write_public_batch(payload: dict[str, Any]) -> Path:
     """Publish both the immutable batch record and the active-batch pointer."""
     public = public_batch(payload)
     public_path = WEB / "data" / "batches" / f"{payload['batch_id']}.json"
-    atomic_json(public_path, public, mode=0o644)
-    atomic_json(
+    atomic_public_json(public_path, public)
+    atomic_public_json(
         WEB / "data" / "batches" / "current.json",
         public_tracking_batch(payload),
-        mode=0o644,
     )
     return public_path
 

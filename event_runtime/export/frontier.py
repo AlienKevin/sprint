@@ -39,6 +39,7 @@ VERCEL_SCOPE = "alienkevins-projects"
 PUBLIC_RUN_LIMIT = 6
 TIME_TOLERANCE_SECONDS = 0.001
 DEPLOY_DEBOUNCE_SECONDS = 300
+DEPLOY_COMMAND_TIMEOUT_SECONDS = 180
 CAPTURE_MAX_ATTEMPTS = 3
 PIPELINE_LOCK = ROOT / "runs" / "ops" / ".frontier-pipeline.lock"
 
@@ -727,15 +728,32 @@ def validate_capture_precision(capture: Path, html: Path) -> dict[str, Any]:
     return result
 
 
-def run_checked(command: Sequence[str], *, cwd: Path | None = None) -> str:
-    completed = subprocess.run(
-        list(command),
-        cwd=cwd,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        check=False,
-    )
+def run_checked(
+    command: Sequence[str],
+    *,
+    cwd: Path | None = None,
+    timeout_seconds: float | None = None,
+) -> str:
+    try:
+        completed = subprocess.run(
+            list(command),
+            cwd=cwd,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        rendered = " ".join(str(part) for part in command)
+        output = exc.stdout or ""
+        if isinstance(output, bytes):
+            output = output.decode(errors="replace")
+        output = output[-8_000:].strip()
+        raise RuntimeError(
+            f"command timed out after {timeout_seconds}s: {rendered}"
+            + (f"\n{output}" if output else "")
+        ) from exc
     if completed.returncode != 0:
         rendered = " ".join(str(part) for part in command)
         output = completed.stdout[-8_000:].strip()
@@ -932,7 +950,11 @@ Runner = Callable[[Sequence[str], Path | None], str]
 
 
 def _default_runner(command: Sequence[str], cwd: Path | None) -> str:
-    return run_checked(command, cwd=cwd)
+    return run_checked(
+        command,
+        cwd=cwd,
+        timeout_seconds=DEPLOY_COMMAND_TIMEOUT_SECONDS,
+    )
 
 
 def deploy_if_needed(
