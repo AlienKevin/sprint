@@ -28,7 +28,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--launch-argv-json", required=True)
-    parser.add_argument("--secret-env", required=True)
+    parser.add_argument("--secret-env", action="append", required=True)
     parser.add_argument("--batch-id", default="")
     parser.add_argument("--max-restarts", type=int, default=50)
     parser.add_argument("--min-backoff-s", type=float, default=30)
@@ -47,14 +47,25 @@ def main() -> int:
         or not all(isinstance(item, str) and item for item in launch_argv)
     ):
         parser.error("launch argv must be a non-empty string array")
-    if args.secret_env not in {"OPENAI_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"}:
-        parser.error("unsupported secret environment variable")
+    secret_envs = list(dict.fromkeys(args.secret_env))
+    allowed_secret_envs = {
+        "OPENAI_API_KEY",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "SPRINT_DEEPSEEK_PRICING_SNAPSHOT",
+    }
+    unsupported_secret_envs = sorted(set(secret_envs) - allowed_secret_envs)
+    if unsupported_secret_envs:
+        parser.error(
+            "unsupported secret environment variable: "
+            + ", ".join(unsupported_secret_envs)
+        )
     if args.batch_id and not re.fullmatch(
         r"[A-Za-z0-9][A-Za-z0-9._-]{2,48}", args.batch_id
     ):
         parser.error("unsafe batch id")
-    if not os.environ.get(args.secret_env):
-        parser.error(f"{args.secret_env} is not set")
+    missing_secret_envs = [name for name in secret_envs if not os.environ.get(name)]
+    if missing_secret_envs:
+        parser.error(f"{', '.join(missing_secret_envs)} is not set")
     uv = os.environ.get("UV") or shutil.which("uv") or "/home/ubuntu/.local/bin/uv"
     if not Path(uv).is_file() or not os.access(uv, os.X_OK):
         parser.error("UV must name an executable absolute path")
@@ -120,8 +131,8 @@ def main() -> int:
         "--setenv=MODAL_PROFILE",
         f"--setenv=UV={uv}",
         f"--setenv=PATH={service_path}",
-        f"--setenv={args.secret_env}",
     ]
+    command.extend(f"--setenv={name}" for name in secret_envs)
     if args.batch_id:
         command.append(f"--setenv=SPRINT_BATCH_ID={args.batch_id}")
     command.extend(supervisor_argv)
