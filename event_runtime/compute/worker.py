@@ -267,10 +267,23 @@ target = (root / "cost.json").resolve()
 if root not in target.parents:
     raise SystemExit("invalid cost mirror path")
 target.parent.mkdir(parents=True, exist_ok=True)
-temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-temporary.write_bytes(base64.b64decode(payload["cost"]))
-os.chmod(temporary, 0o600)
-os.replace(temporary, target)
+incoming = base64.b64decode(payload["cost"])
+incoming_doc = json.loads(incoming)
+def rank(document):
+    return (
+        float(document.get("checked_at_epoch_s") or 0),
+        float(document.get("total_usd") or 0),
+    )
+stale = False
+try:
+    stale = rank(json.loads(target.read_text())) > rank(incoming_doc)
+except (OSError, ValueError, TypeError, json.JSONDecodeError):
+    pass
+if not stale:
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    temporary.write_bytes(incoming)
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, target)
 cli = base64.b64decode(payload["cli"])
 if hashlib.sha256(cli).hexdigest() != payload["cli_sha256"]:
     raise SystemExit("cost CLI checksum mismatch")
@@ -279,6 +292,7 @@ cli_temporary = cli_target.with_name(f".{cli_target.name}.{os.getpid()}.tmp")
 cli_temporary.write_bytes(cli)
 os.chmod(cli_temporary, 0o755)
 os.replace(cli_temporary, cli_target)
+print("STALE_IGNORED" if stale else "UPDATED")
 """.strip()
     encoded = base64.b64encode(compressed).decode("ascii")
     try:
@@ -310,8 +324,9 @@ os.replace(cli_temporary, cli_target)
             "agent_cost_mirror_error": error[-1000:],
             "agent_cost_mirror_return_code": result.returncode,
         }
+    stale_ignored = "STALE_IGNORED" in (result.stdout or "")
     return {
-        "agent_cost_mirror": "updated",
+        "agent_cost_mirror": "stale_ignored" if stale_ignored else "updated",
         "agent_cost_snapshot_bytes": len(content),
         "agent_cost_cli_sha256": cli_sha256,
         "agent_cost_as_of": payload.get("as_of"),
@@ -378,14 +393,29 @@ def mirror_gpu_budget(
 
     encoded = base64.b64encode(content).decode("ascii")
     install = """
-import base64, os, pathlib, sys
+import base64, json, os, pathlib, sys
 target = pathlib.Path(sys.argv[1])
-temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-temporary.write_bytes(base64.b64decode(sys.argv[2]))
-os.chmod(temporary, 0o600)
-os.replace(temporary, target)
+incoming = base64.b64decode(sys.argv[2])
+incoming_doc = json.loads(incoming)
+def rank(document):
+    return (
+        float(document.get("checked_at_epoch_s") or 0),
+        float(document.get("total_usd") or 0),
+    )
+stale = False
+try:
+    stale = rank(json.loads(target.read_text())) > rank(incoming_doc)
+except (OSError, ValueError, TypeError, json.JSONDecodeError):
+    pass
+if not stale:
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    temporary.write_bytes(incoming)
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, target)
+print("STALE_IGNORED" if stale else "UPDATED")
 """.strip()
     updated: list[str] = []
+    stale_ignored: list[str] = []
     finished: list[str] = []
     errors: dict[str, str] = {}
     for sandbox_id in targets:
@@ -406,7 +436,10 @@ os.replace(temporary, target)
                 if isinstance(detail, bytes):
                     detail = detail.decode(errors="replace")
                 raise RuntimeError(str(detail).strip()[-1000:])
-            updated.append(sandbox_id)
+            if "STALE_IGNORED" in str(stdout or ""):
+                stale_ignored.append(sandbox_id)
+            else:
+                updated.append(sandbox_id)
         except modal.exception.NotFoundError:
             # A short worker can finish after the registry scan but before
             # this exec.  A terminal sandbox cannot accrue more GPU cost, so
@@ -426,6 +459,7 @@ os.replace(temporary, target)
         "gpu_budget_mirror": "updated" if not errors else "error",
         "sandbox_ids": targets,
         "updated_sandbox_ids": updated,
+        "stale_ignored_sandbox_ids": stale_ignored,
         "finished_sandbox_ids": finished,
         "errors": errors,
         "snapshot_checked_at_epoch_s": checked_at,

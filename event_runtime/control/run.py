@@ -1023,57 +1023,89 @@ def worker_alive(state_dir: Path) -> bool:
     return process_alive(pid, "event_runtime/export/frontier.py")
 
 
+def budget_pulse_alive(state_dir: Path) -> bool:
+    try:
+        pid = int((state_dir / "budget-pulse.pid").read_text().strip())
+    except (OSError, ValueError):
+        return False
+    return process_alive(pid, "budget-pulse")
+
+
 def refresh_agent_cost_snapshot(
     run_id: str,
     state_dir: Path,
     run: dict[str, Any],
     timeline: dict[str, Any],
 ) -> dict[str, Any]:
-    """Build, persist, and propagate one serialized cost snapshot.
+    """Build and persist one serialized artifact-monitor cost snapshot.
 
     The artifact monitor and the independent budget pulse are concurrent
-    writers. Serializing the complete build-to-mirror transaction prevents a
-    slower writer from publishing an older total after a newer snapshot has
-    already reached the agent or a GPU worker.
+    writers. Local serialization keeps the ledger monotonic. While the
+    dedicated pulse is alive it alone owns remote propagation: an artifact
+    timeline can lag the live watchdog and must never overwrite the fresher
+    agent/GPU heartbeat merely because it finished later.
     """
     with file_lock(state_dir / "telemetry" / "agent-cost.lock"):
         cost_payload = agent_cost.build_snapshot(timeline, state_dir=state_dir)
         cost_path = state_dir / "telemetry" / "agent-cost.json"
         atomic_write_json(cost_path, cost_payload, mode=0o600)
-        from event_runtime.compute import worker as gpu_worker
+        enforce_agent_cost_budget(run_id, state_dir, run, cost_payload)
 
-        mirror = gpu_worker.mirror_agent_cost(run, cost_payload)
+    if budget_pulse_alive(state_dir):
+        delegated = {
+            "schema_version": 1,
+            "updated_at": utc_now(),
+            "agent_cost_mirror": "delegated_to_budget_pulse",
+        }
         atomic_write_json(
             state_dir / "telemetry" / "agent-cost-mirror.json",
-            {"schema_version": 1, "updated_at": utc_now(), **mirror},
+            delegated,
             mode=0o600,
         )
-        if mirror.get("agent_cost_mirror") == "error":
-            raise RuntimeError(
-                "agent cost mirror failed: "
-                + str(mirror.get("agent_cost_mirror_error") or "unknown")
-            )
-        gpu_budget_mirror = gpu_worker.mirror_gpu_budget(run, cost_payload)
         atomic_write_json(
             state_dir / "telemetry" / "gpu-budget-mirror.json",
             {
                 "schema_version": 1,
                 "updated_at": utc_now(),
-                **gpu_budget_mirror,
+                "gpu_budget_mirror": "delegated_to_budget_pulse",
             },
             mode=0o600,
         )
-        if gpu_budget_mirror.get("gpu_budget_mirror") == "error":
-            raise RuntimeError(
-                "GPU budget mirror failed: "
-                + str(
-                    gpu_budget_mirror.get("gpu_budget_mirror_error")
-                    or gpu_budget_mirror.get("errors")
-                    or "unknown"
-                )
-            )
-        enforce_agent_cost_budget(run_id, state_dir, run, cost_payload)
         return cost_payload
+
+    from event_runtime.compute import worker as gpu_worker
+
+    mirror = gpu_worker.mirror_agent_cost(run, cost_payload)
+    atomic_write_json(
+        state_dir / "telemetry" / "agent-cost-mirror.json",
+        {"schema_version": 1, "updated_at": utc_now(), **mirror},
+        mode=0o600,
+    )
+    if mirror.get("agent_cost_mirror") == "error":
+        raise RuntimeError(
+            "agent cost mirror failed: "
+            + str(mirror.get("agent_cost_mirror_error") or "unknown")
+        )
+    gpu_budget_mirror = gpu_worker.mirror_gpu_budget(run, cost_payload)
+    atomic_write_json(
+        state_dir / "telemetry" / "gpu-budget-mirror.json",
+        {
+            "schema_version": 1,
+            "updated_at": utc_now(),
+            **gpu_budget_mirror,
+        },
+        mode=0o600,
+    )
+    if gpu_budget_mirror.get("gpu_budget_mirror") == "error":
+        raise RuntimeError(
+            "GPU budget mirror failed: "
+            + str(
+                gpu_budget_mirror.get("gpu_budget_mirror_error")
+                or gpu_budget_mirror.get("errors")
+                or "unknown"
+            )
+        )
+    return cost_payload
 
 
 def maybe_start_frontier_worker(

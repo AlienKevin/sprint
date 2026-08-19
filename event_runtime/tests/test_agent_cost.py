@@ -281,6 +281,48 @@ def test_host_atomically_mirrors_cost_and_cli(tmp_path: Path, monkeypatch) -> No
     assert cli.read_bytes() == (ROOT / "event_runtime/agent/cost.py").read_bytes()
 
 
+def test_agent_cost_mirror_refuses_to_replace_newer_snapshot(
+    tmp_path: Path, monkeypatch
+) -> None:
+    mirror = tmp_path / "mirror"
+    mirror.mkdir()
+    cli = tmp_path / "event_runtime" / "agent" / "cost.py"
+    cli.parent.mkdir(parents=True)
+    current = {
+        "schema_version": 2,
+        "checked_at_epoch_s": 200.0,
+        "total_usd": 3.0,
+    }
+    (mirror / "cost.json").write_text(json.dumps(current))
+
+    def local_exec(
+        _run: dict, _container_id: str, command: str, **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            command,
+            shell=True,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    monkeypatch.setattr(gpu_worker, "AGENT_GPU_MIRROR_ROOT", str(mirror))
+    monkeypatch.setattr(gpu_worker, "AGENT_COST_CLI_PATH", str(cli))
+    monkeypatch.setattr(gpu_worker.sprintctl, "exec_container", local_exec)
+    detail = gpu_worker.mirror_agent_cost(
+        {"agent_container_id": "ta-agent"},
+        {
+            "schema_version": 2,
+            "checked_at_epoch_s": 100.0,
+            "total_usd": 9.0,
+        },
+    )
+
+    assert detail["agent_cost_mirror"] == "stale_ignored"
+    assert json.loads((mirror / "cost.json").read_text()) == current
+
+
 def test_host_skips_cost_mirror_after_agent_stop(tmp_path: Path, monkeypatch) -> None:
     (tmp_path / "STOP_ACK.json").write_text("{}")
     execute = mock.Mock(side_effect=AssertionError("stopped agent must not be called"))

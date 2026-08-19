@@ -663,6 +663,53 @@ class ClaimSelectionTests(unittest.TestCase):
         self.assertEqual(detail["finished_sandbox_ids"], ["sb-finished"])
         self.assertEqual(detail["errors"], {})
 
+    def test_gpu_budget_mirror_refuses_to_replace_newer_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            target = Path(raw) / "cost.json"
+            current = {
+                "schema_version": 2,
+                "run_id": "run-1",
+                "checked_at_epoch_s": 200.0,
+                "total_usd": 3.0,
+                "stop_threshold_usd": 9.9,
+                "status": "within_budget",
+            }
+            target.write_text(json.dumps(current))
+
+            class Sandbox:
+                def exec(self, *args: str, **_kwargs: object) -> subprocess.Popen:
+                    return subprocess.Popen(
+                        args,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+
+            incoming = {
+                "schema_version": 2,
+                "run_id": "run-1",
+                "checked_at_epoch_s": 100.0,
+                "total_usd": 9.0,
+                "stop_threshold_usd": 9.9,
+                "status": "within_budget",
+            }
+            with (
+                mock.patch.object(
+                    gpu_worker.modal.Sandbox, "from_id", return_value=Sandbox()
+                ),
+                mock.patch.object(
+                    gpu_worker, "GPU_BUDGET_MIRROR_PATH", str(target)
+                ),
+            ):
+                detail = gpu_worker.mirror_gpu_budget(
+                    {"run_id": "run-1"},
+                    incoming,
+                    jobs=[{"sandbox_id": "sb-gpu", "status": "running"}],
+                )
+
+            self.assertEqual(detail["updated_sandbox_ids"], [])
+            self.assertEqual(detail["stale_ignored_sandbox_ids"], ["sb-gpu"])
+            self.assertEqual(json.loads(target.read_text()), current)
+
     def test_budget_mirror_accepts_sandbox_that_is_shutting_down(self) -> None:
         payload = {
             "schema_version": 2,
