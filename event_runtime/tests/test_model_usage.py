@@ -203,6 +203,8 @@ def test_openrouter_cost_is_bound_to_the_matching_codex_usage() -> None:
         "generation_id": "gen-1",
         "response_model": "openai/gpt-5.6-luna-20260709",
         "provider_reported_cost_usd": 0.123,
+        "undiscounted_cost_usd": 0.246,
+        "promotion_discount_fraction": 0.5,
         "usage": {
             "input_tokens": 100,
             "input_tokens_details": {
@@ -219,9 +221,10 @@ def test_openrouter_cost_is_bound_to_the_matching_codex_usage() -> None:
 
     apply_provider_reported_costs([request], [record])
 
-    assert request["calculated_cost_usd"] == 0.123
+    assert request["calculated_cost_usd"] == 0.246
     assert request["provider_reported_cost_usd"] == 0.123
-    assert request["cost_basis"] == "openrouter_reported_per_request"
+    assert request["promotion_savings_usd"] == 0.123
+    assert request["cost_basis"] == "openrouter_list_price_before_endpoint_discount"
     assert request["openrouter_generation_id"] == "gen-1"
     assert request["cost_components_usd"] == {"upstream_inference_cost": 0.123}
 

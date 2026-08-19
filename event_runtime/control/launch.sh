@@ -570,6 +570,11 @@ payload = {
             if model_api_host == "openrouter.ai"
             else "token_rate_reconstruction"
         ),
+        "api_budget_cost_basis": (
+            "openrouter_list_price_before_endpoint_discount"
+            if model_api_host == "openrouter.ai"
+            else "published_standard_list_price"
+        ),
         "shutdown_reserve_usd": float(shutdown_reserve),
         "minimum_safe_shutdown_reserve_usd": float(minimum_reserve),
         "durable_stop_marker": "BUDGET_STOP_REQUESTED.json",
@@ -779,6 +784,11 @@ base = {
             "openrouter_reported_per_request"
             if model_api_host == "openrouter.ai"
             else "token_rate_reconstruction"
+        ),
+        "api_budget_cost_basis": (
+            "openrouter_list_price_before_endpoint_discount"
+            if model_api_host == "openrouter.ai"
+            else "published_standard_list_price"
         ),
         "shutdown_reserve_usd": float(shutdown_reserve),
         "minimum_safe_shutdown_reserve_usd": float(minimum_reserve),

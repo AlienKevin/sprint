@@ -57,19 +57,29 @@ def write_run(
     return root
 
 
-def write_openrouter_cost(root: Path, *, cost: float) -> None:
+def write_openrouter_cost(
+    root: Path, *, cost: float, undiscounted_cost: float | None = None
+) -> None:
     path = root / "api-usage" / "requests" / "request.json"
     path.parent.mkdir(parents=True)
     path.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2 if undiscounted_cost is not None else 1,
                 "ledger_request_id": "request",
                 "run_id": "unit",
                 "cpu_attempt": 1,
                 "state": "complete",
                 "generation_id": "gen-test",
                 "provider_reported_cost_usd": cost,
+                **(
+                    {
+                        "undiscounted_cost_usd": undiscounted_cost,
+                        "promotion_discount_fraction": 1 - cost / undiscounted_cost,
+                    }
+                    if undiscounted_cost is not None
+                    else {}
+                ),
                 "usage": {
                     "cost": cost,
                     "input_tokens": 10,
@@ -206,7 +216,7 @@ def test_live_watchdog_prices_pinned_luna_default_tier(
     assert payload["components"]["model_api"]["cost_usd"] > 0
 
 
-def test_live_watchdog_uses_openrouter_reported_cost_as_ground_truth(
+def test_live_watchdog_uses_openrouter_undiscounted_cost_for_budget(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     durable = tmp_path / "durable"
@@ -216,7 +226,7 @@ def test_live_watchdog_uses_openrouter_reported_cost_as_ground_truth(
         "unit",
         api_cost_source="openrouter_reported_per_request",
     )
-    write_openrouter_cost(root, cost=0.75)
+    write_openrouter_cost(root, cost=0.75, undiscounted_cost=1.5)
     monkeypatch.setenv("OPENAI_API_KEY", "test-openrouter-key-long-enough")
     watchdog.ensure_cpu_start(root, 1, 1_000)
 
@@ -230,14 +240,16 @@ def test_live_watchdog_uses_openrouter_reported_cost_as_ground_truth(
     )
 
     assert payload["components"]["model_api"] == {
-        "cost_usd": 0.75,
+        "cost_usd": 1.5,
+        "provider_billed_cost_usd": 0.75,
+        "promotion_savings_usd": 0.75,
         "request_count": 1,
         "pending_request_count": 0,
-        "cost_source": "openrouter_reported_per_request",
+        "cost_source": "openrouter_list_price_before_endpoint_discount",
         "provider_reported": True,
     }
-    assert payload["total_usd"] == pytest.approx(0.75)
-    assert payload["budget_remaining_usd"] == pytest.approx(9.25)
+    assert payload["total_usd"] == pytest.approx(1.5)
+    assert payload["budget_remaining_usd"] == pytest.approx(8.5)
 
 
 def test_openrouter_watchdog_bootstraps_without_agent_scoped_api_key(
@@ -361,14 +373,53 @@ def test_interrupted_openrouter_stream_recovers_exact_generation_cost(
         },
     )
 
-    cost, complete, pending = watchdog.openrouter_api_cost(
+    cost, provider_cost, complete, pending = watchdog.openrouter_api_cost(
         root, run_id="unit", api_key="test-key"
     )
 
-    assert (cost, complete, pending) == (0.456, 1, 0)
+    assert (cost, provider_cost, complete, pending) == (0.456, 0.456, 1, 0)
     recovered = json.loads(path.read_text())
     assert recovered["state"] == "recovered_complete"
     assert recovered["provider_reported_cost_usd"] == 0.456
+
+
+def test_interrupted_discounted_stream_recovers_undiscounted_budget_cost(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "run"
+    path = root / "api-usage/requests/request.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "run_id": "unit",
+                "cpu_attempt": 1,
+                "state": "cost_recovery_required",
+                "generation_id": "gen-discounted",
+                "provider_reported_cost_usd": None,
+                "undiscounted_cost_usd": None,
+                "promotion_snapshot": {"discount_fraction": 0.5},
+            }
+        )
+    )
+    monkeypatch.setattr(
+        watchdog,
+        "recover_openrouter_generation",
+        lambda generation_id, api_key: {
+            "id": generation_id,
+            "total_cost": 0.4,
+        },
+    )
+
+    cost, provider_cost, complete, pending = watchdog.openrouter_api_cost(
+        root, run_id="unit", api_key="test-key"
+    )
+
+    assert (cost, provider_cost, complete, pending) == (0.8, 0.4, 1, 0)
+    recovered = json.loads(path.read_text())
+    assert recovered["undiscounted_cost_usd"] == 0.8
+    assert recovered["promotion_discount_fraction"] == 0.5
 
 
 def test_openrouter_recovery_reads_only_named_pending_request(
@@ -415,10 +466,11 @@ def test_openrouter_recovery_reads_only_named_pending_request(
         },
     )
 
-    cost, complete, pending = watchdog.openrouter_api_cost(
+    cost, provider_cost, complete, pending = watchdog.openrouter_api_cost(
         root, run_id="unit", api_key="test-key"
     )
     assert cost == pytest.approx(1.706)
+    assert provider_cost == pytest.approx(1.706)
     assert (complete, pending) == (2_001, 0)
     summary = json.loads((requests.parent / "summary.json").read_text())
     assert summary["in_flight_request_ids"] == []
@@ -451,6 +503,7 @@ def test_openrouter_watchdog_uses_exact_rollup_without_rescanning_shards(
     )
 
     assert watchdog.openrouter_api_cost(root, run_id="unit", api_key=None) == (
+        1.25,
         1.25,
         2_000,
         0,

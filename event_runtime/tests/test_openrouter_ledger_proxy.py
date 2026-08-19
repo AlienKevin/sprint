@@ -43,6 +43,61 @@ def test_terminal_response_event_exposes_exact_usage_cost() -> None:
     assert response["id"] == "gen-1"
 
 
+def test_endpoint_promotion_is_reversed_without_changing_cache_skus() -> None:
+    # Exercise the pure parser used by the live fetcher. Cache-read pricing is
+    # deliberately irrelevant here: the endpoint promotion is a single factor
+    # that OpenRouter applies to every priced SKU.
+    parsed = proxy.sys.modules[
+        "sprint_openrouter_pricing"
+    ].parse_endpoint_discount_snapshot(
+        {
+            "data": {
+                "endpoints": [
+                    {
+                        "provider_name": "OpenAI",
+                        "tag": "openai",
+                        "quantization": "unknown",
+                        "pricing": {
+                            "prompt": "0.0000025",
+                            "input_cache_read": "0.00000025",
+                            "completion": "0.000015",
+                            "discount": 0.5,
+                        },
+                    }
+                ]
+            }
+        },
+        model="openai/gpt-5.6-sol",
+        provider_tag="openai",
+        captured_at="2026-08-19T00:00:00Z",
+    )
+
+    assert parsed["discount_fraction"] == 0.5
+    assert parsed["endpoints"][0]["effective_pricing"]["input_cache_read"] == (
+        "0.00000025"
+    )
+    assert proxy.undiscounted_cost_usd(0.25, parsed) == pytest.approx(0.5)
+
+
+def test_unpinned_route_with_different_discounts_fails_closed() -> None:
+    parser = proxy.sys.modules[
+        "sprint_openrouter_pricing"
+    ].parse_endpoint_discount_snapshot
+    with pytest.raises(proxy.OpenRouterPricingError, match="pin one provider"):
+        parser(
+            {
+                "data": {
+                    "endpoints": [
+                        {"tag": "one", "pricing": {"discount": 0.5}},
+                        {"tag": "two", "pricing": {"discount": 0}},
+                    ]
+                }
+            },
+            model="vendor/model",
+            provider_tag=None,
+        )
+
+
 def test_atomic_ledger_record_is_private_and_complete(tmp_path: Path) -> None:
     path = tmp_path / "requests/request.json"
     proxy.atomic_json(path, {"state": "complete", "cost": 0.5})

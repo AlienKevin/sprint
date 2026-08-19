@@ -3,8 +3,8 @@
 
 The controller also reconstructs the authoritative cost ledger.  This smaller
 ledger deliberately runs in the CPU sandbox so a controller outage cannot
-remove the circuit breaker. OpenRouter runs consume the proxy's exact
-per-response charge; other supported routes use the pinned pricing module.
+remove the circuit breaker. OpenRouter runs consume the proxy's request-time
+undiscounted list-price equivalent; other supported routes use the pinned pricing module.
 Modal uses the pinned tariff. One durable stop marker is visible to every
 sandbox.
 """
@@ -17,12 +17,22 @@ import importlib.util
 import json
 import math
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Any
 import urllib.error
 import urllib.parse
 import urllib.request
+
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from sprint_openrouter_pricing import (  # noqa: E402
+    PROVIDER_COST_BASIS,
+    UNDISCOUNTED_COST_BASIS,
+    OpenRouterPricingError,
+    undiscounted_cost_usd,
+)
 
 
 CPU_USD_PER_SECOND = 2 * 0.00003942 + 8 * 0.00000667
@@ -73,18 +83,66 @@ def recover_openrouter_generation(
     return data if isinstance(data, dict) else None
 
 
+def _record_costs(record: dict[str, Any]) -> tuple[float, float] | None:
+    """Return (undiscounted benchmark cost, charged cost) for one record."""
+    charged = record.get("provider_reported_cost_usd")
+    if not (
+        isinstance(charged, (int, float))
+        and not isinstance(charged, bool)
+        and math.isfinite(float(charged))
+        and float(charged) >= 0
+    ):
+        return None
+    charged_value = float(charged)
+    benchmark = record.get("undiscounted_cost_usd")
+    if benchmark is None and record.get("schema_version") in {None, 1}:
+        benchmark = charged_value
+    if not (
+        isinstance(benchmark, (int, float))
+        and not isinstance(benchmark, bool)
+        and math.isfinite(float(benchmark))
+        and float(benchmark) >= charged_value
+    ):
+        raise BudgetTelemetryError("invalid OpenRouter undiscounted request cost")
+    return float(benchmark), charged_value
+
+
+def _recover_record_cost(record: dict[str, Any], charged: float) -> tuple[float, float]:
+    try:
+        benchmark = undiscounted_cost_usd(charged, record.get("promotion_snapshot"))
+    except OpenRouterPricingError as exc:
+        if record.get("schema_version") in {None, 1}:
+            benchmark = charged
+        else:
+            raise BudgetTelemetryError(
+                "OpenRouter recovery has no request-time promotion snapshot"
+            ) from exc
+    record["provider_reported_cost_usd"] = charged
+    record["undiscounted_cost_usd"] = benchmark
+    record["promotion_discount_fraction"] = (
+        record.get("promotion_snapshot") or {}
+    ).get("discount_fraction")
+    record["cost_basis"] = UNDISCOUNTED_COST_BASIS
+    record["provider_cost_basis"] = PROVIDER_COST_BASIS
+    return benchmark, charged
+
+
 def openrouter_api_cost(
     run_root: Path, *, run_id: str, api_key: str | None
-) -> tuple[float, int, int]:
-    """Sum exact OpenRouter charges, recovering interrupted streams by ID."""
+) -> tuple[float, float, int, int]:
+    """Sum undiscounted and charged OpenRouter costs, recovering streams by ID."""
     requests_dir = run_root / "api-usage" / "requests"
     summary_path = requests_dir.parent / "summary.json"
     if summary_path.is_file():
         try:
             summary = json.loads(summary_path.read_text())
-            if summary.get("schema_version") != 1 or summary.get("run_id") != run_id:
-                raise BudgetTelemetryError("OpenRouter ledger summary identity mismatch")
+            schema = summary.get("schema_version")
+            if schema not in {1, 2} or summary.get("run_id") != run_id:
+                raise BudgetTelemetryError(
+                    "OpenRouter ledger summary identity mismatch"
+                )
             total = float(summary["model_api_usd"])
+            provider_total = float(summary.get("provider_billed_model_api_usd", total))
             completed = int(summary["completed_request_count"])
             pending = int(summary["pending_request_count"])
             in_flight = int(summary["in_flight_request_count"])
@@ -110,6 +168,9 @@ def openrouter_api_cost(
             if not (
                 math.isfinite(total)
                 and total >= 0
+                and math.isfinite(provider_total)
+                and provider_total >= 0
+                and provider_total <= total + 1e-12
                 and completed >= 0
                 and pending >= 0
                 and in_flight >= 0
@@ -130,7 +191,7 @@ def openrouter_api_cost(
                     raise BudgetTelemetryError(
                         "OpenRouter charge recovery requires controller credentials"
                     )
-                return total, completed, pending
+                return total, provider_total, completed, pending
             if has_pending_ids:
                 remaining_recovery_ids: set[str] = set()
                 for request_id in sorted(recovery_ids):
@@ -149,14 +210,9 @@ def openrouter_api_cost(
                         raise BudgetTelemetryError(
                             f"OpenRouter ledger identity mismatch: {path}"
                         )
-                    cost = record.get("provider_reported_cost_usd")
-                    if (
-                        isinstance(cost, (int, float))
-                        and not isinstance(cost, bool)
-                        and math.isfinite(float(cost))
-                        and float(cost) >= 0
-                    ):
-                        recovered_cost = float(cost)
+                    existing = _record_costs(record)
+                    if existing is not None:
+                        recovered_cost, recovered_provider_cost = existing
                     else:
                         generation_id = record.get("generation_id")
                         recovered = (
@@ -174,47 +230,52 @@ def openrouter_api_cost(
                         ):
                             remaining_recovery_ids.add(request_id)
                             continue
-                        recovered_cost = float(candidate)
+                        recovered_cost, recovered_provider_cost = _recover_record_cost(
+                            record, float(candidate)
+                        )
                         record.update(
                             {
                                 "state": "recovered_complete",
                                 "completed_at": dt.datetime.now(dt.timezone.utc)
                                 .isoformat()
                                 .replace("+00:00", "Z"),
-                                "provider_reported_cost_usd": recovered_cost,
                                 "generation_audit": recovered,
                             }
                         )
                         atomic_json(path, record)
                     total += recovered_cost
+                    provider_total += recovered_provider_cost
                     completed += 1
                 pending = len(in_flight_ids) + len(remaining_recovery_ids)
                 atomic_json(
                     summary_path,
                     {
-                        "schema_version": 1,
+                        "schema_version": 2,
                         "run_id": run_id,
                         "updated_at": dt.datetime.now(dt.timezone.utc)
                         .isoformat()
                         .replace("+00:00", "Z"),
                         "model_api_usd": total,
+                        "provider_billed_model_api_usd": provider_total,
+                        "promotion_savings_usd": total - provider_total,
+                        "model_api_cost_basis": UNDISCOUNTED_COST_BASIS,
+                        "provider_billed_cost_basis": PROVIDER_COST_BASIS,
                         "completed_request_count": completed,
                         "pending_request_count": pending,
                         "in_flight_request_count": len(in_flight_ids),
-                        "cost_recovery_required_count": len(
-                            remaining_recovery_ids
-                        ),
+                        "cost_recovery_required_count": len(remaining_recovery_ids),
                         "in_flight_request_ids": sorted(in_flight_ids),
                         "cost_recovery_required_request_ids": sorted(
                             remaining_recovery_ids
                         ),
                     },
                 )
-                return total, completed, pending
+                return total, provider_total, completed, pending
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
             raise BudgetTelemetryError("invalid OpenRouter ledger summary") from exc
 
     total = 0.0
+    provider_total = 0.0
     completed = 0
     pending = 0
     in_flight = 0
@@ -230,14 +291,11 @@ def openrouter_api_cost(
             ) from exc
         if not isinstance(record, dict) or record.get("run_id") != run_id:
             raise BudgetTelemetryError(f"OpenRouter ledger identity mismatch: {path}")
-        cost = record.get("provider_reported_cost_usd")
-        if (
-            isinstance(cost, (int, float))
-            and not isinstance(cost, bool)
-            and math.isfinite(float(cost))
-            and float(cost) >= 0
-        ):
-            total += float(cost)
+        existing = _record_costs(record)
+        if existing is not None:
+            benchmark_cost, provider_cost = existing
+            total += benchmark_cost
+            provider_total += provider_cost
             completed += 1
             continue
         generation_id = record.get("generation_id")
@@ -258,18 +316,21 @@ def openrouter_api_cost(
             and math.isfinite(float(recovered_cost))
             and float(recovered_cost) >= 0
         ):
+            benchmark_cost, provider_cost = _recover_record_cost(
+                record, float(recovered_cost)
+            )
             record.update(
                 {
                     "state": "recovered_complete",
                     "completed_at": dt.datetime.now(dt.timezone.utc)
                     .isoformat()
                     .replace("+00:00", "Z"),
-                    "provider_reported_cost_usd": float(recovered_cost),
                     "generation_audit": recovered,
                 }
             )
             atomic_json(path, record)
-            total += float(recovered_cost)
+            total += benchmark_cost
+            provider_total += provider_cost
             completed += 1
             continue
         if state not in {"in_flight", "cost_recovery_required"}:
@@ -289,12 +350,16 @@ def openrouter_api_cost(
     atomic_json(
         summary_path,
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "run_id": run_id,
             "updated_at": dt.datetime.now(dt.timezone.utc)
             .isoformat()
             .replace("+00:00", "Z"),
             "model_api_usd": total,
+            "provider_billed_model_api_usd": provider_total,
+            "promotion_savings_usd": total - provider_total,
+            "model_api_cost_basis": UNDISCOUNTED_COST_BASIS,
+            "provider_billed_cost_basis": PROVIDER_COST_BASIS,
             "completed_request_count": completed,
             "pending_request_count": pending,
             "in_flight_request_count": in_flight,
@@ -303,7 +368,7 @@ def openrouter_api_cost(
             "cost_recovery_required_request_ids": sorted(recovery_ids),
         },
     )
-    return total, completed, pending
+    return total, provider_total, completed, pending
 
 
 def require_live_openrouter_proxy(runtime_dir: Path) -> None:
@@ -600,8 +665,8 @@ def check_once(
         # can recover its exact OpenRouter generation charge.
         raw_api_key = os.environ.get("OPENAI_API_KEY", "")
         api_key = raw_api_key if len(raw_api_key) >= 16 else None
-        api_usd, requests, pending_requests = openrouter_api_cost(
-            run_root, run_id=run_id, api_key=api_key
+        api_usd, provider_billed_api_usd, requests, pending_requests = (
+            openrouter_api_cost(run_root, run_id=run_id, api_key=api_key)
         )
     else:
         pricing = load_pricing_module(pricing_path)
@@ -619,6 +684,7 @@ def check_once(
                 durable_codex_streams(run_root), **api_kwargs
             )
         pending_requests = 0
+        provider_billed_api_usd = None
     cpu_usd = cpu_seconds * CPU_USD_PER_SECOND
     training_usd = gpu_seconds * TRAINING_USD_PER_SECOND
     component_totals = {
@@ -644,10 +710,19 @@ def check_once(
         "components": {
             "model_api": {
                 "cost_usd": api_usd,
+                "provider_billed_cost_usd": provider_billed_api_usd,
+                "promotion_savings_usd": (
+                    api_usd - provider_billed_api_usd
+                    if provider_billed_api_usd is not None
+                    else 0.0
+                ),
                 "request_count": requests,
                 "pending_request_count": pending_requests,
-                "cost_source": enforcement.get(
-                    "api_cost_source", "token_rate_reconstruction"
+                "cost_source": (
+                    UNDISCOUNTED_COST_BASIS
+                    if enforcement.get("api_cost_source")
+                    == "openrouter_reported_per_request"
+                    else enforcement.get("api_cost_source", "token_rate_reconstruction")
                 ),
                 "provider_reported": enforcement.get("api_cost_source")
                 == "openrouter_reported_per_request",
@@ -670,14 +745,17 @@ def check_once(
         "training_allocated_seconds": gpu_seconds,
         "status": "stop_requested" if total >= threshold else "within_budget",
         "cost_basis": (
-            "openrouter_reported_per_request_plus_pinned_modal_requested_resource_tariff"
+            "openrouter_list_price_before_endpoint_discount_plus_pinned_modal_requested_resource_tariff"
             if enforcement.get("api_cost_source") == "openrouter_reported_per_request"
             else "published_api_list_price_plus_pinned_modal_requested_resource_tariff"
         ),
         "excluded_costs": ["openrouter_credit_purchase_fee"],
         "equation": {
-            "total": "C(t) = C_openrouter_reported(t) + C_cpu_agent(t) + C_training(t)",
-            "model_api": "sum OpenRouter usage.cost over completed requests",
+            "total": "C(t) = C_openrouter_undiscounted(t) + C_cpu_agent(t) + C_training(t)",
+            "model_api": (
+                "sum OpenRouter usage.cost / (1 - request-time endpoint discount) "
+                "over completed requests"
+            ),
             "modal_role": "allocated_seconds * pinned requested-resource rate",
         },
     }

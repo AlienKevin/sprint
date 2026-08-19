@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Deterministic agent-cost ledger shared by live agents and the website.
 
-OpenRouter runs use its per-response reported charge for the API component;
+OpenRouter runs use each endpoint's undiscounted list-price equivalent for the
+API component while retaining the provider-reported charged amount;
 Modal components use live allocated seconds at the pinned requested-resource
 tariff. Official verification, observability, website hosting, storage,
 credits, and credit-purchase fees are excluded.

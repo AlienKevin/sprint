@@ -1577,6 +1577,15 @@ def run_usage_audit_ready(
     elif abs(float(calculated) - request_cost) > 1e-12:
         details.append("run usage audit request costs do not sum to total")
     expected_short_model = expected_model.split("/", 1)[-1]
+    openrouter_list_price = (run.get("budget_enforcement") or {}).get(
+        "api_budget_cost_basis"
+    ) == "openrouter_list_price_before_endpoint_discount"
+    if openrouter_list_price and audit.get("calculated_api_usage_cost_basis") != (
+        "openrouter_list_price_before_endpoint_discount"
+    ):
+        details.append(
+            "run usage audit does not use undiscounted OpenRouter list price"
+        )
     for index, request in enumerate(requests, start=1):
         if not isinstance(request, dict):
             details.append(f"run usage request {index} is not an object")
@@ -1596,6 +1605,23 @@ def run_usage_audit_ready(
                 details.append(f"run usage request {index} lacks OpenRouter cost")
             if not request.get("openrouter_generation_id"):
                 details.append(f"run usage request {index} lacks generation ID")
+            if openrouter_list_price:
+                benchmark_cost = request.get("calculated_cost_usd")
+                provider_cost = request.get("provider_reported_cost_usd")
+                if not (
+                    isinstance(benchmark_cost, (int, float))
+                    and not isinstance(benchmark_cost, bool)
+                    and isinstance(provider_cost, (int, float))
+                    and not isinstance(provider_cost, bool)
+                    and float(benchmark_cost) >= float(provider_cost)
+                ):
+                    details.append(
+                        f"run usage request {index} has invalid undiscounted cost"
+                    )
+                if not isinstance(request.get("promotion_snapshot"), dict):
+                    details.append(
+                        f"run usage request {index} lacks promotion snapshot"
+                    )
     for source in audit.get("source_sessions") or []:
         if not isinstance(source, dict):
             details.append("run usage source session is malformed")

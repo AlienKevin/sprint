@@ -233,11 +233,18 @@ def provider_usage_records(state_dir: Path, run_id: str) -> list[dict[str, Any]]
         if not isinstance(record, dict) or record.get("run_id") != run_id:
             raise SystemExit(f"provider usage identity mismatch: {path}")
         cost = record.get("provider_reported_cost_usd")
+        benchmark_cost = record.get("undiscounted_cost_usd")
+        if benchmark_cost is None and record.get("schema_version") in {None, 1}:
+            benchmark_cost = cost
         if (
             isinstance(cost, (int, float))
             and not isinstance(cost, bool)
             and math.isfinite(float(cost))
             and float(cost) >= 0
+            and isinstance(benchmark_cost, (int, float))
+            and not isinstance(benchmark_cost, bool)
+            and math.isfinite(float(benchmark_cost))
+            and float(benchmark_cost) >= float(cost)
             and record.get("state") in {"complete", "recovered_complete"}
         ):
             rows.append(record)
@@ -320,21 +327,28 @@ def apply_provider_reported_costs(
                 f"attempt={attempt} usage={signature}"
             )
         record = remaining.pop(match_index)
-        cost = float(record["provider_reported_cost_usd"])
+        provider_cost = float(record["provider_reported_cost_usd"])
+        cost = float(record.get("undiscounted_cost_usd", provider_cost))
         usage = record.get("usage")
         details = (usage.get("cost_details") or {}) if isinstance(usage, dict) else {}
         request.update(
             {
                 "pricing_snapshot_id": None,
                 "calculated_cost_usd": cost,
-                "provider_reported_cost_usd": cost,
+                "provider_reported_cost_usd": provider_cost,
+                "promotion_savings_usd": cost - provider_cost,
+                "promotion_discount_fraction": record.get(
+                    "promotion_discount_fraction"
+                ),
+                "promotion_snapshot": record.get("promotion_snapshot"),
                 "cost_components_usd": {
                     str(name): float(value)
                     for name, value in details.items()
                     if isinstance(value, (int, float)) and not isinstance(value, bool)
                 },
                 "cost_reconstruction_status": "complete",
-                "cost_basis": "openrouter_reported_per_request",
+                "cost_basis": "openrouter_list_price_before_endpoint_discount",
+                "provider_cost_basis": "openrouter_reported_per_request",
                 "openrouter_generation_id": record.get("generation_id"),
                 "openrouter_ledger_request_id": record.get("ledger_request_id"),
                 "openrouter_response_model": record.get("response_model"),
@@ -733,7 +747,7 @@ def main() -> int:
             else None
         ),
         "calculated_api_usage_cost_basis": (
-            "openrouter_reported_per_request"
+            "openrouter_list_price_before_endpoint_discount"
             if provider_cost_source
             else next(
                 iter(
@@ -749,6 +763,19 @@ def main() -> int:
         "provider_billed_api_usage_usd": (
             sum(
                 float(record["provider_reported_cost_usd"])
+                for record in provider_records
+            )
+            if provider_cost_source
+            else None
+        ),
+        "promotion_savings_usd": (
+            sum(
+                float(
+                    record.get(
+                        "undiscounted_cost_usd", record["provider_reported_cost_usd"]
+                    )
+                )
+                - float(record["provider_reported_cost_usd"])
                 for record in provider_records
             )
             if provider_cost_source

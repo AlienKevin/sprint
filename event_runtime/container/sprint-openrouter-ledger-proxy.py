@@ -14,9 +14,20 @@ import os
 from pathlib import Path
 import secrets
 import ssl
+import sys
 import threading
 from typing import Any
 from urllib.parse import urlsplit
+
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from sprint_openrouter_pricing import (  # noqa: E402
+    PROVIDER_COST_BASIS,
+    UNDISCOUNTED_COST_BASIS,
+    OpenRouterPricingError,
+    capture_endpoint_discount_snapshot,
+    undiscounted_cost_usd,
+)
 
 
 HOP_BY_HOP = {
@@ -100,7 +111,7 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
             raise ValueError("invalid request content length")
         return self.rfile.read(length)
 
-    def _forward_headers(self, body: bytes) -> dict[str, str]:
+    def _forward_headers(self, body: bytes, *, router_metadata: bool) -> dict[str, str]:
         headers = {
             name: value
             for name, value in self.headers.items()
@@ -108,6 +119,8 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
         }
         headers["Content-Length"] = str(len(body))
         headers["Accept-Encoding"] = "identity"
+        if router_metadata:
+            headers["X-OpenRouter-Metadata"] = "enabled"
         return headers
 
     def _forward(self, *, record_usage: bool) -> None:
@@ -145,6 +158,7 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
         record_path = self.ledger_server.requests_dir / f"{request_id}.json"
         requested_model = None
         stream = False
+        promotion_snapshot: dict[str, Any] | None = None
         if record_usage:
             try:
                 request_payload = json.loads(body)
@@ -153,8 +167,37 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
             if isinstance(request_payload, dict):
                 requested_model = request_payload.get("model")
                 stream = bool(request_payload.get("stream"))
+            try:
+                promotion_snapshot = capture_endpoint_discount_snapshot(
+                    canonical_model=self.ledger_server.canonical_model,
+                    requested_model=requested_model,
+                    request_provider=(
+                        request_payload.get("provider")
+                        if isinstance(request_payload, dict)
+                        else None
+                    ),
+                    authorization=self.headers.get("Authorization"),
+                )
+            except OpenRouterPricingError:
+                self.ledger_server.write_stop(
+                    {
+                        "schema_version": 2,
+                        "run_id": self.ledger_server.run_id,
+                        "reason": "budget_telemetry_unavailable",
+                        "status": "fail_closed",
+                    }
+                )
+                body = b'{"error":{"message":"live list-price metadata unavailable"}}\n'
+                self.send_response(HTTPStatus.SERVICE_UNAVAILABLE)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(body)
+                self.close_connection = True
+                return
             record = {
-                "schema_version": 1,
+                "schema_version": 2,
                 "ledger_request_id": request_id,
                 "run_id": self.ledger_server.run_id,
                 "cpu_attempt": self.ledger_server.cpu_attempt,
@@ -164,6 +207,8 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                 "state": "in_flight",
                 "generation_id": None,
                 "provider_reported_cost_usd": None,
+                "undiscounted_cost_usd": None,
+                "promotion_snapshot": promotion_snapshot,
             }
             self.ledger_server.begin_request(request_id)
             atomic_json(record_path, record)
@@ -181,7 +226,7 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                 self.command,
                 self.path,
                 body=body,
-                headers=self._forward_headers(body),
+                headers=self._forward_headers(body, router_metadata=record_usage),
             )
             upstream = connection.getresponse()
             generation_id = upstream.getheader("X-Generation-Id")
@@ -259,6 +304,7 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                     and float(cost) >= 0
                 )
                 if valid_cost:
+                    list_cost = undiscounted_cost_usd(cost, promotion_snapshot)
                     record.update(
                         {
                             "state": "complete",
@@ -266,6 +312,12 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                             "generation_id": generation_id
                             or terminal_response.get("id"),
                             "provider_reported_cost_usd": float(cost),
+                            "undiscounted_cost_usd": list_cost,
+                            "promotion_discount_fraction": promotion_snapshot[
+                                "discount_fraction"
+                            ],
+                            "cost_basis": UNDISCOUNTED_COST_BASIS,
+                            "provider_cost_basis": PROVIDER_COST_BASIS,
                             "usage": terminal_usage,
                             "response_id": terminal_response.get("id"),
                             "response_model": terminal_response.get("model"),
@@ -278,6 +330,7 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                             "state": "rejected_not_billed",
                             "completed_at": utc_now(),
                             "provider_reported_cost_usd": 0.0,
+                            "undiscounted_cost_usd": 0.0,
                         }
                     )
                 else:
@@ -289,9 +342,11 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                     )
                 atomic_json(record_path, record)
                 if valid_cost:
-                    self.ledger_server.complete_request(request_id, float(cost))
+                    self.ledger_server.complete_request(
+                        request_id, list_cost, float(cost)
+                    )
                 elif upstream.status >= 400 and not generation_id:
-                    self.ledger_server.complete_request(request_id, 0.0)
+                    self.ledger_server.complete_request(request_id, 0.0, 0.0)
                 else:
                     self.ledger_server.require_cost_recovery(request_id)
                 if valid_cost:
@@ -360,6 +415,10 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
         self.run_id = run_id
         self.cpu_attempt = cpu_attempt
         self.run_root = ledger_root.parent
+        run = json.loads((self.run_root / "state/run.json").read_text())
+        if run.get("run_id") != run_id:
+            raise ValueError("run identity mismatch")
+        self.canonical_model = str(run.get("model") or "")
         self.requests_dir = ledger_root / "requests"
         self.runtime_dir = runtime_dir
         self.billing_lock = threading.Lock()
@@ -369,6 +428,7 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
             loaded = self._rebuild_totals()
         (
             self.api_cost_usd,
+            self.provider_billed_api_cost_usd,
             self.completed_request_count,
             self.in_flight_request_ids,
             self.cost_recovery_required_request_ids,
@@ -381,13 +441,17 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
     def summary_path(self) -> Path:
         return self.requests_dir.parent / "summary.json"
 
-    def _load_summary(self) -> tuple[float, int, set[str], set[str]] | None:
+    def _load_summary(
+        self,
+    ) -> tuple[float, float, int, set[str], set[str]] | None:
         if not self.summary_path.is_file():
             return None
         summary = json.loads(self.summary_path.read_text())
-        if summary.get("schema_version") != 1 or summary.get("run_id") != self.run_id:
+        schema = summary.get("schema_version")
+        if schema not in {1, 2} or summary.get("run_id") != self.run_id:
             raise ValueError("ledger summary identity mismatch")
         total = float(summary["model_api_usd"])
+        provider_total = float(summary.get("provider_billed_model_api_usd", total))
         completed = int(summary["completed_request_count"])
         pending = int(summary["pending_request_count"])
         in_flight_count = int(summary["in_flight_request_count"])
@@ -408,6 +472,9 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
         if not (
             math.isfinite(total)
             and total >= 0
+            and math.isfinite(provider_total)
+            and provider_total >= 0
+            and provider_total <= total + 1e-12
             and completed >= 0
             and pending >= 0
             and in_flight_count >= 0
@@ -419,10 +486,11 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
             and all(in_flight | recovery_required)
         ):
             raise ValueError("invalid ledger summary")
-        return total, completed, in_flight, recovery_required
+        return total, provider_total, completed, in_flight, recovery_required
 
-    def _rebuild_totals(self) -> tuple[float, int, set[str], set[str]]:
+    def _rebuild_totals(self) -> tuple[float, float, int, set[str], set[str]]:
         total = 0.0
+        provider_total = 0.0
         completed = 0
         in_flight: set[str] = set()
         recovery_required: set[str] = set()
@@ -435,12 +503,25 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
                 raise ValueError("invalid ledger request identity")
             if request_id in in_flight or request_id in recovery_required:
                 raise ValueError("duplicate pending ledger request identity")
-            cost = record.get("provider_reported_cost_usd")
-            if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+            provider_cost = record.get("provider_reported_cost_usd")
+            if isinstance(provider_cost, (int, float)) and not isinstance(
+                provider_cost, bool
+            ):
+                provider_value = float(provider_cost)
+                cost = record.get("undiscounted_cost_usd", provider_value)
+                if not isinstance(cost, (int, float)) or isinstance(cost, bool):
+                    raise ValueError("invalid undiscounted cost")
                 value = float(cost)
-                if not math.isfinite(value) or value < 0:
+                if (
+                    not math.isfinite(value)
+                    or value < 0
+                    or not math.isfinite(provider_value)
+                    or provider_value < 0
+                    or provider_value > value + 1e-12
+                ):
                     raise ValueError("invalid provider-reported cost")
                 total += value
+                provider_total += provider_value
                 completed += 1
             elif record.get("state") == "in_flight":
                 in_flight.add(request_id)
@@ -448,7 +529,7 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
                 recovery_required.add(request_id)
             else:
                 raise ValueError("invalid unpriced ledger record")
-        return total, completed, in_flight, recovery_required
+        return total, provider_total, completed, in_flight, recovery_required
 
     def _reconcile_pending_requests(self, *, include_in_flight: bool = True) -> None:
         for request_id in (
@@ -468,6 +549,7 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
                         "state": "rejected_not_billed",
                         "completed_at": utc_now(),
                         "provider_reported_cost_usd": 0.0,
+                        "undiscounted_cost_usd": 0.0,
                         "recovered_after_proxy_restart": True,
                     },
                 )
@@ -486,7 +568,12 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
             ):
                 self.in_flight_request_ids.remove(request_id)
                 self.completed_request_count += 1
-                self.api_cost_usd += float(cost)
+                provider_cost = float(cost)
+                list_cost = float(record.get("undiscounted_cost_usd", provider_cost))
+                if list_cost < provider_cost or not math.isfinite(list_cost):
+                    raise ValueError("invalid undiscounted cost")
+                self.api_cost_usd += list_cost
+                self.provider_billed_api_cost_usd += provider_cost
                 continue
             record.update(
                 {
@@ -513,7 +600,12 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
             ):
                 self.cost_recovery_required_request_ids.remove(request_id)
                 self.completed_request_count += 1
-                self.api_cost_usd += float(cost)
+                provider_cost = float(cost)
+                list_cost = float(record.get("undiscounted_cost_usd", provider_cost))
+                if list_cost < provider_cost or not math.isfinite(list_cost):
+                    raise ValueError("invalid undiscounted cost")
+                self.api_cost_usd += list_cost
+                self.provider_billed_api_cost_usd += provider_cost
             elif record.get("state") != "cost_recovery_required":
                 raise ValueError("invalid recovery ledger state")
 
@@ -524,10 +616,16 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
         atomic_json(
             self.summary_path,
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "run_id": self.run_id,
                 "updated_at": utc_now(),
                 "model_api_usd": self.api_cost_usd,
+                "provider_billed_model_api_usd": self.provider_billed_api_cost_usd,
+                "promotion_savings_usd": (
+                    self.api_cost_usd - self.provider_billed_api_cost_usd
+                ),
+                "model_api_cost_basis": UNDISCOUNTED_COST_BASIS,
+                "provider_billed_cost_basis": PROVIDER_COST_BASIS,
                 "completed_request_count": self.completed_request_count,
                 "pending_request_count": pending,
                 "in_flight_request_count": len(self.in_flight_request_ids),
@@ -551,14 +649,24 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
         self.in_flight_request_ids.add(request_id)
         self.write_summary()
 
-    def complete_request(self, request_id: str, cost: float) -> None:
-        if not math.isfinite(cost) or cost < 0:
+    def complete_request(
+        self, request_id: str, cost: float, provider_cost: float | None = None
+    ) -> None:
+        provider_cost = cost if provider_cost is None else provider_cost
+        if (
+            not math.isfinite(cost)
+            or cost < 0
+            or not math.isfinite(provider_cost)
+            or provider_cost < 0
+            or provider_cost > cost + 1e-12
+        ):
             raise ValueError("invalid provider-reported cost")
         if request_id not in self.in_flight_request_ids:
             raise ValueError("ledger has no in-flight request to complete")
         self.in_flight_request_ids.remove(request_id)
         self.completed_request_count += 1
         self.api_cost_usd += cost
+        self.provider_billed_api_cost_usd += provider_cost
         self.write_summary()
 
     def require_cost_recovery(self, request_id: str) -> None:
@@ -576,6 +684,7 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
             # named pending records so the next request can safely proceed.
             before = (
                 self.api_cost_usd,
+                self.provider_billed_api_cost_usd,
                 self.completed_request_count,
                 frozenset(self.in_flight_request_ids),
                 frozenset(self.cost_recovery_required_request_ids),
@@ -583,6 +692,7 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
             self._reconcile_pending_requests(include_in_flight=False)
             after = (
                 self.api_cost_usd,
+                self.provider_billed_api_cost_usd,
                 self.completed_request_count,
                 frozenset(self.in_flight_request_ids),
                 frozenset(self.cost_recovery_required_request_ids),
@@ -636,6 +746,8 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
             "total_usd": total,
             "component_totals_usd": {
                 "model_api_usd": api_cost,
+                "provider_billed_model_api_usd": self.provider_billed_api_cost_usd,
+                "promotion_savings_usd": (api_cost - self.provider_billed_api_cost_usd),
                 "modal_live_estimate_usd": modal_cost,
             },
         }

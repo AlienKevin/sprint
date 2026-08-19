@@ -1094,6 +1094,11 @@ class Builder:
                         "long_context_pricing_applied",
                         "pricing_snapshot_id",
                         "calculated_cost_usd",
+                        "provider_reported_cost_usd",
+                        "promotion_savings_usd",
+                        "promotion_discount_fraction",
+                        "promotion_snapshot",
+                        "provider_cost_basis",
                         "cost_components_usd",
                         "cost_reconstruction_status",
                     )
@@ -1796,6 +1801,34 @@ class Builder:
                     and self.source_counts["usage_audit_files"] > 0
                     else None
                 )
+            ),
+            "provider_billed_api_usage_usd": (
+                sum(
+                    float(event["provider_reported_cost_usd"])
+                    for event in usage_events
+                    if isinstance(event.get("provider_reported_cost_usd"), (int, float))
+                    and not isinstance(event.get("provider_reported_cost_usd"), bool)
+                )
+                if any(
+                    isinstance(event.get("provider_reported_cost_usd"), (int, float))
+                    and not isinstance(event.get("provider_reported_cost_usd"), bool)
+                    for event in usage_events
+                )
+                else None
+            ),
+            "promotion_savings_usd": (
+                sum(
+                    float(event["promotion_savings_usd"])
+                    for event in usage_events
+                    if isinstance(event.get("promotion_savings_usd"), (int, float))
+                    and not isinstance(event.get("promotion_savings_usd"), bool)
+                )
+                if any(
+                    isinstance(event.get("promotion_savings_usd"), (int, float))
+                    and not isinstance(event.get("promotion_savings_usd"), bool)
+                    for event in usage_events
+                )
+                else None
             ),
             "pricing_snapshot_ids": sorted(
                 {
