@@ -480,6 +480,41 @@ print("STALE_IGNORED" if stale else "UPDATED")
     }
 
 
+def fresh_dispatch_budget_snapshot(
+    state_dir: Path,
+    run_id: str,
+    *,
+    now: float | None = None,
+) -> dict[str, Any] | None:
+    """Load the canonical host ledger for a newly spawned GPU sandbox.
+
+    The raw in-sandbox watchdog excludes host-observed training allocations and
+    can therefore understate total run spend after earlier GPU work.  Dispatch
+    may seed only the merged agent-cost document maintained by the independent
+    pulse, and only while that document is fresh.  Otherwise the worker stays
+    behind its fail-closed startup barrier until the next pulse arrives.
+    """
+
+    try:
+        payload = json.loads(
+            (state_dir / "telemetry" / "agent-cost.json").read_text()
+        )
+        checked_at = float(payload["checked_at_epoch_s"])
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    reference = time.time() if now is None else float(now)
+    age = reference - checked_at
+    if (
+        payload.get("schema_version") != 2
+        or payload.get("run_id") != run_id
+        or payload.get("status") not in {"within_budget", "stop_requested"}
+        or age < -5
+        or age > 60
+    ):
+        return None
+    return payload
+
+
 def fetch_agent_policy_artifact(
     run: dict[str, Any], job: dict[str, Any]
 ) -> tuple[dict[str, Any], str | None, bytes | None, dict[str, Any]]:
@@ -2261,14 +2296,11 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
                 budget_mirror: dict[str, Any] = {
                     "gpu_budget_mirror": "awaiting_controller_snapshot"
                 }
-                try:
-                    budget_snapshot = json.loads(
-                        (state_dir / "telemetry" / "budget-watchdog.json").read_text()
-                    )
-                except (OSError, json.JSONDecodeError):
+                budget_snapshot = fresh_dispatch_budget_snapshot(state_dir, run_id)
+                if budget_snapshot is None:
                     # The sandbox command remains behind its /run barrier. The
-                    # same monitor cycle reconstructs and injects the snapshot
-                    # below; if the controller disappears first, the barrier
+                    # independent pulse reconstructs and injects the canonical
+                    # snapshot; if the controller disappears first, the barrier
                     # exits without ever starting paid model work.
                     pass
                 else:

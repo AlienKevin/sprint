@@ -766,6 +766,55 @@ class ClaimSelectionTests(unittest.TestCase):
         self.assertEqual(detail["finished_sandbox_ids"], ["sb-stopped"])
         self.assertEqual(detail["errors"], {})
 
+    def test_dispatch_budget_snapshot_uses_fresh_canonical_agent_cost(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state_dir = Path(raw)
+            telemetry = state_dir / "telemetry"
+            telemetry.mkdir()
+            canonical = {
+                "schema_version": 2,
+                "run_id": "run-1",
+                "checked_at_epoch_s": 100.0,
+                "total_usd": 7.69,
+                "stop_threshold_usd": 9.9,
+                "status": "within_budget",
+            }
+            (telemetry / "agent-cost.json").write_text(json.dumps(canonical))
+            # A lower raw watchdog must never be the dispatch source.
+            (telemetry / "budget-watchdog.json").write_text(
+                json.dumps({**canonical, "total_usd": 2.63})
+            )
+
+            loaded = gpu_worker.fresh_dispatch_budget_snapshot(
+                state_dir, "run-1", now=120.0
+            )
+
+            self.assertEqual(loaded, canonical)
+
+    def test_dispatch_budget_snapshot_rejects_stale_canonical_cost(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state_dir = Path(raw)
+            telemetry = state_dir / "telemetry"
+            telemetry.mkdir()
+            (telemetry / "agent-cost.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "run_id": "run-1",
+                        "checked_at_epoch_s": 100.0,
+                        "total_usd": 7.69,
+                        "stop_threshold_usd": 9.9,
+                        "status": "within_budget",
+                    }
+                )
+            )
+
+            self.assertIsNone(
+                gpu_worker.fresh_dispatch_budget_snapshot(
+                    state_dir, "run-1", now=161.0
+                )
+            )
+
     def test_fetches_only_reported_scoped_policy_for_agent_mirror(self) -> None:
         run = {"run_id": "run-1", "volume_name": "volume-1"}
         job = {
