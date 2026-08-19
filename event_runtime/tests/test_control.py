@@ -460,7 +460,7 @@ class DurableOpsTests(unittest.TestCase):
             with mock.patch.object(
                 sprintctl,
                 "volume_get_text",
-                side_effect=lambda _run, path: remote.get(path),
+                side_effect=lambda _run, path, **_kwargs: remote.get(path),
             ) as getter:
                 self.assertTrue(sprintctl.sync_durable_telemetry(state, run))
                 self.assertTrue(sprintctl.sync_durable_telemetry(state, run))
@@ -505,6 +505,38 @@ class DurableOpsTests(unittest.TestCase):
                 )
             self.assertEqual(getter.call_count, 6)
 
+    def test_live_durable_telemetry_isolates_a_slow_volume_source(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            run = {"run_id": "sync-run", "volume_name": "sync-volume"}
+            prefix = "runs/sync-run/telemetry"
+
+            def fetch(_run: dict, path: str, **kwargs: object) -> str | None:
+                self.assertEqual(kwargs["timeout_seconds"], 15)
+                if path.endswith("/samples.jsonl") and "/gpu-stream/" not in path:
+                    raise subprocess.TimeoutExpired(["modal", "volume", "get"], 15)
+                if path.endswith("/gpu-stream/samples.jsonl"):
+                    return '{"role":"training-gpu"}\n'
+                return None
+
+            with mock.patch.object(
+                sprintctl, "volume_get_text", side_effect=fetch
+            ):
+                self.assertFalse(
+                    sprintctl.sync_durable_telemetry(
+                        state, run, max_age_seconds=300
+                    )
+                )
+
+            telemetry = state / "telemetry"
+            self.assertTrue((telemetry / "durable-gpu-samples.jsonl").is_file())
+            stamp = json.loads((telemetry / "durable-sync.json").read_text())
+            self.assertFalse(stamp["ok"])
+            self.assertIn(f"{prefix}/samples.jsonl", stamp["errors"])
+            self.assertIn(
+                f"{prefix}/gpu-stream/samples.jsonl", stamp["sources"]
+            )
+
     def test_final_sync_recovers_per_job_stream_missing_from_merge(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             state = Path(raw)
@@ -532,7 +564,7 @@ class DurableOpsTests(unittest.TestCase):
             with mock.patch.object(
                 sprintctl,
                 "volume_get_text",
-                side_effect=lambda _run, path: remote.get(path),
+                side_effect=lambda _run, path, **_kwargs: remote.get(path),
             ) as getter:
                 self.assertTrue(
                     sprintctl.sync_durable_telemetry(state, run, force=True)

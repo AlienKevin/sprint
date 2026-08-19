@@ -226,7 +226,12 @@ def discover_agent_container(state_dir: Path, run: dict[str, Any]) -> str | None
     return None
 
 
-def volume_get_text(run: dict[str, Any], remote_path: str) -> str | None:
+def volume_get_text(
+    run: dict[str, Any],
+    remote_path: str,
+    *,
+    timeout_seconds: int = 60,
+) -> str | None:
     result = run_command(
         modal_command(
             "volume",
@@ -237,7 +242,7 @@ def volume_get_text(run: dict[str, Any], remote_path: str) -> str | None:
         ),
         run=run,
         check=False,
-        timeout=60,
+        timeout=timeout_seconds,
     )
     if result.returncode != 0:
         return None
@@ -405,9 +410,29 @@ def sync_durable_telemetry(
         f"{prefix}/gpu_timeline.jsonl": out_dir / "durable-gpu-timeline.jsonl",
     }
     captured: dict[str, dict[str, Any]] = {}
+    errors: dict[str, str] = {}
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Live telemetry is supplementary to the host poller and must not hold an
+    # entire monitor cycle behind a slow Volume read. Final reconciliation is
+    # allowed a longer window and retries until the required coverage is
+    # present. Isolate failures per source so one busy append-only stream does
+    # not prevent the other durable evidence from being imported.
+    read_timeout_seconds = 180 if force else 15
+
+    def fetch(remote: str) -> str | None:
+        try:
+            return volume_get_text(
+                run,
+                remote,
+                timeout_seconds=read_timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            errors[remote] = f"TimeoutExpired after {read_timeout_seconds}s: {exc}"
+            return None
+
     for remote, local in sources.items():
-        text = volume_get_text(run, remote)
+        text = fetch(remote)
         if text is None:
             continue
         atomic_write_text(local, text, mode=0o600)
@@ -457,7 +482,7 @@ def sync_durable_telemetry(
     by_job_targets = lifecycle_jobs if force else lifecycle_jobs - sampled_jobs
     for job_id in sorted(by_job_targets):
         remote = f"{prefix}/by-job/{job_id}/samples.jsonl"
-        text = volume_get_text(run, remote)
+        text = fetch(remote)
         if text is None:
             continue
         local = by_job_dir / job_id / "samples.jsonl"
@@ -470,7 +495,7 @@ def sync_durable_telemetry(
     if force:
         for job_id, attempt in sorted(lifecycle_attempts):
             remote = f"runs/{run['run_id']}/gpu-jobs/attempts/{job_id}/{attempt}.json"
-            text = volume_get_text(run, remote)
+            text = fetch(remote)
             if text is None:
                 continue
             local = out_dir / "durable-gpu-attempts" / job_id / f"{attempt}.json"
@@ -480,7 +505,7 @@ def sync_durable_telemetry(
                 "bytes": len(text.encode()),
                 "sha256": hashlib.sha256(text.encode()).hexdigest(),
             }
-    ok = bool(captured)
+    ok = bool(captured) and not errors
     atomic_write_json(
         stamp,
         {
@@ -490,6 +515,7 @@ def sync_durable_telemetry(
             "synced_at_epoch_s": now,
             "ok": ok,
             "sources": captured,
+            "errors": errors,
         },
         mode=0o600,
     )
