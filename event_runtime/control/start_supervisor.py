@@ -29,6 +29,7 @@ def main() -> int:
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--launch-argv-json", required=True)
     parser.add_argument("--secret-env", action="append", required=True)
+    parser.add_argument("--launch-env", action="append", default=[])
     parser.add_argument("--batch-id", default="")
     parser.add_argument("--max-restarts", type=int, default=50)
     parser.add_argument("--min-backoff-s", type=float, default=30)
@@ -59,6 +60,20 @@ def main() -> int:
             "unsupported secret environment variable: "
             + ", ".join(unsupported_secret_envs)
         )
+    launch_envs = list(dict.fromkeys(args.launch_env))
+    allowed_launch_envs = {
+        "OPENROUTER_MODEL",
+        "SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW",
+        "SPRINT_CODEX_DEEPSEEK_MODEL",
+        "SPRINT_OPENROUTER_PROVIDER_ENDPOINT",
+        "SPRINT_OPENROUTER_QUANTIZATION",
+    }
+    unsupported_launch_envs = sorted(set(launch_envs) - allowed_launch_envs)
+    if unsupported_launch_envs:
+        parser.error(
+            "unsupported launch environment variable: "
+            + ", ".join(unsupported_launch_envs)
+        )
     if args.batch_id and not re.fullmatch(
         r"[A-Za-z0-9][A-Za-z0-9._-]{2,48}", args.batch_id
     ):
@@ -66,6 +81,9 @@ def main() -> int:
     missing_secret_envs = [name for name in secret_envs if not os.environ.get(name)]
     if missing_secret_envs:
         parser.error(f"{', '.join(missing_secret_envs)} is not set")
+    missing_launch_envs = [name for name in launch_envs if not os.environ.get(name)]
+    if missing_launch_envs:
+        parser.error(f"{', '.join(missing_launch_envs)} is not set")
     uv = os.environ.get("UV") or shutil.which("uv") or "/home/ubuntu/.local/bin/uv"
     if not Path(uv).is_file() or not os.access(uv, os.X_OK):
         parser.error("UV must name an executable absolute path")
@@ -115,6 +133,7 @@ def main() -> int:
         "uv": uv,
         "controller_python": str(harbor_python),
         "path": service_path,
+        "launch_env_names": launch_envs,
     }
     atomic_write(state_dir / "supervisor.json", metadata)
 
@@ -133,6 +152,7 @@ def main() -> int:
         f"--setenv=PATH={service_path}",
     ]
     command.extend(f"--setenv={name}" for name in secret_envs)
+    command.extend(f"--setenv={name}" for name in launch_envs)
     if args.batch_id:
         command.append(f"--setenv=SPRINT_BATCH_ID={args.batch_id}")
     command.extend(supervisor_argv)

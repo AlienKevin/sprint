@@ -2954,6 +2954,8 @@ class LauncherWiringTests(unittest.TestCase):
                 "OPENAI_API_KEY",
                 "--secret-env",
                 "SPRINT_DEEPSEEK_PRICING_SNAPSHOT",
+                "--launch-env",
+                "SPRINT_OPENROUTER_PROVIDER_ENDPOINT",
                 "--batch-id",
                 "eval-batch",
             ]
@@ -2966,6 +2968,7 @@ class LauncherWiringTests(unittest.TestCase):
                     {
                         "OPENAI_API_KEY": "secret-value",
                         "SPRINT_DEEPSEEK_PRICING_SNAPSHOT": "pricing-secret-value",
+                        "SPRINT_OPENROUTER_PROVIDER_ENDPOINT": "baidu/fp8",
                         "UV": "/test/bin/uv",
                         "PATH": "/usr/bin",
                     },
@@ -2986,6 +2989,7 @@ class LauncherWiringTests(unittest.TestCase):
             self.assertIn("--property=RestartPreventExitStatus=75 78", command)
             self.assertIn("--setenv=OPENAI_API_KEY", command)
             self.assertIn("--setenv=SPRINT_DEEPSEEK_PRICING_SNAPSHOT", command)
+            self.assertIn("--setenv=SPRINT_OPENROUTER_PROVIDER_ENDPOINT", command)
             self.assertIn("--setenv=UV=/test/bin/uv", command)
             self.assertIn(
                 f"--setenv=PATH={ROOT / 'harbor/.venv/bin'}:/test/bin:/usr/bin",
@@ -2994,11 +2998,16 @@ class LauncherWiringTests(unittest.TestCase):
             self.assertIn("--setenv=SPRINT_BATCH_ID=eval-batch", command)
             self.assertNotIn("secret-value", command)
             self.assertNotIn("pricing-secret-value", command)
+            self.assertNotIn("baidu/fp8", command)
             metadata = json.loads(
                 (Path(raw) / "unit-run" / "supervisor.json").read_text()
             )
             self.assertEqual(metadata["launch_argv"], launch)
             self.assertEqual(metadata["batch_id"], "eval-batch")
+            self.assertEqual(
+                metadata["launch_env_names"],
+                ["SPRINT_OPENROUTER_PROVIDER_ENDPOINT"],
+            )
             self.assertEqual(
                 metadata["controller_python"],
                 str(ROOT / "harbor/.venv/bin/python3"),

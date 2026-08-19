@@ -117,5 +117,14 @@ SUPERVISOR_ARGS=(
 if [[ -n "${SPRINT_DEEPSEEK_PRICING_SNAPSHOT:-}" ]]; then
   SUPERVISOR_ARGS+=(--secret-env SPRINT_DEEPSEEK_PRICING_SNAPSHOT)
 fi
+if [[ -n "${SPRINT_OPENROUTER_PROVIDER_ENDPOINT:-}" ]]; then
+  SUPERVISOR_ARGS+=(
+    --launch-env OPENROUTER_MODEL
+    --launch-env SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW
+    --launch-env SPRINT_CODEX_DEEPSEEK_MODEL
+    --launch-env SPRINT_OPENROUTER_PROVIDER_ENDPOINT
+    --launch-env SPRINT_OPENROUTER_QUANTIZATION
+  )
+fi
 python3 "${SUPERVISOR_ARGS[@]}"
 echo "supervisor unit=sprint-lane-${RUN_ID}.service log=/data/sprint-launch-${RUN_ID}.log"
