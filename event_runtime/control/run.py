@@ -1210,6 +1210,25 @@ def monitor_once(
                         "agent cost mirror failed: "
                         + str(mirror.get("agent_cost_mirror_error") or "unknown")
                     )
+                gpu_budget_mirror = gpu_worker.mirror_gpu_budget(run, cost_payload)
+                atomic_write_json(
+                    state_dir / "telemetry" / "gpu-budget-mirror.json",
+                    {
+                        "schema_version": 1,
+                        "updated_at": utc_now(),
+                        **gpu_budget_mirror,
+                    },
+                    mode=0o600,
+                )
+                if gpu_budget_mirror.get("gpu_budget_mirror") == "error":
+                    raise RuntimeError(
+                        "GPU budget mirror failed: "
+                        + str(
+                            gpu_budget_mirror.get("gpu_budget_mirror_error")
+                            or gpu_budget_mirror.get("errors")
+                            or "unknown"
+                        )
+                    )
                 enforce_agent_cost_budget(run_id, state_dir, run, cost_payload)
             except Exception as exc:  # noqa: BLE001
                 record_controller_error(run_id, exc)

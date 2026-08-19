@@ -39,7 +39,14 @@ from sprint_resilience import CheckpointStore, Interruption, Lease
 
 MAX_ARCHIVE_MEMBERS = 20_000
 MAX_ARCHIVE_EXPANDED_BYTES = 512 * 1024 * 1024
-MAX_BUDGET_SNAPSHOT_AGE_SECONDS = 30.0
+# Modal Volume commits from the CPU sandbox are not guaranteed to become
+# visible in a separately mounted GPU sandbox within 30 seconds.  The $0.10
+# shutdown reserve covers more than 160 seconds of one configured A10G worker;
+# keep the propagation allowance below that bound so a stale GPU view cannot
+# consume the reserve while a healthy five-second CPU watchdog is still the
+# primary circuit breaker.
+MAX_BUDGET_SNAPSHOT_AGE_SECONDS = 120.0
+RUNTIME_BUDGET_SNAPSHOT = Path("/run/sprint-budget-watchdog.json")
 
 
 def file_sha256(path: Path) -> str:
@@ -551,12 +558,29 @@ def budget_stop_requested(run_id: str, durable_dir: str = "/durable") -> bool:
     ).is_file()
 
 
+def budget_stop_reason(run_id: str, durable_dir: str = "/durable") -> str:
+    marker = (
+        Path(durable_dir) / "runs" / run_id / "BUDGET_STOP_REQUESTED.json"
+    )
+    try:
+        payload = json.loads(marker.read_text())
+    except (OSError, json.JSONDecodeError):
+        return "budget_telemetry_unavailable"
+    reason = payload.get("reason")
+    return (
+        reason
+        if reason in {"agent_cost_budget_exhausted", "budget_telemetry_unavailable"}
+        else "budget_telemetry_unavailable"
+    )
+
+
 def refresh_budget_stop(
     run_id: str,
     durable_dir: str = "/durable",
     *,
     now: float | None = None,
     max_snapshot_age_seconds: float = MAX_BUDGET_SNAPSHOT_AGE_SECONDS,
+    runtime_snapshot: Path = RUNTIME_BUDGET_SNAPSHOT,
 ) -> bool:
     """Observe the CPU watchdog's constant-size durable budget snapshot.
 
@@ -574,7 +598,28 @@ def refresh_budget_stop(
 
     checked_at = time.time() if now is None else float(now)
     try:
-        snapshot = json.loads((run_root / "budget" / "watchdog.json").read_text())
+        candidates: list[dict] = []
+        errors: list[str] = []
+        for path in (runtime_snapshot, run_root / "budget" / "watchdog.json"):
+            try:
+                candidate = json.loads(path.read_text())
+                if candidate.get("schema_version") != 2:
+                    raise ValueError("budget watchdog schema mismatch")
+                if candidate.get("run_id") != run_id:
+                    raise ValueError("budget watchdog identity mismatch")
+                candidates.append(candidate)
+            except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+                errors.append(f"{path}: {type(exc).__name__}: {exc}")
+        if not candidates:
+            raise ValueError("; ".join(errors) or "budget watchdog snapshot missing")
+        # The host injects the same canonical snapshot into /run because Modal
+        # Volume mounts do not automatically observe commits from another
+        # sandbox.  Keep the durable candidate as a safe startup fallback and
+        # prefer whichever valid source is newest.
+        snapshot = max(
+            candidates,
+            key=lambda item: float(item.get("checked_at_epoch_s") or 0.0),
+        )
         if snapshot.get("schema_version") != 2:
             raise ValueError("budget watchdog schema mismatch")
         if snapshot.get("run_id") != run_id:
@@ -601,8 +646,9 @@ def refresh_budget_stop(
             raise ValueError("budget watchdog status is inconsistent")
         payload = {**snapshot, "reason": "agent_cost_budget_exhausted"}
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
-        # A stale snapshot proves that the independent CPU circuit breaker is
-        # no longer healthy. Stop GPU spend within a bounded 30-second window.
+        # A snapshot older than the propagation allowance proves that the
+        # independent CPU circuit breaker is no longer healthy. Stop GPU spend
+        # while the configured shutdown reserve still covers this worker.
         payload = {
             "schema_version": 1,
             "run_id": run_id,
@@ -751,10 +797,11 @@ def main() -> int:
     )
 
     if refresh_budget_stop(run_id):
+        termination_reason = budget_stop_reason(run_id)
         attempt_record.update(
             {
                 "status": "terminated",
-                "termination_reason": "agent_cost_budget_exhausted",
+                "termination_reason": termination_reason,
                 "exit_code": 0,
                 "finished_at": utc_now(),
                 "finished_at_epoch_s": time.time(),
@@ -917,6 +964,7 @@ def main() -> int:
     activity_watchdog_fired = False
     progress_watchdog_fired = False
     budget_watchdog_fired = False
+    budget_termination_reason: str | None = None
     progress_watchdog = TrainingProgressWatchdog()
     last_watchdog_phase: str | None = None
     try:
@@ -946,7 +994,7 @@ def main() -> int:
         def update_heartbeat(status: str) -> None:
             nonlocal progress, checkpoint, error
             nonlocal activity_watchdog_fired, progress_watchdog_fired
-            nonlocal budget_watchdog_fired
+            nonlocal budget_watchdog_fired, budget_termination_reason
             nonlocal last_watchdog_phase
             progress, checkpoint = progress_snapshot(
                 progress_file,
@@ -993,7 +1041,8 @@ def main() -> int:
                 raise SystemExit(75)
             if not budget_watchdog_fired and refresh_budget_stop(run_id):
                 budget_watchdog_fired = True
-                error = "agent cost budget exhausted"
+                budget_termination_reason = budget_stop_reason(run_id)
+                error = budget_termination_reason.replace("_", " ")
                 print(f"{error}; stopping GPU child", flush=True)
                 stop_child(proc)
                 return
@@ -1058,7 +1107,9 @@ def main() -> int:
     )
     if budget_watchdog_fired:
         final_status = "terminated"
-        attempt_record["termination_reason"] = "agent_cost_budget_exhausted"
+        attempt_record["termination_reason"] = (
+            budget_termination_reason or "budget_telemetry_unavailable"
+        )
     progress, checkpoint = progress_snapshot(progress_file, checkpoint_dir)
     finished = time.time()
     attempt_record.update(

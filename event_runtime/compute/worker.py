@@ -69,6 +69,8 @@ AGENT_GPU_CLI_PATH = "/opt/event_runtime/agent/gpu.py"
 AGENT_COST_CLI_PATH = "/opt/event_runtime/agent/cost.py"
 AGENT_COMMAND_SOURCE = ROOT / "event_runtime" / "agent"
 MAX_WORK_ARCHIVE_BYTES = 256 * 1024 * 1024
+GPU_BUDGET_MIRROR_PATH = "/run/sprint-budget-watchdog.json"
+MAX_GPU_BUDGET_MIRROR_BYTES = 1024 * 1024
 
 
 def mirror_agent_job(
@@ -310,6 +312,106 @@ os.replace(cli_temporary, cli_target)
         "agent_cost_snapshot_bytes": len(content),
         "agent_cost_cli_sha256": cli_sha256,
         "agent_cost_as_of": payload.get("as_of"),
+    }
+
+
+def mirror_gpu_budget(
+    run: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    jobs: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Inject the canonical cost snapshot into each active GPU sandbox.
+
+    Modal Volume mounts are point-in-time views and cannot safely be reloaded
+    while training processes hold files open.  The trusted host therefore
+    mirrors the CPU watchdog's exact snapshot into ``/run``.  The worker fails
+    closed if this heartbeat becomes stale, so loss of the controller still
+    terminates GPU spend inside the configured shutdown reserve.
+    """
+    run_id = str(run.get("run_id") or "")
+    try:
+        if payload.get("schema_version") != 2 or payload.get("run_id") != run_id:
+            raise ValueError("budget snapshot identity mismatch")
+        checked_at = float(payload["checked_at_epoch_s"])
+        total = float(payload["total_usd"])
+        threshold = float(payload["stop_threshold_usd"])
+        if not (
+            checked_at > 0
+            and total >= 0
+            and threshold > 0
+            and payload.get("status") in {"within_budget", "stop_requested"}
+        ):
+            raise ValueError("budget snapshot fields are invalid")
+    except (KeyError, TypeError, ValueError) as exc:
+        return {
+            "gpu_budget_mirror": "error",
+            "gpu_budget_mirror_error": f"{type(exc).__name__}: {exc}",
+        }
+
+    content = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode()
+    if len(content) > MAX_GPU_BUDGET_MIRROR_BYTES:
+        return {
+            "gpu_budget_mirror": "error",
+            "gpu_budget_mirror_error": "budget snapshot exceeds trusted mirror bound",
+        }
+    if jobs is None:
+        jobs = [
+            job
+            for job_id in list_job_ids(run)
+            if (job := load_job(run, job_id))
+            and str(job.get("status") or "") in gpu_claim.OWNED
+            and str(job.get("sandbox_id") or "").startswith("sb-")
+        ]
+    targets = sorted(
+        {
+            str(job.get("sandbox_id"))
+            for job in jobs
+            if str(job.get("sandbox_id") or "").startswith("sb-")
+        }
+    )
+    if not targets:
+        return {"gpu_budget_mirror": "no_active_sandbox", "sandbox_ids": []}
+
+    encoded = base64.b64encode(content).decode("ascii")
+    install = """
+import base64, os, pathlib, sys
+target = pathlib.Path(sys.argv[1])
+temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+temporary.write_bytes(base64.b64decode(sys.argv[2]))
+os.chmod(temporary, 0o600)
+os.replace(temporary, target)
+""".strip()
+    updated: list[str] = []
+    errors: dict[str, str] = {}
+    for sandbox_id in targets:
+        try:
+            process = modal.Sandbox.from_id(sandbox_id).exec(
+                "python3",
+                "-c",
+                install,
+                GPU_BUDGET_MIRROR_PATH,
+                encoded,
+                timeout=30,
+            )
+            return_code = process.wait()
+            stdout = process.stdout.read()
+            stderr = process.stderr.read()
+            if return_code != 0:
+                detail = stderr or stdout or f"exit {return_code}"
+                if isinstance(detail, bytes):
+                    detail = detail.decode(errors="replace")
+                raise RuntimeError(str(detail).strip()[-1000:])
+            updated.append(sandbox_id)
+        except Exception as exc:  # noqa: BLE001
+            errors[sandbox_id] = f"{type(exc).__name__}: {exc}"
+    return {
+        "gpu_budget_mirror": "updated" if not errors else "error",
+        "sandbox_ids": targets,
+        "updated_sandbox_ids": updated,
+        "errors": errors,
+        "snapshot_checked_at_epoch_s": checked_at,
+        "snapshot_total_usd": total,
     }
 
 
@@ -852,7 +954,11 @@ def exec_on_standing(run: dict[str, Any], job: dict[str, Any]) -> str:
     sandbox.exec(
         "bash",
         "-c",
-        "python3 /opt/sprint-gpu-worker-run.py "
+        "deadline=$((SECONDS + 120)); "
+        f"while [ ! -s {shlex.quote(GPU_BUDGET_MIRROR_PATH)} ]; do "
+        "if [ \"$SECONDS\" -ge \"$deadline\" ]; then "
+        "echo 'trusted GPU budget mirror unavailable' >&2; exit 78; fi; "
+        "sleep 1; done; exec python3 /opt/sprint-gpu-worker-run.py "
         + shlex.quote(str(run["run_id"]))
         + " "
         + shlex.quote(str(job["job_id"]))
@@ -879,7 +985,7 @@ def spawn_gpu_sandbox(run: dict[str, Any], job: dict[str, Any]) -> str:
     volume = modal.Volume.from_name(str(run["volume_name"]))
     timeout = int(job.get("timeout_sec") or 3600)
     timeout = max(60, min(timeout, 24 * 60 * 60))
-    command = (
+    worker_command = (
         "python3 /opt/sprint-gpu-worker-run.py "
         + shlex.quote(run_id)
         + " "
@@ -888,6 +994,14 @@ def spawn_gpu_sandbox(run: dict[str, Any], job: dict[str, Any]) -> str:
         + shlex.quote(str(attempt))
         + " "
         + shlex.quote(lease_id)
+    )
+    command = (
+        "deadline=$((SECONDS + 120)); "
+        f"while [ ! -s {shlex.quote(GPU_BUDGET_MIRROR_PATH)} ]; do "
+        "if [ \"$SECONDS\" -ge \"$deadline\" ]; then "
+        "echo 'trusted GPU budget mirror unavailable' >&2; exit 78; fi; "
+        "sleep 1; done; exec "
+        + worker_command
     )
     sandbox = modal.Sandbox.create(
         "bash",
@@ -2079,6 +2193,32 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
                     )
                     continue
                 payload = mark_dispatched(run, latest or claimed, sandbox_id)
+                budget_mirror: dict[str, Any] = {
+                    "gpu_budget_mirror": "awaiting_controller_snapshot"
+                }
+                try:
+                    budget_snapshot = json.loads(
+                        (state_dir / "telemetry" / "budget-watchdog.json").read_text()
+                    )
+                except (OSError, json.JSONDecodeError):
+                    # The sandbox command remains behind its /run barrier. The
+                    # same monitor cycle reconstructs and injects the snapshot
+                    # below; if the controller disappears first, the barrier
+                    # exits without ever starting paid model work.
+                    pass
+                else:
+                    budget_mirror = mirror_gpu_budget(
+                        run, budget_snapshot, jobs=[payload]
+                    )
+                    if budget_mirror.get("gpu_budget_mirror") != "updated":
+                        raise RuntimeError(
+                            "trusted GPU budget mirror failed after spawn: "
+                            + str(
+                                budget_mirror.get("gpu_budget_mirror_error")
+                                or budget_mirror.get("errors")
+                                or budget_mirror.get("gpu_budget_mirror")
+                            )
+                        )
                 # STOP_REQUESTED can arrive while Sandbox.create is in flight.
                 # Publish the new sandbox id first so the fencing pass can
                 # terminate the exact worker, then stop it before releasing the
@@ -2104,6 +2244,7 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
                         "sandbox_id": sandbox_id,
                         "status": payload.get("status"),
                         "claim_id": claim_id,
+                        "budget_mirror": budget_mirror,
                     }
                 )
                 break

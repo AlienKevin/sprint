@@ -279,11 +279,17 @@ def test_functional_gpu_canary_must_match_both_warmed_images(
     canary.write_text(
         json.dumps(
             {
-                "schema_version": 4,
+                "schema_version": 5,
                 "completed": True,
                 "full_path_verified": True,
                 "verifier_equivalence_verified": True,
                 "cost_equivalence_verified": True,
+                "gpu_budget_mirror_verified": True,
+                "gpu_budget_mirror": {
+                    "completed": True,
+                    "updates_verified": 2,
+                    "observed_sequences": [1, 2],
+                },
                 "cost_equivalence": {
                     "completed": True,
                     "comparison": {
@@ -331,11 +337,17 @@ def test_functional_gpu_canary_fails_closed_on_cost_mismatch(
     canary.write_text(
         json.dumps(
             {
-                "schema_version": 4,
+                "schema_version": 5,
                 "completed": True,
                 "full_path_verified": True,
                 "verifier_equivalence_verified": True,
                 "cost_equivalence_verified": False,
+                "gpu_budget_mirror_verified": True,
+                "gpu_budget_mirror": {
+                    "completed": True,
+                    "updates_verified": 2,
+                    "observed_sequences": [1, 2],
+                },
                 "cost_equivalence": {
                     "completed": True,
                     "comparison": {"verified": False},

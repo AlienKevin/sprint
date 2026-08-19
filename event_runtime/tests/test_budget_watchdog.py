@@ -551,16 +551,68 @@ def test_gpu_worker_accepts_fresh_budget_snapshot(tmp_path: Path) -> None:
     assert not (tmp_path / "runs/unit/BUDGET_STOP_REQUESTED.json").exists()
 
 
+def test_gpu_worker_accepts_snapshot_within_modal_volume_propagation_allowance(
+    tmp_path: Path,
+) -> None:
+    worker = load_gpu_worker()
+    write_budget_snapshot(tmp_path, checked_at=1_000)
+
+    assert not worker.refresh_budget_stop("unit", str(tmp_path), now=1_090)
+    assert not (tmp_path / "runs/unit/BUDGET_STOP_REQUESTED.json").exists()
+
+
+def test_gpu_worker_prefers_fresh_host_mirror_over_stale_volume_snapshot(
+    tmp_path: Path,
+) -> None:
+    worker = load_gpu_worker()
+    write_budget_snapshot(tmp_path, checked_at=1_000)
+    runtime_snapshot = tmp_path / "runtime-budget.json"
+    runtime_snapshot.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "run_id": "unit",
+                "checked_at_epoch_s": 1_190,
+                "total_usd": 1.5,
+                "stop_threshold_usd": 9.9,
+                "status": "within_budget",
+            }
+        )
+        + "\n"
+    )
+
+    assert not worker.refresh_budget_stop(
+        "unit",
+        str(tmp_path),
+        now=1_200,
+        runtime_snapshot=runtime_snapshot,
+    )
+    assert not (tmp_path / "runs/unit/BUDGET_STOP_REQUESTED.json").exists()
+
+
 def test_gpu_worker_fails_closed_on_stale_budget_snapshot(tmp_path: Path) -> None:
     worker = load_gpu_worker()
     write_budget_snapshot(tmp_path, checked_at=1_000)
 
-    assert worker.refresh_budget_stop("unit", str(tmp_path), now=1_031)
+    assert worker.refresh_budget_stop("unit", str(tmp_path), now=1_121)
     marker = json.loads(
         (tmp_path / "runs/unit/BUDGET_STOP_REQUESTED.json").read_text()
     )
     assert marker["reason"] == "budget_telemetry_unavailable"
     assert "stale" in marker["error"]
+
+
+def test_gpu_worker_preserves_fail_closed_budget_stop_reason(tmp_path: Path) -> None:
+    worker = load_gpu_worker()
+    marker = tmp_path / "runs/unit/BUDGET_STOP_REQUESTED.json"
+    marker.parent.mkdir(parents=True)
+    marker.write_text(
+        json.dumps({"reason": "budget_telemetry_unavailable"}) + "\n"
+    )
+
+    assert worker.budget_stop_reason("unit", str(tmp_path)) == (
+        "budget_telemetry_unavailable"
+    )
 
 
 def test_gpu_worker_propagates_fresh_budget_stop(tmp_path: Path) -> None:

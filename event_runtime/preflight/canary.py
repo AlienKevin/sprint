@@ -31,6 +31,7 @@ from event_runtime.preflight.warm_images import (  # noqa: E402
 )
 from event_runtime.cost import agent as agent_cost  # noqa: E402
 from event_runtime.cost import modal as modal_cost  # noqa: E402
+from event_runtime.compute import worker as gpu_worker  # noqa: E402
 
 
 CANARY_RESOURCE_CONTRACT = {
@@ -250,6 +251,87 @@ def run_cost_equivalence_canary(
             sandbox.terminate(wait=True)
 
 
+def run_gpu_budget_mirror_canary(
+    *, app: modal.App, image: modal.Image
+) -> dict[str, Any]:
+    """Prove repeated trusted cost updates reach a live GPU sandbox."""
+    sandbox: modal.Sandbox | None = None
+    started = time.monotonic()
+    run_id = "gpu-budget-mirror-canary"
+    try:
+        sandbox = modal.Sandbox.create(
+            "python3",
+            "-c",
+            "import time; time.sleep(300)",
+            app=app,
+            image=image,
+            gpu="A10G",
+            cpu=6,
+            memory=12288,
+            block_network=True,
+            timeout=360,
+            tags={"sprint.role": "gpu-budget-mirror-canary", "sprint.warmup": "true"},
+        )
+        observed: list[dict[str, Any]] = []
+        mirrors: list[dict[str, Any]] = []
+        for sequence, total in ((1, 1.25), (2, 2.5)):
+            checked_at = time.time() + sequence / 1000
+            payload = {
+                "schema_version": 2,
+                "run_id": run_id,
+                "checked_at_epoch_s": checked_at,
+                "total_usd": total,
+                "stop_threshold_usd": 9.9,
+                "status": "within_budget",
+                "canary_sequence": sequence,
+            }
+            detail = gpu_worker.mirror_gpu_budget(
+                {"run_id": run_id},
+                payload,
+                jobs=[{"sandbox_id": sandbox.object_id, "status": "running"}],
+            )
+            if detail.get("gpu_budget_mirror") != "updated":
+                raise RuntimeError(
+                    "GPU budget mirror canary injection failed: "
+                    + json.dumps(detail, sort_keys=True)
+                )
+            mirrors.append(detail)
+            process = sandbox.exec(
+                "python3",
+                "-c",
+                (
+                    "import json,pathlib,sys; "
+                    "p=json.loads(pathlib.Path(sys.argv[1]).read_text()); "
+                    "assert p['run_id']==sys.argv[2]; "
+                    "assert p['canary_sequence']==int(sys.argv[3]); "
+                    "print(json.dumps(p,sort_keys=True))"
+                ),
+                gpu_worker.GPU_BUDGET_MIRROR_PATH,
+                run_id,
+                str(sequence),
+                timeout=30,
+            )
+            return_code, stdout, stderr = _read_process(process)
+            if return_code != 0:
+                raise RuntimeError(
+                    f"GPU budget mirror canary read failed {return_code}: "
+                    f"{stderr or stdout}"
+                )
+            observed.append(json.loads(stdout))
+        return {
+            "completed": True,
+            "sandbox_id": sandbox.object_id,
+            "updates_verified": len(observed),
+            "observed_sequences": [row["canary_sequence"] for row in observed],
+            "final_total_usd": observed[-1]["total_usd"],
+            "mirrors": mirrors,
+            "elapsed_s": round(time.monotonic() - started, 3),
+        }
+    finally:
+        if sandbox is not None:
+            sandbox.terminate(wait=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--work-archive", type=Path, required=True)
@@ -352,7 +434,7 @@ def main() -> int:
 
     started = time.time()
     report = {
-        "schema_version": 4,
+        "schema_version": 5,
         "completed": False,
         "canary_id": canary_id,
         "image_id": image_id,
@@ -381,6 +463,10 @@ def main() -> int:
                 image=modal.Image.from_id(image_id),
                 training_allocated_s=float(report["training_sandbox"]["total_s"]),
             )
+            report["gpu_budget_mirror"] = run_gpu_budget_mirror_canary(
+                app=app,
+                image=modal.Image.from_id(image_id),
+            )
             report["verifier_sandbox"] = run_sandbox(
                 app=app,
                 image=modal.Image.from_id(verifier_image_id),
@@ -399,6 +485,11 @@ def main() -> int:
         report["verifier_equivalence_verified"] = True
         report["cost_equivalence_verified"] = bool(
             report["cost_equivalence"]["comparison"]["verified"]
+        )
+        report["gpu_budget_mirror_verified"] = bool(
+            report["gpu_budget_mirror"]["completed"]
+            and report["gpu_budget_mirror"]["updates_verified"] == 2
+            and report["gpu_budget_mirror"]["observed_sequences"] == [1, 2]
         )
         report["full_path_verified"] = True
         report["completed"] = True

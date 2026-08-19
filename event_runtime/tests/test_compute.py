@@ -585,6 +585,55 @@ class ClaimSelectionTests(unittest.TestCase):
         )
         self.assertEqual(detail["agent_mirror"], "updated")
 
+    def test_pushes_canonical_budget_snapshot_into_active_gpu_sandbox(self) -> None:
+        captured: dict[str, object] = {}
+
+        class Reader:
+            def read(self) -> str:
+                return ""
+
+        class Process:
+            stdout = Reader()
+            stderr = Reader()
+
+            def wait(self) -> int:
+                return 0
+
+        class Sandbox:
+            def exec(self, *args: str, **kwargs: object) -> Process:
+                captured["args"] = args
+                captured["kwargs"] = kwargs
+                return Process()
+
+        payload = {
+            "schema_version": 2,
+            "run_id": "run-1",
+            "checked_at_epoch_s": 1234.5,
+            "total_usd": 2.25,
+            "stop_threshold_usd": 9.9,
+            "status": "within_budget",
+        }
+        with mock.patch.object(
+            gpu_worker.modal.Sandbox, "from_id", return_value=Sandbox()
+        ) as from_id:
+            detail = gpu_worker.mirror_gpu_budget(
+                {"run_id": "run-1"},
+                payload,
+                jobs=[{"sandbox_id": "sb-gpu", "status": "running"}],
+            )
+
+        from_id.assert_called_once_with("sb-gpu")
+        args = captured["args"]
+        self.assertIsInstance(args, tuple)
+        assert isinstance(args, tuple)
+        self.assertEqual(args[0:2], ("python3", "-c"))
+        self.assertEqual(args[3], gpu_worker.GPU_BUDGET_MIRROR_PATH)
+        self.assertEqual(
+            json.loads(gpu_worker.base64.b64decode(args[4])), payload
+        )
+        self.assertEqual(detail["gpu_budget_mirror"], "updated")
+        self.assertEqual(detail["updated_sandbox_ids"], ["sb-gpu"])
+
     def test_fetches_only_reported_scoped_policy_for_agent_mirror(self) -> None:
         run = {"run_id": "run-1", "volume_name": "volume-1"}
         job = {

@@ -163,11 +163,16 @@ def functional_gpu_canary_ready() -> bool:
     )
     return bool(
         warmup.get("completed")
-        and canary.get("schema_version") == 4
+        and canary.get("schema_version") == 5
         and canary.get("completed")
         and canary.get("full_path_verified")
         and canary.get("verifier_equivalence_verified")
         and canary.get("cost_equivalence_verified")
+        and canary.get("gpu_budget_mirror_verified")
+        and (canary.get("gpu_budget_mirror") or {}).get("completed")
+        and (canary.get("gpu_budget_mirror") or {}).get("updates_verified") == 2
+        and (canary.get("gpu_budget_mirror") or {}).get("observed_sequences")
+        == [1, 2]
         and cost_proof_valid
         and canary.get("image_id") == contexts.get("agent_training", {}).get("image_id")
         and canary.get("verifier_image_id")
