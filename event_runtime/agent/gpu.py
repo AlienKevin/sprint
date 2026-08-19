@@ -37,6 +37,7 @@ from event_runtime.container.sprint_resilience import CheckpointStore, Completio
 AGENT_MIRROR_ROOT = Path("/run/sprint-gpu-mirror")
 AGENT_WORKSPACE_ROOT = Path("/app")
 TERMINAL_STATUSES = frozenset({"succeeded", "failed", "terminated"})
+MAX_OUTPUT_ARTIFACTS = 8
 
 
 def utc_now() -> str:
@@ -315,12 +316,38 @@ def _tar_filter(tarinfo: tarfile.TarInfo) -> tarfile.TarInfo | None:
     return tarinfo
 
 
+def validate_output_paths(raw_paths: list[str] | None) -> list[str]:
+    """Validate bounded files that the GPU worker must return to the agent."""
+    paths: list[str] = []
+    seen_names: set[str] = set()
+    for raw in raw_paths or []:
+        path = Path(raw)
+        if not path.is_absolute() or path == AGENT_WORKSPACE_ROOT:
+            raise SystemExit(f"--output must name an absolute file under /app: {raw}")
+        try:
+            relative = path.relative_to(AGENT_WORKSPACE_ROOT)
+        except ValueError as exc:
+            raise SystemExit(f"--output must be under /app: {raw}") from exc
+        if ".." in relative.parts or not relative.name:
+            raise SystemExit(f"invalid --output path: {raw}")
+        if relative.name in seen_names:
+            raise SystemExit(
+                f"--output basenames must be unique (duplicate {relative.name!r})"
+            )
+        seen_names.add(relative.name)
+        paths.append(str(AGENT_WORKSPACE_ROOT / relative))
+    if len(paths) > MAX_OUTPUT_ARTIFACTS:
+        raise SystemExit(f"at most {MAX_OUTPUT_ARTIFACTS} --output files are allowed")
+    return paths
+
+
 def cmd_submit(args: argparse.Namespace) -> int:
     if not args.command:
         raise SystemExit("missing command after --")
     root = jobs_root()
     run_id = run_id_from_env(root)
     job_id = uuid.uuid4().hex[:12]
+    created_epoch = time.time()
     created = utc_now()
     sync_dirs = [Path(p) for p in (args.sync or ["/app"])]
     work_rel = f"runs/{run_id}/gpu-jobs/work/{job_id}/app.tar.gz"
@@ -337,6 +364,7 @@ def cmd_submit(args: argparse.Namespace) -> int:
         "job_id": job_id,
         "run_id": run_id,
         "created_at": created,
+        "created_at_epoch_s": created_epoch,
         "command": list(args.command),
         "workdir": args.workdir,
         "timeout_sec": int(args.timeout),
@@ -359,6 +387,7 @@ def cmd_submit(args: argparse.Namespace) -> int:
         "resume_arg": args.resume_arg or "",
         "gpu_type": "A10G",
         "job_kind": args.job_kind,
+        "output_paths": validate_output_paths(getattr(args, "output", None)),
     }
     # Queue entry (claimed by host dispatcher) + status mirror for the agent.
     atomic_write_json(root / "queue" / f"{job_id}.json", job)
@@ -443,6 +472,72 @@ def cmd_logs(args: argparse.Namespace) -> int:
     for path in logs:
         sys.stdout.write(f"== {path.parent.name} ==\n")
         sys.stdout.write(path.read_text())
+    return 0
+
+
+def cmd_get(args: argparse.Namespace) -> int:
+    root = jobs_root()
+    job_id = args.job_id or latest_job_id(root)
+    if not job_id:
+        raise SystemExit("no gpu jobs yet")
+    payload = read_status(root, job_id)
+    raw_source = str(payload.get("agent_policy_mirror_path") or "").strip()
+    if not raw_source:
+        raise SystemExit(
+            f"job {job_id} has no mirrored policy yet; declare it with "
+            "--output /app/POLICY.pt and wait for completion"
+        )
+    source = Path(raw_source)
+    try:
+        source.relative_to(AGENT_MIRROR_ROOT / "artifacts" / job_id)
+    except ValueError as exc:
+        raise SystemExit("GPU policy mirror path is outside the trusted job scope") from exc
+    if not source.is_file():
+        raise SystemExit(f"mirrored policy is not available yet: {source}")
+    expected_size = int(payload.get("agent_policy_size_bytes") or 0)
+    expected_sha = str(payload.get("agent_policy_sha256") or "")
+    actual_size = source.stat().st_size
+    with source.open("rb") as handle:
+        actual_sha = hashlib.file_digest(handle, "sha256").hexdigest()
+    if actual_size != expected_size or actual_sha != expected_sha:
+        raise SystemExit("mirrored policy failed size/digest verification")
+    destination = Path(args.destination or (AGENT_WORKSPACE_ROOT / source.name))
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    tmp = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
+    shutil.copyfile(source, tmp)
+    os.replace(tmp, destination)
+    print(destination)
+    return 0
+
+
+def cmd_cancel(args: argparse.Namespace) -> int:
+    root = jobs_root()
+    job_id = args.job_id or latest_job_id(root)
+    if not job_id:
+        raise SystemExit("no gpu jobs yet")
+    payload = read_status(root, job_id)
+    status = str(payload.get("status") or "")
+    if status not in {"pending", "retry_wait", "claiming"} or payload.get(
+        "sandbox_id"
+    ):
+        raise SystemExit(
+            f"job {job_id} is {status or 'unknown'}; only undispatched jobs can "
+            "be cancelled from the agent sandbox"
+        )
+    cancelled = {
+        **payload,
+        "status": "terminated",
+        "termination_reason": "agent_cancelled_before_dispatch",
+        "terminated_at": utc_now(),
+        "terminated_at_epoch_s": time.time(),
+    }
+    for directory in (root / "queue", root / "status"):
+        visible = directory / f"{job_id}.json"
+        marker = directory / f".cancelled-{job_id}.json"
+        atomic_write_json(marker, cancelled)
+        visible.unlink(missing_ok=True)
+    flush_durable(root)
+    print(json.dumps(cancelled, indent=2, sort_keys=True))
     return 0
 
 
@@ -531,6 +626,12 @@ def main() -> int:
 
     submit = sub.add_parser("submit", help="enqueue a GPU command (default)")
     submit.add_argument("--sync", action="append", default=None)
+    submit.add_argument(
+        "--output",
+        action="append",
+        default=None,
+        help="Required file under /app to return (repeatable; .pt/.pth is mirrored)",
+    )
     submit.add_argument("--workdir", default="/app")
     submit.add_argument("--timeout", type=int, default=3600)
     submit.add_argument("--note", default="")
@@ -570,6 +671,13 @@ def main() -> int:
     logs = sub.add_parser("logs")
     logs.add_argument("job_id", nargs="?")
 
+    get = sub.add_parser("get", help="copy a mirrored policy back into /app")
+    get.add_argument("job_id", nargs="?")
+    get.add_argument("destination", nargs="?")
+
+    cancel = sub.add_parser("cancel", help="cancel an undispatched queued job")
+    cancel.add_argument("job_id", nargs="?")
+
     checkpoint = sub.add_parser(
         "checkpoint", help="publish or inspect atomic durable checkpoints"
     )
@@ -602,6 +710,8 @@ def main() -> int:
         "status",
         "wait",
         "logs",
+        "get",
+        "cancel",
         "checkpoint",
         "-h",
         "--help",
@@ -622,6 +732,10 @@ def main() -> int:
         return cmd_wait(args)
     if args.action == "logs":
         return cmd_logs(args)
+    if args.action == "get":
+        return cmd_get(args)
+    if args.action == "cancel":
+        return cmd_cancel(args)
     if args.action == "checkpoint":
         return cmd_checkpoint(args)
     parser.print_help()

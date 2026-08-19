@@ -35,7 +35,7 @@ def build_command(worker_policy: Path, note: str) -> list[str]:
         "--timeout",
         "900",
         "--max-attempts",
-        "1",
+        "3",
         "--job-kind",
         "verify",
         "--note",

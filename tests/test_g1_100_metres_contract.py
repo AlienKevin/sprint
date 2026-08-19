@@ -93,7 +93,7 @@ def test_documented_container_paths_match_the_built_agent_image() -> None:
     assert "standing_start.py /app/train/" in dockerfile
     assert "`/app/train/README.md`" in instruction
     assert "The writable workspace is `/app`" in guide
-    assert "event gpu -- python3 -u /app/YOUR_SCRIPT.py" in guide
+    assert "event gpu --output /app/policy.pt -- python3 -u /app/YOUR_SCRIPT.py" in guide
     assert "/app/train/YOUR_SCRIPT.py" not in guide
     assert 'AGENT_WORKSPACE_ROOT = Path("/app")' in gpu
     assert 'submit.add_argument("--workdir", default="/app")' in gpu
@@ -322,7 +322,7 @@ def test_local_verifier_uses_only_the_trial_training_queue() -> None:
     helper = (ROOT / "event_runtime/agent/test_policy.py").read_text()
     image = (ROOT / "event_runtime/image.py").read_text()
     assert '"gpu"' in helper
-    assert '"--max-attempts",\n        "1"' in helper
+    assert '"--max-attempts",\n        "3"' in helper
     assert "/opt/event-verifier/test.sh" in helper
     assert 'public_verifier, "/opt/event-verifier"' in image
     assert '"chmod -R a-w /opt/event-verifier; "' in image

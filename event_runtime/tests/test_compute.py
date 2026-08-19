@@ -85,6 +85,28 @@ class ClaimSelectionTests(unittest.TestCase):
             "claim",
         )
 
+    def test_pending_candidates_are_fifo_including_legacy_timestamp(self) -> None:
+        jobs = {
+            "later": {
+                "job_id": "later",
+                "status": "pending",
+                "created_at_epoch_s": 20,
+            },
+            "legacy": {
+                "job_id": "legacy",
+                "status": "pending",
+                "created_at": "1970-01-01T00:00:10Z",
+            },
+        }
+        with (
+            mock.patch.object(gpu_worker, "list_job_ids", return_value=list(jobs)),
+            mock.patch.object(
+                gpu_worker, "load_job", side_effect=lambda _run, job_id: jobs[job_id]
+            ),
+        ):
+            candidates = gpu_worker._candidate_job_ids({}, now=30)
+        self.assertEqual(candidates, ["legacy", "later"])
+
     def test_running_with_sandbox_skipped(self) -> None:
         job = {
             "job_id": "a",
@@ -908,6 +930,28 @@ class ClaimSelectionTests(unittest.TestCase):
             payload["agent_policy_source_path"],
             "/durable/runs/run-1/policies/policy_7.pt",
         )
+
+    def test_terminal_policy_fetch_retries_after_volume_lag(self) -> None:
+        job = {
+            "job_id": "job-1",
+            "status": "succeeded",
+            "progress": {
+                "policy_path": (
+                    "/durable/runs/run-1/gpu-jobs/artifacts/job-1/attempt-1/policy.pt"
+                )
+            },
+        }
+        with mock.patch.object(
+            gpu_worker,
+            "fetch_agent_policy_artifact",
+            return_value=(job, None, None, {"policy_mirror": "fetch_retry"}),
+        ):
+            payload, detail = gpu_worker.retry_terminal_policy_mirror(
+                {"run_id": "run-1"}, job
+            )
+        self.assertEqual(detail["policy_mirror"], "fetch_retry")
+        self.assertEqual(payload["policy_mirror_attempts"], 1)
+        self.assertGreater(payload["policy_mirror_retry_after_epoch_s"], time.time())
 
     def test_live_heartbeat_policy_is_mirrored_once_while_training(self) -> None:
         run = {"run_id": "run-1", "volume_name": "volume-1"}
@@ -2587,6 +2631,63 @@ class CheckpointContinuationTests(unittest.TestCase):
                 2,
                 None,
             )
+
+    def test_spawn_failure_retries_from_scratch_without_checkpoint(self) -> None:
+        command = worker_run.build_attempt_command(
+            {
+                "command": ["python3", "train.py"],
+                "retry_reason": "spawn_failed",
+            },
+            2,
+            None,
+        )
+        self.assertEqual(command, ["python3", "train.py"])
+
+    def test_stateless_evaluation_retries_without_checkpoint(self) -> None:
+        command = worker_run.build_attempt_command(
+            {
+                "command": ["python3", "evaluate_policy.py"],
+                "job_kind": "evaluate",
+                "retry_reason": "graceful_preemption",
+            },
+            2,
+            None,
+        )
+        self.assertEqual(command, ["python3", "evaluate_policy.py"])
+
+    def test_declared_policy_output_is_committed_with_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            workspace = root / "app"
+            durable = root / "durable"
+            workspace.mkdir()
+            (workspace / "policy.pt").write_bytes(b"torchscript")
+            records, missing = worker_run.collect_output_artifacts(
+                {"output_paths": ["/app/policy.pt"]},
+                run_id="run-1",
+                job_id="job-1",
+                attempt=2,
+                durable_dir=durable,
+                workspace_dir=workspace,
+            )
+        self.assertEqual(missing, [])
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["source_path"], "/app/policy.pt")
+        self.assertEqual(
+            records[0]["sha256"], hashlib.sha256(b"torchscript").hexdigest()
+        )
+
+
+class AgentGpuCliTests(unittest.TestCase):
+    def test_output_paths_are_scoped_and_have_unique_names(self) -> None:
+        self.assertEqual(
+            train_cli.validate_output_paths(["/app/results/policy.pt"]),
+            ["/app/results/policy.pt"],
+        )
+        with self.assertRaisesRegex(SystemExit, "under /app"):
+            train_cli.validate_output_paths(["/tmp/policy.pt"])
+        with self.assertRaisesRegex(SystemExit, "basenames must be unique"):
+            train_cli.validate_output_paths(["/app/a/p.pt", "/app/b/p.pt"])
 
 
 class LauncherWiringTests(unittest.TestCase):

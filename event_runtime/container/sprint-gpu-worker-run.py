@@ -39,6 +39,7 @@ from sprint_resilience import CheckpointStore, Interruption, Lease
 
 MAX_ARCHIVE_MEMBERS = 20_000
 MAX_ARCHIVE_EXPANDED_BYTES = 512 * 1024 * 1024
+MAX_OUTPUT_ARTIFACT_BYTES = 32 * 1024 * 1024
 # Modal Volume commits from the CPU sandbox are not guaranteed to become
 # visible in a separately mounted GPU sandbox within 30 seconds.  The $0.10
 # shutdown reserve covers more than 160 seconds of one configured A10G worker;
@@ -52,6 +53,61 @@ RUNTIME_BUDGET_SNAPSHOT = Path("/run/sprint-budget-watchdog.json")
 def file_sha256(path: Path) -> str:
     with path.open("rb") as handle:
         return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def collect_output_artifacts(
+    job: dict,
+    *,
+    run_id: str,
+    job_id: str,
+    attempt: int,
+    durable_dir: Path = Path("/durable"),
+    workspace_dir: Path = Path("/app"),
+) -> tuple[list[dict], list[str]]:
+    """Commit explicitly declared GPU outputs to a run-scoped durable path."""
+    records: list[dict] = []
+    missing: list[str] = []
+    destination_root = (
+        durable_dir
+        / "runs"
+        / run_id
+        / "gpu-jobs"
+        / "artifacts"
+        / job_id
+        / f"attempt-{attempt}"
+    )
+    for raw in job.get("output_paths") or []:
+        declared = Path(str(raw))
+        try:
+            relative = declared.relative_to("/app")
+        except ValueError:
+            missing.append(str(declared))
+            continue
+        source = workspace_dir / relative
+        if not relative.parts or ".." in relative.parts or not source.is_file():
+            missing.append(str(declared))
+            continue
+        size = source.stat().st_size
+        if size <= 0 or size > MAX_OUTPUT_ARTIFACT_BYTES:
+            missing.append(f"{source} (invalid size {size})")
+            continue
+        destination_root.mkdir(parents=True, exist_ok=True)
+        destination = destination_root / source.name
+        tmp = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
+        shutil.copyfile(source, tmp)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, destination)
+        digest = file_sha256(destination)
+        records.append(
+            {
+                "source_path": str(declared),
+                "path": str(destination),
+                "name": source.name,
+                "size_bytes": size,
+                "sha256": digest,
+            }
+        )
+    return records, missing
 
 
 def safe_extract_work_archive(archive: Path, destination: Path) -> None:
@@ -276,12 +332,23 @@ def build_attempt_command(
             command = ["python3", *command[1:]]
     resume_arg = str(job.get("resume_arg") or "")
     if attempt > 1:
+        retry_reason = str(job.get("retry_reason") or "")
+        job_kind = infer_job_kind(job)
         retry_without_checkpoint = bool(
             not checkpoint
-            and str(job.get("retry_reason") or "")
-            == "app_launcher_initialization_failed"
-            and not job.get("last_progress")
-            and not job.get("last_checkpoint")
+            and (
+                # No child process started, so there is no state to recover.
+                retry_reason == "spawn_failed"
+                # Verification/evaluation commands are intentionally
+                # stateless and safe to replay from their immutable input.
+                or job_kind in {"evaluate", "verify"}
+                # AppLauncher failed before agent-authored code began.
+                or (
+                    retry_reason == "app_launcher_initialization_failed"
+                    and not job.get("last_progress")
+                    and not job.get("last_checkpoint")
+                )
+            )
         )
         if not checkpoint and not retry_without_checkpoint:
             raise RuntimeError(
@@ -936,7 +1003,9 @@ def main() -> int:
     )
     app_launcher_state_file.unlink(missing_ok=True)
     env["PYTHONPATH"] = os.pathsep.join(
-        part for part in ("/opt", env.get("PYTHONPATH", "")) if part
+        part
+        for part in ("/opt", "/opt/event-verifier", "/app", env.get("PYTHONPATH", ""))
+        if part
     )
     env.update(
         {
@@ -1111,6 +1180,28 @@ def main() -> int:
             budget_termination_reason or "budget_telemetry_unavailable"
         )
     progress, checkpoint = progress_snapshot(progress_file, checkpoint_dir)
+    output_artifacts, missing_outputs = collect_output_artifacts(
+        job,
+        run_id=run_id,
+        job_id=job_id,
+        attempt=attempt,
+    )
+    if output_artifacts:
+        progress_payload = dict(progress) if isinstance(progress, dict) else {}
+        progress_payload["output_artifacts"] = output_artifacts
+        policies = [
+            item
+            for item in output_artifacts
+            if Path(str(item.get("path") or "")).suffix in {".pt", ".pth"}
+        ]
+        if policies:
+            progress_payload["policy_path"] = policies[0]["path"]
+        progress = progress_payload
+    if missing_outputs and final_status == "succeeded":
+        final_status = "failed"
+        exit_code = 2
+        error = "required GPU output missing or invalid: " + ", ".join(missing_outputs)
+        print(error, flush=True)
     finished = time.time()
     attempt_record.update(
         {

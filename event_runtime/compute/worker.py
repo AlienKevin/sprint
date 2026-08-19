@@ -21,6 +21,7 @@ import sys
 import tempfile
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -678,6 +679,36 @@ def refresh_live_policy_mirror(
         **detail,
         **mirror_detail,
     }
+
+
+def retry_terminal_policy_mirror(
+    run: dict[str, Any], job: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Retry a terminal artifact fetch after Modal Volume propagation lag."""
+    payload, artifact_name, artifact_content, detail = fetch_agent_policy_artifact(
+        run, job
+    )
+    outcome = str(detail.get("policy_mirror") or "")
+    if artifact_name is not None and artifact_content is not None:
+        payload.pop("policy_mirror_retry_after_epoch_s", None)
+        payload.pop("policy_mirror_attempts", None)
+        payload["agent_policy_mirrored_at"] = utc_now()
+        mirror_detail = mirror_agent_job(
+            run,
+            payload,
+            artifact_name=artifact_name,
+            artifact_content=artifact_content,
+        )
+        return payload, {**detail, **mirror_detail}
+    if outcome == "fetch_retry":
+        attempts = int(payload.get("policy_mirror_attempts") or 0) + 1
+        payload["policy_mirror_attempts"] = attempts
+        payload["policy_mirror_retry_after_epoch_s"] = time.time() + min(
+            15 * 60, 15 * (2 ** min(attempts - 1, 6))
+        )
+    else:
+        payload["policy_mirror_terminal_failure"] = outcome or "unknown"
+    return payload, detail
 
 
 def jobs_prefix(run_id: str) -> str:
@@ -2140,6 +2171,13 @@ def _candidate_job_ids(run: dict[str, Any], *, now: float | None = None) -> list
                 created = float(job.get("created_at_epoch_s") or 0)
             except (TypeError, ValueError):
                 created = 0.0
+            if created <= 0:
+                try:
+                    created = datetime.fromisoformat(
+                        str(job.get("created_at") or "").replace("Z", "+00:00")
+                    ).astimezone(timezone.utc).timestamp()
+                except (TypeError, ValueError):
+                    created = 0.0
             out.append((created, job_id))
     return [job_id for _created, job_id in sorted(out)]
 
@@ -2163,6 +2201,7 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
     reconciled: list[dict[str, Any]] = []
     pending: list[str] = []
     log_backfill: dict[str, Any] | None = None
+    policy_backfill: dict[str, Any] | None = None
     with gpu_claim.dispatch_lock(state_dir) as got_lock:
         if not got_lock:
             result = {
@@ -2208,6 +2247,19 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
             job = load_job(run, job_id)
             if not job:
                 continue
+            progress = job.get("progress")
+            reported_policy = isinstance(progress, dict) and bool(
+                str(progress.get("policy_path") or progress.get("policy") or "").strip()
+            )
+            if (
+                str(job.get("status") or "") in gpu_claim.TERMINAL
+                and reported_policy
+                and not job.get("agent_policy_mirror_path")
+                and not job.get("policy_mirror_terminal_failure")
+                and float(job.get("policy_mirror_retry_after_epoch_s") or 0) <= now
+                and policy_backfill is None
+            ):
+                policy_backfill = job
             if (
                 str(job.get("status") or "") in gpu_claim.TERMINAL
                 and not job.get("provider_logs_archived_at")
@@ -2400,6 +2452,20 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
                     "attempt": archived.get("attempt"),
                     "status": archived.get("status"),
                     "decision": "terminal_log_backfill",
+                    **detail,
+                }
+            )
+
+        if policy_backfill is not None:
+            mirrored, detail = retry_terminal_policy_mirror(run, policy_backfill)
+            if mirrored != policy_backfill:
+                persist_job(run, mirrored)
+            reconciled.append(
+                {
+                    "job_id": mirrored.get("job_id"),
+                    "attempt": mirrored.get("attempt"),
+                    "status": mirrored.get("status"),
+                    "decision": "terminal_policy_backfill",
                     **detail,
                 }
             )

@@ -33,10 +33,12 @@ archived by that point.
 ## Commands
 
 ```bash
-event gpu -- python3 -u /app/YOUR_SCRIPT.py        # run GPU work
+event gpu --output /app/policy.pt -- python3 -u /app/YOUR_SCRIPT.py
 event gpu status                                   # job and policy mirror
 event gpu logs JOB_ID                              # worker output
 event gpu wait JOB_ID                              # wait for completion
+event gpu get JOB_ID /app/policy.pt                # retrieve verified output
+event gpu cancel JOB_ID                            # cancel an undispatched job
 event check POLICY.pt                              # validate TorchScript ABI
 event test POLICY.pt                               # run local published verifier
 event archive POLICY.pt --note "..."               # durably stage candidate
@@ -44,11 +46,20 @@ event history                                      # inspect Harbor admission
 event cost                                         # cumulative agent-cost JSON
 ```
 
-Only one A10G job runs at a time; later jobs queue. The exact nominal verifier
-is read-only at `/app/verifier` and `event test` runs it on the current GPU
-allocation. Official scoring separately evaluates archived bytes and does not
-return results or traces during the run. At most one archive may be outstanding,
-with a five-minute interval between accepted archives.
+Declare every file that must return from the isolated GPU sandbox with a
+repeatable `--output /app/...` option. Declared files are required, bounded,
+checksummed, and copied automatically; `.pt` and `.pth` outputs become available
+through `event gpu get`. Do not encode model files into logs. Only one A10G job
+runs at a time; later jobs run FIFO. `event gpu cancel` works only before a GPU
+sandbox is allocated.
+
+The worker automatically bootstraps Python scripts that use Isaac Lab; do not
+wrap them in another launcher or pass wrapper-reserved device flags. `/app`,
+`/opt`, and the published verifier are already on `PYTHONPATH`. The exact nominal
+verifier is read-only at `/app/verifier` and `event test` runs it on the current
+GPU allocation. Official scoring separately evaluates archived bytes and does
+not return results or traces during the run. At most one archive may be
+outstanding, with a five-minute interval between accepted archives.
 
 ## Checkpointing
 
