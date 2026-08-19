@@ -888,7 +888,7 @@ def test_provider_inference_probe_retries_transient_server_error(
     )
     assert result["request_id"] == "resp_retry"
     assert calls == 3
-    assert delays == [1.0, 2.0]
+    assert delays == [5.0, 10.0]
 
 
 def test_provider_inference_probe_audits_eventual_openrouter_generation(
