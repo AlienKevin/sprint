@@ -499,7 +499,26 @@ def infer_job_kind(job: dict) -> str:
     script_names = {Path(part).name.lower() for part in command if part.endswith(".py")}
     if any(name.startswith(("verify", "test")) for name in script_names):
         return "verify"
-    if any(name.startswith(("eval", "evaluate")) for name in script_names):
+    # Agent-authored evaluation programs commonly put the verb at the end
+    # (``targeted_gait_eval.py``) or describe a sweep/probe instead.  Treat
+    # those as evaluation jobs so the training-only utilization/progress
+    # watchdogs cannot kill a simulator-heavy rollout that is making useful
+    # progress while sampling below 5% GPU utilization.
+    evaluation_markers = (
+        "eval",
+        "evaluate",
+        "sweep",
+        "probe",
+        "inspect",
+        "benchmark",
+    )
+    if any(
+        any(
+            marker in Path(name).stem.lower().replace("-", "_").split("_")
+            for marker in evaluation_markers
+        )
+        for name in script_names
+    ):
         return "evaluate"
     if "event-verifier" in searchable or "test.sh" in searchable:
         return "verify"

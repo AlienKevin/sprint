@@ -453,6 +453,19 @@ class WorkerAttemptGuardTests(unittest.TestCase):
         self.assertEqual(worker_run.infer_job_kind(verifier), "verify")
         self.assertEqual(worker_run.watchdog_phase(verifier, None), "verifying")
 
+    def test_agent_authored_evaluation_names_do_not_use_training_watchdogs(self) -> None:
+        for script in (
+            "targeted_gait_eval.py",
+            "gait_sweep.py",
+            "probe_pretrained.py",
+            "inspect_gpu_env.py",
+            "policy_benchmark.py",
+        ):
+            with self.subTest(script=script):
+                job = {"job_kind": "auto", "command": ["python3", script]}
+                self.assertEqual(worker_run.infer_job_kind(job), "evaluate")
+                self.assertEqual(worker_run.watchdog_phase(job, None), "evaluating")
+
     def test_progress_watchdog_cannot_be_reported_as_success(self) -> None:
         self.assertEqual(
             worker_run.final_attempt_outcome(
