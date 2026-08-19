@@ -2007,6 +2007,14 @@ class RetryAndFencingTests(unittest.TestCase):
         mismatched["start_ticks"] = int(mismatched["start_ticks"]) + 1
         self.assertEqual(gpu_claim.process_identity_state(mismatched), "dead")
 
+    def test_zombie_claim_owner_is_dead(self) -> None:
+        identity = gpu_claim.process_identity()
+        self.assertIsNotNone(identity)
+        current = dict(identity or {})
+        current["state"] = "Z"
+        with mock.patch.object(gpu_claim, "process_identity", return_value=current):
+            self.assertEqual(gpu_claim.process_identity_state(identity), "dead")
+
     def test_operator_stop_waits_for_inflight_dispatch_lock(self) -> None:
         run = {"run_id": "unit", "state_dir": "/tmp/unit-stop-lock"}
         lock = mock.MagicMock()

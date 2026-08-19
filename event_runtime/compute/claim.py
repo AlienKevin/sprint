@@ -41,7 +41,9 @@ def process_identity(pid: int | None = None) -> dict[str, Any] | None:
         stat = Path(f"/proc/{process_id}/stat").read_text()
         # Everything after the final ``)`` starts at proc stat field 3.  The
         # process start time is field 22, hence index 19 in this tail.
-        start_ticks = int(stat.rsplit(") ", 1)[1].split()[19])
+        tail = stat.rsplit(") ", 1)[1].split()
+        process_state = tail[0]
+        start_ticks = int(tail[19])
         boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
     except (IndexError, OSError, ValueError):
         return None
@@ -49,6 +51,7 @@ def process_identity(pid: int | None = None) -> dict[str, Any] | None:
         "pid": process_id,
         "start_ticks": start_ticks,
         "boot_id": boot_id,
+        "state": process_state,
     }
 
 
@@ -72,6 +75,12 @@ def process_identity_state(identity: Any) -> str:
         # A transient or permission error is not proof that the owner died.
         return "unknown"
     if current["start_ticks"] != expected_ticks or current["boot_id"] != expected_boot:
+        return "dead"
+    # A zombie still has a matching PID and start time until its parent reaps
+    # it, but it cannot finish a dispatch or release an in-flight claim.  Treat
+    # it as dead so the exact pre-claim state is restored without consuming a
+    # retry attempt or incorrectly requiring a nonexistent checkpoint.
+    if current.get("state") == "Z":
         return "dead"
     return "alive"
 
