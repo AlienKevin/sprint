@@ -1092,32 +1092,53 @@ fi
 python3 -m modal volume put -f "$VOLUME_NAME" "$STATE_DIR/run.json" \
   "runs/$RUN_ID/state/run.json"
 
-if ((START_MONITOR)); then
-  monitor_alive=0
-  if [[ -f "$STATE_DIR/monitor.pid" ]]; then
-    monitor_pid=$(tr -dc '0-9' <"$STATE_DIR/monitor.pid" || true)
-    if [[ -n "$monitor_pid" ]] && kill -0 "$monitor_pid" 2>/dev/null; then
-      monitor_alive=1
+start_controller_worker() {
+  local kind=$1
+  local log_path=$2
+  local pid_path=$3
+  shift 3
+  local unit="sprint-${kind}-${RUN_ID}.service"
+  local worker_alive=0
+  local worker_pid=
+  if [[ -f "$pid_path" ]]; then
+    worker_pid=$(tr -dc '0-9' <"$pid_path" || true)
+    if [[ -n "$worker_pid" ]] && kill -0 "$worker_pid" 2>/dev/null; then
+      worker_alive=1
     fi
   fi
-  if (( ! monitor_alive )); then
-    nohup python3 "$CONTROL" monitor --run-id "$RUN_ID" \
-      >>"$STATE_DIR/monitor.log" 2>&1 </dev/null &
-    printf '%s\n' "$!" >"$STATE_DIR/monitor.pid"
+  if ((worker_alive)); then
+    return 0
   fi
 
-  budget_pulse_alive=0
-  if [[ -f "$STATE_DIR/budget-pulse.pid" ]]; then
-    budget_pulse_pid=$(tr -dc '0-9' <"$STATE_DIR/budget-pulse.pid" || true)
-    if [[ -n "$budget_pulse_pid" ]] && kill -0 "$budget_pulse_pid" 2>/dev/null; then
-      budget_pulse_alive=1
-    fi
+  # A controller reboot or terminal disconnect must not remove the independent
+  # budget watchdog. Prefer a restartable user service; retain nohup only for
+  # environments without a reachable user-systemd manager.
+  if command -v systemd-run >/dev/null 2>&1 \
+    && systemctl --user show-environment >/dev/null 2>&1; then
+    systemctl --user stop "$unit" >/dev/null 2>&1 || true
+    systemctl --user reset-failed "$unit" >/dev/null 2>&1 || true
+    systemd-run --user \
+      --unit="$unit" \
+      --property=Restart=on-failure \
+      --property=RestartSec=5s \
+      --property="WorkingDirectory=$ROOT" \
+      --property="StandardOutput=append:$log_path" \
+      --property="StandardError=append:$log_path" \
+      /usr/bin/python3 "$CONTROL" "$@" >/dev/null
+    return 0
   fi
-  if (( ! budget_pulse_alive )); then
-    nohup python3 "$CONTROL" budget-pulse --run-id "$RUN_ID" --poll-seconds 15 \
-      >>"$STATE_DIR/budget-pulse.log" 2>&1 </dev/null &
-    printf '%s\n' "$!" >"$STATE_DIR/budget-pulse.pid"
-  fi
+
+  nohup python3 "$CONTROL" "$@" >>"$log_path" 2>&1 </dev/null &
+  printf '%s\n' "$!" >"$pid_path"
+}
+
+if ((START_MONITOR)); then
+  start_controller_worker \
+    monitor "$STATE_DIR/monitor.log" "$STATE_DIR/monitor.pid" \
+    monitor --run-id "$RUN_ID"
+  start_controller_worker \
+    pulse "$STATE_DIR/budget-pulse.log" "$STATE_DIR/budget-pulse.pid" \
+    budget-pulse --run-id "$RUN_ID" --poll-seconds 15
 fi
 
 printf '%s\n' "$$" >"$STATE_DIR/harbor.pid"
