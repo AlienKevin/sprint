@@ -15,7 +15,7 @@
         "mode": "tokens",
         "limit": 10000
       },
-      "supports_parallel_tool_calls": true,
+      "supports_parallel_tool_calls": false,
       "tool_mode": null,
       "multi_agent_version": "v2",
       "use_responses_lite": false,
@@ -82,7 +82,7 @@
         "mode": "tokens",
         "limit": 10000
       },
-      "supports_parallel_tool_calls": true,
+      "supports_parallel_tool_calls": false,
       "tool_mode": null,
       "multi_agent_version": "v2",
       "use_responses_lite": false,

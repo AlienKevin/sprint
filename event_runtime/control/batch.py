@@ -978,7 +978,6 @@ def preflight(
                         # intentionally absent because routed DeepSeek
                         # endpoints do not advertise or accept it when strict
                         # parameter routing is enabled.
-                        "parallel_tool_calls": True,
                         "tools": [
                             {
                                 "type": "function",
@@ -986,7 +985,10 @@ def preflight(
                                 "description": "Preflight-only no-op tool.",
                                 "parameters": {
                                     "type": "object",
-                                    "properties": {},
+                                    "properties": {
+                                        "ack": {"type": "string"},
+                                    },
+                                    "required": ["ack"],
                                     "additionalProperties": False,
                                 },
                             }

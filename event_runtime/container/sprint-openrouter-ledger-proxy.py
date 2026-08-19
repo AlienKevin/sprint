@@ -95,6 +95,12 @@ def pin_provider_route(
     if quantization:
         provider["quantizations"] = [quantization]
     payload["provider"] = provider
+    # Codex emits this field even when the catalog disables parallel tool
+    # calls. Some strict OpenRouter endpoints reject the parameter itself,
+    # despite its false value. Omitting false is behaviorally equivalent and
+    # keeps this compatibility rule generic across routed models.
+    if payload.get("parallel_tool_calls") is False:
+        payload.pop("parallel_tool_calls")
     return json.dumps(payload, separators=(",", ":")).encode(), payload
 
 

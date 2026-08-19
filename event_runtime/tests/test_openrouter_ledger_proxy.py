@@ -49,6 +49,7 @@ def test_generic_proxy_seals_provider_endpoint_and_quantization() -> None:
             {
                 "model": "deepseek/deepseek-v4-flash-0731",
                 "input": "hello",
+                "parallel_tool_calls": False,
                 "provider": {"sort": "price", "allow_fallbacks": True},
             }
         ).encode(),
@@ -64,6 +65,23 @@ def test_generic_proxy_seals_provider_endpoint_and_quantization() -> None:
         "require_parameters": True,
         "quantizations": ["fp8"],
     }
+    assert "parallel_tool_calls" not in payload
+
+
+def test_generic_proxy_preserves_requested_parallel_tool_calls() -> None:
+    _body, payload = proxy.pin_provider_route(
+        json.dumps(
+            {
+                "model": "example/model",
+                "input": "hello",
+                "parallel_tool_calls": True,
+            }
+        ).encode(),
+        provider_endpoint="example",
+        quantization=None,
+    )
+
+    assert payload["parallel_tool_calls"] is True
 
 
 def test_endpoint_promotion_is_reversed_without_changing_cache_skus() -> None:

@@ -357,6 +357,10 @@ def test_deepseek_catalog_never_emits_unsupported_verbosity() -> None:
     )
     assert catalog["models"]
     assert all(model["support_verbosity"] is False for model in catalog["models"])
+    assert all(
+        model["supports_parallel_tool_calls"] is False
+        for model in catalog["models"]
+    )
 
 
 @pytest.mark.parametrize("trials_per_model", [2, 5])
