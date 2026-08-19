@@ -346,6 +346,14 @@ def mirror_gpu_budget(
     mirrors the CPU watchdog's exact snapshot into ``/run``.  The worker fails
     closed if this heartbeat becomes stale, so loss of the controller still
     terminates GPU spend inside the configured shutdown reserve.
+
+    Target discovery is deliberately host-local.  A claimed job is persisted
+    in the controller-owned registry before ``Sandbox.create`` and gains its
+    sandbox ID before the dispatch lock is released.  Consulting the remote
+    queue/status delivery mirrors here would put the budget-critical pulse
+    behind Modal Volume latency for jobs that were never allocated.  The
+    dispatch startup barrier and stale-heartbeat shutdown cover the narrow
+    crash window before a new sandbox ID is published locally.
     """
     run_id = str(run.get("run_id") or "")
     try:
@@ -376,8 +384,8 @@ def mirror_gpu_budget(
     if jobs is None:
         jobs = [
             job
-            for job_id in list_job_ids(run)
-            if (job := load_job(run, job_id))
+            for job_id in list_host_job_ids(run)
+            if (job := load_host_job(run, job_id))
             and str(job.get("status") or "") in gpu_claim.OWNED
             and str(job.get("sandbox_id") or "").startswith("sb-")
         ]

@@ -635,6 +635,69 @@ class ClaimSelectionTests(unittest.TestCase):
         self.assertEqual(detail["updated_sandbox_ids"], ["sb-gpu"])
         self.assertEqual(detail["finished_sandbox_ids"], [])
 
+    def test_budget_mirror_discovers_targets_without_remote_volume_reads(self) -> None:
+        class Reader:
+            def read(self) -> str:
+                return ""
+
+        class Process:
+            stdout = Reader()
+            stderr = Reader()
+
+            def wait(self) -> int:
+                return 0
+
+        class Sandbox:
+            def exec(self, *_args: str, **_kwargs: object) -> Process:
+                return Process()
+
+        payload = {
+            "schema_version": 2,
+            "run_id": "run-1",
+            "checked_at_epoch_s": 1234.5,
+            "total_usd": 2.25,
+            "stop_threshold_usd": 9.9,
+            "status": "within_budget",
+        }
+        with tempfile.TemporaryDirectory() as raw:
+            state_dir = Path(raw)
+            registry = state_dir / "gpu-job-registry"
+            registry.mkdir()
+            (registry / "active.json").write_text(
+                json.dumps(
+                    {
+                        "job_id": "active",
+                        "status": "running",
+                        "sandbox_id": "sb-gpu",
+                    }
+                )
+            )
+            # A locally known but unallocated job is not a mirror target.
+            (registry / "pending.json").write_text(
+                json.dumps({"job_id": "pending", "status": "pending"})
+            )
+            run = {"run_id": "run-1", "state_dir": str(state_dir)}
+            with (
+                mock.patch.object(
+                    gpu_worker.modal.Sandbox, "from_id", return_value=Sandbox()
+                ) as from_id,
+                mock.patch.object(
+                    gpu_worker,
+                    "volume_ls_json_names",
+                    side_effect=AssertionError("remote job listing must not run"),
+                ),
+                mock.patch.object(
+                    gpu_worker.sprintctl,
+                    "volume_get_text",
+                    side_effect=AssertionError("remote job fetch must not run"),
+                ),
+            ):
+                detail = gpu_worker.mirror_gpu_budget(run, payload)
+
+        from_id.assert_called_once_with("sb-gpu")
+        self.assertEqual(detail["gpu_budget_mirror"], "updated")
+        self.assertEqual(detail["sandbox_ids"], ["sb-gpu"])
+
     def test_budget_mirror_accepts_sandbox_that_finished_after_scan(self) -> None:
         payload = {
             "schema_version": 2,
