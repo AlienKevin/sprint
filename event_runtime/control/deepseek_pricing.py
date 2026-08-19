@@ -247,7 +247,7 @@ def parse_openrouter_snapshot(
     pricing = endpoint.get("pricing")
     if not isinstance(pricing, dict):
         raise RuntimeError("OpenRouter DeepSeek endpoint has no pricing object")
-    off_peak_rates = _openrouter_rates(pricing)
+    base_rates = _openrouter_rates(pricing)
     overrides = pricing.get("overrides")
     if not isinstance(overrides, list) or not overrides:
         raise RuntimeError("OpenRouter DeepSeek endpoint lost its pricing schedule")
@@ -264,18 +264,24 @@ def parse_openrouter_snapshot(
         )
     distinct_rates = {
         tuple(sorted(rates.items()))
-        for _start, _end, rates in override_rows
-        if rates != off_peak_rates
+        for rates in [base_rates, *(row[2] for row in override_rows)]
     }
-    if len(distinct_rates) != 1:
-        raise RuntimeError("OpenRouter DeepSeek peak tariff is missing or ambiguous")
-    peak_rates = dict(next(iter(distinct_rates)))
-    if any(
-        Decimal(peak_rates[key]) < Decimal(off_peak_rates[key]) for key in peak_rates
-    ):
-        raise RuntimeError(
-            "OpenRouter DeepSeek peak tariff is below its off-peak tariff"
+    if len(distinct_rates) != 2:
+        raise RuntimeError("OpenRouter DeepSeek tariff schedule is missing or ambiguous")
+    candidates = [dict(row) for row in distinct_rates]
+    ordered = [
+        (lower, higher)
+        for lower in candidates
+        for higher in candidates
+        if lower != higher
+        and all(
+            Decimal(lower[key]) <= Decimal(higher[key]) for key in lower
         )
+        and any(Decimal(lower[key]) < Decimal(higher[key]) for key in lower)
+    ]
+    if len(ordered) != 1:
+        raise RuntimeError("OpenRouter DeepSeek tariffs cannot be ordered by price")
+    off_peak_rates, peak_rates = ordered[0]
     peak_hours = [
         {"start_hour": start, "end_hour": end}
         for start, end, rates in override_rows

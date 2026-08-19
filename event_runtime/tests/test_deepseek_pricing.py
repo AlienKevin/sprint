@@ -162,6 +162,47 @@ def test_parse_openrouter_official_deepseek_contract() -> None:
     }
 
 
+def test_parse_openrouter_contract_while_peak_tariff_is_active() -> None:
+    endpoints_raw, zdr, preset = openrouter_fixtures()
+    endpoints = json.loads(endpoints_raw)
+    pricing = endpoints["data"]["endpoints"][0]["pricing"]
+    pricing.update(
+        {
+            "prompt": "0.00000044",
+            "completion": "0.00000132",
+            "input_cache_read": "0.000000014",
+            "overrides": [
+                {
+                    "utc_start": 1000,
+                    "utc_end": 100,
+                    "prompt": "0.00000022",
+                    "completion": "0.00000066",
+                    "input_cache_read": "0.000000007",
+                },
+                *pricing["overrides"],
+                {
+                    "utc_start": 400,
+                    "utc_end": 600,
+                    "prompt": "0.00000022",
+                    "completion": "0.00000066",
+                    "input_cache_read": "0.000000007",
+                },
+            ],
+        }
+    )
+
+    snapshot = deepseek_pricing.parse_openrouter_snapshot(
+        json.dumps(endpoints).encode(), zdr, preset
+    )
+
+    assert snapshot["peak_hours_utc"] == [
+        {"start_hour": 1, "end_hour": 4},
+        {"start_hour": 6, "end_hour": 10},
+    ]
+    assert snapshot["rates_usd_per_million_tokens"]["off_peak"]["output"] == "0.66"
+    assert snapshot["rates_usd_per_million_tokens"]["peak"]["output"] == "1.32"
+
+
 def test_parse_openrouter_fails_closed_on_preset_fallback_drift() -> None:
     endpoints, zdr, preset_raw = openrouter_fixtures()
     preset = json.loads(preset_raw)
