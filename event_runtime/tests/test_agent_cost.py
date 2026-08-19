@@ -109,7 +109,7 @@ def test_snapshot_has_one_matching_component_ledger_and_all_constants(
     assert "official_verifier" in payload["excluded"]
 
 
-def test_host_uses_the_same_canonical_watchdog_document_as_agent(
+def test_host_conservatively_merges_watchdog_and_host_allocation_ledgers(
     tmp_path: Path,
 ) -> None:
     canonical = {
@@ -130,9 +130,22 @@ def test_host_uses_the_same_canonical_watchdog_document_as_agent(
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps(canonical))
 
-    assert (
-        agent_cost.build_snapshot(timeline_fixture(), state_dir=tmp_path) == canonical
-    )
+    payload = agent_cost.build_snapshot(timeline_fixture(), state_dir=tmp_path)
+
+    # The provider-reported API charge wins over the older host request view,
+    # while the host's fresher CPU/GPU lifecycle values win over a stale Modal
+    # Volume mount.  The merged total is the one mirrored back to the agent.
+    assert payload["components"]["model_api"]["cost_usd"] == 6.0
+    assert payload["components"]["cpu_agent"]["cost_usd"] == 12
+    assert payload["components"]["training_sandboxes"]["cost_usd"] == 26
+    assert payload["component_totals_usd"] == {
+        "model_api_usd": 6.0,
+        "cpu_agent_usd": 12,
+        "training_sandboxes_usd": 26,
+    }
+    assert payload["total_usd"] == 44.0
+    assert payload["training_allocated_seconds"] == 2.0
+    assert payload["schema_version"] == 2
 
 
 def test_live_ledger_caps_open_training_interval_at_snapshot_time() -> None:

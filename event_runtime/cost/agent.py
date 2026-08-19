@@ -170,20 +170,21 @@ def build_snapshot(
     timeline: dict[str, Any], *, state_dir: Path | None = None
 ) -> dict[str, Any]:
     """Return the sole agent-facing JSON cost document."""
+    canonical: dict[str, Any] | None = None
     if state_dir is not None:
         canonical_path = state_dir / "telemetry" / "budget-watchdog.json"
         try:
-            canonical = json.loads(canonical_path.read_text())
+            candidate = json.loads(canonical_path.read_text())
         except (OSError, json.JSONDecodeError):
-            canonical = None
+            candidate = None
         if (
-            isinstance(canonical, dict)
-            and canonical.get("schema_version") == 2
-            and canonical.get("run_id") == timeline["run"]["run_id"]
-            and isinstance(canonical.get("total_usd"), (int, float))
-            and not isinstance(canonical.get("total_usd"), bool)
+            isinstance(candidate, dict)
+            and candidate.get("schema_version") == 2
+            and candidate.get("run_id") == timeline["run"]["run_id"]
+            and isinstance(candidate.get("total_usd"), (int, float))
+            and not isinstance(candidate.get("total_usd"), bool)
         ):
-            return canonical
+            canonical = candidate
     resources = timeline["resource_usage_summary"]
     estimate = resources["modal_estimate"]
     pricing = estimate["pricing_snapshot"]
@@ -225,7 +226,7 @@ def build_snapshot(
     cpu_spec = contract.get("cpu_agent") or {}
     training_spec = contract.get("training_worker") or {}
     snapshots = _pricing_snapshots(state_dir)
-    return {
+    snapshot = {
         "schema_version": SCHEMA_VERSION,
         "run_id": timeline["run"]["run_id"],
         "model": timeline["run"].get("model"),
@@ -307,3 +308,89 @@ def build_snapshot(
         "cost_basis": "published_api_list_price_plus_pinned_modal_requested_resource_tariff",
         "invoice_exact": False,
     }
+    if canonical is None:
+        return snapshot
+
+    # The in-sandbox watchdog sees API requests and CPU lifetime immediately,
+    # but a long-lived Modal Volume mount does not see host-written GPU
+    # lifecycle shards without a reload.  The host timeline has those GPU
+    # allocation events.  Merge component-wise using the greater cumulative
+    # value so a stale view can never lower spend, then mirror this exact
+    # document back to the agent and active GPU workers.
+    canonical_components = canonical.get("components") or {}
+    host_components = snapshot["components"]
+
+    def merged_component(name: str) -> dict[str, Any]:
+        host = dict(host_components.get(name) or {})
+        remote = dict(canonical_components.get(name) or {})
+        merged = {**host, **remote}
+        merged["cost_usd"] = max(
+            float(host.get("cost_usd") or 0.0),
+            float(remote.get("cost_usd") or 0.0),
+        )
+        if name != "model_api":
+            merged["allocated_seconds"] = max(
+                float(host.get("allocated_seconds") or 0.0),
+                float(remote.get("allocated_seconds") or 0.0),
+            )
+        else:
+            merged["request_count"] = max(
+                int(host.get("request_count") or 0),
+                int(remote.get("request_count") or 0),
+            )
+        return merged
+
+    components = {
+        name: merged_component(name)
+        for name in ("model_api", "cpu_agent", "training_sandboxes")
+    }
+    totals = {
+        "model_api_usd": components["model_api"]["cost_usd"],
+        "cpu_agent_usd": components["cpu_agent"]["cost_usd"],
+        "training_sandboxes_usd": components["training_sandboxes"]["cost_usd"],
+    }
+    total = sum(totals.values())
+    merged = {**snapshot, **canonical}
+    merged.update(
+        {
+            "as_of": snapshot.get("as_of"),
+            "as_of_epoch_ms": snapshot.get("as_of_epoch_ms"),
+            "checked_at_epoch_s": float(snapshot["as_of_epoch_ms"]) / 1000.0,
+            "components": components,
+            "component_totals_usd": totals,
+            "total_usd": total,
+            "estimated_total_usd": total,
+            "cpu_allocated_seconds": components["cpu_agent"][
+                "allocated_seconds"
+            ],
+            "training_allocated_seconds": components["training_sandboxes"][
+                "allocated_seconds"
+            ],
+            "request_count": components["model_api"]["request_count"],
+            "pending_request_count": int(
+                (canonical_components.get("model_api") or {}).get(
+                    "pending_request_count"
+                )
+                or canonical.get("pending_request_count")
+                or 0
+            ),
+            "component_snapshot_sources": {
+                "model_api": "max(openrouter_watchdog,host_provider_usage)",
+                "cpu_agent": "max(in_sandbox_lifecycle,host_timeline)",
+                "training_sandboxes": "max(in_sandbox_lifecycle,host_timeline)",
+            },
+        }
+    )
+    budget = canonical.get("budget_usd")
+    if isinstance(budget, (int, float)) and not isinstance(budget, bool):
+        merged["budget_remaining_usd"] = max(0.0, float(budget) - total)
+    threshold = canonical.get("stop_threshold_usd")
+    if canonical.get("status") == "stop_requested" or (
+        isinstance(threshold, (int, float))
+        and not isinstance(threshold, bool)
+        and total >= float(threshold)
+    ):
+        merged["status"] = "stop_requested"
+    else:
+        merged["status"] = "within_budget"
+    return merged
