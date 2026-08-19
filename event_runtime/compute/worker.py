@@ -410,6 +410,13 @@ os.replace(temporary, target)
             # the budget objective is already satisfied.  The dispatcher
             # separately reconciles the job's success/failure state.
             finished.append(sandbox_id)
+        except modal.exception.ConflictError as exc:
+            # Modal can expose the same terminal race as a 409 while the
+            # sandbox is transitioning out of the running state.
+            if "shutting down" in str(exc).lower():
+                finished.append(sandbox_id)
+            else:
+                errors[sandbox_id] = f"{type(exc).__name__}: {exc}"
         except Exception as exc:  # noqa: BLE001
             errors[sandbox_id] = f"{type(exc).__name__}: {exc}"
     return {

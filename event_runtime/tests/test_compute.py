@@ -663,6 +663,32 @@ class ClaimSelectionTests(unittest.TestCase):
         self.assertEqual(detail["finished_sandbox_ids"], ["sb-finished"])
         self.assertEqual(detail["errors"], {})
 
+    def test_budget_mirror_accepts_sandbox_that_is_shutting_down(self) -> None:
+        payload = {
+            "schema_version": 2,
+            "run_id": "run-1",
+            "checked_at_epoch_s": 1234.5,
+            "total_usd": 2.25,
+            "stop_threshold_usd": 9.9,
+            "status": "within_budget",
+        }
+        with mock.patch.object(
+            gpu_worker.modal.Sandbox,
+            "from_id",
+            side_effect=gpu_worker.modal.exception.ConflictError(
+                "Modal Sandbox is shutting down."
+            ),
+        ):
+            detail = gpu_worker.mirror_gpu_budget(
+                {"run_id": "run-1"},
+                payload,
+                jobs=[{"sandbox_id": "sb-stopping", "status": "running"}],
+            )
+
+        self.assertEqual(detail["gpu_budget_mirror"], "updated")
+        self.assertEqual(detail["finished_sandbox_ids"], ["sb-stopping"])
+        self.assertEqual(detail["errors"], {})
+
     def test_fetches_only_reported_scoped_policy_for_agent_mirror(self) -> None:
         run = {"run_id": "run-1", "volume_name": "volume-1"}
         job = {
