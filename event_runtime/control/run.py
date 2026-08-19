@@ -1995,6 +1995,18 @@ def budget_pulse_once(run_id: str, *, now: float | None = None) -> dict[str, Any
     # this path.
     timeline = build_unified_timeline(state_dir, run, upload=False)
     payload = agent_cost.build_snapshot(timeline, state_dir=state_dir)
+    # ``build_snapshot`` normally inherits the unified timeline cutoff.  The
+    # artifact monitor can legitimately lag while it archives/restores large
+    # histories, so that cutoff is not a freshness signal for the independent
+    # budget pulse.  Stamp the merged document with this pulse's fresh trusted
+    # watchdog read; otherwise a GPU worker can receive new totals carrying an
+    # old timestamp and fail closed after 120 seconds despite healthy updates.
+    snapshot_epoch = max(ref, float(checked_at))
+    payload["checked_at_epoch_s"] = snapshot_epoch
+    payload["as_of_epoch_ms"] = round(snapshot_epoch * 1000)
+    payload["as_of"] = dt.datetime.fromtimestamp(
+        snapshot_epoch, tz=dt.timezone.utc
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
     payload["budget_pulse"] = {
         "checked_at": utc_now(),
         "upstream_watchdog_age_seconds": round(upstream_age, 3),

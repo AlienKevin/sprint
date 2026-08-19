@@ -115,6 +115,9 @@ class DurableOpsTests(unittest.TestCase):
             merged = {
                 "schema_version": 2,
                 "run_id": "pulse-run",
+                "checked_at_epoch_s": 900.0,
+                "as_of_epoch_ms": 900000,
+                "as_of": "1970-01-01T00:15:00Z",
                 "total_usd": 1.25,
                 "budget_remaining_usd": 8.75,
                 "status": "within_budget",
@@ -152,6 +155,10 @@ class DurableOpsTests(unittest.TestCase):
             gpu_mirror.assert_called_once()
             agent_mirror.assert_called_once()
             enforce.assert_called_once()
+            mirrored = gpu_mirror.call_args.args[1]
+            self.assertEqual(mirrored["checked_at_epoch_s"], 1010.0)
+            self.assertEqual(mirrored["as_of_epoch_ms"], 1010000)
+            self.assertEqual(mirrored["as_of"], "1970-01-01T00:16:50Z")
             self.assertEqual(payload["total_usd"], 1.25)
             self.assertEqual(payload["upstream_watchdog_age_seconds"], 10.0)
             persisted = json.loads(
