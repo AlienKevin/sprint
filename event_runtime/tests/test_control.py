@@ -339,6 +339,24 @@ class DurableOpsTests(unittest.TestCase):
                 "delegated_to_budget_pulse",
             )
 
+    def test_live_trace_sync_timeout_is_best_effort_and_persisted(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            run = {"run_id": "trace-run", "volume_name": "trace-volume"}
+            timeout = subprocess.TimeoutExpired(["modal", "volume", "get"], 60)
+            with mock.patch.object(
+                sprintctl, "run_command", side_effect=timeout
+            ) as command:
+                self.assertFalse(sprintctl.sync_durable_trace(state, run))
+
+            self.assertEqual(
+                command.call_args.kwargs["timeout"],
+                sprintctl.DURABLE_TRACE_LIVE_SYNC_TIMEOUT_SECONDS,
+            )
+            stamp = json.loads((state / "durable-trace-sync.json").read_text())
+            self.assertFalse(stamp["ok"])
+            self.assertIn("TimeoutExpired after 60s", stamp["error"])
+
     def test_budget_pulse_rejects_stale_upstream_watchdog(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             state = Path(raw)

@@ -52,6 +52,8 @@ POLL_SECONDS = 30
 DEFAULT_WAIT_SECONDS = 3 * 60 * 60
 BUDGET_PULSE_MAX_UPSTREAM_AGE_SECONDS = 60.0
 BUDGET_PULSE_MAX_CLOCK_SKEW_SECONDS = 60.0
+DURABLE_TRACE_LIVE_SYNC_TIMEOUT_SECONDS = 60
+DURABLE_TRACE_FINAL_SYNC_TIMEOUT_SECONDS = 300
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,80}$")
 Uploader = Callable[[Path, str], None]
 
@@ -301,31 +303,45 @@ def sync_durable_trace(
         return bool(previous.get("ok"))
     destination = state_dir / "durable-trace"
     destination.mkdir(parents=True, exist_ok=True)
-    result = run_command(
-        modal_command(
-            "volume",
-            "get",
-            "--force",
-            str(run["volume_name"]),
-            f"runs/{run['run_id']}/trace/raw",
-            str(destination),
-        ),
-        run=run,
-        check=False,
-        timeout=300,
+    timeout_seconds = (
+        DURABLE_TRACE_FINAL_SYNC_TIMEOUT_SECONDS
+        if force
+        else DURABLE_TRACE_LIVE_SYNC_TIMEOUT_SECONDS
     )
+    error: str | None = None
+    try:
+        result = run_command(
+            modal_command(
+                "volume",
+                "get",
+                "--force",
+                str(run["volume_name"]),
+                f"runs/{run['run_id']}/trace/raw",
+                str(destination),
+            ),
+            run=run,
+            check=False,
+            timeout=timeout_seconds,
+        )
+        ok = result.returncode == 0
+        if not ok:
+            error = (result.stderr or result.stdout)[-1000:]
+    except subprocess.TimeoutExpired as exc:
+        # Live trace chunks are immutable observability evidence. A slow Modal
+        # directory scan must not hold the controller behind the artifact
+        # transport; keep the last complete snapshot and retry on a later pass.
+        ok = False
+        error = f"TimeoutExpired after {timeout_seconds}s: {exc}"
     payload = {
         "schema_version": 1,
         "run_id": run["run_id"],
         "synced_at": utc_now(),
         "synced_at_epoch_s": now,
-        "ok": result.returncode == 0,
-        "error": None
-        if result.returncode == 0
-        else (result.stderr or result.stdout)[-1000:],
+        "ok": ok,
+        "error": error,
     }
     atomic_write_json(stamp, payload, mode=0o600)
-    return result.returncode == 0
+    return ok
 
 
 def sync_durable_api_usage(
