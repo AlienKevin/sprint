@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Harbor Codex + gpt-5.6-luna (official OpenAI), durable Modal lane.
+# Harbor Codex + gpt-5.6-luna through pinned OpenRouter/OpenAI, durable Modal lane.
 # Does NOT launch unless CONFIRM_LAUNCH=1.
 #
 # Usage:
@@ -10,6 +10,8 @@ ROOT="${EVENT_REPOSITORY_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../
 export MODAL_PROFILE="${MODAL_PROFILE:-kevinli020508}"
 
 MODEL="${MODEL:-openai/gpt-5.6-luna}"
+ENDPOINT="${ENDPOINT:-https://openrouter.ai/api/v1}"
+OPENROUTER_PRESET="${OPENROUTER_PRESET:-@preset/sprint-gpt-5-6-luna-openai-standard}"
 # Codex/Responses accepts max for Luna (Chat Completions does not). See REASONING_EFFORT_PROBE.md.
 REASONING_EFFORT="${REASONING_EFFORT:-max}"
 # Same immutable harness pin as every competitor.
@@ -18,10 +20,12 @@ RUN_ID="${RUN_ID:-lane-luna-$(date -u +%Y%m%dT%H%M%SZ)}"
 
 GOAL="$ROOT/event_runtime/control/templates/codex.j2"
 
-if [[ -z "${OPENAI_API_KEY:-}" ]]; then
-  echo "OPENAI_API_KEY unset; source runs/.secrets/openai-luna.env" >&2
+if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
+  echo "OPENROUTER_API_KEY is required" >&2
   exit 1
 fi
+export OPENAI_API_KEY="$OPENROUTER_API_KEY"
+export SPRINT_CODEX_LUNA_MODEL="$OPENROUTER_PRESET"
 
 echo "launcher: providers/luna.sh"
 echo "run_id:   $RUN_ID"
@@ -29,16 +33,19 @@ echo "agent:    codex"
 echo "codex:    $CODEX_VERSION  (Harbor --ak version=...)"
 echo "model:    $MODEL"
 echo "effort:   $REASONING_EFFORT  (Codex/Responses max; see REASONING_EFFORT_PROBE.md)"
-echo "endpoint: (default OpenAI)"
+echo "endpoint: $ENDPOINT"
+echo "provider: OpenRouter preset -> OpenAI standard only (no fallback)"
+echo "preset:   $OPENROUTER_PRESET"
 echo "goal:     $GOAL"
 echo "profile:  $MODAL_PROFILE"
-echo "auth:     OPENAI_API_KEY=[configured] via durable env-file (not --ae)"
+echo "auth:     OPENAI_API_KEY=[OpenRouter key] via durable env-file (not --ae)"
 
 DRY_ARGS=(
   --dry-run
   --run-id "$RUN_ID"
   --agent-kind codex
   --model "$MODEL"
+  --endpoint "$ENDPOINT"
   --reasoning-effort "$REASONING_EFFORT"
   --codex-version "$CODEX_VERSION"
 )
@@ -58,6 +65,7 @@ LAUNCH_ARGS=(
   --run-id "$RUN_ID" \
   --agent-kind codex \
   --model "$MODEL" \
+  --endpoint "$ENDPOINT" \
   --reasoning-effort "$REASONING_EFFORT" \
   --codex-version "$CODEX_VERSION"
 )

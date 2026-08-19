@@ -1,3 +1,4 @@
+import json
 from typing import Any
 
 import pytest
@@ -287,6 +288,139 @@ def test_deepseek_missing_timestamp_fails_closed_at_tariff_boundary() -> None:
 
     assert result["cost_reconstruction_status"] == "incomplete"
     assert result["incomplete_reasons"] == ["missing_usage_reported_at_for_pricing"]
+
+
+def test_deepseek_uses_launch_frozen_first_party_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot = {
+        "schema_version": 1,
+        "provider": "deepseek",
+        "model": "deepseek-v4-flash",
+        "model_version": "DeepSeek-V4-Flash-0731",
+        "currency": "USD",
+        "unit_tokens": 1_000_000,
+        "captured_at": "2026-08-18T18:00:00Z",
+        "effective_from": "2026-08-16T16:00:00Z",
+        "source_url": "https://api-docs.deepseek.com/quick_start/pricing",
+        "announcement_url": "https://api-docs.deepseek.com/news/news260813",
+        "source_sha256": "b" * 64,
+        "peak_hours_utc": [{"start_hour": 18, "end_hour": 19}],
+        "rates_usd_per_million_tokens": {
+            "off_peak": {
+                "cache_hit_input": "1",
+                "cache_miss_input": "2",
+                "output": "3",
+            },
+            "peak": {
+                "cache_hit_input": "4",
+                "cache_miss_input": "5",
+                "output": "6",
+            },
+        },
+    }
+    monkeypatch.setenv(
+        "SPRINT_DEEPSEEK_PRICING_SNAPSHOT",
+        json.dumps(snapshot, separators=(",", ":"), sort_keys=True),
+    )
+
+    result = deepseek_record("2026-08-18T18:00:00Z")
+
+    assert result["pricing_snapshot_id"] == "deepseek-v4-flash-peak-" + "b" * 12
+    # 1M miss*$5/M + 2M hit*$4/M + 0.5M output*$6/M
+    assert result["calculated_cost_usd"] == pytest.approx(16.0)
+
+
+def test_deepseek_uses_launch_frozen_openrouter_endpoint_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot = {
+        "schema_version": 2,
+        "provider": "openrouter",
+        "upstream_provider": "DeepSeek",
+        "endpoint_tag": "deepseek",
+        "model": "deepseek-v4-flash",
+        "openrouter_model": "deepseek/deepseek-v4-flash-0731",
+        "resolved_model": "deepseek/deepseek-v4-flash-20260731",
+        "model_version": "DeepSeek-V4-Flash-0731",
+        "quantization": "unknown",
+        "context_length": 1_048_576,
+        "max_completion_tokens": 384_000,
+        "zdr": False,
+        "preset_slug": "sprint-deepseek-v4-flash-0731-official",
+        "preset_id": "preset-fixture",
+        "preset_version": 2,
+        "currency": "USD",
+        "unit_tokens": 1_000_000,
+        "captured_at": "2026-08-18T19:00:00Z",
+        "source_url": "https://openrouter.ai/endpoints",
+        "zdr_source_url": "https://openrouter.ai/zdr",
+        "preset_source_url": "https://openrouter.ai/preset",
+        "source_sha256": "c" * 64,
+        "peak_hours_utc": [
+            {"start_hour": 1, "end_hour": 4},
+            {"start_hour": 6, "end_hour": 10},
+        ],
+        "rates_usd_per_million_tokens": {
+            "off_peak": {
+                "cache_hit_input": "0.007",
+                "cache_miss_input": "0.22",
+                "output": "0.66",
+            },
+            "peak": {
+                "cache_hit_input": "0.014",
+                "cache_miss_input": "0.44",
+                "output": "1.32",
+            },
+        },
+    }
+    monkeypatch.setenv(
+        "SPRINT_DEEPSEEK_PRICING_SNAPSHOT",
+        json.dumps(snapshot, separators=(",", ":"), sort_keys=True),
+    )
+
+    result = build_request_usage_record(
+        api_call_id="api_call_openrouter",
+        model="@preset/sprint-deepseek-v4-flash-0731-official",
+        service_tier=None,
+        reasoning_effort="max",
+        usage=usage(
+            ordinary=1_000_000,
+            cached=2_000_000,
+            cache_write=0,
+            output=500_000,
+            reasoning=300_000,
+        ),
+        usage_reported_at="2026-08-18T19:00:00Z",
+        model_context_window=1_048_576,
+    )
+
+    assert result["pricing_snapshot_id"] == ("openrouter-deepseek-off-peak-" + "c" * 12)
+    assert result["cost_reconstruction_status"] == "complete"
+    # 1M miss*$0.22/M + 2M hit*$0.007/M + 0.5M output*$0.66/M
+    assert result["calculated_cost_usd"] == pytest.approx(0.564)
+
+    peak_result = build_request_usage_record(
+        api_call_id="api_call_openrouter_peak",
+        model="@preset/sprint-deepseek-v4-flash-0731-official",
+        service_tier=None,
+        reasoning_effort="max",
+        usage=usage(
+            ordinary=1_000_000,
+            cached=2_000_000,
+            cache_write=0,
+            output=500_000,
+            reasoning=300_000,
+        ),
+        usage_reported_at="2026-08-18T02:00:00Z",
+        model_context_window=1_048_576,
+    )
+
+    assert peak_result["pricing_snapshot_id"] == (
+        "openrouter-deepseek-peak-" + "c" * 12
+    )
+    # 1M miss*$0.44/M + 2M hit*$0.014/M + 0.5M output*$1.32/M
+    assert peak_result["calculated_cost_usd"] == pytest.approx(1.128)
 
 
 def test_deepseek_cost_separates_cache_hits_and_misses() -> None:

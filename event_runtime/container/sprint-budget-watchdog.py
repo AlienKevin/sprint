@@ -3,9 +3,10 @@
 
 The controller also reconstructs the authoritative cost ledger.  This smaller
 ledger deliberately runs in the CPU sandbox so a controller outage cannot
-remove the circuit breaker.  It uses the same pinned API pricing module and
-Modal tariff, and publishes one durable stop marker that every sandbox can
-observe.
+remove the circuit breaker. OpenRouter runs consume the proxy's exact
+per-response charge; other supported routes use the pinned pricing module.
+Modal uses the pinned tariff. One durable stop marker is visible to every
+sandbox.
 """
 
 from __future__ import annotations
@@ -19,17 +20,14 @@ import os
 import time
 from pathlib import Path
 from typing import Any
+import urllib.error
+import urllib.parse
+import urllib.request
 
 
 CPU_USD_PER_SECOND = 2 * 0.00003942 + 8 * 0.00000667
 TRAINING_USD_PER_SECOND = 6 * 0.00003942 + 12 * 0.00000667 + 0.000306
 STOP_REASON = "agent_cost_budget_exhausted"
-MINIMUM_SAFE_RESERVE_USD = {
-    # Pessimistic full-context uncached input + full-context output at the
-    # pinned tariff, plus 100 seconds of concurrent CPU/A10G shutdown runway.
-    "deepseek-v4-flash": 1.10,
-    "gpt-5.6-luna": 0.50,
-}
 
 
 class BudgetTelemetryError(RuntimeError):
@@ -46,6 +44,97 @@ def atomic_json(path: Path, payload: dict[str, Any]) -> None:
         os.fsync(handle.fileno())
     os.chmod(temporary, 0o600)
     os.replace(temporary, path)
+
+
+def recover_openrouter_generation(
+    generation_id: str, api_key: str
+) -> dict[str, Any] | None:
+    url = "https://openrouter.ai/api/v1/generation?" + urllib.parse.urlencode(
+        {"id": generation_id}
+    )
+    request = urllib.request.Request(
+        url,
+        headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            payload = json.load(response)
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
+        return None
+    data = payload.get("data") if isinstance(payload, dict) else None
+    return data if isinstance(data, dict) else None
+
+
+def openrouter_api_cost(
+    run_root: Path, *, run_id: str, api_key: str
+) -> tuple[float, int, int]:
+    """Sum exact OpenRouter charges, recovering interrupted streams by ID."""
+    requests_dir = run_root / "api-usage" / "requests"
+    total = 0.0
+    completed = 0
+    pending = 0
+    for path in sorted(requests_dir.glob("*.json")) if requests_dir.is_dir() else ():
+        try:
+            record = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise BudgetTelemetryError(
+                f"invalid OpenRouter ledger record: {path}"
+            ) from exc
+        if not isinstance(record, dict) or record.get("run_id") != run_id:
+            raise BudgetTelemetryError(f"OpenRouter ledger identity mismatch: {path}")
+        cost = record.get("provider_reported_cost_usd")
+        if (
+            isinstance(cost, (int, float))
+            and not isinstance(cost, bool)
+            and math.isfinite(float(cost))
+            and float(cost) >= 0
+        ):
+            total += float(cost)
+            completed += 1
+            continue
+        generation_id = record.get("generation_id")
+        recovered = (
+            recover_openrouter_generation(str(generation_id), api_key)
+            if generation_id and record.get("state") == "cost_recovery_required"
+            else None
+        )
+        recovered_cost = recovered.get("total_cost") if recovered else None
+        if (
+            isinstance(recovered_cost, (int, float))
+            and not isinstance(recovered_cost, bool)
+            and math.isfinite(float(recovered_cost))
+            and float(recovered_cost) >= 0
+        ):
+            record.update(
+                {
+                    "state": "recovered_complete",
+                    "completed_at": dt.datetime.now(dt.timezone.utc)
+                    .isoformat()
+                    .replace("+00:00", "Z"),
+                    "provider_reported_cost_usd": float(recovered_cost),
+                    "generation_audit": recovered,
+                }
+            )
+            atomic_json(path, record)
+            total += float(recovered_cost)
+            completed += 1
+            continue
+        pending += 1
+    return total, completed, pending
+
+
+def require_live_openrouter_proxy(runtime_dir: Path) -> None:
+    process_path = runtime_dir / "sprint-agent" / "codex-process"
+    if not process_path.is_file():
+        return
+    proxy_path = runtime_dir / "sprint-agent" / "openrouter-proxy.pid"
+    try:
+        proxy_pid = int(proxy_path.read_text().strip())
+        os.kill(proxy_pid, 0)
+    except (OSError, ValueError) as exc:
+        raise BudgetTelemetryError(
+            "Codex is running without its OpenRouter cost ledger proxy"
+        ) from exc
 
 
 def load_pricing_module(path: Path):
@@ -295,13 +384,11 @@ def check_once(
     threshold = budget - reserve
     if not (math.isfinite(budget) and budget > 0 and 0 <= reserve < budget):
         raise BudgetTelemetryError("invalid budget or shutdown reserve")
-    canonical_model = str(run.get("model") or "").split("/", 1)[-1]
-    minimum_reserve = MINIMUM_SAFE_RESERVE_USD.get(canonical_model)
-    if minimum_reserve is None:
-        raise BudgetTelemetryError(
-            f"no hard-cap reserve contract for model {canonical_model!r}"
-        )
+    minimum_reserve = float(enforcement.get("minimum_safe_shutdown_reserve_usd") or 0)
+    if not math.isfinite(minimum_reserve) or minimum_reserve <= 0:
+        raise BudgetTelemetryError("run contract has no valid minimum safe reserve")
     if reserve < minimum_reserve:
+        canonical_model = str(run.get("model") or "").split("/", 1)[-1]
         raise BudgetTelemetryError(
             f"shutdown reserve ${reserve:g} is below the ${minimum_reserve:g} "
             f"hard-cap minimum for {canonical_model}"
@@ -321,40 +408,91 @@ def check_once(
     )
     if run.get("agent_kind") != "codex" or not run.get("usage_audit_required"):
         raise BudgetTelemetryError("live API pricing is unsupported for this run")
-    pricing = load_pricing_module(pricing_path)
-    api_kwargs = {
-        "default_model": str(run.get("model") or ""),
-        "default_service_tier": run.get("service_tier"),
-        "default_effort": run.get("reasoning_effort"),
-        "pricing_module": pricing,
-    }
-    local_sessions = codex_home / "sessions"
-    if local_sessions.is_dir() and any(local_sessions.rglob("*.jsonl")):
-        api_usd, requests = codex_api_cost(local_sessions, **api_kwargs)
-    else:
-        api_usd, requests = codex_api_cost_streams(
-            durable_codex_streams(run_root), **api_kwargs
+    if enforcement.get("api_cost_source") == "openrouter_reported_per_request":
+        require_live_openrouter_proxy(runtime_dir)
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+        if len(api_key) < 16:
+            raise BudgetTelemetryError("OpenRouter API key is unavailable")
+        api_usd, requests, pending_requests = openrouter_api_cost(
+            run_root, run_id=run_id, api_key=api_key
         )
-    components = {
+    else:
+        pricing = load_pricing_module(pricing_path)
+        api_kwargs = {
+            "default_model": str(run.get("model") or ""),
+            "default_service_tier": run.get("service_tier"),
+            "default_effort": run.get("reasoning_effort"),
+            "pricing_module": pricing,
+        }
+        local_sessions = codex_home / "sessions"
+        if local_sessions.is_dir() and any(local_sessions.rglob("*.jsonl")):
+            api_usd, requests = codex_api_cost(local_sessions, **api_kwargs)
+        else:
+            api_usd, requests = codex_api_cost_streams(
+                durable_codex_streams(run_root), **api_kwargs
+            )
+        pending_requests = 0
+    cpu_usd = cpu_seconds * CPU_USD_PER_SECOND
+    training_usd = gpu_seconds * TRAINING_USD_PER_SECOND
+    component_totals = {
         "model_api_usd": api_usd,
-        "cpu_agent_usd": cpu_seconds * CPU_USD_PER_SECOND,
-        "training_sandboxes_usd": gpu_seconds * TRAINING_USD_PER_SECOND,
+        "cpu_agent_usd": cpu_usd,
+        "training_sandboxes_usd": training_usd,
     }
-    total = sum(components.values())
+    total = sum(component_totals.values())
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "run_id": run_id,
+        "model": run.get("model"),
+        "currency": "USD",
         "checked_at_epoch_s": ref,
+        "as_of_epoch_ms": round(ref * 1000),
         "budget_usd": budget,
+        "budget_remaining_usd": max(0.0, budget - total),
         "shutdown_reserve_usd": reserve,
         "minimum_safe_shutdown_reserve_usd": minimum_reserve,
         "stop_threshold_usd": threshold,
+        "total_usd": total,
         "estimated_total_usd": total,
-        "components": components,
+        "components": {
+            "model_api": {
+                "cost_usd": api_usd,
+                "request_count": requests,
+                "pending_request_count": pending_requests,
+                "cost_source": enforcement.get(
+                    "api_cost_source", "token_rate_reconstruction"
+                ),
+                "provider_reported": enforcement.get("api_cost_source")
+                == "openrouter_reported_per_request",
+            },
+            "cpu_agent": {
+                "cost_usd": cpu_usd,
+                "allocated_seconds": cpu_seconds,
+                "cost_source": "live_allocated_seconds_x_pinned_modal_tariff",
+            },
+            "training_sandboxes": {
+                "cost_usd": training_usd,
+                "allocated_seconds": gpu_seconds,
+                "cost_source": "live_allocated_seconds_x_pinned_modal_tariff",
+            },
+        },
+        "component_totals_usd": component_totals,
         "request_count": requests,
+        "pending_request_count": pending_requests,
         "cpu_allocated_seconds": cpu_seconds,
         "training_allocated_seconds": gpu_seconds,
         "status": "stop_requested" if total >= threshold else "within_budget",
+        "cost_basis": (
+            "openrouter_reported_per_request_plus_pinned_modal_requested_resource_tariff"
+            if enforcement.get("api_cost_source") == "openrouter_reported_per_request"
+            else "published_api_list_price_plus_pinned_modal_requested_resource_tariff"
+        ),
+        "excluded_costs": ["openrouter_credit_purchase_fee"],
+        "equation": {
+            "total": "C(t) = C_openrouter_reported(t) + C_cpu_agent(t) + C_training(t)",
+            "model_api": "sum OpenRouter usage.cost over completed requests",
+            "modal_role": "allocated_seconds * pinned requested-resource rate",
+        },
     }
     atomic_json(run_root / "budget" / "watchdog.json", payload)
     if total >= threshold:

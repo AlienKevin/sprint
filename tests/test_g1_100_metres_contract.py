@@ -168,12 +168,49 @@ def test_codex_comparison_models_pin_provider_compatible_tool_contracts(
     )
     assert result.returncode == 0, result.stderr
     locked_catalog = json.loads((codex_home / "models.json").read_text())
-    assert [model["slug"] for model in locked_catalog["models"]] == ["gpt-5.6-luna"]
+    assert [model["slug"] for model in locked_catalog["models"]] == [
+        "@preset/sprint-gpt-5-6-luna-openai-standard"
+    ]
     assert locked_catalog["models"][0]["tool_mode"] == "code_mode_only"
     assert locked_catalog["models"][0]["multi_agent_version"] == "v1"
     config = (codex_home / "config.toml").read_text()
-    assert 'model = "gpt-5.6-luna"' in config
+    assert 'model = "@preset/sprint-gpt-5-6-luna-openai-standard"' in config
+    assert 'model_provider = "sprint_openrouter"' in config
+    assert 'base_url = "http://127.0.0.1:18080/api/v1"' in config
     assert f'model_catalog_json = "{codex_home / "models.json"}"' in config
+
+    official_deepseek = json.loads((models / "deepseek.json").read_text())
+    result = subprocess.run(
+        ["bash", str(environment / "sprint-apply-deepseek-codex-config.sh")],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            "PATH": "/usr/bin:/bin",
+            "CODEX_HOME": str(codex_home),
+            "SPRINT_CODEX_DEEPSEEK_MODELS_JSON": str(models / "deepseek.json"),
+            "SPRINT_CODEX_DEEPSEEK_BASE_URL": "https://openrouter.ai/api/v1",
+            "SPRINT_CODEX_DEEPSEEK_MODEL": (
+                "@preset/sprint-deepseek-v4-flash-0731-official"
+            ),
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    locked_catalog = json.loads((codex_home / "models.json").read_text())
+    assert locked_catalog["models"][0]["slug"] == (
+        "@preset/sprint-deepseek-v4-flash-0731-official"
+    )
+    expected_model = official_deepseek["models"][0] | {
+        "slug": "@preset/sprint-deepseek-v4-flash-0731-official"
+    }
+    expected_catalog = official_deepseek | {
+        "models": [expected_model, *official_deepseek["models"][1:]]
+    }
+    assert locked_catalog == expected_catalog
+    config = (codex_home / "config.toml").read_text()
+    assert 'model = "@preset/sprint-deepseek-v4-flash-0731-official"' in config
+    assert 'base_url = "https://openrouter.ai/api/v1"' in config
+    assert 'wire_api = "responses"' in config
 
 
 def test_published_verifier_is_an_exact_reviewed_source_mirror() -> None:

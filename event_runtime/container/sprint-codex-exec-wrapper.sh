@@ -20,6 +20,9 @@ DURABLE_DIR=${SPRINT_DURABLE_DIR:-/durable}
 RUN_ID=${SPRINT_RUN_ID:-}
 STOP_ACK_TIMEOUT_SECONDS=${SPRINT_STOP_ACK_TIMEOUT_SECONDS:-600}
 CODEX_EXECUTABLE=${SPRINT_CODEX_EXECUTABLE:-}
+OPENROUTER_PROXY_BIN=${SPRINT_OPENROUTER_PROXY_BIN:-/opt/sprint-openrouter-ledger-proxy.py}
+OPENROUTER_PROXY_BASE_URL=${SPRINT_OPENROUTER_PROXY_BASE_URL:-http://127.0.0.1:18080/api/v1}
+OPENROUTER_UPSTREAM_URL=${SPRINT_OPENROUTER_UPSTREAM_URL:-https://openrouter.ai/api/v1}
 
 if [[ ! "$STOP_ACK_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
   echo "SPRINT_STOP_ACK_TIMEOUT_SECONDS must be a positive integer" >&2
@@ -29,6 +32,70 @@ fi
 umask 077
 mkdir -p "$AGENT_STATE_DIR" "$AGENT_LOG_DIR" "$CODEX_HOME_DIR"
 rm -f "$EXPECTED_INTERRUPT"
+
+proxy_pid=""
+stop_openrouter_proxy() {
+  [[ -n "$proxy_pid" ]] || return 0
+  kill "$proxy_pid" 2>/dev/null || true
+  wait "$proxy_pid" 2>/dev/null || true
+  rm -f "$AGENT_STATE_DIR/openrouter-proxy.pid"
+  proxy_pid=""
+}
+trap stop_openrouter_proxy EXIT
+
+start_openrouter_proxy() {
+  [[ -n "$RUN_ID" ]] || {
+    echo "OpenRouter ledger proxy requires SPRINT_RUN_ID" >&2
+    exit 1
+  }
+  [[ -x "$OPENROUTER_PROXY_BIN" ]] || {
+    echo "OpenRouter ledger proxy missing: $OPENROUTER_PROXY_BIN" >&2
+    exit 1
+  }
+  local ledger_root="$DURABLE_DIR/runs/$RUN_ID/api-usage"
+  local attempt=${SPRINT_CPU_LAUNCH_ATTEMPT:-1}
+  "$OPENROUTER_PROXY_BIN" \
+    --upstream "$OPENROUTER_UPSTREAM_URL" \
+    --ledger-root "$ledger_root" \
+    --run-id "$RUN_ID" \
+    --cpu-attempt "$attempt" \
+    --runtime-dir "$RUNTIME_DIR" \
+    >>"$AGENT_LOG_DIR/openrouter-ledger-proxy.log" 2>&1 &
+  proxy_pid=$!
+  printf '%s\n' "$proxy_pid" >"$AGENT_STATE_DIR/openrouter-proxy.pid"
+  local ready=0
+  for _ in $(seq 1 50); do
+    if ! kill -0 "$proxy_pid" 2>/dev/null; then
+      break
+    fi
+    if python3 - "$OPENROUTER_PROXY_BASE_URL" <<'PY' >/dev/null 2>&1
+import sys
+import urllib.request
+from urllib.parse import urlsplit
+
+base = urlsplit(sys.argv[1])
+url = f"{base.scheme}://{base.netloc}/healthz"
+with urllib.request.urlopen(url, timeout=1) as response:
+    raise SystemExit(0 if response.status == 200 else 1)
+PY
+    then
+      ready=1
+      break
+    fi
+    sleep 0.1
+  done
+  if ((ready == 0)); then
+    echo "OpenRouter ledger proxy failed to become ready" >&2
+    exit 1
+  fi
+  export SPRINT_CODEX_DEEPSEEK_BASE_URL="$OPENROUTER_PROXY_BASE_URL"
+  export SPRINT_CODEX_LUNA_BASE_URL="$OPENROUTER_PROXY_BASE_URL"
+  export OPENAI_BASE_URL="$OPENROUTER_PROXY_BASE_URL"
+}
+
+if [[ "${SPRINT_OPENROUTER_LEDGER_REQUIRED:-0}" == "1" ]]; then
+  start_openrouter_proxy
+fi
 
 # Install a static model catalog for the two comparison models. DeepSeek needs
 # its custom provider definition; Luna needs an explicit copy of the catalog
@@ -58,6 +125,26 @@ for argument in "$@"; do
   esac
 done
 if ((want_deepseek)); then
+  if [[ -n "${SPRINT_CODEX_DEEPSEEK_MODEL:-}" ]]; then
+    rewritten=()
+    replace_next_model=0
+    for argument in "$@"; do
+      if ((replace_next_model)); then
+        rewritten+=("$SPRINT_CODEX_DEEPSEEK_MODEL")
+        replace_next_model=0
+        continue
+      fi
+      case "$argument" in
+        --model|-m)
+          rewritten+=("$argument")
+          replace_next_model=1
+          ;;
+        --model=*) rewritten+=("--model=$SPRINT_CODEX_DEEPSEEK_MODEL") ;;
+        *) rewritten+=("$argument") ;;
+      esac
+    done
+    set -- "${rewritten[@]}"
+  fi
   apply=${SPRINT_APPLY_DEEPSEEK_CODEX_CONFIG:-/opt/sprint-apply-deepseek-codex-config.sh}
   if [[ ! -x "$apply" && -f "$apply" ]]; then
     chmod +x "$apply" 2>/dev/null || true

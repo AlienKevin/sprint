@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """Deterministic agent-cost ledger shared by live agents and the website.
 
-Benchmark comparison cost is published API list price plus the pinned Modal
-tariff applied to requested CPU, memory, and A10G allocation.  Official
-verification, observability, website hosting, storage, credits, and taxes are
-excluded.  Provider billing remains a separate audit and never changes this
-comparison ledger retroactively.
+OpenRouter runs use its per-response reported charge for the API component;
+Modal components use live allocated seconds at the pinned requested-resource
+tariff. Official verification, observability, website hosting, storage,
+credits, and credit-purchase fees are excluded.
 """
 
 from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -130,6 +130,13 @@ def _pricing_snapshots(state_dir: Path | None) -> list[dict[str, Any]]:
     # maintaining a second mutable tariff table in the event runtime.
     try:
         run = json.loads((state_dir / "run.json").read_text())
+        pricing_snapshot = run.get("api_pricing_snapshot")
+        if isinstance(pricing_snapshot, dict):
+            os.environ["SPRINT_DEEPSEEK_PRICING_SNAPSHOT"] = json.dumps(
+                pricing_snapshot, separators=(",", ":"), sort_keys=True
+            )
+        else:
+            os.environ.pop("SPRINT_DEEPSEEK_PRICING_SNAPSHOT", None)
         source = (
             Path(str(run["harbor_path"])) / "src/harbor/agents/installed/codex_cost.py"
         )
@@ -163,6 +170,20 @@ def build_snapshot(
     timeline: dict[str, Any], *, state_dir: Path | None = None
 ) -> dict[str, Any]:
     """Return the sole agent-facing JSON cost document."""
+    if state_dir is not None:
+        canonical_path = state_dir / "telemetry" / "budget-watchdog.json"
+        try:
+            canonical = json.loads(canonical_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            canonical = None
+        if (
+            isinstance(canonical, dict)
+            and canonical.get("schema_version") == 2
+            and canonical.get("run_id") == timeline["run"]["run_id"]
+            and isinstance(canonical.get("total_usd"), (int, float))
+            and not isinstance(canonical.get("total_usd"), bool)
+        ):
+            return canonical
     resources = timeline["resource_usage_summary"]
     estimate = resources["modal_estimate"]
     pricing = estimate["pricing_snapshot"]

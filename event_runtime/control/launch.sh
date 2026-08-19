@@ -37,6 +37,8 @@ PROMPT_TEMPLATE_OVERRIDE=""
 DRY_RUN=0
 START_MONITOR=1
 SUPERVISED_LAUNCH=0
+DEEPSEEK_OPENROUTER_PRESET=${DEEPSEEK_OPENROUTER_PRESET:-@preset/sprint-deepseek-v4-flash-0731-official}
+LUNA_OPENROUTER_PRESET=${LUNA_OPENROUTER_PRESET:-@preset/sprint-gpt-5-6-luna-openai-standard}
 
 usage() {
   cat <<'EOF'
@@ -164,6 +166,14 @@ case "$MODEL_API_HOST" in
     exit 2
     ;;
 esac
+if [[ "${MODEL#*/}" == "deepseek-v4-flash" && "$MODEL_API_HOST" != "openrouter.ai" ]]; then
+  echo "DeepSeek V4 Flash is locked to the audited OpenRouter endpoint" >&2
+  exit 2
+fi
+if [[ "${MODEL#*/}" == "gpt-5.6-luna" && "$MODEL_API_HOST" != "openrouter.ai" ]]; then
+  echo "GPT-5.6 Luna is locked to the audited OpenRouter/OpenAI endpoint" >&2
+  exit 2
+fi
 if [[ "$CODEX_VERSION" != "$BAKED_CODEX_VERSION" ]]; then
   echo "Codex $CODEX_VERSION is not baked into the offline image (expected $BAKED_CODEX_VERSION)" >&2
   exit 2
@@ -302,6 +312,20 @@ fi
 
 TASK_SOURCE="$SOURCE_ROOT/events/g1-100-metres"
 TASK="$STATE_DIR/rendered-task"
+if [[ "$RESUMING" == "1" && "${MODEL#*/}" == "deepseek-v4-flash" \
+      && -z "${SPRINT_DEEPSEEK_PRICING_SNAPSHOT:-}" ]]; then
+  SPRINT_DEEPSEEK_PRICING_SNAPSHOT=$(python3 - "$STATE_DIR/run.json" <<'PY'
+import json
+import sys
+
+snapshot = json.load(open(sys.argv[1])).get("api_pricing_snapshot")
+if not isinstance(snapshot, dict):
+    raise SystemExit("resume is missing its frozen DeepSeek pricing snapshot")
+print(json.dumps(snapshot, separators=(",", ":"), sort_keys=True))
+PY
+  )
+  export SPRINT_DEEPSEEK_PRICING_SNAPSHOT
+fi
 BUDGET_CONFIG="$SOURCE_ROOT/event_runtime/control/budget.env"
 [[ -f "$BUDGET_CONFIG" ]] || {
   echo "missing global event budget configuration: $BUDGET_CONFIG" >&2
@@ -319,27 +343,31 @@ if not math.isfinite(value) or value <= 0:
 print(format(value, "g"))
 PY
 )
-AGENT_COST_SHUTDOWN_RESERVE_USD=$(python3 - \
-  "$AGENT_COST_SHUTDOWN_RESERVE_USD" "$DEEPSEEK_COST_SHUTDOWN_RESERVE_USD" \
-  "$LUNA_COST_SHUTDOWN_RESERVE_USD" "$AGENT_COST_BUDGET_USD" "$MODEL" <<'PY'
+read -r AGENT_COST_SHUTDOWN_RESERVE_USD MINIMUM_SAFE_SHUTDOWN_RESERVE_USD < <(python3 - \
+  "$AGENT_COST_SHUTDOWN_RESERVE_USD" "$AGENT_COST_BUDGET_USD" <<'PY'
 import math
 import sys
 
-generic, deepseek, luna = sys.argv[1:4]
-budget = float(sys.argv[4])
-model = sys.argv[5].split("/", 1)[-1]
-defaults = {"deepseek-v4-flash": deepseek, "gpt-5.6-luna": luna}
-reserve = float(generic or defaults.get(model, luna))
+configured = sys.argv[1]
+budget = float(sys.argv[2])
+# Reserve only graceful teardown. The OpenRouter proxy serializes requests and
+# stops admitting paid work once exact completed-request cost reaches the cap,
+# so at most the one request already in flight may cross it.
+infrastructure_runway = 120 * (
+    (2 * 0.00003942 + 8 * 0.00000667)
+    + (6 * 0.00003942 + 12 * 0.00000667 + 0.000306)
+)
+minimum = math.ceil(infrastructure_runway * 100) / 100
+reserve = minimum if configured == "auto" else float(configured)
 if not math.isfinite(reserve) or reserve < 0 or reserve >= budget:
     raise SystemExit(
         "AGENT_COST_SHUTDOWN_RESERVE_USD must be finite, non-negative, and below the budget"
     )
-minimum = {"deepseek-v4-flash": 1.10, "gpt-5.6-luna": 0.50}.get(model)
-if minimum is not None and reserve < minimum:
+if reserve < minimum:
     raise SystemExit(
-        f"AGENT_COST_SHUTDOWN_RESERVE_USD must be at least {minimum:g} for {model}"
+        f"AGENT_COST_SHUTDOWN_RESERVE_USD must be at least {minimum:g}"
     )
-print(format(reserve, "g"))
+print(format(reserve, "g"), format(minimum, "g"))
 PY
 )
 # Modal enforces this deadline in its control plane. It is intentionally based
@@ -369,6 +397,53 @@ actual_commit=$(tr -d '[:space:]' <"$HARBOR/.sprint-upstream-commit")
   echo "vendored Harbor $actual_commit does not match pin $HARBOR_COMMIT" >&2
   exit 1
 }
+
+DEEPSEEK_PRICING_SNAPSHOT_JSON=${SPRINT_DEEPSEEK_PRICING_SNAPSHOT:-}
+if [[ "${MODEL#*/}" == "deepseek-v4-flash" ]]; then
+  if [[ -z "$DEEPSEEK_PRICING_SNAPSHOT_JSON" && "$RESUMING" == "1" ]]; then
+    DEEPSEEK_PRICING_SNAPSHOT_JSON=$(python3 - "$STATE_DIR/run.json" <<'PY'
+import json
+import sys
+
+snapshot = json.load(open(sys.argv[1])).get("api_pricing_snapshot")
+if not isinstance(snapshot, dict):
+    raise SystemExit("resume is missing its frozen DeepSeek pricing snapshot")
+print(json.dumps(snapshot, separators=(",", ":"), sort_keys=True))
+PY
+    )
+  fi
+  [[ -n "$DEEPSEEK_PRICING_SNAPSHOT_JSON" ]] || {
+    echo "DeepSeek launch requires its provider pricing snapshot from batch preflight" >&2
+    exit 1
+  }
+  DEEPSEEK_PRICING_SNAPSHOT_JSON=$(python3 - \
+    "$HARBOR/src/harbor/agents/installed/codex_cost.py" \
+    "$DEEPSEEK_PRICING_SNAPSHOT_JSON" <<'PY'
+import importlib.util
+import json
+import os
+import sys
+
+path, raw = sys.argv[1:]
+snapshot = json.loads(raw)
+os.environ["SPRINT_DEEPSEEK_PRICING_SNAPSHOT"] = json.dumps(
+    snapshot, separators=(",", ":"), sort_keys=True
+)
+spec = importlib.util.spec_from_file_location("launch_codex_cost", path)
+if spec is None or spec.loader is None:
+    raise SystemExit("cannot load the frozen pricing validator")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+selected = module.pricing_snapshot_for_request(
+    "deepseek-v4-flash", snapshot["captured_at"]
+)
+if not isinstance(selected, dict) or selected.get("source_sha256") != snapshot.get("source_sha256"):
+    raise SystemExit("DeepSeek pricing snapshot did not survive validation")
+print(os.environ["SPRINT_DEEPSEEK_PRICING_SNAPSHOT"])
+PY
+  )
+  export SPRINT_DEEPSEEK_PRICING_SNAPSHOT="$DEEPSEEK_PRICING_SNAPSHOT_JSON"
+fi
 
 VOLUMES_JSON=$(python3 - "$VOLUME_NAME" <<'PY'
 import json
@@ -459,13 +534,16 @@ print_config() {
     "$AGENT_SECRET_NAME" \
     "$SANDBOX_TIMEOUT_SECONDS" "$MODEL_API_HOST" "$MODAL_PROFILE" "$HARBOR" "$HARBOR_COMMIT" \
   "$HARBOR_BRANCH" "$VOLUMES_JSON" "$KEEPALIVE_JSON" "$AGENT_COST_BUDGET_USD" \
-  "$AGENT_COST_SHUTDOWN_RESERVE_USD" <<'PY'
+  "$AGENT_COST_SHUTDOWN_RESERVE_USD" "$MINIMUM_SAFE_SHUTDOWN_RESERVE_USD" \
+  "$DEEPSEEK_PRICING_SNAPSHOT_JSON" <<'PY'
 import json
 import sys
 
 (run_id, app, training_app, verifier_app, volume, state, jobs, agent_kind, model, endpoint, effort,
  codex_version, auth_name, sandbox_timeout, model_api_host, profile, harbor, commit, branch,
- volumes, keepalive, agent_cost_budget, shutdown_reserve) = sys.argv[1:]
+ volumes, keepalive, agent_cost_budget, shutdown_reserve, minimum_reserve,
+ pricing_snapshot_json) = sys.argv[1:]
+pricing_snapshot = json.loads(pricing_snapshot_json) if pricing_snapshot_json else None
 payload = {
     "run_id": run_id,
     "app_name": app,
@@ -482,11 +560,18 @@ payload = {
     "automatic_stop": True,
     "automatic_stop_reason": "agent_cost_budget_exhausted",
     "agent_cost_budget_usd": float(agent_cost_budget),
+    "api_pricing_snapshot": pricing_snapshot,
     "budget_enforcement": {
         "controller_watchdog": True,
         "in_sandbox_watchdog": True,
         "uncertainty_policy": "fail_closed",
+        "api_cost_source": (
+            "openrouter_reported_per_request"
+            if model_api_host == "openrouter.ai"
+            else "token_rate_reconstruction"
+        ),
         "shutdown_reserve_usd": float(shutdown_reserve),
+        "minimum_safe_shutdown_reserve_usd": float(minimum_reserve),
         "durable_stop_marker": "BUDGET_STOP_REQUESTED.json",
     },
     "sandbox_timeout_seconds": int(sandbox_timeout),
@@ -511,13 +596,11 @@ payload = {
     ),
     "usage_audit_required": (
         agent_kind == "codex"
-        and model.split("/", 1)[-1]
-        in {
-            "gpt-5.6-sol",
-            "gpt-5.6-terra",
-            "gpt-5.6-luna",
-            "deepseek-v4-flash",
-        }
+        and (
+            model_api_host == "openrouter.ai"
+            or model.split("/", 1)[-1]
+            in {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
+        )
     ),
     "modal_profile": profile,
     "harbor_path": harbor,
@@ -599,9 +682,9 @@ printf '%s=%s\n' "$AGENT_SECRET_NAME" "$AGENT_SECRET" >"$ENV_FILE"
 if [[ -n "$ENDPOINT" ]]; then
   printf 'OPENAI_BASE_URL=%s\n' "$ENDPOINT" >>"$ENV_FILE"
 fi
-# Official DeepSeek Codex provider+catalog (not Harbor openai_base_url alone).
+# DeepSeek Codex provider+catalog (not Harbor openai_base_url alone).
 # Luna / default OpenAI endpoints leave this unset.
-if [[ "$ENDPOINT" == *api.deepseek.com* ]]; then
+if [[ "${MODEL#*/}" == "deepseek-v4-flash" ]]; then
   printf 'SPRINT_CODEX_PROVIDER=deepseek\n' >>"$ENV_FILE"
 fi
 if (( ! RESUMING )); then
@@ -629,7 +712,9 @@ python3 - "$STATE_DIR/run.json" "$RUN_ID" "$APP_NAME" "$TRAINING_APP_NAME" \
   "$SUPERVISED_LAUNCH" "$STANDING_GPU" "$MODEL_API_HOST" \
   "$PROMPT_TEMPLATE" "$WARMUP_MANIFEST_PATH" "$ROOT" "$BATCH_ID" \
   "$SOURCE_ROOT" "$SPRINT_SOURCE_COMMIT" "$TASK" \
-  "$AGENT_COST_BUDGET_USD" "$AGENT_COST_SHUTDOWN_RESERVE_USD" <<'PY'
+  "$AGENT_COST_BUDGET_USD" "$AGENT_COST_SHUTDOWN_RESERVE_USD" \
+  "$MINIMUM_SAFE_SHUTDOWN_RESERVE_USD" \
+  "$DEEPSEEK_PRICING_SNAPSHOT_JSON" <<'PY'
 import datetime
 import fcntl
 import hashlib
@@ -642,8 +727,10 @@ import sys
  endpoint, effort, codex_version, sandbox_timeout, debounce, harbor, commit,
  branch, resuming, cpu_attempt, supervised, standing_gpu_flag,
  model_api_host, prompt_template, warmup_manifest_path, root, batch_id, source_root,
- sprint_source_commit, rendered_task_root, agent_cost_budget, shutdown_reserve) = sys.argv[1:]
+ sprint_source_commit, rendered_task_root, agent_cost_budget, shutdown_reserve, minimum_reserve,
+ pricing_snapshot_json) = sys.argv[1:]
 standing_gpu = standing_gpu_flag == "1"
+pricing_snapshot = json.loads(pricing_snapshot_json) if pricing_snapshot_json else None
 target = pathlib.Path(path)
 root_path = pathlib.Path(root)
 task_source_root = pathlib.Path(source_root) / "events/g1-100-metres"
@@ -675,19 +762,26 @@ base = {
     "endpoint": endpoint or None,
     "reasoning_effort": effort,
     "resolved_model_version": (
-        "DeepSeek-V4-Flash-0731"
-        if model.split("/", 1)[-1] == "deepseek-v4-flash"
+        pricing_snapshot["model_version"]
+        if pricing_snapshot is not None
         else model.split("/", 1)[-1]
     ),
     "codex_version": codex_version if agent_kind == "codex" else None,
     "automatic_stop": True,
     "automatic_stop_reason": "agent_cost_budget_exhausted",
     "agent_cost_budget_usd": float(agent_cost_budget),
+    "api_pricing_snapshot": pricing_snapshot,
     "budget_enforcement": {
         "controller_watchdog": True,
         "in_sandbox_watchdog": True,
         "uncertainty_policy": "fail_closed",
+        "api_cost_source": (
+            "openrouter_reported_per_request"
+            if model_api_host == "openrouter.ai"
+            else "token_rate_reconstruction"
+        ),
         "shutdown_reserve_usd": float(shutdown_reserve),
+        "minimum_safe_shutdown_reserve_usd": float(minimum_reserve),
         "durable_stop_marker": "BUDGET_STOP_REQUESTED.json",
     },
     "sandbox_timeout_seconds": int(sandbox_timeout),
@@ -766,7 +860,10 @@ base = {
     # OpenAI cost is accepted only from Harbor's per-request, checksummed usage
     # audit. Aggregate cached/uncached counters cannot recover long-context or
     # cache-write pricing correctly.
-    "usage_audit_required": agent_kind == "codex" and model.split("/", 1)[-1] in {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "deepseek-v4-flash"},
+    "usage_audit_required": agent_kind == "codex" and (
+        model_api_host == "openrouter.ai"
+        or model.split("/", 1)[-1] in {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
+    ),
     "hosted_model_tools_policy": "disabled" if agent_kind == "codex" else None,
     "service_tier": (
         "default"
@@ -926,8 +1023,24 @@ else
     --ae "SPRINT_AGENT_LOG_DIR=/logs/agent"
     "${SHARED_AGENT_ENV[@]}"
   )
-  if [[ "$ENDPOINT" == *api.deepseek.com* ]]; then
-    AGENT_HARBOR_ARGS+=(--ae "SPRINT_CODEX_PROVIDER=deepseek")
+  if [[ "$MODEL_API_HOST" == "openrouter.ai" ]]; then
+    AGENT_HARBOR_ARGS+=(
+      --ae "SPRINT_OPENROUTER_LEDGER_REQUIRED=1"
+      --ae "SPRINT_OPENROUTER_UPSTREAM_URL=https://openrouter.ai/api/v1"
+    )
+  fi
+  if [[ "${MODEL#*/}" == "deepseek-v4-flash" ]]; then
+    AGENT_HARBOR_ARGS+=(
+      --ae "SPRINT_CODEX_PROVIDER=deepseek"
+      --ae "SPRINT_CODEX_DEEPSEEK_BASE_URL=$ENDPOINT"
+      --ae "SPRINT_CODEX_DEEPSEEK_MODEL=$DEEPSEEK_OPENROUTER_PRESET"
+      --ae "SPRINT_DEEPSEEK_PRICING_SNAPSHOT=$DEEPSEEK_PRICING_SNAPSHOT_JSON"
+    )
+  fi
+  if [[ "${MODEL#*/}" == "gpt-5.6-luna" ]]; then
+    AGENT_HARBOR_ARGS+=(
+      --ae "SPRINT_CODEX_LUNA_MODEL=$LUNA_OPENROUTER_PRESET"
+    )
   fi
   if [[ "${MODEL#*/}" == "gpt-5.6-sol" || "${MODEL#*/}" == "gpt-5.6-terra" || "${MODEL#*/}" == "gpt-5.6-luna" ]]; then
     # Pin standard pricing. Leaving this unset lets Codex/project defaults pick

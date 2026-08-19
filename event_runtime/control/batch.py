@@ -15,6 +15,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,7 @@ sys.path.insert(0, str(ROOT))
 from event_runtime.export import frontier as frontier_update  # noqa: E402
 from event_runtime.export import performance as performance_export  # noqa: E402
 from event_runtime.control import run as sprintctl  # noqa: E402
+from event_runtime.control import deepseek_pricing  # noqa: E402
 
 
 UV = Path(os.environ.get("UV", "/home/ubuntu/.local/bin/uv"))
@@ -59,6 +61,7 @@ PROVIDER_DISCOVERY_ATTEMPTS = 3
 PROVIDER_DISCOVERY_RETRY_SECONDS = 1.0
 PROVIDER_INFERENCE_ATTEMPTS = 3
 PROVIDER_INFERENCE_RETRY_SECONDS = 1.0
+PROVIDER_GENERATION_AUDIT_ATTEMPTS = 6
 VERCEL_DAILY_QUOTA_BACKOFF_SECONDS = 24 * 60 * 60
 VERCEL_DAILY_QUOTA_CODE = "api-deployments-free-per-day"
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,48}$")
@@ -101,7 +104,14 @@ def load_env(path: Path) -> dict[str, str]:
             continue
         name, value = line.split("=", 1)
         value = value.strip().strip('"').strip("'")
-        if name.strip() in {"OPENAI_API_KEY", "DEEPSEEK_API_KEY"} and value:
+        if (
+            name.strip()
+            in {
+                "OPENAI_API_KEY",
+                "OPENROUTER_API_KEY",
+            }
+            and value
+        ):
             values[name.strip()] = value
     return values
 
@@ -304,6 +314,8 @@ def provider_inference_probe(
     url: str,
     key: str,
     payload: dict[str, Any],
+    *,
+    generation_audit_url: str | None = None,
 ) -> dict[str, Any]:
     """Make a tiny paid request and retain only non-secret serving evidence."""
     request = urllib.request.Request(
@@ -323,7 +335,8 @@ def provider_inference_probe(
                 result = json.load(response)
             break
         except urllib.error.HTTPError as exc:
-            if 500 <= exc.code < 600 and attempt + 1 < PROVIDER_INFERENCE_ATTEMPTS:
+            retryable = exc.code == 429 or 500 <= exc.code < 600
+            if retryable and attempt + 1 < PROVIDER_INFERENCE_ATTEMPTS:
                 time.sleep(PROVIDER_INFERENCE_RETRY_SECONDS * (2**attempt))
                 continue
             detail = ""
@@ -352,6 +365,46 @@ def provider_inference_probe(
             raise RuntimeError(f"provider inference request failed: {reason}") from exc
     if not isinstance(result, dict) or not result.get("id"):
         raise RuntimeError("provider inference response lacked a request ID")
+    generation: dict[str, Any] = {}
+    if generation_audit_url:
+        audit_url = (
+            generation_audit_url
+            + "?"
+            + urllib.parse.urlencode({"id": str(result["id"])})
+        )
+        audit_request = urllib.request.Request(
+            audit_url,
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Accept": "application/json",
+            },
+        )
+        for attempt in range(PROVIDER_GENERATION_AUDIT_ATTEMPTS):
+            try:
+                with urllib.request.urlopen(audit_request, timeout=30) as response:
+                    audit_payload = json.load(response)
+                candidate = audit_payload.get("data")
+                if isinstance(candidate, dict):
+                    generation = candidate
+                    break
+            except urllib.error.HTTPError as exc:
+                retryable = exc.code in {404, 429} or 500 <= exc.code < 600
+                if retryable and attempt + 1 < PROVIDER_GENERATION_AUDIT_ATTEMPTS:
+                    time.sleep(PROVIDER_DISCOVERY_RETRY_SECONDS * (2**attempt))
+                    continue
+                raise RuntimeError(
+                    f"provider generation audit failed: HTTP {exc.code}"
+                ) from exc
+            except (urllib.error.URLError, TimeoutError) as exc:
+                if attempt + 1 < PROVIDER_GENERATION_AUDIT_ATTEMPTS:
+                    time.sleep(PROVIDER_DISCOVERY_RETRY_SECONDS * (2**attempt))
+                    continue
+                reason = getattr(exc, "reason", str(exc))
+                raise RuntimeError(
+                    f"provider generation audit failed: {reason}"
+                ) from exc
+        if not generation:
+            raise RuntimeError("provider generation audit response was incomplete")
     usage = result.get("usage")
     return {
         "checked_at": utc_now(),
@@ -360,6 +413,13 @@ def provider_inference_probe(
         "response_model": str(result.get("model", "")),
         "status": str(result.get("status", result.get("object", ""))),
         "service_tier": result.get("service_tier"),
+        "provider": generation.get("provider_name", result.get("provider")),
+        "resolved_model": generation.get("model"),
+        "preset_id": generation.get("preset_id"),
+        "provider_responses": generation.get("provider_responses", []),
+        "provider_reported_total_cost_usd": generation.get(
+            "total_cost", (usage or {}).get("cost") if isinstance(usage, dict) else None
+        ),
         "usage": usage if isinstance(usage, dict) else {},
     }
 
@@ -377,7 +437,9 @@ def run_checked(command: list[str], *, env: dict[str, str] | None = None) -> str
     return completed.stdout
 
 
-def sprint_modal_resource_audit(*, modal_profile: str) -> tuple[bool, dict[str, Any]]:
+def sprint_modal_resource_audit(
+    *, modal_profile: str, allowed_app_prefixes: tuple[str, ...] = ()
+) -> tuple[bool, dict[str, Any]]:
     """Fail closed when an older Sprint App or container is still live.
 
     Modal's App list retains stopped history, so stopped Sprint Apps are valid
@@ -419,6 +481,11 @@ def sprint_modal_resource_audit(*, modal_profile: str) -> tuple[bool, dict[str, 
             "error": "Modal resource listings were not arrays",
         }
 
+    def allowed(name: object) -> bool:
+        return any(
+            str(name or "").startswith(prefix) for prefix in allowed_app_prefixes
+        )
+
     live_apps = [
         {
             "app_id": row.get("app_id"),
@@ -430,6 +497,7 @@ def sprint_modal_resource_audit(*, modal_profile: str) -> tuple[bool, dict[str, 
         if isinstance(row, dict)
         and str(row.get("description") or "").startswith("sprint-")
         and str(row.get("state") or "").lower() != "stopped"
+        and not allowed(row.get("description"))
     ]
     live_containers = [
         {
@@ -441,12 +509,14 @@ def sprint_modal_resource_audit(*, modal_profile: str) -> tuple[bool, dict[str, 
         for row in containers
         if isinstance(row, dict)
         and str(row.get("app_name") or "").startswith("sprint-")
+        and not allowed(row.get("app_name"))
     ]
     report = {
         "checked_at": utc_now(),
         "modal_profile": modal_profile,
         "live_sprint_apps": live_apps,
         "live_sprint_containers": live_containers,
+        "allowed_live_prefixes": list(allowed_app_prefixes),
         "unrelated_resources_ignored": True,
     }
     return not live_apps and not live_containers, report
@@ -512,15 +582,17 @@ def preflight(
     families: tuple[str, ...] = DEFAULT_FAMILIES,
     trials_per_model: int = TRIALS_PER_MODEL,
     probe_training_fleet: bool = False,
+    coexist_batch_ids: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     checks: dict[str, Any] = {}
     provider_probes: dict[str, Any] = {}
     provider_errors: dict[str, str] = {}
+    deepseek_pricing_snapshot: dict[str, Any] | None = None
     sprint_resource_report: dict[str, Any] | None = None
     keys = load_env(env_file)
     required_keys = {
-        "deepseek": "DEEPSEEK_API_KEY",
-        "luna": "OPENAI_API_KEY",
+        "deepseek": "OPENROUTER_API_KEY",
+        "luna": "OPENROUTER_API_KEY",
     }
     for family in families:
         name = required_keys[family]
@@ -577,8 +649,21 @@ def preflight(
     except (subprocess.CalledProcessError, json.JSONDecodeError, OSError):
         pass
     if checks["modal_auth"]:
+        valid_coexistence = all(
+            RUN_ID_RE.fullmatch(existing_id) and batch_path(existing_id).is_file()
+            for existing_id in coexist_batch_ids
+        )
+        checks["coexisting_batches_valid"] = valid_coexistence
+        allowed_prefixes = (
+            tuple(f"sprint-{existing_id}-" for existing_id in coexist_batch_ids)
+            if valid_coexistence
+            else ()
+        )
         checks["no_live_sprint_resources"], sprint_resource_report = (
-            sprint_modal_resource_audit(modal_profile=modal_profile)
+            sprint_modal_resource_audit(
+                modal_profile=modal_profile,
+                allowed_app_prefixes=allowed_prefixes,
+            )
         )
     else:
         checks["no_live_sprint_resources"] = False
@@ -591,53 +676,98 @@ def preflight(
         ).returncode
         == 0
     )
-    if "luna" in families and check_providers and checks["secret_openai_api_key"]:
+    if "luna" in families and check_providers and checks["secret_openrouter_api_key"]:
         models = provider_models(
-            "https://api.openai.com/v1/models", keys["OPENAI_API_KEY"]
+            "https://openrouter.ai/api/v1/models", keys["OPENROUTER_API_KEY"]
         )
-        checks["openai_luna_visible"] = "gpt-5.6-luna" in models
+        checks["openai_luna_visible"] = "openai/gpt-5.6-luna" in models
         try:
             provider_probes["openai_luna"] = provider_inference_probe(
-                "https://api.openai.com/v1/responses",
-                keys["OPENAI_API_KEY"],
+                "https://openrouter.ai/api/v1/responses",
+                keys["OPENROUTER_API_KEY"],
                 {
-                    "model": "gpt-5.6-luna",
+                    "model": "@preset/sprint-gpt-5-6-luna-openai-standard",
                     "input": "Return OK.",
                     "reasoning": {"effort": REASONING_EFFORT},
                     "max_output_tokens": 16,
                     "store": False,
                 },
+                generation_audit_url="https://openrouter.ai/api/v1/generation",
             )
-            checks["openai_luna_inference"] = True
+            luna_probe = provider_probes["openai_luna"]
+            checks["openai_luna_inference"] = (
+                luna_probe.get("provider") == "OpenAI"
+                and luna_probe.get("preset_id")
+                == "f06bb802-6122-4e11-8e22-a3476113a3b1"
+                and luna_probe.get("resolved_model") == "openai/gpt-5.6-luna-20260709"
+            )
+            if not checks["openai_luna_inference"]:
+                provider_errors["openai_luna"] = (
+                    "controlled preset response did not identify OpenAI standard"
+                )
         except RuntimeError as exc:
             checks["openai_luna_inference"] = False
             provider_errors["openai_luna"] = str(exc)
     elif "luna" in families:
         checks["openai_luna_visible"] = not check_providers
         checks["openai_luna_inference"] = not check_providers
-    if "deepseek" in families and check_providers and checks["secret_deepseek_api_key"]:
+    if (
+        "deepseek" in families
+        and check_providers
+        and checks["secret_openrouter_api_key"]
+    ):
+        try:
+            deepseek_pricing_snapshot = deepseek_pricing.fetch_openrouter_snapshot(
+                keys["OPENROUTER_API_KEY"]
+            )
+            checks["deepseek_openrouter_endpoint_contract"] = True
+        except Exception as exc:  # noqa: BLE001
+            checks["deepseek_openrouter_endpoint_contract"] = False
+            provider_errors["deepseek_pricing"] = f"{type(exc).__name__}: {exc}"
         models = provider_models(
-            "https://api.deepseek.com/models", keys["DEEPSEEK_API_KEY"]
+            "https://openrouter.ai/api/v1/models", keys["OPENROUTER_API_KEY"]
         )
-        checks["deepseek_v4_flash_visible"] = "deepseek-v4-flash" in models
+        checks["deepseek_v4_flash_visible"] = (
+            "deepseek/deepseek-v4-flash-0731" in models
+        )
         try:
             provider_probes["deepseek_v4_flash"] = provider_inference_probe(
-                "https://api.deepseek.com/chat/completions",
-                keys["DEEPSEEK_API_KEY"],
+                "https://openrouter.ai/api/v1/responses",
+                keys["OPENROUTER_API_KEY"],
                 {
-                    "model": "deepseek-v4-flash",
-                    "messages": [{"role": "user", "content": "Return OK."}],
-                    "thinking": {"type": "enabled"},
-                    "reasoning_effort": REASONING_EFFORT,
-                    "max_tokens": 16,
-                    "stream": False,
+                    "model": ("@preset/sprint-deepseek-v4-flash-0731-official"),
+                    "input": "Return OK.",
+                    "reasoning": {"effort": REASONING_EFFORT},
+                    "max_output_tokens": 16,
+                    "store": False,
                 },
+                generation_audit_url="https://openrouter.ai/api/v1/generation",
             )
-            checks["deepseek_v4_flash_inference"] = True
+            deepseek_probe = provider_probes["deepseek_v4_flash"]
+            expected_preset_id = (
+                deepseek_pricing_snapshot.get("preset_id")
+                if isinstance(deepseek_pricing_snapshot, dict)
+                else None
+            )
+            checks["deepseek_v4_flash_inference"] = (
+                deepseek_probe.get("provider") == "DeepSeek"
+                and deepseek_probe.get("preset_id") == expected_preset_id
+                and deepseek_probe.get("resolved_model")
+                == (
+                    deepseek_pricing_snapshot.get("resolved_model")
+                    if isinstance(deepseek_pricing_snapshot, dict)
+                    else None
+                )
+            )
+            if not checks["deepseek_v4_flash_inference"]:
+                provider_errors["deepseek_v4_flash"] = (
+                    "controlled preset response did not identify DeepSeek"
+                )
         except RuntimeError as exc:
             checks["deepseek_v4_flash_inference"] = False
             provider_errors["deepseek_v4_flash"] = str(exc)
     elif "deepseek" in families:
+        checks["deepseek_openrouter_endpoint_contract"] = not check_providers
         checks["deepseek_v4_flash_visible"] = not check_providers
         checks["deepseek_v4_flash_inference"] = not check_providers
     planned = matrix(
@@ -666,10 +796,12 @@ def preflight(
         "modal_profile": modal_profile,
         "families": list(families),
         "trials_per_model": trials_per_model,
+        "coexist_batch_ids": list(coexist_batch_ids),
         "env_file": str(env_file),
         "checks": checks,
         "provider_probes": provider_probes,
         "provider_errors": provider_errors,
+        "deepseek_pricing_snapshot": deepseek_pricing_snapshot,
         "sprint_modal_resource_audit": sprint_resource_report,
         "training_gpu_fleet_probe": fleet_probe,
         "ready": ready,
@@ -755,6 +887,7 @@ def launch(
     *,
     families: tuple[str, ...] = DEFAULT_FAMILIES,
     trials_per_model: int = TRIALS_PER_MODEL,
+    coexist_batch_ids: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     report = preflight(
         batch_id=batch_id,
@@ -763,6 +896,7 @@ def launch(
         families=families,
         trials_per_model=trials_per_model,
         probe_training_fleet=True,
+        coexist_batch_ids=coexist_batch_ids,
     )
     if not report["ready"]:
         failed = [name for name, passed in report["checks"].items() if not passed]
@@ -778,6 +912,7 @@ def launch(
         "codex_version": CODEX_VERSION,
         "trials_per_model": trials_per_model,
         "families": list(families),
+        "coexist_batch_ids": list(coexist_batch_ids),
         "run_hours": RUN_HOURS,
         "site_deploy_interval_seconds": LIVE_SITE_DEPLOY_SECONDS,
         "modal_profile": modal_profile,
@@ -805,6 +940,13 @@ def launch(
             "UV": str(UV),
         }
     )
+    pricing_snapshot = report.get("deepseek_pricing_snapshot")
+    if "deepseek" in families:
+        if not isinstance(pricing_snapshot, dict):
+            raise RuntimeError("preflight did not produce a DeepSeek pricing snapshot")
+        base_env["SPRINT_DEEPSEEK_PRICING_SNAPSHOT"] = json.dumps(
+            pricing_snapshot, separators=(",", ":"), sort_keys=True
+        )
     launched: list[dict[str, Any]] = []
     try:
         for arm in payload["arms"]:
@@ -1456,6 +1598,12 @@ def parser() -> argparse.ArgumentParser:
             command.add_argument("--confirm", action="store_true")
         if name in {"preflight", "launch"}:
             command.add_argument(
+                "--coexist-with-batch",
+                action="append",
+                default=[],
+                help="allow live Modal resources owned by this existing batch",
+            )
+            command.add_argument(
                 "--families",
                 nargs="+",
                 choices=DEFAULT_FAMILIES,
@@ -1484,6 +1632,7 @@ def main() -> int:
             families=tuple(args.families),
             trials_per_model=args.trials_per_model,
             probe_training_fleet=True,
+            coexist_batch_ids=tuple(args.coexist_with_batch),
         )
     elif args.command == "launch":
         if not args.confirm:
@@ -1494,6 +1643,7 @@ def main() -> int:
             args.modal_profile,
             families=tuple(args.families),
             trials_per_model=args.trials_per_model,
+            coexist_batch_ids=tuple(args.coexist_with_batch),
         )
     elif args.command == "monitor":
         while True:

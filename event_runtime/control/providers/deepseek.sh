@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Harbor Codex + deepseek-v4-flash (official DeepSeek Codex harness).
+# Harbor Codex + DeepSeek V4 Flash 0731 through its official OpenRouter endpoint.
 # Does NOT launch unless CONFIRM_LAUNCH=1.
 #
 # Official docs: https://api-docs.deepseek.com/quick_start/agent_integrations/codex/
@@ -15,7 +15,8 @@ ROOT="${EVENT_REPOSITORY_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../
 export MODAL_PROFILE="${MODAL_PROFILE:-kevinli020508}"
 
 MODEL="${MODEL:-deepseek/deepseek-v4-flash}"
-ENDPOINT="${ENDPOINT:-https://api.deepseek.com}"
+ENDPOINT="${ENDPOINT:-https://openrouter.ai/api/v1}"
+OPENROUTER_PRESET="${OPENROUTER_PRESET:-@preset/sprint-deepseek-v4-flash-0731-official}"
 REASONING_EFFORT="${REASONING_EFFORT:-max}"  # API-max for DeepSeek Flash
 # Same immutable harness pin as every competitor.
 CODEX_VERSION="${CODEX_VERSION:-0.147.0}"
@@ -23,12 +24,31 @@ RUN_ID="${RUN_ID:-lane-deepseek-$(date -u +%Y%m%dT%H%M%SZ)}"
 
 GOAL="$ROOT/event_runtime/control/templates/codex.j2"
 
-if [[ -n "${DEEPSEEK_API_KEY:-}" ]]; then
-  export OPENAI_API_KEY="$DEEPSEEK_API_KEY"
-fi
-if [[ -z "${OPENAI_API_KEY:-}" ]]; then
-  echo "DEEPSEEK_API_KEY (or compatible OPENAI_API_KEY) is required" >&2
+if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
+  echo "OPENROUTER_API_KEY is required" >&2
   exit 1
+fi
+export OPENAI_API_KEY="$OPENROUTER_API_KEY"
+export SPRINT_CODEX_DEEPSEEK_BASE_URL="$ENDPOINT"
+export SPRINT_CODEX_DEEPSEEK_MODEL="$OPENROUTER_PRESET"
+if [[ -z "${SPRINT_DEEPSEEK_PRICING_SNAPSHOT:-}" ]]; then
+  SPRINT_DEEPSEEK_PRICING_SNAPSHOT=$(PYTHONPATH="$ROOT" python3 - \
+    "$OPENROUTER_API_KEY" <<'PY'
+import json
+import sys
+
+from event_runtime.control.deepseek_pricing import fetch_openrouter_snapshot
+
+print(
+    json.dumps(
+        fetch_openrouter_snapshot(sys.argv[1]),
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+)
+PY
+  )
+  export SPRINT_DEEPSEEK_PRICING_SNAPSHOT
 fi
 
 echo "launcher: providers/deepseek.sh"
@@ -38,12 +58,13 @@ echo "codex:    $CODEX_VERSION  (Harbor --ak version=...)"
 echo "model:    $MODEL"
 echo "effort:   $REASONING_EFFORT  (DeepSeek Flash API-max; xhigh maps to high)"
 echo "endpoint: $ENDPOINT"
-echo "provider: deepseek (official Codex config; SPRINT_CODEX_PROVIDER=deepseek)"
+echo "provider: OpenRouter preset -> DeepSeek official only (no fallback; non-ZDR)"
+echo "preset:   $OPENROUTER_PRESET"
 echo "wire_api: responses (via [model_providers.deepseek]; not openai_base_url alone)"
 echo "catalog:  DeepSeek models.json (1M context, auto_compact_token_limit=null)"
 echo "goal:     $GOAL"
 echo "profile:  $MODAL_PROFILE"
-echo "auth:     OPENAI_API_KEY=[configured] via env-file (not --ae)"
+echo "auth:     OPENAI_API_KEY=[OpenRouter key] via env-file (not --ae)"
 
 DRY_ARGS=(
   --dry-run
@@ -80,6 +101,7 @@ python3 "$ROOT/event_runtime/control/start_supervisor.py" \
   --batch-id "${SPRINT_BATCH_ID:-}" \
   --launch-argv-json "$LAUNCH_JSON" \
   --secret-env OPENAI_API_KEY \
+  --secret-env SPRINT_DEEPSEEK_PRICING_SNAPSHOT \
   --max-restarts "${CPU_MAX_RESTARTS:-50}" \
   --min-backoff-s "${CPU_MIN_BACKOFF_S:-30}" \
   --max-backoff-s "${CPU_MAX_BACKOFF_S:-600}"

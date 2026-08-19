@@ -469,6 +469,41 @@ class DurableOpsTests(unittest.TestCase):
         self.assertNotIn("stop_after_seconds", config)
         self.assertFalse(state.exists())
 
+    def test_any_codex_model_on_openrouter_uses_exact_shared_ledger(self) -> None:
+        run_id = f"dry-{uuid.uuid4().hex[:12]}"
+        key = "fake-openrouter-key-that-must-never-print-123456789"
+        env = os.environ.copy()
+        env["OPENAI_API_KEY"] = key
+        completed = subprocess.run(
+            [
+                "bash",
+                str(ROOT / "event_runtime/control/launch.sh"),
+                "--dry-run",
+                "--run-id",
+                run_id,
+                "--agent-kind",
+                "codex",
+                "--model",
+                "vendor/future-model",
+                "--endpoint",
+                "https://openrouter.ai/api/v1",
+            ],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+
+        self.assertNotIn(key, completed.stdout + completed.stderr)
+        config = json.loads(completed.stdout)
+        self.assertEqual(config["agent_allowed_host"], "openrouter.ai")
+        self.assertTrue(config["usage_audit_required"])
+        self.assertEqual(
+            config["budget_enforcement"]["api_cost_source"],
+            "openrouter_reported_per_request",
+        )
+
     def test_dry_run_accepts_one_global_budget_override(self) -> None:
         run_id = f"dry-{uuid.uuid4().hex[:12]}"
         env = os.environ.copy()
@@ -523,7 +558,9 @@ class DurableOpsTests(unittest.TestCase):
     def test_luna_dry_run_pins_reconstructible_cost_policy(self) -> None:
         run_id = f"dry-{uuid.uuid4().hex[:12]}"
         env = os.environ.copy()
-        env["OPENAI_API_KEY"] = "fake-openai-key-that-must-never-print-123456789"
+        key = "fake-openrouter-key-that-must-never-print-123456789"
+        env["OPENROUTER_API_KEY"] = key
+        env["OPENAI_API_KEY"] = key
         completed = subprocess.run(
             [
                 "bash",
@@ -535,6 +572,8 @@ class DurableOpsTests(unittest.TestCase):
                 "codex",
                 "--model",
                 "openai/gpt-5.6-luna",
+                "--endpoint",
+                "https://openrouter.ai/api/v1",
                 "--reasoning-effort",
                 "max",
             ],
@@ -547,6 +586,11 @@ class DurableOpsTests(unittest.TestCase):
         config = json.loads(completed.stdout)
         self.assertEqual(config["service_tier"], "default")
         self.assertEqual(config["reasoning_effort"], "max")
+        self.assertEqual(config["agent_allowed_host"], "openrouter.ai")
+        self.assertEqual(
+            config["budget_enforcement"]["api_cost_source"],
+            "openrouter_reported_per_request",
+        )
         self.assertTrue(config["usage_audit_required"])
 
     def test_sol_dry_run_pins_reconstructible_cost_policy(self) -> None:
@@ -582,6 +626,50 @@ class DurableOpsTests(unittest.TestCase):
         run_id = f"dry-{uuid.uuid4().hex[:12]}"
         env = os.environ.copy()
         env["OPENAI_API_KEY"] = "fake-deepseek-key-that-must-never-print-123456789"
+        env["SPRINT_DEEPSEEK_PRICING_SNAPSHOT"] = json.dumps(
+            {
+                "schema_version": 2,
+                "provider": "openrouter",
+                "upstream_provider": "DeepSeek",
+                "endpoint_tag": "deepseek",
+                "model": "deepseek-v4-flash",
+                "openrouter_model": "deepseek/deepseek-v4-flash-0731",
+                "resolved_model": "deepseek/deepseek-v4-flash-20260731",
+                "model_version": "DeepSeek-V4-Flash-0731",
+                "quantization": "unknown",
+                "context_length": 1_048_576,
+                "max_completion_tokens": 384_000,
+                "zdr": False,
+                "preset_slug": "sprint-deepseek-v4-flash-0731-official",
+                "preset_id": "preset-fixture",
+                "preset_version": 2,
+                "currency": "USD",
+                "unit_tokens": 1_000_000,
+                "captured_at": "2026-08-18T18:00:00Z",
+                "source_url": "https://openrouter.ai/api/v1/models/deepseek/deepseek-v4-flash-0731/endpoints",
+                "zdr_source_url": "https://openrouter.ai/api/v1/endpoints/zdr",
+                "preset_source_url": "https://openrouter.ai/api/v1/presets/sprint-deepseek-v4-flash-0731-official",
+                "source_sha256": "a" * 64,
+                "peak_hours_utc": [
+                    {"start_hour": 1, "end_hour": 4},
+                    {"start_hour": 6, "end_hour": 10},
+                ],
+                "rates_usd_per_million_tokens": {
+                    "off_peak": {
+                        "cache_hit_input": "0.007",
+                        "cache_miss_input": "0.22",
+                        "output": "0.66",
+                    },
+                    "peak": {
+                        "cache_hit_input": "0.014",
+                        "cache_miss_input": "0.44",
+                        "output": "1.32",
+                    },
+                },
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
         completed = subprocess.run(
             [
                 "bash",
@@ -594,7 +682,7 @@ class DurableOpsTests(unittest.TestCase):
                 "--model",
                 "deepseek/deepseek-v4-flash",
                 "--endpoint",
-                "https://api.deepseek.com",
+                "https://openrouter.ai/api/v1",
             ],
             env=env,
             text=True,
@@ -603,7 +691,11 @@ class DurableOpsTests(unittest.TestCase):
             check=True,
         )
         config = json.loads(completed.stdout)
-        self.assertEqual(config["agent_allowed_host"], "api.deepseek.com")
+        self.assertEqual(config["agent_allowed_host"], "openrouter.ai")
+        self.assertEqual(
+            config["api_pricing_snapshot"]["model_version"],
+            "DeepSeek-V4-Flash-0731",
+        )
         self.assertTrue(config["usage_audit_required"])
 
     def test_stop_watcher_signals_only_dummy_claude_and_acks(self) -> None:

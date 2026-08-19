@@ -174,12 +174,12 @@ def test_env_loader_reads_only_required_model_keys(tmp_path: Path) -> None:
     path = tmp_path / ".env"
     path.write_text(
         "OPENAI_API_KEY='openai-secret'\n"
-        'DEEPSEEK_API_KEY="deepseek-secret"\n'
+        'OPENROUTER_API_KEY="openrouter-secret"\n'
         "MODAL_TOKEN_SECRET=must-not-load\n"
     )
     assert batch_eval.load_env(path) == {
         "OPENAI_API_KEY": "openai-secret",
-        "DEEPSEEK_API_KEY": "deepseek-secret",
+        "OPENROUTER_API_KEY": "openrouter-secret",
     }
 
 
@@ -453,6 +453,42 @@ def test_sprint_modal_resource_audit_accepts_stopped_history(
     assert report["live_sprint_containers"] == []
 
 
+def test_sprint_modal_resource_audit_allows_explicit_companion_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def listing(command, **_kwargs):
+        if "container" in command:
+            return json.dumps(
+                [
+                    {
+                        "container_id": "ta-companion",
+                        "app_id": "ap-companion",
+                        "app_name": "sprint-companion-luna-1-training",
+                        "start_time": "now",
+                    }
+                ]
+            )
+        return json.dumps(
+            [
+                {
+                    "app_id": "ap-companion",
+                    "description": "sprint-companion-luna-1",
+                    "state": "deployed",
+                    "tasks": "1",
+                }
+            ]
+        )
+
+    monkeypatch.setattr(batch_eval, "run_checked", listing)
+    ready, report = batch_eval.sprint_modal_resource_audit(
+        modal_profile="test", allowed_app_prefixes=("sprint-companion-",)
+    )
+    assert ready
+    assert report["live_sprint_apps"] == []
+    assert report["live_sprint_containers"] == []
+    assert report["allowed_live_prefixes"] == ["sprint-companion-"]
+
+
 def test_vercel_daily_quota_error_backs_off_for_24_hours() -> None:
     observed = dt.datetime(2026, 8, 9, 23, 45, tzinfo=dt.timezone.utc)
     state: dict[str, object] = {}
@@ -604,6 +640,64 @@ def test_provider_inference_probe_retries_transient_server_error(
     assert result["request_id"] == "resp_retry"
     assert calls == 3
     assert delays == [1.0, 2.0]
+
+
+def test_provider_inference_probe_audits_eventual_openrouter_generation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+    delays: list[float] = []
+
+    def fake_urlopen(request, timeout):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            assert timeout == 120
+            return io.BytesIO(
+                json.dumps(
+                    {
+                        "id": "gen_test",
+                        "model": "deepseek/deepseek-v4-flash-0731",
+                        "status": "completed",
+                        "usage": {"cost": 0.001},
+                    }
+                ).encode()
+            )
+        assert timeout == 30
+        assert "id=gen_test" in request.full_url
+        if calls == 2:
+            raise urllib.error.HTTPError(
+                request.full_url, 404, "Not Found", {}, io.BytesIO()
+            )
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "data": {
+                        "provider_name": "DeepSeek",
+                        "model": "deepseek/deepseek-v4-flash-20260731",
+                        "preset_id": "preset-fixture",
+                        "total_cost": 0.001,
+                        "provider_responses": [{"status": 200}],
+                    }
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(batch_eval.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(batch_eval.time, "sleep", delays.append)
+
+    result = batch_eval.provider_inference_probe(
+        "https://openrouter.ai/api/v1/responses",
+        "top-secret-key",
+        {"model": "@preset/test", "input": "Return OK."},
+        generation_audit_url="https://openrouter.ai/api/v1/generation",
+    )
+
+    assert result["provider"] == "DeepSeek"
+    assert result["resolved_model"] == "deepseek/deepseek-v4-flash-20260731"
+    assert result["preset_id"] == "preset-fixture"
+    assert result["provider_reported_total_cost_usd"] == 0.001
+    assert delays == [1.0]
 
 
 def test_provider_inference_probe_preserves_sanitized_spend_limit_error(
@@ -1232,7 +1326,9 @@ def test_batch_monitor_reads_stopped_lane_locally_without_modal_poll(
         "stop_ack": {"reason": "operator_stop"},
     }
     monkeypatch.setattr(batch_eval, "SCRIPT_DIR", tmp_path)
-    monkeypatch.setattr(batch_eval.sprintctl, "load_run", lambda _run_id: (state_dir, {}))
+    monkeypatch.setattr(
+        batch_eval.sprintctl, "load_run", lambda _run_id: (state_dir, {})
+    )
     monkeypatch.setattr(
         batch_eval.sprintctl,
         "status_snapshot",
@@ -1390,7 +1486,11 @@ def test_partial_batch_launch_is_safely_rolled_back(
 
     def fake_preflight(**kwargs):
         preflight_calls.append(kwargs)
-        return {"ready": True, "checks": {}}
+        return {
+            "ready": True,
+            "checks": {},
+            "deepseek_pricing_snapshot": {"fixture": True},
+        }
 
     monkeypatch.setattr(batch_eval, "preflight", fake_preflight)
     monkeypatch.setattr(batch_eval, "load_env", lambda _path: {})

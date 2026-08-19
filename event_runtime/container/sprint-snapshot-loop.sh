@@ -433,6 +433,7 @@ final_snapshot_and_ack() {
   stop_signal_watch
   stop_trace_mirror
   mirror_trace_once
+  budget_watchdog_once || true
   write_heartbeat final_snapshot
   until snapshot "$reason"; do
     sleep 10

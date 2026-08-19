@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Install a static Luna catalog copied from the exact pinned Codex release.
-# This prevents the OpenAI models endpoint from changing tool or collaboration
-# semantics during a comparison while leaving API transport/authentication alone.
+# This prevents a model refresh from changing tool/collaboration semantics and
+# routes the pinned OpenRouter/OpenAI preset through the durable cost proxy.
 set -euo pipefail
 
 CODEX_HOME_DIR=${CODEX_HOME:-/tmp/codex-home}
 LOCK_SRC=${SPRINT_CODEX_LUNA_MODEL_LOCK:-/opt/sprint-codex-luna-model-lock.json}
 TEMPLATE_SRC=${SPRINT_CODEX_DEEPSEEK_MODELS_JSON:-/opt/sprint-codex-deepseek-models.json}
-MODEL_SLUG=${SPRINT_CODEX_LUNA_MODEL:-gpt-5.6-luna}
+MODEL_SLUG=${SPRINT_CODEX_LUNA_MODEL:-@preset/sprint-gpt-5-6-luna-openai-standard}
+BASE_URL=${SPRINT_CODEX_LUNA_BASE_URL:-http://127.0.0.1:18080/api/v1}
 CATALOG_PATH="$CODEX_HOME_DIR/models.json"
 CONFIG_PATH="$CODEX_HOME_DIR/config.toml"
 
@@ -20,7 +21,8 @@ done
 
 umask 077
 mkdir -p "$CODEX_HOME_DIR"
-python3 - "$CONFIG_PATH" "$CATALOG_PATH" "$LOCK_SRC" "$TEMPLATE_SRC" "$MODEL_SLUG" <<'PY'
+python3 - "$CONFIG_PATH" "$CATALOG_PATH" "$LOCK_SRC" "$TEMPLATE_SRC" \
+  "$MODEL_SLUG" "$BASE_URL" <<'PY'
 import hashlib
 import json
 import pathlib
@@ -32,13 +34,14 @@ catalog_path = pathlib.Path(sys.argv[2])
 lock_path = pathlib.Path(sys.argv[3])
 template_path = pathlib.Path(sys.argv[4])
 model_slug = sys.argv[5]
+base_url = sys.argv[6]
 
 lock = json.loads(lock_path.read_text(encoding="utf-8"))
 if lock.get("codex_version") != "0.147.0":
     raise SystemExit("Luna catalog lock must target Codex 0.147.0")
 model = lock.get("model")
-if not isinstance(model, dict) or model.get("slug") != model_slug:
-    raise SystemExit(f"Luna catalog lock is missing {model_slug}")
+if not isinstance(model, dict) or model.get("slug") != "gpt-5.6-luna":
+    raise SystemExit("Luna catalog lock is missing gpt-5.6-luna")
 if model.get("tool_mode") != "code_mode_only" or model.get("multi_agent_version") != "v1":
     raise SystemExit("Luna catalog lock does not preserve the comparison contract")
 
@@ -55,6 +58,7 @@ if hashlib.sha256(canonical).hexdigest() != lock.get("model_messages_sha256"):
     raise SystemExit("Codex instruction template does not match the Luna lock")
 
 locked_model = dict(model)
+locked_model["slug"] = model_slug
 locked_model["model_messages"] = messages
 catalog_path.write_text(
     json.dumps({"models": [locked_model]}, indent=2, ensure_ascii=False) + "\n",
@@ -70,17 +74,47 @@ def key_of(line: str) -> str | None:
     return stripped.split("=", 1)[0].strip().strip("\"'")
 
 out = []
+skip_section = False
 for line in raw.splitlines():
-    if key_of(line) in {"model", "model_catalog_json"}:
+    stripped = line.strip()
+    if stripped.startswith("["):
+        header = stripped.strip("[]").strip().strip("\"'")
+        skip_section = header == "model_providers.sprint_openrouter" or header.startswith(
+            "model_providers.sprint_openrouter."
+        )
+        if skip_section:
+            continue
+        out.append(line)
+        continue
+    if skip_section:
+        continue
+    if key_of(line) in {
+        "model",
+        "model_catalog_json",
+        "model_provider",
+        "preferred_auth_method",
+        "forced_login_method",
+        "openai_base_url",
+    }:
         continue
     out.append(line)
 
 leading = [
     f'model = "{model_slug}"',
+    'model_provider = "sprint_openrouter"',
+    'preferred_auth_method = "apikey"',
+    'forced_login_method = "api"',
     f'model_catalog_json = "{catalog_path}"',
 ]
+provider = [
+    "[model_providers.sprint_openrouter]",
+    'name = "sprint_openrouter"',
+    f'base_url = "{base_url}"',
+    'wire_api = "responses"',
+    'env_key = "OPENAI_API_KEY"',
+]
 body = "\n".join(out).strip("\n")
-parts = ["\n".join(leading)]
+parts = ["\n".join(leading), "\n".join(provider)]
 if body:
     parts.append(body)
 text = "\n\n".join(parts).rstrip() + "\n"

@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from harbor.agents.installed.codex import Codex
 from harbor.models.agent.context import AgentContext
 
@@ -17,7 +19,11 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(OPS))
 
 from event_runtime.control import run as sprintctl  # noqa: E402
-from event_runtime.cost.model_usage import prefer_complete_session  # noqa: E402
+from event_runtime.cost.model_usage import (  # noqa: E402
+    apply_provider_reported_costs,
+    prefer_complete_session,
+    provider_usage_records,
+)
 
 
 def write_session(state: Path, attempt: int, session_id: str, timestamp: str) -> None:
@@ -179,6 +185,106 @@ def test_zero_completed_requests_are_attested_as_exact_zero_cost(
     )
     assert all(row["trajectory_sha256"] for row in audit["source_sessions"])
     assert sprintctl.run_usage_audit_ready(tmp_path, run) == (True, [])
+
+
+def test_openrouter_cost_is_bound_to_the_matching_codex_usage() -> None:
+    request = {
+        "cpu_attempt": 2,
+        "input_tokens": 100,
+        "cached_input_tokens": 80,
+        "cache_write_input_tokens": 5,
+        "output_tokens": 20,
+        "reasoning_output_tokens": 7,
+        "total_tokens": 120,
+    }
+    record = {
+        "cpu_attempt": 2,
+        "ledger_request_id": "ledger-1",
+        "generation_id": "gen-1",
+        "response_model": "openai/gpt-5.6-luna-20260709",
+        "provider_reported_cost_usd": 0.123,
+        "usage": {
+            "input_tokens": 100,
+            "input_tokens_details": {
+                "cached_tokens": 80,
+                "cache_write_tokens": 5,
+            },
+            "output_tokens": 20,
+            "output_tokens_details": {"reasoning_tokens": 7},
+            "total_tokens": 120,
+            "cost": 0.123,
+            "cost_details": {"upstream_inference_cost": 0.123},
+        },
+    }
+
+    apply_provider_reported_costs([request], [record])
+
+    assert request["calculated_cost_usd"] == 0.123
+    assert request["provider_reported_cost_usd"] == 0.123
+    assert request["cost_basis"] == "openrouter_reported_per_request"
+    assert request["openrouter_generation_id"] == "gen-1"
+    assert request["cost_components_usd"] == {"upstream_inference_cost": 0.123}
+
+
+def test_recovered_openrouter_cost_is_bound_in_serial_request_order(
+    tmp_path: Path,
+) -> None:
+    request = {
+        "cpu_attempt": 1,
+        "input_tokens": 100,
+        "cached_input_tokens": 80,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 20,
+        "reasoning_output_tokens": 7,
+        "total_tokens": 120,
+    }
+    record_path = tmp_path / "provider-api-usage" / "requests" / "recovered.json"
+    record_path.parent.mkdir(parents=True)
+    record_path.write_text(
+        json.dumps(
+            {
+                "run_id": "run-1",
+                "cpu_attempt": 1,
+                "ledger_request_id": "ledger-recovered",
+                "generation_id": "gen-recovered",
+                "requested_at": "2026-08-19T00:00:00Z",
+                "state": "recovered_complete",
+                "provider_reported_cost_usd": 0.25,
+                "generation_audit": {"total_cost": 0.25},
+            }
+        )
+    )
+
+    records = provider_usage_records(tmp_path, "run-1")
+    apply_provider_reported_costs([request], records)
+
+    assert request["calculated_cost_usd"] == 0.25
+    assert request["openrouter_generation_id"] == "gen-recovered"
+    assert request["cost_components_usd"] == {}
+
+
+def test_openrouter_usage_mismatch_fails_closed() -> None:
+    request = {
+        "cpu_attempt": 1,
+        "input_tokens": 10,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 5,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 15,
+    }
+    record = {
+        "cpu_attempt": 1,
+        "provider_reported_cost_usd": 0.1,
+        "usage": {
+            "input_tokens": 11,
+            "output_tokens": 5,
+            "total_tokens": 16,
+        },
+    }
+
+    with pytest.raises(SystemExit, match="no matching OpenRouter"):
+        apply_provider_reported_costs([request], [record])
 
 
 def test_dominating_harbor_final_supersedes_shifted_durable_ordinals(

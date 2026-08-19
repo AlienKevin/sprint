@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Rewrite $CODEX_HOME config to DeepSeek's official Codex harness shape.
+# Rewrite $CODEX_HOME config to the audited DeepSeek Codex harness shape.
 # See: https://api-docs.deepseek.com/quick_start/agent_integrations/codex/
 #
 # Harbor only appends openai_base_url; that routes Codex through the built-in
@@ -13,8 +13,8 @@ set -euo pipefail
 
 CODEX_HOME_DIR=${CODEX_HOME:-/tmp/codex-home}
 MODELS_SRC=${SPRINT_CODEX_DEEPSEEK_MODELS_JSON:-/opt/sprint-codex-deepseek-models.json}
-BASE_URL=${SPRINT_CODEX_DEEPSEEK_BASE_URL:-https://api.deepseek.com/}
-MODEL_SLUG=${SPRINT_CODEX_DEEPSEEK_MODEL:-deepseek-v4-flash}
+BASE_URL=${SPRINT_CODEX_DEEPSEEK_BASE_URL:-https://openrouter.ai/api/v1}
+MODEL_SLUG=${SPRINT_CODEX_DEEPSEEK_MODEL:-@preset/sprint-deepseek-v4-flash-0731-official}
 
 if [[ ! -f "$MODELS_SRC" ]]; then
   echo "DeepSeek Codex models.json missing: $MODELS_SRC" >&2
@@ -28,6 +28,7 @@ cp -f -- "$MODELS_SRC" "$CODEX_HOME_DIR/models.json"
 CONFIG_PATH="$CODEX_HOME_DIR/config.toml"
 python3 - "$CONFIG_PATH" "$CODEX_HOME_DIR/models.json" "$BASE_URL" "$MODEL_SLUG" <<'PY'
 import pathlib
+import json
 import re
 import sys
 
@@ -35,6 +36,21 @@ config_path = pathlib.Path(sys.argv[1])
 models_path = pathlib.Path(sys.argv[2])
 base_url = sys.argv[3]
 model_slug = sys.argv[4]
+
+# The provider preset is the wire-level model identifier. Preserve every field
+# from DeepSeek's official Codex catalog while making its slug match the model
+# passed to Codex, otherwise Codex silently falls back to generic metadata.
+catalog = json.loads(models_path.read_text(encoding="utf-8"))
+models = catalog.get("models")
+if not isinstance(models, list):
+    raise SystemExit("DeepSeek model catalog has no model list")
+flash_models = [model for model in models if model.get("slug") == "deepseek-v4-flash"]
+if len(flash_models) != 1:
+    raise SystemExit("DeepSeek model catalog must contain exactly one V4 Flash model")
+flash_models[0]["slug"] = model_slug
+models_path.write_text(
+    json.dumps(catalog, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+)
 
 raw = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
 
@@ -137,4 +153,4 @@ text = re.sub(r"\n{3,}", "\n\n", text)
 config_path.write_text(text, encoding="utf-8")
 PY
 
-echo "Applied official DeepSeek Codex config in $CODEX_HOME_DIR" >&2
+echo "Applied audited DeepSeek Codex config in $CODEX_HOME_DIR" >&2

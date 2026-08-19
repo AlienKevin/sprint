@@ -4,11 +4,22 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
 
-SNAPSHOT = Path("/run/sprint-gpu-mirror/cost.json")
+MIRRORED_SNAPSHOT = Path("/run/sprint-gpu-mirror/cost.json")
+SNAPSHOT = MIRRORED_SNAPSHOT
+
+
+def snapshot_path() -> Path:
+    run_id = os.environ.get("SPRINT_RUN_ID", "")
+    if run_id:
+        durable = Path("/durable") / "runs" / run_id / "budget" / "watchdog.json"
+        if durable.is_file():
+            return durable
+    return SNAPSHOT
 
 
 def main() -> int:
@@ -25,7 +36,7 @@ def main() -> int:
         )
         return 2
     try:
-        payload = json.loads(SNAPSHOT.read_text())
+        payload = json.loads(snapshot_path().read_text())
     except FileNotFoundError:
         payload = {
             "schema_version": 1,

@@ -25,6 +25,7 @@ _CONTAINER_LINKS = (
     "sprint-telemetry.py",
     "sprint_gpu_pipeline.py",
     "sprint-codex-exec-wrapper.sh",
+    "sprint-openrouter-ledger-proxy.py",
     "sprint-apply-deepseek-codex-config.sh",
     "sprint-apply-luna-codex-config.sh",
     "sprint-agent-shell-env.sh",
@@ -129,6 +130,7 @@ def agent_image(event: EventLayout, public_verifier: Path) -> modal.Image:
         "chmod 0755 /opt/event_runtime/container/bin/event "
         "/opt/event/check_policy.py "
         "/opt/event_runtime/container/sprint-codex-exec-wrapper.sh "
+        "/opt/event_runtime/container/sprint-openrouter-ledger-proxy.py "
         "/opt/event_runtime/container/sprint-apply-deepseek-codex-config.sh "
         "/opt/event_runtime/container/sprint-apply-luna-codex-config.sh "
         "/opt/event_runtime/container/sprint-agent-shell-env.sh "

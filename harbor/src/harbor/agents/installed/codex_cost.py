@@ -4,11 +4,15 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
+import json
+import os
 from typing import Any
 
 
 USAGE_AUDIT_SCHEMA_VERSION = 2
 COST_ESTIMATE_BASIS = "published_standard_list_price"
+DEEPSEEK_OPENROUTER_PRESET = "@preset/sprint-deepseek-v4-flash-0731-official"
+LUNA_OPENROUTER_PRESET = "@preset/sprint-gpt-5-6-luna-openai-standard"
 
 # This is deliberately pinned rather than delegated to LiteLLM. Cost reports must
 # remain reproducible after a dependency updates its mutable pricing table.
@@ -132,17 +136,27 @@ def pricing_snapshot_for_request(
         if request_time.tzinfo is None:
             return None
         if normalized_model == DEEPSEEK_V4_FLASH_PRICING["model"]:
+            off_peak, peak = _deepseek_pricing_snapshots()
+            if off_peak.get("provider") == "openrouter":
+                utc_hour = request_time.astimezone(timezone.utc).hour
+                if any(
+                    int(window["start_hour"]) <= utc_hour < int(window["end_hour"])
+                    for window in off_peak["peak_hours_utc"]
+                ):
+                    return peak
+                return off_peak
             effective_from = datetime.fromisoformat(
-                DEEPSEEK_V4_FLASH_OFF_PEAK_PRICING["effective_from"].replace(
-                    "Z", "+00:00"
-                )
+                off_peak["effective_from"].replace("Z", "+00:00")
             )
             if request_time < effective_from:
                 return DEEPSEEK_V4_FLASH_LEGACY_PRICING
             utc_hour = request_time.astimezone(timezone.utc).hour
-            if 1 <= utc_hour < 4 or 6 <= utc_hour < 10:
-                return DEEPSEEK_V4_FLASH_PEAK_PRICING
-            return DEEPSEEK_V4_FLASH_OFF_PEAK_PRICING
+            if any(
+                int(window["start_hour"]) <= utc_hour < int(window["end_hour"])
+                for window in off_peak["peak_hours_utc"]
+            ):
+                return peak
+            return off_peak
         effective_from = datetime.fromisoformat(
             GPT_5_6_LUNA_PRICING["effective_from"].replace("Z", "+00:00")
         )
@@ -185,6 +199,10 @@ DEEPSEEK_V4_FLASH_OFF_PEAK_PRICING: dict[str, Any] = {
     "currency": "USD",
     "captured_at": "2026-08-18",
     "effective_from": "2026-08-16T16:00:00Z",
+    "peak_hours_utc": [
+        {"start_hour": 1, "end_hour": 4},
+        {"start_hour": 6, "end_hour": 10},
+    ],
     "schedule": "off_peak_except_01_04_and_06_10_utc",
     "source_url": "https://api-docs.deepseek.com/quick_start/pricing",
     "unit_tokens": 1_000_000,
@@ -209,6 +227,152 @@ DEEPSEEK_V4_FLASH_PEAK_PRICING: dict[str, Any] = {
 # Backwards-compatible model descriptor for callers that only need the alias.
 DEEPSEEK_V4_FLASH_PRICING = DEEPSEEK_V4_FLASH_OFF_PEAK_PRICING
 
+
+def _deepseek_pricing_snapshots() -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return the launch-frozen official tariff, or the historical fallback.
+
+    New benchmark launches must provide the normalized snapshot in the
+    environment. The fallback keeps already archived runs reproducible.
+    """
+    raw = os.environ.get("SPRINT_DEEPSEEK_PRICING_SNAPSHOT")
+    if not raw:
+        return DEEPSEEK_V4_FLASH_OFF_PEAK_PRICING, DEEPSEEK_V4_FLASH_PEAK_PRICING
+    try:
+        contract = json.loads(raw)
+        if not isinstance(contract, dict):
+            raise ValueError("snapshot is not an object")
+        provider = contract.get("provider")
+        if provider not in {"deepseek", "openrouter"}:
+            raise ValueError("provider mismatch")
+        if contract.get("model") != "deepseek-v4-flash":
+            raise ValueError("model mismatch")
+        if (
+            contract.get("currency") != "USD"
+            or contract.get("unit_tokens") != 1_000_000
+        ):
+            raise ValueError("unsupported currency or token unit")
+        source_hash = str(contract["source_sha256"])
+        if len(source_hash) != 64 or any(
+            char not in "0123456789abcdef" for char in source_hash
+        ):
+            raise ValueError("invalid source hash")
+        tariffs = contract["rates_usd_per_million_tokens"]
+        if provider == "deepseek":
+            datetime.fromisoformat(
+                str(contract["effective_from"]).replace("Z", "+00:00")
+            )
+            windows = contract["peak_hours_utc"]
+            if not isinstance(windows, list) or not windows:
+                raise ValueError("missing peak schedule")
+            for window in windows:
+                start, end = int(window["start_hour"]), int(window["end_hour"])
+                if not 0 <= start < end <= 24:
+                    raise ValueError("invalid peak schedule")
+            rate_sets = (tariffs["off_peak"], tariffs["peak"])
+        else:
+            if contract.get("endpoint_tag") != "deepseek":
+                raise ValueError("endpoint mismatch")
+            if contract.get("upstream_provider") != "DeepSeek":
+                raise ValueError("upstream provider mismatch")
+            if contract.get("openrouter_model") != ("deepseek/deepseek-v4-flash-0731"):
+                raise ValueError("OpenRouter model mismatch")
+            if contract.get("model_version") != "DeepSeek-V4-Flash-0731":
+                raise ValueError("model version mismatch")
+            if contract.get("context_length") != 1_048_576:
+                raise ValueError("context length mismatch")
+            if contract.get("max_completion_tokens") != 384_000:
+                raise ValueError("maximum output mismatch")
+            if contract.get("resolved_model") != (
+                "deepseek/deepseek-v4-flash-20260731"
+            ):
+                raise ValueError("concrete model revision mismatch")
+            if contract.get("preset_slug") != (
+                "sprint-deepseek-v4-flash-0731-official"
+            ):
+                raise ValueError("preset mismatch")
+            if (
+                not contract.get("preset_id")
+                or int(contract.get("preset_version", 0)) < 1
+            ):
+                raise ValueError("preset identity is missing")
+            windows = contract["peak_hours_utc"]
+            if not isinstance(windows, list) or not windows:
+                raise ValueError("missing peak schedule")
+            for window in windows:
+                start, end = int(window["start_hour"]), int(window["end_hour"])
+                if not 0 <= start < end <= 24:
+                    raise ValueError("invalid peak schedule")
+            rate_sets = (tariffs["off_peak"], tariffs["peak"])
+        for rates in rate_sets:
+            for bucket in ("cache_hit_input", "cache_miss_input", "output"):
+                if Decimal(str(rates[bucket])) <= 0:
+                    raise ValueError("non-positive tariff")
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid DeepSeek launch pricing snapshot: {exc}") from exc
+
+    common = {
+        "provider": str(provider),
+        "model": "deepseek-v4-flash",
+        "model_version": str(contract["model_version"]),
+        "currency": "USD",
+        "captured_at": str(contract["captured_at"]),
+        "source_url": str(contract["source_url"]),
+        "source_sha256": source_hash,
+        "unit_tokens": 1_000_000,
+    }
+    if provider == "openrouter":
+        route = {
+            **common,
+            "upstream_provider": str(contract["upstream_provider"]),
+            "endpoint_tag": str(contract["endpoint_tag"]),
+            "openrouter_model": str(contract["openrouter_model"]),
+            "resolved_model": str(contract["resolved_model"]),
+            "quantization": str(contract["quantization"]),
+            "context_length": int(contract["context_length"]),
+            "max_completion_tokens": int(contract["max_completion_tokens"]),
+            "zdr": bool(contract["zdr"]),
+            "zdr_source_url": str(contract["zdr_source_url"]),
+            "preset_slug": str(contract["preset_slug"]),
+            "preset_id": str(contract["preset_id"]),
+            "preset_version": int(contract["preset_version"]),
+            "preset_source_url": str(contract["preset_source_url"]),
+            "peak_hours_utc": windows,
+        }
+        off_peak = {
+            **route,
+            "id": f"openrouter-deepseek-off-peak-{source_hash[:12]}",
+            "schedule": "off_peak",
+            "rates_usd_per_million_tokens": dict(tariffs["off_peak"]),
+        }
+        peak = {
+            **route,
+            "id": f"openrouter-deepseek-peak-{source_hash[:12]}",
+            "schedule": "peak",
+            "rates_usd_per_million_tokens": dict(tariffs["peak"]),
+        }
+        return off_peak, peak
+    common.update(
+        {
+            "effective_from": str(contract["effective_from"]),
+            "peak_hours_utc": windows,
+            "announcement_url": str(contract["announcement_url"]),
+        }
+    )
+    off_peak = {
+        **common,
+        "id": f"deepseek-v4-flash-off-peak-{source_hash[:12]}",
+        "schedule": "off_peak",
+        "rates_usd_per_million_tokens": dict(tariffs["off_peak"]),
+    }
+    peak = {
+        **common,
+        "id": f"deepseek-v4-flash-peak-{source_hash[:12]}",
+        "schedule": "peak",
+        "rates_usd_per_million_tokens": dict(tariffs["peak"]),
+    }
+    return off_peak, peak
+
+
 _USAGE_FIELDS = (
     "input_tokens",
     "cached_input_tokens",
@@ -223,6 +387,14 @@ def canonical_model_name(model: str | None) -> str | None:
     """Strip an optional provider prefix from a model identifier."""
     if not model:
         return None
+    if model == DEEPSEEK_OPENROUTER_PRESET or model.endswith(
+        "@preset/sprint-deepseek-v4-flash-0731-official"
+    ):
+        return "deepseek-v4-flash"
+    if model == LUNA_OPENROUTER_PRESET or model.endswith(
+        "@preset/sprint-gpt-5-6-luna-openai-standard"
+    ):
+        return "gpt-5.6-luna"
     return model.split("/", 1)[-1]
 
 
@@ -501,6 +673,7 @@ def build_usage_audit(
             if record.get("pricing_snapshot_id")
         }
     )
+    deepseek_snapshots = _deepseek_pricing_snapshots()
     snapshots = [
         snapshot
         for snapshot_id in snapshot_ids
@@ -510,8 +683,7 @@ def build_usage_audit(
             GPT_5_6_LUNA_LEGACY_PRICING,
             GPT_5_6_LUNA_PRICING,
             DEEPSEEK_V4_FLASH_LEGACY_PRICING,
-            DEEPSEEK_V4_FLASH_OFF_PEAK_PRICING,
-            DEEPSEEK_V4_FLASH_PEAK_PRICING,
+            *deepseek_snapshots,
         )
         if snapshot_id == snapshot["id"]
     ]

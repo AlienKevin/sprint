@@ -109,6 +109,32 @@ def test_snapshot_has_one_matching_component_ledger_and_all_constants(
     assert "official_verifier" in payload["excluded"]
 
 
+def test_host_uses_the_same_canonical_watchdog_document_as_agent(
+    tmp_path: Path,
+) -> None:
+    canonical = {
+        "schema_version": 2,
+        "run_id": "run-1",
+        "status": "within_budget",
+        "total_usd": 7.25,
+        "components": {
+            "model_api": {
+                "cost_usd": 6.0,
+                "cost_source": "openrouter_reported_per_request",
+            },
+            "cpu_agent": {"cost_usd": 0.25},
+            "training_sandboxes": {"cost_usd": 1.0},
+        },
+    }
+    path = tmp_path / "telemetry/budget-watchdog.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(canonical))
+
+    assert (
+        agent_cost.build_snapshot(timeline_fixture(), state_dir=tmp_path) == canonical
+    )
+
+
 def test_live_ledger_caps_open_training_interval_at_snapshot_time() -> None:
     timeline = timeline_fixture()
     timeline["events"] = timeline["events"][:-1]

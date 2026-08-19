@@ -321,6 +321,54 @@ def sync_durable_trace(
     return result.returncode == 0
 
 
+def sync_durable_api_usage(
+    state_dir: Path,
+    run: dict[str, Any],
+    *,
+    min_interval_seconds: int = 60,
+    force: bool = False,
+) -> bool:
+    """Download the immutable OpenRouter per-request billing ledger."""
+    stamp = state_dir / "provider-api-usage-sync.json"
+    try:
+        previous = json.loads(stamp.read_text())
+    except (OSError, json.JSONDecodeError):
+        previous = {}
+    now = time.time()
+    if (
+        not force
+        and now - float(previous.get("synced_at_epoch_s") or 0) < min_interval_seconds
+    ):
+        return bool(previous.get("ok"))
+    destination = state_dir / "provider-api-usage"
+    destination.mkdir(parents=True, exist_ok=True)
+    result = run_command(
+        modal_command(
+            "volume",
+            "get",
+            "--force",
+            str(run["volume_name"]),
+            f"runs/{run['run_id']}/api-usage",
+            str(destination),
+        ),
+        run=run,
+        check=False,
+        timeout=300,
+    )
+    payload = {
+        "schema_version": 1,
+        "run_id": run["run_id"],
+        "synced_at": utc_now(),
+        "synced_at_epoch_s": now,
+        "ok": result.returncode == 0,
+        "error": (
+            None if result.returncode == 0 else (result.stderr or result.stdout)[-1000:]
+        ),
+    }
+    atomic_write_json(stamp, payload, mode=0o600)
+    return result.returncode == 0
+
+
 def sync_durable_telemetry(
     state_dir: Path,
     run: dict[str, Any],
@@ -672,7 +720,8 @@ def enforce_agent_cost_budget(
         return False
     total = cost_payload.get("total_usd")
     if (
-        cost_payload.get("status") != "complete"
+        cost_payload.get("status")
+        not in {"complete", "within_budget", "stop_requested"}
         or isinstance(total, bool)
         or not isinstance(total, (int, float))
         or not math.isfinite(float(total))
@@ -1133,9 +1182,16 @@ def monitor_once(
                     run,
                     max_age_seconds=5 * 60,
                 )
+                fetch_remote_json(
+                    state_dir,
+                    run,
+                    "budget/watchdog.json",
+                    "telemetry/budget-watchdog.json",
+                )
                 if upload:
                     sync_durable_trace(state_dir, run)
                 if run.get("usage_audit_required"):
+                    sync_durable_api_usage(state_dir, run)
                     reconstruct_codex_usage(state_dir, run)
                 timeline = build_unified_timeline(state_dir, run, upload=upload)
                 cost_payload = agent_cost.build_snapshot(timeline, state_dir=state_dir)
@@ -1262,14 +1318,18 @@ def usage_audit_ready(trial: Path, run: dict[str, Any]) -> tuple[bool, list[str]
             details.append(f"usage audit request {index} cost is incomplete")
 
     snapshots = audit.get("pricing_snapshots")
-    if not isinstance(snapshots, list) or len(snapshots) != 1:
-        details.append("usage audit must contain exactly one pricing snapshot")
+    if not isinstance(snapshots, list) or not snapshots:
+        details.append("usage audit must contain pricing snapshot provenance")
     else:
-        snapshot = snapshots[0] if isinstance(snapshots[0], dict) else {}
-        if snapshot.get("model") != expected_model:
-            details.append("usage audit pricing snapshot model mismatch")
-        if not snapshot.get("captured_at") or not snapshot.get("source_url"):
-            details.append("usage audit pricing snapshot provenance is incomplete")
+        valid_snapshots = [row for row in snapshots if isinstance(row, dict)]
+        if len(valid_snapshots) != len(snapshots):
+            details.append("usage audit pricing snapshot is malformed")
+        for snapshot in valid_snapshots:
+            if snapshot.get("model") != expected_model:
+                details.append("usage audit pricing snapshot model mismatch")
+            if not snapshot.get("captured_at") or not snapshot.get("source_url"):
+                details.append("usage audit pricing snapshot provenance is incomplete")
+        snapshot = valid_snapshots[0] if valid_snapshots else {}
         resolved = run.get("resolved_model_version")
         if (
             expected_model == "deepseek-v4-flash"
@@ -1383,6 +1443,13 @@ def run_usage_audit_ready(
             details.append(f"run usage request {index} cost is incomplete")
         if not request.get("usage_reported_at"):
             details.append(f"run usage request {index} has no timestamp")
+        if (run.get("budget_enforcement") or {}).get("api_cost_source") == (
+            "openrouter_reported_per_request"
+        ):
+            if not isinstance(request.get("provider_reported_cost_usd"), (int, float)):
+                details.append(f"run usage request {index} lacks OpenRouter cost")
+            if not request.get("openrouter_generation_id"):
+                details.append(f"run usage request {index} lacks generation ID")
     for source in audit.get("source_sessions") or []:
         if not isinstance(source, dict):
             details.append("run usage source session is malformed")
@@ -1679,6 +1746,7 @@ def finalize(
         sync_durable_telemetry(state_dir, run, force=True)
     if run.get("usage_audit_required"):
         sync_durable_trace(state_dir, run, force=True)
+        sync_durable_api_usage(state_dir, run, force=True)
         reconstruct_codex_usage(state_dir, run)
         if run.get("unified_timeline_required"):
             build_unified_timeline(state_dir, run, upload=upload)

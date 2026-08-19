@@ -7,6 +7,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -218,6 +219,131 @@ def source_groups(state_dir: Path) -> list[tuple[int, str, list[Path]]]:
         (attempt, source_id, groups[(attempt, source_id)])
         for attempt, source_id in sorted(groups)
     ]
+
+
+def provider_usage_records(state_dir: Path, run_id: str) -> list[dict[str, Any]]:
+    """Load completed OpenRouter records from the synced durable ledger."""
+    rows: list[dict[str, Any]] = []
+    root = state_dir / "provider-api-usage"
+    for path in sorted(root.glob("**/requests/*.json")) if root.is_dir() else ():
+        try:
+            record = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise SystemExit(f"invalid provider usage record: {path}") from exc
+        if not isinstance(record, dict) or record.get("run_id") != run_id:
+            raise SystemExit(f"provider usage identity mismatch: {path}")
+        cost = record.get("provider_reported_cost_usd")
+        if (
+            isinstance(cost, (int, float))
+            and not isinstance(cost, bool)
+            and math.isfinite(float(cost))
+            and float(cost) >= 0
+            and record.get("state") in {"complete", "recovered_complete"}
+        ):
+            rows.append(record)
+    return sorted(
+        rows,
+        key=lambda row: (
+            int(row.get("cpu_attempt") or 0),
+            str(row.get("requested_at") or ""),
+            str(row.get("ledger_request_id") or ""),
+        ),
+    )
+
+
+def _provider_usage_signature(record: dict[str, Any]) -> tuple[int, ...] | None:
+    usage = record.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    input_details = usage.get("input_tokens_details") or {}
+    output_details = usage.get("output_tokens_details") or {}
+    return (
+        int(usage.get("input_tokens") or 0),
+        int(input_details.get("cached_tokens") or 0),
+        int(input_details.get("cache_write_tokens") or 0),
+        int(usage.get("output_tokens") or 0),
+        int(output_details.get("reasoning_tokens") or 0),
+        int(usage.get("total_tokens") or 0),
+    )
+
+
+def _codex_usage_signature(request: dict[str, Any]) -> tuple[int, ...]:
+    return tuple(
+        int(request.get(field) or 0)
+        for field in (
+            "input_tokens",
+            "cached_input_tokens",
+            "cache_write_input_tokens",
+            "output_tokens",
+            "reasoning_output_tokens",
+            "total_tokens",
+        )
+    )
+
+
+def apply_provider_reported_costs(
+    requests: list[dict[str, Any]], records: list[dict[str, Any]]
+) -> None:
+    """Bind every Codex usage event to exactly one OpenRouter charge."""
+    remaining = list(records)
+    for request in requests:
+        attempt = int(request.get("cpu_attempt") or 0)
+        signature = _codex_usage_signature(request)
+        match_index = next(
+            (
+                index
+                for index, record in enumerate(remaining)
+                if int(record.get("cpu_attempt") or 0) == attempt
+                and _provider_usage_signature(record) == signature
+            ),
+            None,
+        )
+        if match_index is None:
+            # If a stream was interrupted after OpenRouter assigned a generation
+            # ID, the generation endpoint can recover the exact billed cost but
+            # may not return the terminal Responses-API usage object. Codex is
+            # serial within an attempt, so bind those recovery-only records in
+            # durable request order after all exact token-signature matches.
+            match_index = next(
+                (
+                    index
+                    for index, record in enumerate(remaining)
+                    if int(record.get("cpu_attempt") or 0) == attempt
+                    and _provider_usage_signature(record) is None
+                    and record.get("state") == "recovered_complete"
+                ),
+                None,
+            )
+        if match_index is None:
+            raise SystemExit(
+                "Codex usage has no matching OpenRouter per-request cost: "
+                f"attempt={attempt} usage={signature}"
+            )
+        record = remaining.pop(match_index)
+        cost = float(record["provider_reported_cost_usd"])
+        usage = record.get("usage")
+        details = (usage.get("cost_details") or {}) if isinstance(usage, dict) else {}
+        request.update(
+            {
+                "pricing_snapshot_id": None,
+                "calculated_cost_usd": cost,
+                "provider_reported_cost_usd": cost,
+                "cost_components_usd": {
+                    str(name): float(value)
+                    for name, value in details.items()
+                    if isinstance(value, (int, float)) and not isinstance(value, bool)
+                },
+                "cost_reconstruction_status": "complete",
+                "cost_basis": "openrouter_reported_per_request",
+                "openrouter_generation_id": record.get("generation_id"),
+                "openrouter_ledger_request_id": record.get("ledger_request_id"),
+                "openrouter_response_model": record.get("response_model"),
+            }
+        )
+    if remaining:
+        raise SystemExit(
+            f"{len(remaining)} billed OpenRouter requests have no matching Codex usage"
+        )
 
 
 def reconstruct_group(
@@ -516,6 +642,11 @@ def main() -> int:
     args = parser.parse_args()
     state_dir = args.state_dir.resolve()
     run = json.loads((state_dir / "run.json").read_text())
+    pricing_snapshot = run.get("api_pricing_snapshot")
+    if isinstance(pricing_snapshot, dict):
+        os.environ["SPRINT_DEEPSEEK_PRICING_SNAPSHOT"] = json.dumps(
+            pricing_snapshot, separators=(",", ":"), sort_keys=True
+        )
     groups = source_groups(state_dir)
     sources = [
         reconstruct_group(
@@ -545,6 +676,16 @@ def main() -> int:
             anonymous.append(source)
     sessions = list(unique_sessions.values()) + anonymous
     requests = [request for source in sessions for request in source["requests"]]
+    provider_cost_source = (run.get("budget_enforcement") or {}).get(
+        "api_cost_source"
+    ) == "openrouter_reported_per_request"
+    provider_records = (
+        provider_usage_records(state_dir, str(run["run_id"]))
+        if provider_cost_source
+        else []
+    )
+    if provider_cost_source:
+        apply_provider_reported_costs(requests, provider_records)
     request_ids = [request["run_api_call_id"] for request in requests]
     if len(request_ids) != len(set(request_ids)):
         raise SystemExit("duplicate run-level Codex API call IDs")
@@ -553,7 +694,11 @@ def main() -> int:
         for snapshot in source["pricing_snapshots"]:
             if isinstance(snapshot, dict) and snapshot.get("id"):
                 snapshots[str(snapshot["id"])] = snapshot
-    complete = all(source["cost_reconstruction_complete"] for source in sessions)
+    complete = (
+        True
+        if provider_cost_source
+        else all(source["cost_reconstruction_complete"] for source in sessions)
+    )
     expected_attempts = {
         int(row["attempt"])
         for row in run.get("cpu_launch_history") or []
@@ -587,18 +732,29 @@ def main() -> int:
             if complete
             else None
         ),
-        "calculated_api_usage_cost_basis": next(
-            iter(
-                {
-                    str(source["calculated_api_usage_cost_basis"])
-                    for source in sessions
-                    if source.get("calculated_api_usage_cost_basis")
-                }
-            ),
-            None,
+        "calculated_api_usage_cost_basis": (
+            "openrouter_reported_per_request"
+            if provider_cost_source
+            else next(
+                iter(
+                    {
+                        str(source["calculated_api_usage_cost_basis"])
+                        for source in sessions
+                        if source.get("calculated_api_usage_cost_basis")
+                    }
+                ),
+                None,
+            )
         ),
-        "provider_billed_api_usage_usd": None,
-        "provider_billing_reconciled": False,
+        "provider_billed_api_usage_usd": (
+            sum(
+                float(record["provider_reported_cost_usd"])
+                for record in provider_records
+            )
+            if provider_cost_source
+            else None
+        ),
+        "provider_billing_reconciled": provider_cost_source,
         "invoice_exact": False,
     }
     if complete and not requests:
