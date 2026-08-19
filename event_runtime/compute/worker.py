@@ -383,6 +383,7 @@ os.chmod(temporary, 0o600)
 os.replace(temporary, target)
 """.strip()
     updated: list[str] = []
+    finished: list[str] = []
     errors: dict[str, str] = {}
     for sandbox_id in targets:
         try:
@@ -403,12 +404,19 @@ os.replace(temporary, target)
                     detail = detail.decode(errors="replace")
                 raise RuntimeError(str(detail).strip()[-1000:])
             updated.append(sandbox_id)
+        except modal.exception.NotFoundError:
+            # A short worker can finish after the registry scan but before
+            # this exec.  A terminal sandbox cannot accrue more GPU cost, so
+            # the budget objective is already satisfied.  The dispatcher
+            # separately reconciles the job's success/failure state.
+            finished.append(sandbox_id)
         except Exception as exc:  # noqa: BLE001
             errors[sandbox_id] = f"{type(exc).__name__}: {exc}"
     return {
         "gpu_budget_mirror": "updated" if not errors else "error",
         "sandbox_ids": targets,
         "updated_sandbox_ids": updated,
+        "finished_sandbox_ids": finished,
         "errors": errors,
         "snapshot_checked_at_epoch_s": checked_at,
         "snapshot_total_usd": total,

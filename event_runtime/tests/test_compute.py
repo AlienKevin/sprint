@@ -633,6 +633,35 @@ class ClaimSelectionTests(unittest.TestCase):
         )
         self.assertEqual(detail["gpu_budget_mirror"], "updated")
         self.assertEqual(detail["updated_sandbox_ids"], ["sb-gpu"])
+        self.assertEqual(detail["finished_sandbox_ids"], [])
+
+    def test_budget_mirror_accepts_sandbox_that_finished_after_scan(self) -> None:
+        payload = {
+            "schema_version": 2,
+            "run_id": "run-1",
+            "checked_at_epoch_s": 1234.5,
+            "total_usd": 2.25,
+            "stop_threshold_usd": 9.9,
+            "status": "within_budget",
+        }
+        with mock.patch.object(
+            gpu_worker.modal.Sandbox,
+            "from_id",
+            side_effect=gpu_worker.modal.exception.NotFoundError(
+                "Task has already finished with status success"
+            ),
+        ) as from_id:
+            detail = gpu_worker.mirror_gpu_budget(
+                {"run_id": "run-1"},
+                payload,
+                jobs=[{"sandbox_id": "sb-finished", "status": "running"}],
+            )
+
+        from_id.assert_called_once_with("sb-finished")
+        self.assertEqual(detail["gpu_budget_mirror"], "updated")
+        self.assertEqual(detail["updated_sandbox_ids"], [])
+        self.assertEqual(detail["finished_sandbox_ids"], ["sb-finished"])
+        self.assertEqual(detail["errors"], {})
 
     def test_fetches_only_reported_scoped_policy_for_agent_mirror(self) -> None:
         run = {"run_id": "run-1", "volume_name": "volume-1"}
