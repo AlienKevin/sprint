@@ -1441,6 +1441,30 @@ def test_public_policy_index_keeps_only_six_newest_runs(tmp_path: Path) -> None:
     ]
 
 
+def test_public_policy_index_preserves_observer_clock_without_changes(
+    tmp_path: Path,
+) -> None:
+    web = tmp_path / "web"
+    state_path = tmp_path / "stable" / "frontier-state.json"
+    state_path.parent.mkdir()
+    (state_path.parent / "run.json").write_text(
+        json.dumps({"run_id": "stable", "created_at": "2026-08-19T00:00:00Z"})
+    )
+    state = {"policies": {}, "captures": {}}
+    frontier_update.write_web_policy_indexes(state_path, state, web)
+    run_path = web / "data" / "policies" / "stable.json"
+    previous = json.loads(run_path.read_text())
+    previous["updated_at"] = "2000-01-01T00:00:00Z"
+    frontier_update.atomic_write_json(run_path, previous)
+
+    frontier_update.write_web_policy_indexes(state_path, state, web)
+
+    public = json.loads(run_path.read_text())
+    index = json.loads((web / "data" / "policies" / "index.json").read_text())
+    assert public["updated_at"] == "2000-01-01T00:00:00Z"
+    assert index["runs"][0]["updated_at"] == "2000-01-01T00:00:00Z"
+
+
 def test_homepage_uses_compact_timeline_index_summaries() -> None:
     source = (ROOT / "web" / "app.js").read_text()
     assert "dashboard_artifacts" in source

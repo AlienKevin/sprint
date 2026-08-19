@@ -111,6 +111,25 @@ def atomic_json(path: pathlib.Path, payload: dict[str, Any], mode: int = 0o600) 
     os.replace(tmp, path)
 
 
+def preserve_observer_timestamp(
+    path: pathlib.Path, payload: dict[str, Any], *, timestamp_key: str
+) -> None:
+    """Keep a generated clock stable when the timeline itself is unchanged."""
+    try:
+        previous = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(previous, dict):
+        return
+    previous_material = {
+        key: value for key, value in previous.items() if key != timestamp_key
+    }
+    material = {key: value for key, value in payload.items() if key != timestamp_key}
+    previous_timestamp = previous.get(timestamp_key)
+    if previous_material == material and isinstance(previous_timestamp, str):
+        payload[timestamp_key] = previous_timestamp
+
+
 def read_jsonl(path: pathlib.Path) -> tuple[list[dict[str, Any]], int]:
     rows: list[dict[str, Any]] = []
     malformed = 0
@@ -2575,6 +2594,7 @@ def build_timeline(
     builder.add_final_verification(trials)
     payload = builder.finalize()
     internal = state_dir / "telemetry" / "unified-timeline.json"
+    preserve_observer_timestamp(internal, payload, timestamp_key="generated_at")
     atomic_json(internal, payload, mode=0o600)
     if web_dir is not None:
         public = web_dir / "data" / "timelines" / f"{builder.run_id}.json"

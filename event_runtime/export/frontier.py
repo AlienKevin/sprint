@@ -84,6 +84,25 @@ def atomic_write_json(path: Path, payload: Any, mode: int = 0o644) -> None:
     atomic_write_text(path, json.dumps(payload, indent=2, sort_keys=True) + "\n", mode)
 
 
+def preserve_observer_timestamp(
+    path: Path, payload: dict[str, Any], *, timestamp_key: str
+) -> None:
+    """Keep a public observer clock stable when its material payload is unchanged."""
+    try:
+        previous = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(previous, dict):
+        return
+    previous_material = {
+        key: value for key, value in previous.items() if key != timestamp_key
+    }
+    material = {key: value for key, value in payload.items() if key != timestamp_key}
+    previous_timestamp = previous.get(timestamp_key)
+    if previous_material == material and isinstance(previous_timestamp, str):
+        payload[timestamp_key] = previous_timestamp
+
+
 def atomic_copy(source: Path, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     fd, raw = tempfile.mkstemp(
@@ -895,6 +914,7 @@ def write_web_policy_indexes(
         "policies": rows,
     }
     run_path = web / "data" / "policies" / f"{run_id}.json"
+    preserve_observer_timestamp(run_path, payload, timestamp_key="updated_at")
     atomic_write_json(run_path, payload)
 
     index_path = web / "data" / "policies" / "index.json"

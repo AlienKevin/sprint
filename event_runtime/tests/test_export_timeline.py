@@ -620,6 +620,28 @@ def test_public_timeline_index_keeps_only_six_newest_runs(tmp_path: Path) -> Non
     ]
 
 
+def test_timeline_preserves_generated_clock_without_material_changes(
+    tmp_path: Path,
+) -> None:
+    web = tmp_path / "web"
+    state = fixture_run(tmp_path)
+    unified_timeline.build_timeline(state, web_dir=web)
+    internal = state / "telemetry" / "unified-timeline.json"
+    previous = json.loads(internal.read_text())
+    previous["generated_at"] = "2000-01-01T00:00:00Z"
+    unified_timeline.atomic_json(internal, previous)
+
+    payload = unified_timeline.build_timeline(state, web_dir=web)
+
+    public = json.loads(
+        (web / "data" / "timelines" / "timeline-fixture.json").read_text()
+    )
+    index = json.loads((web / "data" / "timelines" / "index.json").read_text())
+    assert payload["generated_at"] == "2000-01-01T00:00:00Z"
+    assert public["generated_at"] == "2000-01-01T00:00:00Z"
+    assert index["runs"][0]["generated_at"] == "2000-01-01T00:00:00Z"
+
+
 def test_durable_gpu_lifecycle_copy_is_deduplicated_by_event_id(
     tmp_path: Path,
 ) -> None:
