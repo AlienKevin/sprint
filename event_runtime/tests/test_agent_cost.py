@@ -243,6 +243,87 @@ def test_host_merged_cost_uses_previous_snapshot_as_monotonic_floor(
     assert payload["budget_remaining_usd"] == 46.5
 
 
+def test_stop_ack_makes_reconciled_host_compute_lifecycle_authoritative(
+    tmp_path: Path,
+) -> None:
+    telemetry = tmp_path / "telemetry"
+    telemetry.mkdir(parents=True)
+    provisional_components = {
+        "model_api": {"cost_usd": 6.0, "request_count": 2},
+        "cpu_agent": {
+            "cost_usd": 15.0,
+            "allocated_seconds": 5.0,
+            "cost_components_usd": {"CPU": 5.0, "Memory": 10.0},
+        },
+        "training_sandboxes": {
+            "cost_usd": 39.0,
+            "allocated_seconds": 3.0,
+            "cost_components_usd": {"CPU": 3.0, "Memory": 6.0, "A10G": 30.0},
+        },
+    }
+    (telemetry / "budget-watchdog.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "run_id": "run-1",
+                "status": "stop_requested",
+                "budget_usd": 100.0,
+                "stop_threshold_usd": 99.9,
+                "total_usd": 60.0,
+                "components": provisional_components,
+            }
+        )
+    )
+    (telemetry / "agent-cost.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "run_id": "run-1",
+                "status": "stop_requested",
+                "total_usd": 60.0,
+                "components": provisional_components,
+            }
+        )
+    )
+    timeline = timeline_fixture()
+    timeline["events"].append(
+        {"kind": "stop_acknowledged", "epoch_ms": 4000}
+    )
+
+    payload = agent_cost.build_snapshot(timeline, state_dir=tmp_path)
+
+    # Provider API usage remains monotonic, but exact post-ACK host lifecycle
+    # values replace larger provisional CPU/GPU estimates.
+    assert payload["component_totals_usd"] == {
+        "model_api_usd": 6.0,
+        "cpu_agent_usd": 12.0,
+        "training_sandboxes_usd": 26.0,
+    }
+    assert payload["total_usd"] == 44.0
+    assert payload["cpu_allocated_seconds"] == 4.0
+    assert payload["training_allocated_seconds"] == 2.0
+    assert payload["components"]["cpu_agent"]["cost_components_usd"] == {
+        "CPU": 4,
+        "Memory": 8,
+    }
+    assert payload["component_snapshot_sources"]["training_sandboxes"] == (
+        "host_timeline_after_stop_ack"
+    )
+
+
+def test_cost_ledger_prefers_reconciled_training_intervals() -> None:
+    timeline = timeline_fixture()
+    timeline["resource_usage_summary"]["training_gpu"] = {
+        "intervals": [{"start_epoch_ms": 1500, "end_epoch_ms": 2500}]
+    }
+
+    ledger = agent_cost.build_cost_ledger(timeline)
+
+    assert ledger["training_intervals"] == [(1500, 2500)]
+    # CPU: 4 * 3 = 12; reconciled training: 1 * 13 = 13; API: .5.
+    assert agent_cost.cumulative_cost_at_epoch(ledger, 4000) == 25.5
+
+
 def test_live_ledger_caps_open_training_interval_at_snapshot_time() -> None:
     timeline = timeline_fixture()
     timeline["events"] = timeline["events"][:-1]

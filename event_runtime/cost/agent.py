@@ -48,22 +48,37 @@ def build_cost_ledger(timeline: dict[str, Any]) -> dict[str, Any]:
     ]
     if not cpu_starts:
         raise RuntimeError("CPU allocation lifecycle is missing")
-    starts = {
-        str(event["lease_id"]): int(event["epoch_ms"])
-        for event in events
-        if event.get("kind") in {"gpu_allocated", "gpu_reallocated"}
-        and event.get("lease_id")
-    }
-    ends = {
-        str(event["lease_id"]): int(event["epoch_ms"])
-        for event in events
-        if event.get("kind") in {"gpu_released", "gpu_preempted"}
-        and event.get("lease_id")
-    }
-    training_intervals = sorted(
-        (start, max(start, ends.get(lease_id, end_epoch_ms)))
-        for lease_id, start in starts.items()
-    )
+    reconciled_intervals = (resources.get("training_gpu") or {}).get("intervals")
+    if isinstance(reconciled_intervals, list):
+        training_intervals = sorted(
+            (
+                int(interval["start_epoch_ms"]),
+                max(
+                    int(interval["start_epoch_ms"]),
+                    int(interval.get("end_epoch_ms") or end_epoch_ms),
+                ),
+            )
+            for interval in reconciled_intervals
+            if isinstance(interval, dict)
+            and isinstance(interval.get("start_epoch_ms"), int)
+        )
+    else:
+        starts = {
+            str(event["lease_id"]): int(event["epoch_ms"])
+            for event in events
+            if event.get("kind") in {"gpu_allocated", "gpu_reallocated"}
+            and event.get("lease_id")
+        }
+        ends = {
+            str(event["lease_id"]): int(event["epoch_ms"])
+            for event in events
+            if event.get("kind") in {"gpu_released", "gpu_preempted"}
+            and event.get("lease_id")
+        }
+        training_intervals = sorted(
+            (start, max(start, ends.get(lease_id, end_epoch_ms)))
+            for lease_id, start in starts.items()
+        )
     return {
         "origin_epoch_ms": int(timeline["clock"]["origin_epoch_ms"]),
         "end_epoch_ms": end_epoch_ms,
@@ -349,10 +364,22 @@ def build_snapshot(
                 result[key] = max(candidates)
         return result
 
+    stop_acknowledged = any(
+        event.get("kind") == "stop_acknowledged" for event in events
+    )
+
     def merged_component(name: str) -> dict[str, Any]:
         host = dict(host_components.get(name) or {})
         prior = dict(previous_components.get(name) or {})
         remote = dict(canonical_components.get(name) or {})
+        # Once STOP_ACK exists, the host timeline has exact CPU termination
+        # and provider-backed terminal bounds for every training allocation.
+        # A pre-ACK high-water mark can be conservatively larger because a
+        # stale sandbox mount has not yet observed those tighter bounds.  Do
+        # not let that provisional estimate permanently inflate finalized
+        # cost or make the website disagree with the reconciled timeline.
+        if stop_acknowledged and name != "model_api":
+            return host
         merged = {**host, **prior, **remote}
         merged["cost_usd"] = max(
             float(host.get("cost_usd") or 0.0),
@@ -425,8 +452,16 @@ def build_snapshot(
             ),
             "component_snapshot_sources": {
                 "model_api": "max(openrouter_watchdog,host_provider_usage)",
-                "cpu_agent": "max(in_sandbox_lifecycle,host_timeline)",
-                "training_sandboxes": "max(in_sandbox_lifecycle,host_timeline)",
+                "cpu_agent": (
+                    "host_timeline_after_stop_ack"
+                    if stop_acknowledged
+                    else "max(in_sandbox_lifecycle,host_timeline)"
+                ),
+                "training_sandboxes": (
+                    "host_timeline_after_stop_ack"
+                    if stop_acknowledged
+                    else "max(in_sandbox_lifecycle,host_timeline)"
+                ),
             },
         }
     )

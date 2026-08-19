@@ -2253,6 +2253,24 @@ class Builder:
             "training_gpu": {
                 "allocation_count": len(training_intervals),
                 "allocated_ms": allocated_by_role["training_gpu"],
+                # Preserve the provider-registry-clamped intervals used for
+                # billing so downstream cost curves cannot reconstruct a
+                # larger provisional lifecycle from raw legacy events.
+                "intervals": [
+                    {
+                        key: interval.get(key)
+                        for key in (
+                            "gpu_job_id",
+                            "gpu_attempt",
+                            "lease_id",
+                            "start_epoch_ms",
+                            "end_epoch_ms",
+                            "lifecycle_bounds_source",
+                        )
+                        if interval.get(key) is not None
+                    }
+                    for interval in training_intervals
+                ],
             },
             "verifier_gpu": {
                 "allocation_count": len(verifier_intervals),
