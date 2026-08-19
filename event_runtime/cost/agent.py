@@ -334,6 +334,21 @@ def build_snapshot(
     previous_components = (previous or {}).get("components") or {}
     host_components = snapshot["components"]
 
+    def cumulative_numeric_map(*values: Any) -> dict[str, float | int]:
+        maps = [value for value in values if isinstance(value, dict)]
+        keys = {str(key) for value in maps for key in value}
+        result: dict[str, float | int] = {}
+        for key in keys:
+            candidates = [
+                value.get(key)
+                for value in maps
+                if isinstance(value.get(key), (int, float))
+                and not isinstance(value.get(key), bool)
+            ]
+            if candidates:
+                result[key] = max(candidates)
+        return result
+
     def merged_component(name: str) -> dict[str, Any]:
         host = dict(host_components.get(name) or {})
         prior = dict(previous_components.get(name) or {})
@@ -344,6 +359,11 @@ def build_snapshot(
             float(prior.get("cost_usd") or 0.0),
             float(remote.get("cost_usd") or 0.0),
         )
+        merged["cost_components_usd"] = cumulative_numeric_map(
+            host.get("cost_components_usd"),
+            prior.get("cost_components_usd"),
+            remote.get("cost_components_usd"),
+        )
         if name != "model_api":
             merged["allocated_seconds"] = max(
                 float(host.get("allocated_seconds") or 0.0),
@@ -351,10 +371,18 @@ def build_snapshot(
                 float(remote.get("allocated_seconds") or 0.0),
             )
         else:
+            merged["tokens"] = cumulative_numeric_map(
+                host.get("tokens"), prior.get("tokens"), remote.get("tokens")
+            )
             merged["request_count"] = max(
                 int(host.get("request_count") or 0),
                 int(prior.get("request_count") or 0),
                 int(remote.get("request_count") or 0),
+            )
+            merged["priced_request_count"] = max(
+                int(host.get("priced_request_count") or 0),
+                int(prior.get("priced_request_count") or 0),
+                int(remote.get("priced_request_count") or 0),
             )
         return merged
 

@@ -124,9 +124,27 @@ def test_host_conservatively_merges_watchdog_and_host_allocation_ledgers(
             "model_api": {
                 "cost_usd": 6.0,
                 "cost_source": "openrouter_reported_per_request",
+                "cost_components_usd": {"output": 0.0},
+                "tokens": {
+                    "ordinary_uncached_input_tokens": 0,
+                    "cached_input_tokens": 0,
+                    "cache_write_input_tokens": 0,
+                    "output_tokens": 0,
+                    "reasoning_output_tokens": 0,
+                },
             },
-            "cpu_agent": {"cost_usd": 0.25},
-            "training_sandboxes": {"cost_usd": 1.0},
+            "cpu_agent": {
+                "cost_usd": 0.25,
+                "cost_components_usd": {"CPU": 0.0, "Memory": 0.0},
+            },
+            "training_sandboxes": {
+                "cost_usd": 1.0,
+                "cost_components_usd": {
+                    "CPU": 0.0,
+                    "Memory": 0.0,
+                    "A10G": 0.0,
+                },
+            },
         },
     }
     path = tmp_path / "telemetry/budget-watchdog.json"
@@ -141,6 +159,23 @@ def test_host_conservatively_merges_watchdog_and_host_allocation_ledgers(
     assert payload["components"]["model_api"]["cost_usd"] == 6.0
     assert payload["components"]["cpu_agent"]["cost_usd"] == 12
     assert payload["components"]["training_sandboxes"]["cost_usd"] == 26
+    assert payload["components"]["model_api"]["tokens"] == {
+        "ordinary_uncached_input_tokens": 2,
+        "cached_input_tokens": 3,
+        "cache_write_input_tokens": 4,
+        "output_tokens": 5,
+        "reasoning_output_tokens": 1,
+    }
+    assert payload["components"]["model_api"]["cost_components_usd"] == {
+        "output": 0.5
+    }
+    assert payload["components"]["cpu_agent"]["cost_components_usd"] == {
+        "CPU": 4,
+        "Memory": 8,
+    }
+    assert payload["components"]["training_sandboxes"][
+        "cost_components_usd"
+    ] == {"CPU": 2, "Memory": 4, "A10G": 20}
     assert payload["component_totals_usd"] == {
         "model_api_usd": 6.0,
         "cpu_agent_usd": 12,
