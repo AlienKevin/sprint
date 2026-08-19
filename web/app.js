@@ -1,5 +1,5 @@
 (() => {
-  const APP_VERSION = '20260819-3';
+  const APP_VERSION = '20260819-4';
   const $ = selector => document.querySelector(selector);
   const MODEL = {
     deepseek: {label:'DeepSeek V4 Flash 0731', color:'#4D6BFF', cls:'deepseek'},

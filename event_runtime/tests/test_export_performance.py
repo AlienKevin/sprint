@@ -170,8 +170,8 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "class:'submission-target'" in app
     assert "el.getScreenCTM()" in app
     assert "nearest.distance<=22**2" in app
-    assert "app.js?v=20260819-3" in page
-    assert "const APP_VERSION = '20260819-3'" in app
+    assert "app.js?v=20260819-4" in page
+    assert "const APP_VERSION = '20260819-4'" in app
     assert "refreshVersion" in app
     assert "setInterval(refresh,30000)" in app
     assert "visibilitychange" in app
@@ -189,6 +189,12 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "background: var(--cost-training)" in styles
     assert "--deepseek:#4D6BFF" in timeline_page
     assert "--luna:#66D693" in timeline_page
+    assert 'id="policy-cost-chart"' in timeline_page
+    assert 'id="policy-replay-frame"' in timeline_page
+    assert "/data/performance/current.json" in timeline_app
+    assert "renderPolicyChart" in timeline_app
+    assert "showPolicy(point)" in timeline_app
+    assert "Open rendered policy" in timeline_app
     assert "setModelAccent" in timeline_app
     assert "<title>The Race to AGI4ALL</title>" in page
     assert "The Race to<br><em>AGI4ALL.</em>" in page
