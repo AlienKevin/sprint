@@ -347,6 +347,61 @@ def test_collection_waits_for_complete_hour_then_persists_provider_report(
     assert details == []
 
 
+def test_concurrent_runs_share_identical_workspace_billing_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+    rows = []
+    for run_id in ("cost-one", "cost-two"):
+        state = tmp_path / run_id
+        job = state / "job"
+        job.mkdir(parents=True)
+        run = {
+            **run_payload(),
+            "run_id": run_id,
+            "app_name": f"sprint-{run_id}",
+            "training_app_name": f"sprint-{run_id}-training",
+            "verifier_app_name": f"sprint-{run_id}-verifier",
+            "volume_name": f"sprint-{run_id}-volume",
+            "job_path": str(job),
+        }
+        (state / "run.json").write_text(json.dumps(run))
+        (job / "result.json").write_text(
+            json.dumps({"finished_at": "2026-08-08T04:50:00Z"})
+        )
+        rows.extend(
+            {
+                "object_id": run_id,
+                "description": f"sprint-{run_id}",
+                "resource": category,
+                "cost": "0.5",
+            }
+            for category in ("CPU", "Memory")
+        )
+
+    monkeypatch.setattr(modal_cost.shutil, "which", lambda name: "/tools/modal")
+
+    def runner(command, **kwargs):
+        nonlocal calls
+        calls += 1
+        return subprocess.CompletedProcess(command, 0, json.dumps(rows), "")
+
+    results = [
+        modal_cost.collect_provider_billing(
+            tmp_path / run_id,
+            now=dt.datetime(2026, 8, 8, 5, 6, tzinfo=dt.timezone.utc),
+            runner=runner,
+            volume_scanner=lambda run, duration_seconds: {"status": "captured"},
+        )
+        for run_id in ("cost-one", "cost-two")
+    ]
+
+    assert calls == 1
+    assert [result["billing_report_cache_hit"] for result in results] == [False, True]
+    assert all(result["provider_complete"] is True for result in results)
+
+
 def test_modal_billing_readiness_rejects_pending_artifact(tmp_path: Path) -> None:
     state = tmp_path / "cost-run"
     (state / "telemetry").mkdir(parents=True)

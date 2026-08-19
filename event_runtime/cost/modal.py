@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import fcntl
 import hashlib
 import json
 import os
@@ -24,6 +25,7 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 BILLING_COLLECTION_BUFFER_SECONDS = 5 * 60
+BILLING_REPORT_CACHE_SECONDS = 60
 MODAL_SANDBOX_PRICING: dict[str, Any] = {
     "id": "modal-sandbox-public-2026-08-08",
     "provider": "modal",
@@ -401,6 +403,61 @@ def _atomic_json(path: pathlib.Path, payload: dict[str, Any]) -> None:
         pathlib.Path(raw).unlink(missing_ok=True)
 
 
+def _cached_billing_report(
+    state_dir: pathlib.Path,
+    *,
+    command: list[str],
+    env: dict[str, str],
+    profile: str,
+    current: dt.datetime,
+    runner: Any,
+) -> tuple[subprocess.CompletedProcess[str], bool]:
+    """Serialize and briefly share identical workspace billing queries."""
+    identity = hashlib.sha256(
+        json.dumps(
+            {"command": command, "profile": profile},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    root = state_dir.parent / ".modal-billing-report-cache"
+    cache_path = root / f"{identity}.json"
+    lock_path = root / f"{identity}.lock"
+    root.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        cached = _read_json(cache_path)
+        captured_at = cached.get("captured_at_epoch_s")
+        if (
+            isinstance(captured_at, (int, float))
+            and not isinstance(captured_at, bool)
+            and 0 <= current.timestamp() - float(captured_at) <= BILLING_REPORT_CACHE_SECONDS
+            and isinstance(cached.get("stdout"), str)
+        ):
+            return (
+                subprocess.CompletedProcess(command, 0, cached["stdout"], ""),
+                True,
+            )
+        completed = runner(
+            command,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+        if completed.returncode == 0:
+            _atomic_json(
+                cache_path,
+                {
+                    "schema_version": 1,
+                    "captured_at_epoch_s": current.timestamp(),
+                    "stdout": completed.stdout,
+                },
+            )
+        return completed, False
+
+
 def collect_provider_billing(
     state_dir: pathlib.Path,
     *,
@@ -480,14 +537,15 @@ def collect_provider_billing(
     env = os.environ.copy()
     if run.get("modal_profile"):
         env["MODAL_PROFILE"] = str(run["modal_profile"])
-    completed = runner(
-        cmd,
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+    completed, cache_hit = _cached_billing_report(
+        state_dir,
+        command=cmd,
         env=env,
+        profile=str(run.get("modal_profile") or ""),
+        current=current,
+        runner=runner,
     )
+    base["billing_report_cache_hit"] = cache_hit
     if completed.returncode != 0:
         base["status"] = "error"
         base["error"] = (
