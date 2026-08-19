@@ -1629,8 +1629,14 @@ def final_conditions(
         # Retained while the stopped 2026-08-08 batch finishes draining.
         "all_blind_submissions_by_deadline",
     }
+    stop_was_requested = (state_dir / "STOP_REQUESTED.json").is_file()
     conditions: dict[str, bool] = {
-        "stop_ack": (state_dir / "STOP_ACK.json").is_file(),
+        # Natural completion has no controller stop to acknowledge. A run that
+        # did receive a stop request must still prove that the CPU sandbox
+        # observed it before the host seals the archive.
+        "stop_ack": (
+            not stop_was_requested or (state_dir / "STOP_ACK.json").is_file()
+        ),
         "job_found": job is not None,
         "trial_found": trial is not None,
         "ledger_parseable": False,
@@ -2101,8 +2107,31 @@ def budget_pulse_once(run_id: str, *, now: float | None = None) -> dict[str, Any
         return _budget_pulse_once_unlocked(run_id, now=now)
 
 
+def run_results_finished(state_dir: Path, run: dict[str, Any]) -> bool:
+    """Return whether Harbor has durably sealed both run result records.
+
+    A normally completing agent does not write ``STOP_ACK.json`` because no
+    controller stop was requested. Its watchdog stops with the sandbox, so a
+    pulse process that only watches STOP_ACK will otherwise report an
+    indefinitely stale upstream snapshot while finalization is in progress.
+    The host-owned job and trial results are the durable natural-completion
+    boundary.
+    """
+    job, trial = discover_job_and_trial(state_dir, run)
+    if job is None or trial is None:
+        return False
+    for path in (job / "result.json", trial / "result.json"):
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return False
+        if not payload.get("finished_at"):
+            return False
+    return True
+
+
 def budget_pulse_loop(run_id: str, poll_seconds: int) -> int:
-    state_dir, _run = load_run(run_id)
+    state_dir, run = load_run(run_id)
     with file_lock(state_dir / "budget-pulse.lock", blocking=False) as acquired:
         if not acquired:
             print(f"budget pulse already running for {run_id}", file=sys.stderr)
@@ -2114,6 +2143,7 @@ def budget_pulse_loop(run_id: str, poll_seconds: int) -> int:
             while not (
                 (state_dir / "FINALIZED.json").is_file()
                 or (state_dir / "STOP_ACK.json").is_file()
+                or run_results_finished(state_dir, run)
             ):
                 started = time.monotonic()
                 try:

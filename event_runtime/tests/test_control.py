@@ -325,6 +325,41 @@ class DurableOpsTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "snapshot is stale"):
                     sprintctl.budget_pulse_once("pulse-run", now=1000.0)
 
+    def test_budget_pulse_exits_after_natural_harbor_completion(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            job = state / "jobs" / "natural-run"
+            trial = job / "task__abc"
+            trial.mkdir(parents=True)
+            (job / "result.json").write_text(
+                json.dumps({"finished_at": "2026-08-19T11:16:15Z"})
+            )
+            (trial / "result.json").write_text(
+                json.dumps({"finished_at": "2026-08-19T11:16:15Z"})
+            )
+            run = {
+                "run_id": "natural-run",
+                "jobs_root": str(state / "jobs"),
+                "job_path": str(job),
+                "trial_path": str(trial),
+            }
+
+            @contextlib.contextmanager
+            def owned_lock(_path: Path, *, blocking: bool = True):
+                self.assertFalse(blocking)
+                yield True
+
+            with (
+                mock.patch.object(sprintctl, "load_run", return_value=(state, run)),
+                mock.patch.object(sprintctl, "file_lock", side_effect=owned_lock),
+                mock.patch.object(sprintctl, "budget_pulse_once") as pulse,
+                mock.patch.object(sprintctl, "update_run_fields"),
+            ):
+                self.assertEqual(sprintctl.budget_pulse_loop("natural-run", 15), 0)
+
+            pulse.assert_not_called()
+            self.assertFalse((state / "budget-pulse.pid").exists())
+
     def test_budget_watchdog_prefers_live_agent_sandbox(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             state = Path(raw)
@@ -604,6 +639,43 @@ class DurableOpsTests(unittest.TestCase):
         self.assertFalse(sprintctl.unified_timeline_ready(payload, "timeline-current"))
         payload["schema_version"] = 6
         self.assertFalse(sprintctl.unified_timeline_ready(payload, "other-run"))
+
+    def test_natural_completion_does_not_require_stop_ack(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            job = state / "jobs" / "natural-run"
+            trial = job / "task__abc"
+            (trial / "artifacts" / "continuous").mkdir(parents=True)
+            (trial / "artifacts" / "continuous" / "ledger.jsonl").write_text("")
+            (job / "result.json").write_text(
+                json.dumps({"finished_at": "2026-08-19T11:16:15Z"})
+            )
+            (trial / "result.json").write_text(
+                json.dumps({"finished_at": "2026-08-19T11:16:15Z"})
+            )
+            run = {
+                "run_id": "natural-run",
+                "state_dir": str(state),
+                "jobs_root": str(state / "jobs"),
+                "job_path": str(job),
+                "trial_path": str(trial),
+                "evaluation_result_policy": "all_blind_archival_submissions",
+            }
+            with (
+                mock.patch.object(sprintctl, "update_run_fields"),
+                mock.patch.object(sprintctl, "harbor_alive", return_value=False),
+                mock.patch.object(sprintctl, "worker_alive", return_value=False),
+            ):
+                _complete, conditions, _details = sprintctl.final_conditions(
+                    state, run
+                )
+                self.assertTrue(conditions["stop_ack"])
+
+                (state / "STOP_REQUESTED.json").write_text("{}\n")
+                _complete, conditions, _details = sprintctl.final_conditions(
+                    state, run
+                )
+                self.assertFalse(conditions["stop_ack"])
 
     def test_stale_finalized_file_is_rechecked(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
