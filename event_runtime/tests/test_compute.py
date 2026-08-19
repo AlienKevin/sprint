@@ -353,6 +353,54 @@ class ClaimSelectionTests(unittest.TestCase):
             archived["provider_logs_sha256"], hashlib.sha256(expected).hexdigest()
         )
 
+    def test_mirrors_bounded_live_modal_streams_before_exit(self) -> None:
+        mirrored: dict[str, object] = {}
+
+        def mirror(_run: dict, payload: dict, **kwargs: object) -> dict:
+            mirrored["payload"] = payload
+            mirrored.update(kwargs)
+            return {"agent_mirror": "updated", "agent_mirror_files": 2}
+
+        job = {
+            "run_id": "run-1",
+            "job_id": "job-1",
+            "attempt": 1,
+            "status": "running",
+            "sandbox_id": "sb-1",
+        }
+        with mock.patch.object(gpu_worker, "mirror_agent_job", side_effect=mirror):
+            refreshed, detail = gpu_worker.refresh_live_provider_logs(
+                {"run_id": "run-1"},
+                job,
+                now=100.0,
+                read_output=lambda _run, _sandbox_id: "iteration 12/100\n",
+            )
+
+        self.assertEqual(detail["live_provider_logs"], "mirrored")
+        self.assertEqual(
+            mirrored["log_content"],
+            b"== Modal live log tail ==\niteration 12/100\n",
+        )
+        self.assertEqual(refreshed["provider_live_logs_checked_at_epoch_s"], 100.0)
+        self.assertEqual(refreshed["provider_live_logs_source"], "modal-sandbox-tail")
+
+    def test_live_modal_stream_mirror_is_rate_limited(self) -> None:
+        job = {
+            "job_id": "job-1",
+            "attempt": 1,
+            "sandbox_id": "sb-1",
+            "provider_live_logs_checked_at_epoch_s": 90.0,
+        }
+        refreshed, detail = gpu_worker.refresh_live_provider_logs(
+            {"run_id": "run-1"},
+            job,
+            now=100.0,
+            read_output=lambda _run, _sandbox_id: self.fail("unexpected read"),
+        )
+
+        self.assertIs(refreshed, job)
+        self.assertEqual(detail["live_provider_logs"], "fresh")
+
     def test_provider_log_archive_failure_is_retryable(self) -> None:
         job = {
             "run_id": "run-1",

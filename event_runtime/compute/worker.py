@@ -66,6 +66,8 @@ AGENT_GPU_MIRROR_ROOT = "/run/sprint-gpu-mirror"
 AGENT_GPU_MIRROR_LOG_BYTES = 768 * 1024
 AGENT_GPU_MIRROR_ARTIFACT_BYTES = 32 * 1024 * 1024
 AGENT_GPU_MIRROR_ARG_BYTES = 64 * 1024
+LIVE_PROVIDER_LOG_INTERVAL_SEC = 30
+LIVE_PROVIDER_LOG_TAIL_LINES = 2000
 AGENT_GPU_CLI_PATH = "/opt/event_runtime/agent/gpu.py"
 AGENT_COST_CLI_PATH = "/opt/event_runtime/agent/cost.py"
 AGENT_COMMAND_SOURCE = ROOT / "event_runtime" / "agent"
@@ -1237,6 +1239,86 @@ def read_modal_sandbox_output(sandbox_id: str) -> tuple[str, str]:
     return str(sandbox.stdout.read() or ""), str(sandbox.stderr.read() or "")
 
 
+def read_modal_sandbox_live_output(
+    run: dict[str, Any], sandbox_id: str
+) -> str:
+    """Read a bounded, non-blocking tail from a running Modal Sandbox."""
+    result = sprintctl.run_command(
+        sprintctl.modal_command(
+            "container",
+            "logs",
+            sandbox_id,
+            "--tail",
+            str(LIVE_PROVIDER_LOG_TAIL_LINES),
+        ),
+        run=run,
+        check=False,
+        timeout=45,
+    )
+    if result.returncode != 0:
+        error = (result.stderr or result.stdout or "Modal logs unavailable").strip()
+        raise RuntimeError(error[-1000:])
+    return result.stdout or ""
+
+
+def refresh_live_provider_logs(
+    run: dict[str, Any],
+    job: dict[str, Any],
+    *,
+    now: float | None = None,
+    read_output=read_modal_sandbox_live_output,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Mirror bounded provider output while a GPU attempt is still running.
+
+    The terminal archive remains the complete, checksummed source of record.
+    This tail exists so the agent can diagnose progress and failures without
+    sleeping blindly until the Sandbox exits.
+    """
+    ref = time.time() if now is None else float(now)
+    sandbox_id = str(job.get("sandbox_id") or "")
+    attempt = int(job.get("attempt") or 0)
+    if not sandbox_id or attempt <= 0:
+        return job, {"live_provider_logs": "unavailable"}
+    last_checked = float(job.get("provider_live_logs_checked_at_epoch_s") or 0)
+    if ref - last_checked < LIVE_PROVIDER_LOG_INTERVAL_SEC:
+        return job, {"live_provider_logs": "fresh"}
+
+    payload = dict(job)
+    payload["provider_live_logs_checked_at_epoch_s"] = ref
+    try:
+        text = read_output(run, sandbox_id)
+    except Exception as exc:  # noqa: BLE001
+        payload["provider_live_logs_error"] = f"{type(exc).__name__}: {exc}"
+        return payload, {
+            "live_provider_logs": "error",
+            "live_provider_logs_error": payload["provider_live_logs_error"],
+        }
+
+    encoded = ("== Modal live log tail ==\n" + text).encode(
+        "utf-8", errors="replace"
+    )
+    payload.pop("provider_live_logs_error", None)
+    payload.update(
+        {
+            "provider_live_logs_mirrored_at": utc_now(),
+            "provider_live_logs_size_bytes": len(encoded),
+            "provider_live_logs_sha256": hashlib.sha256(encoded).hexdigest(),
+            "provider_live_logs_source": "modal-sandbox-tail",
+        }
+    )
+    mirror_detail = mirror_agent_job(run, payload, log_content=encoded)
+    if mirror_detail.get("agent_mirror") != "updated":
+        payload["provider_live_logs_error"] = str(
+            mirror_detail.get("agent_mirror_error") or "agent mirror unavailable"
+        )
+        return payload, {"live_provider_logs": "mirror_error", **mirror_detail}
+    return payload, {
+        "live_provider_logs": "mirrored",
+        "live_provider_logs_size_bytes": len(encoded),
+        **mirror_detail,
+    }
+
+
 def provider_terminal_error(stream_text: str) -> str | None:
     """Return a definitive child failure marker hidden by a zero wrapper exit.
 
@@ -1834,6 +1916,11 @@ def reconcile_job(
         persist_job(run, observed)
         return observed, detail
     if decision != "dead":
+        before_live_logs = job
+        job, live_log_detail = refresh_live_provider_logs(run, job, now=ref)
+        if job != before_live_logs:
+            persist_job(run, job)
+        detail.update(live_log_detail)
         return job, detail
     retried = schedule_retry(
         run,
