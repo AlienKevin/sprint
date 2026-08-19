@@ -167,8 +167,29 @@ def test_event_cost_is_a_single_json_interface(tmp_path: Path, monkeypatch) -> N
     snapshot = tmp_path / "cost.json"
     snapshot.write_text(json.dumps({"schema_version": 1, "total_usd": 1.25}))
     monkeypatch.setattr(module, "SNAPSHOT", snapshot)
+    monkeypatch.setattr(module, "MIRRORED_SNAPSHOT", snapshot)
     monkeypatch.setattr(module.sys, "argv", ["event cost"])
     assert module.main() == 0
+
+
+def test_event_cost_prefers_fresh_host_mirror_over_durable_mount(
+    tmp_path: Path, monkeypatch
+) -> None:
+    path = ROOT / "event_runtime/agent/cost.py"
+    spec = importlib.util.spec_from_loader(
+        "event_cost_mirror_priority",
+        SourceFileLoader("event_cost_mirror_priority", str(path)),
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    mirror = tmp_path / "run/cost.json"
+    mirror.parent.mkdir(parents=True)
+    mirror.write_text(json.dumps({"schema_version": 2, "total_usd": 2.0}))
+    monkeypatch.setattr(module, "MIRRORED_SNAPSHOT", mirror)
+    monkeypatch.setenv("SPRINT_RUN_ID", "run-1")
+
+    assert module.snapshot_path() == mirror
 
 
 def test_host_atomically_mirrors_cost_and_cli(tmp_path: Path, monkeypatch) -> None:

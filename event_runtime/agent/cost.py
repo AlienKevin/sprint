@@ -14,6 +14,11 @@ SNAPSHOT = MIRRORED_SNAPSHOT
 
 
 def snapshot_path() -> Path:
+    # The trusted host mirror combines OpenRouter's exact response charges
+    # with host-observed Modal GPU lifecycle events.  Prefer it because a
+    # long-lived Volume mount can lag host-written lifecycle shards.
+    if MIRRORED_SNAPSHOT.is_file():
+        return MIRRORED_SNAPSHOT
     run_id = os.environ.get("SPRINT_RUN_ID", "")
     if run_id:
         durable = Path("/durable") / "runs" / run_id / "budget" / "watchdog.json"
