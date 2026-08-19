@@ -246,18 +246,23 @@ def test_all_submission_finalization_needs_no_final_policy_or_verifier(
                 "expected_cpu_attempts": [1],
                 "captured_cpu_attempts": [1],
                 "attempt_coverage_complete": True,
-                "request_count": 0,
-                "requests": [],
+                "request_count": 1,
+                "requests": [
+                    {
+                        "model": "gpt-5.6-luna",
+                        "reasoning_effort": "max",
+                        "cost_reconstruction_status": "complete",
+                        "usage_reported_at": "2026-08-09T00:00:00Z",
+                        "calculated_cost_usd": 0.1,
+                    }
+                ],
                 "pricing_snapshots": [],
                 "cost_reconstruction_complete": True,
-                "calculated_api_usage_usd": 0.0,
-                "zero_request_reason": (
-                    "no completed model request was present in any captured CPU attempt"
-                ),
+                "calculated_api_usage_usd": 0.1,
                 "source_sessions": [
                     {
                         "cpu_attempt": 1,
-                        "request_count": 0,
+                        "request_count": 1,
                         "cost_reconstruction_complete": True,
                         "chunks": [
                             {

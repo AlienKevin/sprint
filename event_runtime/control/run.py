@@ -1619,7 +1619,11 @@ def final_conditions(
     state_dir: Path, run: dict[str, Any]
 ) -> tuple[bool, dict[str, bool], list[str]]:
     job, trial = discover_job_and_trial(state_dir, run)
-    all_submissions = run.get("evaluation_result_policy") in {
+    evaluation_result_policy = run.get("evaluation_result_policy")
+    archival_submissions = (
+        evaluation_result_policy == "all_blind_archival_submissions"
+    )
+    all_submissions = evaluation_result_policy in {
         "all_blind_submissions",
         "all_blind_archival_submissions",
         # Retained while the stopped 2026-08-08 batch finishes draining.
@@ -1668,9 +1672,15 @@ def final_conditions(
         manifest = json.loads(manifest_path.read_text())
         entries = manifest if isinstance(manifest, list) else []
         if all_submissions:
-            conditions["artifact_manifest"] = isinstance(manifest, list) and all(
-                isinstance(entry, dict) and entry.get("status") != "failed"
-                for entry in entries
+            conditions["artifact_manifest"] = bool(
+                isinstance(manifest, list)
+                and (
+                    archival_submissions
+                    or all(
+                        isinstance(entry, dict) and entry.get("status") != "failed"
+                        for entry in entries
+                    )
+                )
             )
         else:
             policy_entries = [
@@ -1786,13 +1796,15 @@ def final_conditions(
             )
         except (OSError, json.JSONDecodeError):
             run_audit = {}
-        # A provider rejection before its first completed response has no
-        # request-level Harbor audit or tariff snapshot to materialize. The
-        # all-attempt host reconstruction is authoritative in this one case:
-        # it attests every raw chunk and reconstructed ATIF checksum and an
-        # exact zero-dollar total. Runs with any completed request still need
-        # the independent Harbor audit -> ATIF -> result reconciliation.
-        if run_audit_ready and run_audit.get("request_count") == 0:
+        # The archival policy intentionally survives CPU-container teardown.
+        # Its all-attempt host reconstruction is authoritative because it
+        # attests every raw chunk, request, cost, and reconstructed ATIF
+        # checksum. The legacy policies still require the independent Harbor
+        # audit -> ATIF -> result reconciliation, except for attested
+        # zero-request provider rejections.
+        if run_audit_ready and (
+            archival_submissions or run_audit.get("request_count") == 0
+        ):
             trial_audit_ready, trial_audit_details = True, []
         else:
             trial_audit_ready, trial_audit_details = usage_audit_ready(trial, run)
