@@ -171,6 +171,7 @@ def build_snapshot(
 ) -> dict[str, Any]:
     """Return the sole agent-facing JSON cost document."""
     canonical: dict[str, Any] | None = None
+    previous: dict[str, Any] | None = None
     if state_dir is not None:
         canonical_path = state_dir / "telemetry" / "budget-watchdog.json"
         try:
@@ -185,6 +186,18 @@ def build_snapshot(
             and not isinstance(candidate.get("total_usd"), bool)
         ):
             canonical = candidate
+        previous_path = state_dir / "telemetry" / "agent-cost.json"
+        try:
+            candidate = json.loads(previous_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            candidate = None
+        if (
+            isinstance(candidate, dict)
+            and candidate.get("run_id") == timeline["run"]["run_id"]
+            and isinstance(candidate.get("total_usd"), (int, float))
+            and not isinstance(candidate.get("total_usd"), bool)
+        ):
+            previous = candidate
     resources = timeline["resource_usage_summary"]
     estimate = resources["modal_estimate"]
     pricing = estimate["pricing_snapshot"]
@@ -318,24 +331,29 @@ def build_snapshot(
     # value so a stale view can never lower spend, then mirror this exact
     # document back to the agent and active GPU workers.
     canonical_components = canonical.get("components") or {}
+    previous_components = (previous or {}).get("components") or {}
     host_components = snapshot["components"]
 
     def merged_component(name: str) -> dict[str, Any]:
         host = dict(host_components.get(name) or {})
+        prior = dict(previous_components.get(name) or {})
         remote = dict(canonical_components.get(name) or {})
-        merged = {**host, **remote}
+        merged = {**host, **prior, **remote}
         merged["cost_usd"] = max(
             float(host.get("cost_usd") or 0.0),
+            float(prior.get("cost_usd") or 0.0),
             float(remote.get("cost_usd") or 0.0),
         )
         if name != "model_api":
             merged["allocated_seconds"] = max(
                 float(host.get("allocated_seconds") or 0.0),
+                float(prior.get("allocated_seconds") or 0.0),
                 float(remote.get("allocated_seconds") or 0.0),
             )
         else:
             merged["request_count"] = max(
                 int(host.get("request_count") or 0),
+                int(prior.get("request_count") or 0),
                 int(remote.get("request_count") or 0),
             )
         return merged
@@ -350,7 +368,10 @@ def build_snapshot(
         "training_sandboxes_usd": components["training_sandboxes"]["cost_usd"],
     }
     total = sum(totals.values())
-    merged = {**snapshot, **canonical}
+    # The previous merged document is a high-water mark, not a source of
+    # current metadata.  Prefer the fresh in-sandbox watchdog for status and
+    # budget fields while preserving cumulative component maxima above.
+    merged = {**snapshot, **(previous or {}), **canonical}
     merged.update(
         {
             "as_of": snapshot.get("as_of"),
@@ -386,6 +407,8 @@ def build_snapshot(
         merged["budget_remaining_usd"] = max(0.0, float(budget) - total)
     threshold = canonical.get("stop_threshold_usd")
     if canonical.get("status") == "stop_requested" or (
+        previous is not None and previous.get("status") == "stop_requested"
+    ) or (
         isinstance(threshold, (int, float))
         and not isinstance(threshold, bool)
         and total >= float(threshold)

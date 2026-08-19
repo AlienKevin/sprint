@@ -148,6 +148,63 @@ def test_host_conservatively_merges_watchdog_and_host_allocation_ledgers(
     assert payload["schema_version"] == 2
 
 
+def test_host_merged_cost_uses_previous_snapshot_as_monotonic_floor(
+    tmp_path: Path,
+) -> None:
+    telemetry = tmp_path / "telemetry"
+    telemetry.mkdir(parents=True)
+    (telemetry / "budget-watchdog.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "run_id": "run-1",
+                "status": "within_budget",
+                "budget_usd": 100.0,
+                "stop_threshold_usd": 99.9,
+                "total_usd": 1.75,
+                "components": {
+                    "model_api": {"cost_usd": 0.5, "request_count": 1},
+                    "cpu_agent": {"cost_usd": 0.25, "allocated_seconds": 1.0},
+                    "training_sandboxes": {
+                        "cost_usd": 1.0,
+                        "allocated_seconds": 1.0,
+                    },
+                },
+            }
+        )
+    )
+    (telemetry / "agent-cost.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "run_id": "run-1",
+                "status": "within_budget",
+                "total_usd": 53.5,
+                "components": {
+                    "model_api": {"cost_usd": 0.5, "request_count": 1},
+                    "cpu_agent": {"cost_usd": 13.0, "allocated_seconds": 5.0},
+                    "training_sandboxes": {
+                        "cost_usd": 40.0,
+                        "allocated_seconds": 4.0,
+                    },
+                },
+            }
+        )
+    )
+
+    payload = agent_cost.build_snapshot(timeline_fixture(), state_dir=tmp_path)
+
+    assert payload["component_totals_usd"] == {
+        "model_api_usd": 0.5,
+        "cpu_agent_usd": 13.0,
+        "training_sandboxes_usd": 40.0,
+    }
+    assert payload["total_usd"] == 53.5
+    assert payload["cpu_allocated_seconds"] == 5.0
+    assert payload["training_allocated_seconds"] == 4.0
+    assert payload["budget_remaining_usd"] == 46.5
+
+
 def test_live_ledger_caps_open_training_interval_at_snapshot_time() -> None:
     timeline = timeline_fixture()
     timeline["events"] = timeline["events"][:-1]
