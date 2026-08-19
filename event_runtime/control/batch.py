@@ -98,7 +98,7 @@ VERIFIER_LANE_STALL_SECONDS = 20 * 60
 LIVE_SITE_DEPLOY_SECONDS = 20 * 60
 PROVIDER_DISCOVERY_ATTEMPTS = 3
 PROVIDER_DISCOVERY_RETRY_SECONDS = 1.0
-PROVIDER_INFERENCE_ATTEMPTS = 5
+PROVIDER_INFERENCE_ATTEMPTS = 10
 PROVIDER_INFERENCE_RETRY_SECONDS = 5.0
 PROVIDER_GENERATION_AUDIT_ATTEMPTS = 6
 OPENROUTER_CREDIT_SAFETY_FACTOR = 1.05
@@ -515,7 +515,9 @@ def provider_inference_probe(
         except urllib.error.HTTPError as exc:
             retryable = exc.code == 429 or 500 <= exc.code < 600
             if retryable and attempt + 1 < PROVIDER_INFERENCE_ATTEMPTS:
-                time.sleep(PROVIDER_INFERENCE_RETRY_SECONDS * (2**attempt))
+                time.sleep(
+                    min(PROVIDER_INFERENCE_RETRY_SECONDS * (2**attempt), 30.0)
+                )
                 continue
             detail = ""
             try:
@@ -537,7 +539,9 @@ def provider_inference_probe(
             ) from exc
         except (urllib.error.URLError, TimeoutError) as exc:
             if attempt + 1 < PROVIDER_INFERENCE_ATTEMPTS:
-                time.sleep(PROVIDER_INFERENCE_RETRY_SECONDS * (2**attempt))
+                time.sleep(
+                    min(PROVIDER_INFERENCE_RETRY_SECONDS * (2**attempt), 30.0)
+                )
                 continue
             reason = getattr(exc, "reason", str(exc))
             raise RuntimeError(f"provider inference request failed: {reason}") from exc
