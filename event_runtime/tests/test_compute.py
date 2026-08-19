@@ -2752,6 +2752,101 @@ class AgentGpuCliTests(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "basenames must be unique"):
             train_cli.validate_output_paths(["/app/a/p.pt", "/app/b/p.pt"])
 
+    def test_terminal_status_requires_explicit_artifact_retrieval(self) -> None:
+        payload = {
+            "status": "succeeded",
+            "output_paths": ["/app/results/policy.pt"],
+            "agent_policy_mirror_path": (
+                "/run/sprint-gpu-mirror/artifacts/job-1/policy.pt"
+            ),
+        }
+
+        enriched = train_cli.status_with_artifact_retrieval(payload, "job-1")
+
+        self.assertEqual(
+            enriched["artifact_retrieval"]["command"],
+            "event gpu get job-1 /app/results/policy.pt",
+        )
+        self.assertIn("may be stale", enriched["artifact_retrieval"]["warning"])
+        self.assertNotIn("artifact_retrieval", payload)
+
+    def test_terminal_status_identifies_artifact_mirror_sync_lag(self) -> None:
+        payload = {
+            "status": "succeeded",
+            "output_paths": ["/app/policy.pt"],
+        }
+
+        enriched = train_cli.status_with_artifact_retrieval(payload, "job-1")
+
+        self.assertEqual(enriched["artifact_retrieval"]["status"], "syncing")
+        self.assertEqual(
+            enriched["artifact_retrieval"]["retry_command"],
+            "event gpu get job-1 /app/policy.pt",
+        )
+
+    def test_logs_end_with_artifact_retrieval_command(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw) / "gpu-jobs"
+            mirror = Path(raw) / "mirror"
+            (root / "status").mkdir(parents=True)
+            log = root / "out" / "job-1" / "attempt-1" / "worker.log"
+            log.parent.mkdir(parents=True)
+            log.write_text("training complete\n")
+            (root / "status" / "job-1.json").write_text(
+                json.dumps(
+                    {
+                        "job_id": "job-1",
+                        "status": "succeeded",
+                        "output_paths": ["/app/policy.pt"],
+                        "agent_policy_mirror_path": (
+                            f"{mirror}/artifacts/job-1/policy.pt"
+                        ),
+                    }
+                )
+            )
+            stdout = io.StringIO()
+            with (
+                mock.patch.object(train_cli, "jobs_root", return_value=root),
+                mock.patch.object(train_cli, "AGENT_MIRROR_ROOT", mirror),
+                mock.patch.object(train_cli, "AGENT_WORKSPACE_ROOT", Path("/app")),
+                mock.patch("sys.stdout", stdout),
+            ):
+                self.assertEqual(
+                    train_cli.cmd_logs(
+                        type("Args", (), {"job_id": "job-1"})()
+                    ),
+                    0,
+                )
+
+            output = stdout.getvalue()
+            self.assertIn("training complete", output)
+            self.assertTrue(
+                output.rstrip().endswith("event gpu get job-1 /app/policy.pt")
+            )
+
+    def test_get_reports_sync_lag_instead_of_missing_output_declaration(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw) / "gpu-jobs"
+            (root / "status").mkdir(parents=True)
+            (root / "status" / "job-1.json").write_text(
+                json.dumps(
+                    {
+                        "job_id": "job-1",
+                        "status": "succeeded",
+                        "output_paths": ["/app/policy.pt"],
+                    }
+                )
+            )
+            with mock.patch.object(train_cli, "jobs_root", return_value=root):
+                with self.assertRaisesRegex(SystemExit, "still syncing"):
+                    train_cli.cmd_get(
+                        type(
+                            "Args",
+                            (),
+                            {"job_id": "job-1", "destination": None},
+                        )()
+                    )
+
 
 class LauncherWiringTests(unittest.TestCase):
     def test_training_image_uses_pinned_warmup_id(self) -> None:

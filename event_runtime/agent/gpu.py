@@ -427,7 +427,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     job_id = args.job_id or latest_job_id(root)
     if not job_id:
         raise SystemExit("no gpu jobs yet")
-    payload = read_status(root, job_id)
+    payload = status_with_artifact_retrieval(read_status(root, job_id), job_id)
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
 
@@ -439,7 +439,7 @@ def cmd_wait(args: argparse.Namespace) -> int:
         raise SystemExit("no gpu jobs yet")
     deadline = time.time() + int(args.timeout)
     while True:
-        payload = read_status(root, job_id)
+        payload = status_with_artifact_retrieval(read_status(root, job_id), job_id)
         status = str(payload.get("status", ""))
         if status in {"succeeded", "failed", "terminated"}:
             print(json.dumps(payload, indent=2, sort_keys=True))
@@ -472,7 +472,96 @@ def cmd_logs(args: argparse.Namespace) -> int:
     for path in logs:
         sys.stdout.write(f"== {path.parent.name} ==\n")
         sys.stdout.write(path.read_text())
+    payload = read_status(root, job_id)
+    retrieval = artifact_retrieval(payload, job_id)
+    if retrieval:
+        sys.stdout.write(
+            "\n== GPU ARTIFACT READY ==\n"
+            "The output is not installed automatically; an existing file at the "
+            "destination may be stale.\n"
+            f"RUN: {retrieval['command']}\n"
+        )
+    elif artifact_expected(payload):
+        destination = artifact_destination(payload)
+        suffix = f" {destination}" if destination else ""
+        sys.stdout.write(
+            "\n== GPU ARTIFACT SYNCING ==\n"
+            "The worker succeeded, but its verified artifact mirror is still "
+            "syncing (normally under 60 seconds).\n"
+            f"RETRY: event gpu get {job_id}{suffix}\n"
+        )
     return 0
+
+
+def artifact_destination(payload: dict) -> str | None:
+    """Return the original /app destination for a mirrored GPU artifact."""
+    mirror_name = Path(str(payload.get("agent_policy_mirror_path") or "")).name
+    candidates: list[str] = []
+    for raw in payload.get("output_paths") or []:
+        candidates.append(str(raw))
+    progress = payload.get("progress")
+    if isinstance(progress, dict):
+        for record in progress.get("output_artifacts") or []:
+            if isinstance(record, dict):
+                candidates.append(str(record.get("source_path") or ""))
+    for raw in candidates:
+        path = Path(raw)
+        if path.is_absolute() and path.is_relative_to(AGENT_WORKSPACE_ROOT):
+            if not mirror_name or path.name == mirror_name:
+                return str(path)
+    if mirror_name:
+        return str(AGENT_WORKSPACE_ROOT / mirror_name)
+    return None
+
+
+def artifact_expected(payload: dict) -> bool:
+    """Whether a terminal job declared an artifact that may still be syncing."""
+    if str(payload.get("status") or "") != "succeeded":
+        return False
+    if payload.get("output_paths"):
+        return True
+    progress = payload.get("progress")
+    return isinstance(progress, dict) and bool(
+        progress.get("output_artifacts")
+        or progress.get("policy_path")
+        or progress.get("policy")
+    )
+
+
+def artifact_retrieval(payload: dict, job_id: str) -> dict[str, str] | None:
+    """Build an explicit, safe handoff for a verified host-mirrored artifact."""
+    if not str(payload.get("agent_policy_mirror_path") or "").strip():
+        return None
+    destination = artifact_destination(payload)
+    if not destination:
+        return None
+    return {
+        "command": f"event gpu get {job_id} {destination}",
+        "destination": destination,
+        "warning": (
+            "GPU outputs are not installed automatically; retrieve this artifact "
+            "even if the destination already exists, because that file may be stale."
+        ),
+    }
+
+
+def status_with_artifact_retrieval(payload: dict, job_id: str) -> dict:
+    enriched = dict(payload)
+    retrieval = artifact_retrieval(payload, job_id)
+    if retrieval:
+        enriched["artifact_retrieval"] = retrieval
+    elif artifact_expected(payload):
+        destination = artifact_destination(payload)
+        enriched["artifact_retrieval"] = {
+            "status": "syncing",
+            "retry_command": (
+                f"event gpu get {job_id} {destination}"
+                if destination
+                else f"event gpu get {job_id}"
+            ),
+            "expected_within_seconds": 60,
+        }
+    return enriched
 
 
 def cmd_get(args: argparse.Namespace) -> int:
@@ -483,6 +572,14 @@ def cmd_get(args: argparse.Namespace) -> int:
     payload = read_status(root, job_id)
     raw_source = str(payload.get("agent_policy_mirror_path") or "").strip()
     if not raw_source:
+        if artifact_expected(payload):
+            destination = args.destination or artifact_destination(payload)
+            suffix = f" {destination}" if destination else ""
+            raise SystemExit(
+                f"job {job_id} succeeded and declared an output, but its verified "
+                "artifact mirror is still syncing (normally under 60 seconds); "
+                f"retry `event gpu get {job_id}{suffix}` shortly"
+            )
         raise SystemExit(
             f"job {job_id} has no mirrored policy yet; declare it with "
             "--output /app/POLICY.pt and wait for completion"
