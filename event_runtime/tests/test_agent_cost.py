@@ -6,6 +6,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 OPS = ROOT / "runs/ops"
@@ -278,3 +279,17 @@ def test_host_atomically_mirrors_cost_and_cli(tmp_path: Path, monkeypatch) -> No
     assert detail["agent_cost_mirror"] == "updated"
     assert json.loads((mirror / "cost.json").read_text())["total_usd"] == 2.5
     assert cli.read_bytes() == (ROOT / "event_runtime/agent/cost.py").read_bytes()
+
+
+def test_host_skips_cost_mirror_after_agent_stop(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "STOP_ACK.json").write_text("{}")
+    execute = mock.Mock(side_effect=AssertionError("stopped agent must not be called"))
+    monkeypatch.setattr(gpu_worker.sprintctl, "exec_container", execute)
+
+    detail = gpu_worker.mirror_agent_cost(
+        {"agent_container_id": "ta-agent", "state_dir": str(tmp_path)},
+        {"schema_version": 1, "total_usd": 10.0},
+    )
+
+    assert detail == {"agent_cost_mirror": "agent_stopped"}
+    execute.assert_not_called()

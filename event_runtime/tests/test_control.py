@@ -181,9 +181,33 @@ class DurableOpsTests(unittest.TestCase):
                 "budget_remaining_usd": 8.75,
                 "status": "within_budget",
             }
+            cost_lock_held = False
+
+            @contextlib.contextmanager
+            def serialized_cost_lock(path: Path, *, blocking: bool = True):
+                nonlocal cost_lock_held
+                self.assertTrue(blocking)
+                self.assertEqual(path, state / "telemetry/agent-cost.lock")
+                cost_lock_held = True
+                try:
+                    yield True
+                finally:
+                    cost_lock_held = False
+
+            def mirror_gpu(_run: dict, _payload: dict) -> dict:
+                self.assertTrue(cost_lock_held)
+                return {"gpu_budget_mirror": "updated"}
+
+            def mirror_agent(_run: dict, _payload: dict) -> dict:
+                self.assertTrue(cost_lock_held)
+                return {"agent_cost_mirror": "updated"}
+
             with (
                 mock.patch.object(
                     sprintctl, "load_run", return_value=(state, run)
+                ),
+                mock.patch.object(
+                    sprintctl, "file_lock", side_effect=serialized_cost_lock
                 ),
                 mock.patch.object(
                     sprintctl, "fetch_budget_watchdog", return_value=canonical
@@ -197,12 +221,12 @@ class DurableOpsTests(unittest.TestCase):
                 mock.patch.object(
                     gpu_worker,
                     "mirror_gpu_budget",
-                    return_value={"gpu_budget_mirror": "updated"},
+                    side_effect=mirror_gpu,
                 ) as gpu_mirror,
                 mock.patch.object(
                     gpu_worker,
                     "mirror_agent_cost",
-                    return_value={"agent_cost_mirror": "updated"},
+                    side_effect=mirror_agent,
                 ) as agent_mirror,
                 mock.patch.object(
                     sprintctl, "enforce_agent_cost_budget"
@@ -224,6 +248,59 @@ class DurableOpsTests(unittest.TestCase):
                 (state / "telemetry/budget-pulse.json").read_text()
             )
             self.assertEqual(persisted["gpu_mirror"], "updated")
+
+    def test_artifact_cost_refresh_serializes_persistence_and_mirrors(self) -> None:
+        from event_runtime.compute import worker as gpu_worker
+
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            (state / "telemetry").mkdir()
+            run = {"run_id": "serialized-run"}
+            payload = {"schema_version": 2, "run_id": "serialized-run", "total_usd": 2.0}
+            held = False
+
+            @contextlib.contextmanager
+            def serialized_lock(path: Path, *, blocking: bool = True):
+                nonlocal held
+                self.assertTrue(blocking)
+                self.assertEqual(path, state / "telemetry/agent-cost.lock")
+                held = True
+                try:
+                    yield True
+                finally:
+                    held = False
+
+            def assert_held(*_args, **_kwargs):
+                self.assertTrue(held)
+                return {"agent_cost_mirror": "updated"}
+
+            def assert_gpu_held(*_args, **_kwargs):
+                self.assertTrue(held)
+                return {"gpu_budget_mirror": "updated"}
+
+            with (
+                mock.patch.object(sprintctl, "file_lock", side_effect=serialized_lock),
+                mock.patch.object(
+                    sprintctl.agent_cost, "build_snapshot", return_value=payload
+                ),
+                mock.patch.object(
+                    gpu_worker, "mirror_agent_cost", side_effect=assert_held
+                ),
+                mock.patch.object(
+                    gpu_worker, "mirror_gpu_budget", side_effect=assert_gpu_held
+                ),
+                mock.patch.object(sprintctl, "enforce_agent_cost_budget") as enforce,
+            ):
+                result = sprintctl.refresh_agent_cost_snapshot(
+                    "serialized-run", state, run, {"events": []}
+                )
+
+            self.assertEqual(result, payload)
+            enforce.assert_called_once_with("serialized-run", state, run, payload)
+            self.assertEqual(
+                json.loads((state / "telemetry/agent-cost.json").read_text()),
+                payload,
+            )
 
     def test_budget_pulse_rejects_stale_upstream_watchdog(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

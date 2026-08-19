@@ -1023,6 +1023,59 @@ def worker_alive(state_dir: Path) -> bool:
     return process_alive(pid, "event_runtime/export/frontier.py")
 
 
+def refresh_agent_cost_snapshot(
+    run_id: str,
+    state_dir: Path,
+    run: dict[str, Any],
+    timeline: dict[str, Any],
+) -> dict[str, Any]:
+    """Build, persist, and propagate one serialized cost snapshot.
+
+    The artifact monitor and the independent budget pulse are concurrent
+    writers. Serializing the complete build-to-mirror transaction prevents a
+    slower writer from publishing an older total after a newer snapshot has
+    already reached the agent or a GPU worker.
+    """
+    with file_lock(state_dir / "telemetry" / "agent-cost.lock"):
+        cost_payload = agent_cost.build_snapshot(timeline, state_dir=state_dir)
+        cost_path = state_dir / "telemetry" / "agent-cost.json"
+        atomic_write_json(cost_path, cost_payload, mode=0o600)
+        from event_runtime.compute import worker as gpu_worker
+
+        mirror = gpu_worker.mirror_agent_cost(run, cost_payload)
+        atomic_write_json(
+            state_dir / "telemetry" / "agent-cost-mirror.json",
+            {"schema_version": 1, "updated_at": utc_now(), **mirror},
+            mode=0o600,
+        )
+        if mirror.get("agent_cost_mirror") == "error":
+            raise RuntimeError(
+                "agent cost mirror failed: "
+                + str(mirror.get("agent_cost_mirror_error") or "unknown")
+            )
+        gpu_budget_mirror = gpu_worker.mirror_gpu_budget(run, cost_payload)
+        atomic_write_json(
+            state_dir / "telemetry" / "gpu-budget-mirror.json",
+            {
+                "schema_version": 1,
+                "updated_at": utc_now(),
+                **gpu_budget_mirror,
+            },
+            mode=0o600,
+        )
+        if gpu_budget_mirror.get("gpu_budget_mirror") == "error":
+            raise RuntimeError(
+                "GPU budget mirror failed: "
+                + str(
+                    gpu_budget_mirror.get("gpu_budget_mirror_error")
+                    or gpu_budget_mirror.get("errors")
+                    or "unknown"
+                )
+            )
+        enforce_agent_cost_budget(run_id, state_dir, run, cost_payload)
+        return cost_payload
+
+
 def maybe_start_frontier_worker(
     state_dir: Path, run: dict[str, Any], job: Path, trial: Path
 ) -> int | None:
@@ -1245,42 +1298,7 @@ def monitor_once(
                     sync_durable_api_usage(state_dir, run)
                     reconstruct_codex_usage(state_dir, run)
                 timeline = build_unified_timeline(state_dir, run, upload=upload)
-                cost_payload = agent_cost.build_snapshot(timeline, state_dir=state_dir)
-                cost_path = state_dir / "telemetry" / "agent-cost.json"
-                atomic_write_json(cost_path, cost_payload, mode=0o600)
-                from event_runtime.compute import worker as gpu_worker
-
-                mirror = gpu_worker.mirror_agent_cost(run, cost_payload)
-                atomic_write_json(
-                    state_dir / "telemetry" / "agent-cost-mirror.json",
-                    {"schema_version": 1, "updated_at": utc_now(), **mirror},
-                    mode=0o600,
-                )
-                if mirror.get("agent_cost_mirror") == "error":
-                    raise RuntimeError(
-                        "agent cost mirror failed: "
-                        + str(mirror.get("agent_cost_mirror_error") or "unknown")
-                    )
-                gpu_budget_mirror = gpu_worker.mirror_gpu_budget(run, cost_payload)
-                atomic_write_json(
-                    state_dir / "telemetry" / "gpu-budget-mirror.json",
-                    {
-                        "schema_version": 1,
-                        "updated_at": utc_now(),
-                        **gpu_budget_mirror,
-                    },
-                    mode=0o600,
-                )
-                if gpu_budget_mirror.get("gpu_budget_mirror") == "error":
-                    raise RuntimeError(
-                        "GPU budget mirror failed: "
-                        + str(
-                            gpu_budget_mirror.get("gpu_budget_mirror_error")
-                            or gpu_budget_mirror.get("errors")
-                            or "unknown"
-                        )
-                    )
-                enforce_agent_cost_budget(run_id, state_dir, run, cost_payload)
+                refresh_agent_cost_snapshot(run_id, state_dir, run, timeline)
             except Exception as exc:  # noqa: BLE001
                 record_controller_error(run_id, exc)
         frontier_path = state_dir / "frontier-state.json"
@@ -1971,7 +1989,9 @@ def monitor_loop(run_id: str, poll_seconds: int) -> int:
                 pid_path.unlink(missing_ok=True)
 
 
-def budget_pulse_once(run_id: str, *, now: float | None = None) -> dict[str, Any]:
+def _budget_pulse_once_unlocked(
+    run_id: str, *, now: float | None = None
+) -> dict[str, Any]:
     """Refresh the trusted budget mirror without waiting for artifact sync."""
     state_dir, run = load_run(run_id)
     ref = time.time() if now is None else float(now)
@@ -2059,6 +2079,15 @@ def budget_pulse_once(run_id: str, *, now: float | None = None) -> dict[str, Any
     return result
 
 
+def budget_pulse_once(run_id: str, *, now: float | None = None) -> dict[str, Any]:
+    """Refresh and propagate one cost snapshot without concurrent writers."""
+    state_dir, _run = load_run(run_id)
+    lock_path = state_dir / "telemetry" / "agent-cost.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with file_lock(lock_path):
+        return _budget_pulse_once_unlocked(run_id, now=now)
+
+
 def budget_pulse_loop(run_id: str, poll_seconds: int) -> int:
     state_dir, _run = load_run(run_id)
     with file_lock(state_dir / "budget-pulse.lock", blocking=False) as acquired:
@@ -2069,7 +2098,10 @@ def budget_pulse_loop(run_id: str, poll_seconds: int) -> int:
         own_pid = os.getpid()
         atomic_write_text(pid_path, f"{own_pid}\n", 0o600)
         try:
-            while not (state_dir / "FINALIZED.json").is_file():
+            while not (
+                (state_dir / "FINALIZED.json").is_file()
+                or (state_dir / "STOP_ACK.json").is_file()
+            ):
                 started = time.monotonic()
                 try:
                     payload = budget_pulse_once(run_id)

@@ -239,6 +239,9 @@ def mirror_agent_cost(run: dict[str, Any], payload: dict[str, Any]) -> dict[str,
     The CPU agent has no Modal or provider credentials.  Only the host computes
     this document, then installs it under the existing host-owned /run mirror.
     """
+    state_dir_raw = str(run.get("state_dir") or "")
+    if state_dir_raw and (Path(state_dir_raw) / "STOP_ACK.json").is_file():
+        return {"agent_cost_mirror": "agent_stopped"}
     container_id = str(run.get("agent_container_id") or "")
     if not container_id.startswith("ta-"):
         return {"agent_cost_mirror": "unavailable"}
