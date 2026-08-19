@@ -736,6 +736,36 @@ class ClaimSelectionTests(unittest.TestCase):
         self.assertEqual(detail["finished_sandbox_ids"], ["sb-stopping"])
         self.assertEqual(detail["errors"], {})
 
+    def test_budget_mirror_accepts_exec_race_with_stopped_sandbox(self) -> None:
+        payload = {
+            "schema_version": 2,
+            "run_id": "run-1",
+            "checked_at_epoch_s": 1234.5,
+            "total_usd": 2.25,
+            "stop_threshold_usd": 9.9,
+            "status": "within_budget",
+        }
+
+        class Sandbox:
+            def exec(self, *_args: str, **_kwargs: object) -> object:
+                raise RuntimeError(
+                    'executing processes for container: cannot execute in '
+                    'container "ta-gpu" in state stopped'
+                )
+
+        with mock.patch.object(
+            gpu_worker.modal.Sandbox, "from_id", return_value=Sandbox()
+        ):
+            detail = gpu_worker.mirror_gpu_budget(
+                {"run_id": "run-1"},
+                payload,
+                jobs=[{"sandbox_id": "sb-stopped", "status": "running"}],
+            )
+
+        self.assertEqual(detail["gpu_budget_mirror"], "updated")
+        self.assertEqual(detail["finished_sandbox_ids"], ["sb-stopped"])
+        self.assertEqual(detail["errors"], {})
+
     def test_fetches_only_reported_scoped_policy_for_agent_mirror(self) -> None:
         run = {"run_id": "run-1", "volume_name": "volume-1"}
         job = {

@@ -454,7 +454,20 @@ print("STALE_IGNORED" if stale else "UPDATED")
             else:
                 errors[sandbox_id] = f"{type(exc).__name__}: {exc}"
         except Exception as exc:  # noqa: BLE001
-            errors[sandbox_id] = f"{type(exc).__name__}: {exc}"
+            # The Modal client can surface the same terminal race as a plain
+            # RuntimeError after process creation rather than as NotFound/409.
+            # No mirror is needed once the provider reports the container as
+            # stopped, and treating normal verifier teardown as a pulse outage
+            # creates a false controller alert.
+            message = str(exc).lower()
+            terminal_exec_race = (
+                "cannot execute in container" in message
+                and ("state stopped" in message or "state terminated" in message)
+            )
+            if terminal_exec_race:
+                finished.append(sandbox_id)
+            else:
+                errors[sandbox_id] = f"{type(exc).__name__}: {exc}"
     return {
         "gpu_budget_mirror": "updated" if not errors else "error",
         "sandbox_ids": targets,
