@@ -260,6 +260,43 @@ def test_env_loader_reads_only_required_model_keys(tmp_path: Path) -> None:
     }
 
 
+def test_openrouter_credit_requirement_covers_full_matrix_with_margin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AGENT_COST_BUDGET_USD", raising=False)
+
+    requirement = batch_eval.openrouter_credit_requirement(6)
+
+    assert requirement == {
+        "per_trial_budget_usd": 10.0,
+        "trial_count": 6,
+        "maximum_combined_budget_usd": 60.0,
+        "safety_factor": 1.05,
+        "required_credit_usd": 63.0,
+    }
+
+
+def test_openrouter_credit_query_reports_remaining_without_secrets() -> None:
+    response = io.BytesIO(
+        json.dumps(
+            {"data": {"total_credits": 100.0, "total_usage": 25.25}}
+        ).encode()
+    )
+    with mock.patch.object(
+        batch_eval.urllib.request, "urlopen", return_value=response
+    ) as urlopen:
+        snapshot = batch_eval.fetch_openrouter_credit("secret-key")
+
+    assert snapshot == {
+        "total_credits_usd": 100.0,
+        "total_usage_usd": 25.25,
+        "remaining_credit_usd": 74.75,
+    }
+    request = urlopen.call_args.args[0]
+    assert request.full_url == "https://openrouter.ai/api/v1/credits"
+    assert "secret-key" not in json.dumps(snapshot)
+
+
 def test_functional_gpu_canary_must_match_both_warmed_images(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

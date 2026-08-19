@@ -7,6 +7,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -40,6 +41,7 @@ WEB = ROOT / "web"
 BATCH_ROOT = SCRIPT_DIR / "batches"
 WARMUP_MANIFEST = SCRIPT_DIR / "modal-image-warmup.json"
 FUNCTIONAL_CANARY_REPORT = SCRIPT_DIR / "training-gpu-canary.json"
+BUDGET_CONFIG = MODULE_DIR / "budget.env"
 HARBOR_REVISION = "dafb1387151e1c32702963d44fe6c3cea66cf8cb"
 CODEX_VERSION = "0.147.0"
 TRIALS_PER_MODEL = 3
@@ -79,6 +81,7 @@ PROVIDER_DISCOVERY_RETRY_SECONDS = 1.0
 PROVIDER_INFERENCE_ATTEMPTS = 3
 PROVIDER_INFERENCE_RETRY_SECONDS = 1.0
 PROVIDER_GENERATION_AUDIT_ATTEMPTS = 6
+OPENROUTER_CREDIT_SAFETY_FACTOR = 1.05
 VERCEL_DAILY_QUOTA_BACKOFF_SECONDS = 24 * 60 * 60
 VERCEL_DAILY_QUOTA_CODE = "api-deployments-free-per-day"
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,48}$")
@@ -131,6 +134,71 @@ def load_env(path: Path) -> dict[str, str]:
         ):
             values[name.strip()] = value
     return values
+
+
+def configured_agent_budget_usd() -> float:
+    """Read the same global budget default consumed by ``launch.sh``."""
+    raw = os.environ.get("AGENT_COST_BUDGET_USD")
+    if raw is None:
+        match = re.search(
+            r"^AGENT_COST_BUDGET_USD=\$\{AGENT_COST_BUDGET_USD:-([^}]+)\}$",
+            BUDGET_CONFIG.read_text(),
+            re.MULTILINE,
+        )
+        if not match:
+            raise RuntimeError("global agent budget default is unreadable")
+        raw = match.group(1)
+    value = float(raw)
+    if not math.isfinite(value) or value <= 0:
+        raise RuntimeError("global agent budget must be positive and finite")
+    return value
+
+
+def openrouter_credit_requirement(trial_count: int) -> dict[str, Any]:
+    """Return conservative provider credit needed for one planned matrix."""
+    if trial_count <= 0:
+        raise ValueError("trial count must be positive")
+    budget = configured_agent_budget_usd()
+    maximum_budget = budget * trial_count
+    required = maximum_budget * OPENROUTER_CREDIT_SAFETY_FACTOR
+    return {
+        "per_trial_budget_usd": budget,
+        "trial_count": trial_count,
+        "maximum_combined_budget_usd": maximum_budget,
+        "safety_factor": OPENROUTER_CREDIT_SAFETY_FACTOR,
+        "required_credit_usd": required,
+    }
+
+
+def fetch_openrouter_credit(api_key: str) -> dict[str, float]:
+    request = urllib.request.Request(
+        "https://openrouter.ai/api/v1/credits",
+        headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.load(response)
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(
+            f"OpenRouter credit request failed: HTTP {exc.code}"
+        ) from exc
+    except (urllib.error.URLError, TimeoutError) as exc:
+        reason = getattr(exc, "reason", str(exc))
+        raise RuntimeError(f"OpenRouter credit request failed: {reason}") from exc
+    data = payload.get("data") if isinstance(payload, dict) else None
+    try:
+        total = float(data["total_credits"])
+        usage = float(data["total_usage"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("OpenRouter credit response was invalid") from exc
+    remaining = total - usage
+    if not all(math.isfinite(value) and value >= 0 for value in (total, usage, remaining)):
+        raise RuntimeError("OpenRouter credit totals were invalid")
+    return {
+        "total_credits_usd": total,
+        "total_usage_usd": usage,
+        "remaining_credit_usd": remaining,
+    }
 
 
 def functional_gpu_canary_ready() -> bool:
@@ -632,8 +700,14 @@ def preflight(
     provider_probes: dict[str, Any] = {}
     provider_errors: dict[str, str] = {}
     deepseek_pricing_snapshot: dict[str, Any] | None = None
+    openrouter_credit_snapshot: dict[str, Any] | None = None
     sprint_resource_report: dict[str, Any] | None = None
     keys = load_env(env_file)
+    planned = matrix(
+        batch_id,
+        trials_per_model=trials_per_model,
+        families=families,
+    )
     required_keys = {
         "deepseek": "OPENROUTER_API_KEY",
         "luna": "OPENROUTER_API_KEY",
@@ -642,6 +716,30 @@ def preflight(
     for family in families:
         name = required_keys[family]
         checks[f"secret_{name.lower()}"] = len(keys.get(name, "")) >= 16
+    auto_recharge_confirmed = os.environ.get(
+        "SPRINT_OPENROUTER_AUTO_RECHARGE_CONFIRMED", ""
+    ).strip().lower() in {"1", "true", "yes"}
+    if check_providers and checks.get("secret_openrouter_api_key"):
+        requirement = openrouter_credit_requirement(len(planned))
+        try:
+            openrouter_credit_snapshot = {
+                **fetch_openrouter_credit(keys["OPENROUTER_API_KEY"]),
+                **requirement,
+                "auto_recharge_confirmed": auto_recharge_confirmed,
+            }
+            checks["openrouter_credit_query"] = True
+            checks["openrouter_credit_headroom"] = bool(
+                auto_recharge_confirmed
+                or openrouter_credit_snapshot["remaining_credit_usd"]
+                >= requirement["required_credit_usd"]
+            )
+        except RuntimeError as exc:
+            checks["openrouter_credit_query"] = False
+            checks["openrouter_credit_headroom"] = False
+            provider_errors["openrouter_credit"] = str(exc)
+    else:
+        checks["openrouter_credit_query"] = not check_providers
+        checks["openrouter_credit_headroom"] = not check_providers
     checks["harbor_revision"] = (
         ROOT / "harbor/.sprint-upstream-commit"
     ).read_text().strip() == HARBOR_REVISION
@@ -827,11 +925,6 @@ def preflight(
         checks["deepseek_openrouter_endpoint_contract"] = not check_providers
         checks["deepseek_v4_flash_visible"] = not check_providers
         checks["deepseek_v4_flash_inference"] = not check_providers
-    planned = matrix(
-        batch_id,
-        trials_per_model=trials_per_model,
-        families=families,
-    )
     checks["unique_runs"] = len({arm["run_id"] for arm in planned}) == len(planned)
     checks["fresh_run_ids"] = not any(
         (SCRIPT_DIR / arm["run_id"]).exists() for arm in planned
@@ -858,6 +951,7 @@ def preflight(
         "checks": checks,
         "provider_probes": provider_probes,
         "provider_errors": provider_errors,
+        "openrouter_credit_snapshot": openrouter_credit_snapshot,
         "deepseek_pricing_snapshot": deepseek_pricing_snapshot,
         "sprint_modal_resource_audit": sprint_resource_report,
         "training_gpu_fleet_probe": fleet_probe,
