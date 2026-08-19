@@ -1036,6 +1036,46 @@ def test_write_public_batch_tracks_explicitly_coexisting_runs(
     ]
 
 
+def test_tracking_batch_ignores_delegated_site_alerts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(batch_eval, "BATCH_ROOT", tmp_path / "batches")
+    (tmp_path / "batches").mkdir()
+    base = {
+        "batch_id": "base",
+        "updated_at": "2026-08-19T00:00:00Z",
+        "status": "running",
+        "reasoning_effort": "max",
+        "codex_version": "0.147.0",
+        "run_hours": None,
+        "arms": [{"run_id": "base-luna-1", "family": "luna"}],
+        "alerts": [
+            {"run_id": "batch", "kind": "performance_export"},
+            {"run_id": "batch", "kind": "website_deploy"},
+            {"run_id": "base-luna-1", "kind": "monitor_error"},
+        ],
+    }
+    replacement = {
+        "batch_id": "replacement",
+        "updated_at": "2026-08-19T00:00:00Z",
+        "status": "running",
+        "reasoning_effort": "max",
+        "codex_version": "0.147.0",
+        "run_hours": None,
+        "coexist_batch_ids": ["base"],
+        "arms": [{"run_id": "replacement-luna-1", "family": "luna"}],
+        "alerts": [{"run_id": "batch", "kind": "website_deploy"}],
+    }
+    batch_eval.atomic_json(batch_eval.batch_path("base"), base)
+
+    current = batch_eval.public_tracking_batch(replacement)
+
+    assert current["alerts"] == [
+        {"run_id": "base-luna-1", "kind": "monitor_error"},
+        {"run_id": "batch", "kind": "website_deploy"},
+    ]
+
+
 def test_tracking_batch_excludes_budget_telemetry_failure_replaced_lane(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

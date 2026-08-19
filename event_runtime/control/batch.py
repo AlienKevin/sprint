@@ -1378,7 +1378,20 @@ def public_tracking_batch(payload: dict[str, Any]) -> dict[str, Any]:
                     )
                     continue
                 arms_by_run[run_id] = arm
-        alerts.extend(batch.get("alerts", []))
+        for alert in batch.get("alerts", []):
+            # A replacement batch owns the combined performance snapshot and
+            # production deployment.  Site-level alerts from a coexisting
+            # source batch describe that source controller's obsolete view of
+            # the website, not the tracked cohort.  Keep all per-run alerts,
+            # and keep site alerts raised by the active tracking owner itself.
+            if (
+                batch_payload is not payload
+                and alert.get("run_id") == "batch"
+                and alert.get("kind")
+                in {"performance_export", "website_deploy", "final_site_deploy"}
+            ):
+                continue
+            alerts.append(alert)
 
     current["tracked_batch_ids"] = [
         batch["batch_id"]
