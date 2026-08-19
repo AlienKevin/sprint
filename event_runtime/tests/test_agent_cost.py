@@ -112,6 +112,29 @@ def test_snapshot_has_one_matching_component_ledger_and_all_constants(
     assert "official_verifier" in payload["excluded"]
 
 
+def test_snapshot_prefers_complete_modal_provider_report() -> None:
+    timeline = timeline_fixture()
+    timeline["resource_usage_summary"]["modal_provider_billing"] = {
+        "provider_complete": True,
+        "by_role_usd": {
+            "cpu_agent": 12.25,
+            "training_gpu": 27.5,
+            "verifier_gpu": 3.0,
+        },
+        "by_role_category_usd": {
+            "cpu_agent": {"CPU": 4.25, "Memory": 8.0},
+            "training_gpu": {"CPU": 2.5, "Memory": 5.0, "A10G": 20.0},
+        },
+    }
+
+    payload = agent_cost.build_snapshot(timeline)
+
+    assert payload["components"]["cpu_agent"]["cost_usd"] == 12.25
+    assert payload["components"]["training_sandboxes"]["cost_usd"] == 27.5
+    assert payload["total_usd"] == 40.25
+    assert payload["modal_cost_source"] == "modal_provider_report_precredits"
+
+
 def test_host_conservatively_merges_watchdog_and_host_allocation_ledgers(
     tmp_path: Path,
 ) -> None:
@@ -322,6 +345,22 @@ def test_cost_ledger_prefers_reconciled_training_intervals() -> None:
     assert ledger["training_intervals"] == [(1500, 2500)]
     # CPU: 4 * 3 = 12; reconciled training: 1 * 13 = 13; API: .5.
     assert agent_cost.cumulative_cost_at_epoch(ledger, 4000) == 25.5
+
+
+def test_cost_ledger_prefers_training_billing_upper_bound_intervals() -> None:
+    timeline = timeline_fixture()
+    timeline["resource_usage_summary"]["training_gpu"] = {
+        "intervals": [{"start_epoch_ms": 1500, "end_epoch_ms": 2500}],
+        "billing_upper_bound_intervals": [
+            {"start_epoch_ms": 500, "end_epoch_ms": 3500}
+        ],
+    }
+
+    ledger = agent_cost.build_cost_ledger(timeline)
+
+    assert ledger["training_intervals"] == [(500, 3500)]
+    # CPU: 4 * 3 = 12; conservative training: 3 * 13 = 39; API: .5.
+    assert agent_cost.cumulative_cost_at_epoch(ledger, 4000) == 51.5
 
 
 def test_live_ledger_caps_open_training_interval_at_snapshot_time() -> None:

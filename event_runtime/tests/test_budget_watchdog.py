@@ -134,6 +134,48 @@ def write_codex_request(codex_home: Path, *, model: str = "deepseek-v4-flash") -
     session.write_text("".join(json.dumps(row) + "\n" for row in rows))
 
 
+def write_host_cost_mirror(
+    runtime: Path,
+    *,
+    checked_at: float,
+    api: float = 0.0,
+    cpu: float = 0.02,
+    training: float = 9.89,
+) -> Path:
+    path = runtime / "sprint-gpu-mirror/cost.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "run_id": "unit",
+                "checked_at_epoch_s": checked_at,
+                "budget_usd": 10.0,
+                "stop_threshold_usd": 9.9,
+                "status": "stop_requested",
+                "total_usd": api + cpu + training,
+                "components": {
+                    "model_api": {
+                        "cost_usd": api,
+                        "request_count": 0,
+                        "pending_request_count": 0,
+                    },
+                    "cpu_agent": {
+                        "cost_usd": cpu,
+                        "allocated_seconds": 100.0,
+                    },
+                    "training_sandboxes": {
+                        "cost_usd": training,
+                        "allocated_seconds": 15_000.0,
+                    },
+                },
+            }
+        )
+        + "\n"
+    )
+    return path
+
+
 def test_live_watchdog_prices_api_cpu_and_gpu(tmp_path: Path, monkeypatch) -> None:
     durable = tmp_path / "durable"
     runtime = tmp_path / "run"
@@ -184,6 +226,57 @@ def test_live_watchdog_prices_api_cpu_and_gpu(tmp_path: Path, monkeypatch) -> No
     assert payload["training_allocated_seconds"] == 10
     assert payload["components"]["model_api"]["cost_usd"] > 0
     assert not (root / "BUDGET_STOP_REQUESTED.json").exists()
+
+
+def test_live_watchdog_merges_fresh_host_training_cost_and_stops(
+    tmp_path: Path, monkeypatch
+) -> None:
+    durable = tmp_path / "durable"
+    runtime = tmp_path / "run"
+    codex_home = tmp_path / "codex"
+    root = write_run(durable, "unit")
+    monkeypatch.setenv("SPRINT_CPU_LAUNCH_ATTEMPT", "1")
+    watchdog.ensure_cpu_start(root, 1, 1_000)
+    write_host_cost_mirror(runtime, checked_at=1_099)
+
+    payload = watchdog.check_once(
+        run_id="unit",
+        durable_dir=durable,
+        runtime_dir=runtime,
+        codex_home=codex_home,
+        pricing_path=PRICING,
+        now=1_100,
+    )
+
+    assert payload["components"]["training_sandboxes"]["cost_usd"] == pytest.approx(
+        9.89
+    )
+    assert payload["total_usd"] >= 9.9
+    assert payload["status"] == "stop_requested"
+    assert payload["host_cost_mirror_checked_at_epoch_s"] == 1_099
+    assert (runtime / "sprint-stop").read_text() == "agent_cost_budget_exhausted\n"
+
+
+def test_live_watchdog_fails_closed_when_host_cost_mirror_is_stale(
+    tmp_path: Path, monkeypatch
+) -> None:
+    durable = tmp_path / "durable"
+    runtime = tmp_path / "run"
+    codex_home = tmp_path / "codex"
+    root = write_run(durable, "unit")
+    monkeypatch.setenv("SPRINT_CPU_LAUNCH_ATTEMPT", "1")
+    watchdog.ensure_cpu_start(root, 1, 1_000)
+    write_host_cost_mirror(runtime, checked_at=1_000)
+
+    with pytest.raises(watchdog.BudgetTelemetryError, match="host cost mirror is stale"):
+        watchdog.check_once(
+            run_id="unit",
+            durable_dir=durable,
+            runtime_dir=runtime,
+            codex_home=codex_home,
+            pricing_path=PRICING,
+            now=1_061,
+        )
 
 
 def test_live_watchdog_prices_pinned_luna_default_tier(

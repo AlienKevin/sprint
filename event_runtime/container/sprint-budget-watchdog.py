@@ -38,6 +38,9 @@ from sprint_openrouter_pricing import (  # noqa: E402
 CPU_USD_PER_SECOND = 2 * 0.00003942 + 8 * 0.00000667
 TRAINING_USD_PER_SECOND = 6 * 0.00003942 + 12 * 0.00000667 + 0.000306
 STOP_REASON = "agent_cost_budget_exhausted"
+HOST_COST_MIRROR_RELATIVE_PATH = Path("sprint-gpu-mirror/cost.json")
+HOST_COST_MIRROR_MAX_AGE_SECONDS = 60.0
+HOST_COST_MIRROR_MAX_CLOCK_SKEW_SECONDS = 60.0
 
 
 class BudgetTelemetryError(RuntimeError):
@@ -610,6 +613,80 @@ def write_stop(run_root: Path, runtime_dir: Path, payload: dict[str, Any]) -> No
     os.replace(temporary, stop)
 
 
+def load_host_cost_mirror(
+    runtime_dir: Path,
+    *,
+    run_id: str,
+    budget: float,
+    threshold: float,
+    now: float,
+) -> dict[str, Any] | None:
+    """Load the host's complete cost view when it has been mirrored in.
+
+    Modal Volume mounts can lag host-written GPU lifecycle shards indefinitely
+    in a long-running sandbox. The controller therefore mirrors its merged
+    cost snapshot through the container runtime. Once that mirror exists, a
+    stale or malformed copy is an accounting outage and must fail closed.
+    """
+    path = runtime_dir / HOST_COST_MIRROR_RELATIVE_PATH
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise BudgetTelemetryError(f"invalid host cost mirror: {exc}") from exc
+    if not isinstance(payload, dict) or payload.get("schema_version") != 2:
+        raise BudgetTelemetryError("invalid host cost mirror schema")
+    if payload.get("run_id") != run_id:
+        raise BudgetTelemetryError("host cost mirror run ID mismatch")
+
+    def finite_number(name: str, value: object, *, positive: bool = False) -> float:
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or (float(value) <= 0 if positive else float(value) < 0)
+        ):
+            raise BudgetTelemetryError(f"invalid host cost mirror {name}")
+        return float(value)
+
+    checked_at = finite_number(
+        "checked_at_epoch_s", payload.get("checked_at_epoch_s"), positive=True
+    )
+    age = now - checked_at
+    if (
+        age < -HOST_COST_MIRROR_MAX_CLOCK_SKEW_SECONDS
+        or age > HOST_COST_MIRROR_MAX_AGE_SECONDS
+    ):
+        raise BudgetTelemetryError(f"host cost mirror is stale ({age:.1f}s)")
+    mirror_budget = finite_number(
+        "budget_usd", payload.get("budget_usd"), positive=True
+    )
+    mirror_threshold = finite_number(
+        "stop_threshold_usd", payload.get("stop_threshold_usd"), positive=True
+    )
+    if not math.isclose(mirror_budget, budget, rel_tol=0, abs_tol=1e-9):
+        raise BudgetTelemetryError("host cost mirror budget mismatch")
+    if not math.isclose(mirror_threshold, threshold, rel_tol=0, abs_tol=1e-9):
+        raise BudgetTelemetryError("host cost mirror stop threshold mismatch")
+    if payload.get("status") not in {"within_budget", "stop_requested"}:
+        raise BudgetTelemetryError("invalid host cost mirror status")
+
+    components = payload.get("components")
+    if not isinstance(components, dict):
+        raise BudgetTelemetryError("host cost mirror components are missing")
+    costs: dict[str, float] = {}
+    for name in ("model_api", "cpu_agent", "training_sandboxes"):
+        component = components.get(name)
+        if not isinstance(component, dict):
+            raise BudgetTelemetryError(f"host cost mirror {name} is missing")
+        costs[name] = finite_number(f"{name}.cost_usd", component.get("cost_usd"))
+    total = finite_number("total_usd", payload.get("total_usd"))
+    if not math.isclose(total, sum(costs.values()), rel_tol=1e-9, abs_tol=1e-8):
+        raise BudgetTelemetryError("host cost mirror component total mismatch")
+    return payload
+
+
 def check_once(
     *,
     run_id: str,
@@ -687,6 +764,38 @@ def check_once(
         provider_billed_api_usd = None
     cpu_usd = cpu_seconds * CPU_USD_PER_SECOND
     training_usd = gpu_seconds * TRAINING_USD_PER_SECOND
+    host_mirror = load_host_cost_mirror(
+        runtime_dir,
+        run_id=run_id,
+        budget=budget,
+        threshold=threshold,
+        now=ref,
+    )
+    if host_mirror is not None:
+        host_components = host_mirror["components"]
+        host_api = host_components["model_api"]
+        host_cpu = host_components["cpu_agent"]
+        host_training = host_components["training_sandboxes"]
+        api_usd = max(api_usd, float(host_api["cost_usd"]))
+        cpu_usd = max(cpu_usd, float(host_cpu["cost_usd"]))
+        training_usd = max(training_usd, float(host_training["cost_usd"]))
+        cpu_seconds = max(
+            cpu_seconds, float(host_cpu.get("allocated_seconds") or 0.0)
+        )
+        gpu_seconds = max(
+            gpu_seconds, float(host_training.get("allocated_seconds") or 0.0)
+        )
+        requests = max(requests, int(host_api.get("request_count") or 0))
+        pending_requests = max(
+            pending_requests, int(host_api.get("pending_request_count") or 0)
+        )
+        host_provider_cost = host_api.get("provider_billed_cost_usd")
+        if isinstance(host_provider_cost, (int, float)) and not isinstance(
+            host_provider_cost, bool
+        ):
+            provider_billed_api_usd = max(
+                float(provider_billed_api_usd or 0.0), float(host_provider_cost)
+            )
     component_totals = {
         "model_api_usd": api_usd,
         "cpu_agent_usd": cpu_usd,
@@ -743,6 +852,22 @@ def check_once(
         "pending_request_count": pending_requests,
         "cpu_allocated_seconds": cpu_seconds,
         "training_allocated_seconds": gpu_seconds,
+        "component_snapshot_sources": (
+            {
+                "model_api": "max(in_sandbox_openrouter_ledger,host_cost_mirror)",
+                "cpu_agent": "max(in_sandbox_lifecycle,host_cost_mirror)",
+                "training_sandboxes": "max(in_sandbox_lifecycle,host_cost_mirror)",
+            }
+            if host_mirror is not None
+            else {
+                "model_api": "in_sandbox_openrouter_ledger",
+                "cpu_agent": "in_sandbox_lifecycle",
+                "training_sandboxes": "in_sandbox_lifecycle",
+            }
+        ),
+        "host_cost_mirror_checked_at_epoch_s": (
+            host_mirror.get("checked_at_epoch_s") if host_mirror is not None else None
+        ),
         "status": "stop_requested" if total >= threshold else "within_budget",
         "cost_basis": (
             "openrouter_list_price_before_endpoint_discount_plus_pinned_modal_requested_resource_tariff"

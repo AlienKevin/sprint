@@ -1885,6 +1885,26 @@ while True:
                 "budget-run", reason="agent_cost_budget_exhausted"
             )
 
+    def test_agent_cost_budget_stops_at_shutdown_reserve_threshold(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state_dir = Path(raw)
+            run = {"agent_cost_budget_usd": 10.0}
+            with mock.patch.object(sprintctl, "request_stop") as request_stop:
+                stopped = sprintctl.enforce_agent_cost_budget(
+                    "budget-run",
+                    state_dir,
+                    run,
+                    {
+                        "status": "stop_requested",
+                        "total_usd": 9.9,
+                        "stop_threshold_usd": 9.9,
+                    },
+                )
+            self.assertTrue(stopped)
+            request_stop.assert_called_once_with(
+                "budget-run", reason="agent_cost_budget_exhausted"
+            )
+
     def test_agent_cost_budget_waits_for_complete_snapshot_and_threshold(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             state_dir = Path(raw)
@@ -1900,11 +1920,29 @@ while True:
                     "budget-run",
                     state_dir,
                     run,
-                    {"status": "complete", "total_usd": 9.999},
+                    {
+                        "status": "within_budget",
+                        "total_usd": 9.899,
+                        "stop_threshold_usd": 9.9,
+                    },
                 )
             self.assertFalse(incomplete)
             self.assertFalse(below)
             request_stop.assert_not_called()
+
+    def test_agent_cost_budget_rejects_invalid_stop_threshold(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            with self.assertRaisesRegex(ValueError, "invalid stop_threshold_usd"):
+                sprintctl.enforce_agent_cost_budget(
+                    "budget-run",
+                    Path(raw),
+                    {"agent_cost_budget_usd": 10.0},
+                    {
+                        "status": "within_budget",
+                        "total_usd": 1.0,
+                        "stop_threshold_usd": 10.1,
+                    },
+                )
 
     def test_task_instruction_renders_from_global_budget(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

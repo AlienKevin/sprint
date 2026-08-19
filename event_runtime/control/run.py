@@ -800,7 +800,7 @@ def enforce_agent_cost_budget(
     run: dict[str, Any],
     cost_payload: dict[str, Any],
 ) -> bool:
-    """Request a durable stop once a complete agent-cost snapshot reaches its cap."""
+    """Request a durable stop once a complete snapshot reaches its stop threshold."""
     budget = run.get("agent_cost_budget_usd")
     if budget is None:
         return False
@@ -813,6 +813,15 @@ def enforce_agent_cost_budget(
         raise ValueError(f"invalid agent_cost_budget_usd: {budget!r}")
     if (state_dir / "STOP_REQUESTED.json").is_file():
         return False
+    threshold = cost_payload.get("stop_threshold_usd", budget)
+    if (
+        isinstance(threshold, bool)
+        or not isinstance(threshold, (int, float))
+        or not math.isfinite(float(threshold))
+        or float(threshold) <= 0
+        or float(threshold) > float(budget)
+    ):
+        raise ValueError(f"invalid stop_threshold_usd: {threshold!r}")
     total = cost_payload.get("total_usd")
     if (
         cost_payload.get("status")
@@ -820,7 +829,7 @@ def enforce_agent_cost_budget(
         or isinstance(total, bool)
         or not isinstance(total, (int, float))
         or not math.isfinite(float(total))
-        or float(total) < float(budget)
+        or float(total) < float(threshold)
     ):
         return False
     request_stop(run_id, reason="agent_cost_budget_exhausted")

@@ -1878,6 +1878,31 @@ class Builder:
                 key_fields=("gpu_job_id", "gpu_attempt"),
             )
         )
+        # Modal can begin billing while Sandbox.create is still in flight and
+        # can continue briefly after the worker's own terminal timestamp. The
+        # post-create lifecycle above is the right interval for GPU telemetry,
+        # but it is an unsafe lower bound for a live budget. Pair the host's
+        # pre-create dispatch boundary with the terminal release instead and
+        # fall back to the telemetry interval only for legacy records.
+        training_billing_intervals = self._paired_intervals(
+            self.events,
+            start_kinds={"gpu_worker_starting_enter"},
+            end_kinds={"gpu_preempted", "gpu_released"},
+            key_fields=("gpu_job_id", "gpu_attempt"),
+        )
+        billing_keys = {
+            (interval.get("gpu_job_id"), interval.get("gpu_attempt"))
+            for interval in training_billing_intervals
+        }
+        training_billing_intervals.extend(
+            dict(interval)
+            for interval in training_intervals
+            if (interval.get("gpu_job_id"), interval.get("gpu_attempt"))
+            not in billing_keys
+        )
+        training_billing_intervals.sort(
+            key=lambda interval: int(interval["start_epoch_ms"])
+        )
         verifier_evaluation_intervals = self._paired_intervals(
             self.events,
             start_kinds={"evaluation_started"},
@@ -2159,7 +2184,7 @@ class Builder:
 
         allocated_by_role = {
             "cpu_agent": allocated_ms(cpu_intervals),
-            "training_gpu": allocated_ms(training_intervals),
+            "training_gpu": allocated_ms(training_billing_intervals),
             "verifier_gpu": allocated_ms(verifier_intervals),
         }
         modal_estimate = modal_cost.estimate_cost(
@@ -2320,7 +2345,10 @@ class Builder:
             },
             "training_gpu": {
                 "allocation_count": len(training_intervals),
-                "allocated_ms": allocated_by_role["training_gpu"],
+                "allocated_ms": allocated_ms(training_intervals),
+                "billing_upper_bound_allocated_ms": allocated_by_role[
+                    "training_gpu"
+                ],
                 # Preserve the provider-registry-clamped intervals used for
                 # billing so downstream cost curves cannot reconstruct a
                 # larger provisional lifecycle from raw legacy events.
@@ -2338,6 +2366,19 @@ class Builder:
                         if interval.get(key) is not None
                     }
                     for interval in training_intervals
+                ],
+                "billing_upper_bound_intervals": [
+                    {
+                        key: interval.get(key)
+                        for key in (
+                            "gpu_job_id",
+                            "gpu_attempt",
+                            "start_epoch_ms",
+                            "end_epoch_ms",
+                        )
+                        if interval.get(key) is not None
+                    }
+                    for interval in training_billing_intervals
                 ],
             },
             "verifier_gpu": {
@@ -2430,7 +2471,7 @@ class Builder:
                 allocated_ms_by_role={
                     "cpu_agent": allocated_ms(cpu_intervals, cutoff_ms=cutoff_ms),
                     "training_gpu": allocated_ms(
-                        training_intervals, cutoff_ms=cutoff_ms
+                        training_billing_intervals, cutoff_ms=cutoff_ms
                     ),
                     "verifier_gpu": allocated_ms(
                         verifier_intervals, cutoff_ms=cutoff_ms

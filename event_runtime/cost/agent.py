@@ -65,7 +65,10 @@ def build_cost_ledger(timeline: dict[str, Any]) -> dict[str, Any]:
         )
     else:
         cpu_intervals = [(min(cpu_starts), end_epoch_ms)]
-    reconciled_intervals = (resources.get("training_gpu") or {}).get("intervals")
+    training_resource = resources.get("training_gpu") or {}
+    reconciled_intervals = training_resource.get(
+        "billing_upper_bound_intervals"
+    ) or training_resource.get("intervals")
     if isinstance(reconciled_intervals, list):
         training_intervals = sorted(
             (
@@ -274,6 +277,17 @@ def build_snapshot(
 
     cpu = role_payload("cpu_agent")
     training = role_payload("training_gpu")
+    modal_provider = resources.get("modal_provider_billing") or {}
+    provider_reconciled = modal_provider.get("provider_complete") is True
+    if provider_reconciled:
+        provider_by_role = modal_provider.get("by_role_usd") or {}
+        provider_by_role_category = modal_provider.get("by_role_category_usd") or {}
+        for component, role in ((cpu, "cpu_agent"), (training, "training_gpu")):
+            component["cost_usd"] = float(provider_by_role.get(role) or 0.0)
+            component["cost_components_usd"] = dict(
+                provider_by_role_category.get(role) or {}
+            )
+            component["cost_source"] = "modal_provider_report_precredits"
     modal_cost_usd = cpu["cost_usd"] + training["cost_usd"]
     total = api_cost + modal_cost_usd if api_complete else None
     rates = pricing["rates_usd_per_second"]
@@ -360,7 +374,16 @@ def build_snapshot(
             "volume_storage",
             "provider_credits_discounts_taxes_and_invoice_adjustments",
         ],
-        "cost_basis": "published_api_list_price_plus_pinned_modal_requested_resource_tariff",
+        "cost_basis": (
+            "published_api_list_price_plus_modal_provider_report_precredits"
+            if provider_reconciled
+            else "published_api_list_price_plus_conservative_pinned_modal_tariff"
+        ),
+        "modal_cost_source": (
+            "modal_provider_report_precredits"
+            if provider_reconciled
+            else "conservative_live_billing_interval_x_pinned_modal_tariff"
+        ),
         "invoice_exact": False,
     }
     if canonical is None:
