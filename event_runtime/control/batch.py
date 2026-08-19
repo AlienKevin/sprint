@@ -1379,6 +1379,18 @@ def public_tracking_batch(payload: dict[str, Any]) -> dict[str, Any]:
                     continue
                 arms_by_run[run_id] = arm
         for alert in batch.get("alerts", []):
+            alert_run_id = alert.get("run_id")
+            if (
+                alert.get("kind") == "finalization"
+                and isinstance(alert_run_id, str)
+                and (arms_by_run.get(alert_run_id) or {}).get("status")
+                == "finalized"
+            ):
+                # A transient finalizer exception is no longer actionable once
+                # the durable FINALIZED marker exists. Source batch monitors
+                # may already be retired, so the replacement tracking owner
+                # must suppress that recovered alert as well.
+                continue
             # A replacement batch owns the combined performance snapshot and
             # production deployment.  Site-level alerts from a coexisting
             # source batch describe that source controller's obsolete view of
@@ -1750,6 +1762,12 @@ def monitor_cycle(batch_id: str, *, deploy: bool = True) -> dict[str, Any]:
             if finalized_path.is_file():
                 arm["status"] = "finalized"
                 arm["finalized_at"] = arm.get("finalized_at") or utc_now()
+                resolve_alerts(
+                    payload,
+                    run_id=run_id,
+                    kind="finalization",
+                    resolution="subsequent_finalization_succeeded",
+                )
                 finalized += 1
 
         known = {

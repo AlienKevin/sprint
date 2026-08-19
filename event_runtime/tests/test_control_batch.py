@@ -1048,10 +1048,17 @@ def test_tracking_batch_ignores_delegated_site_alerts(
         "reasoning_effort": "max",
         "codex_version": "0.147.0",
         "run_hours": None,
-        "arms": [{"run_id": "base-luna-1", "family": "luna"}],
+        "arms": [
+            {
+                "run_id": "base-luna-1",
+                "family": "luna",
+                "status": "finalized",
+            }
+        ],
         "alerts": [
             {"run_id": "batch", "kind": "performance_export"},
             {"run_id": "batch", "kind": "website_deploy"},
+            {"run_id": "base-luna-1", "kind": "finalization"},
             {"run_id": "base-luna-1", "kind": "monitor_error"},
         ],
     }
