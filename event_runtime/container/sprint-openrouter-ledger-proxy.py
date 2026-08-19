@@ -157,6 +157,7 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                 "generation_id": None,
                 "provider_reported_cost_usd": None,
             }
+            self.ledger_server.begin_request()
             atomic_json(record_path, record)
         else:
             record = {}
@@ -246,6 +247,7 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                 valid_cost = (
                     isinstance(cost, (int, float))
                     and not isinstance(cost, bool)
+                    and math.isfinite(float(cost))
                     and float(cost) >= 0
                 )
                 if valid_cost:
@@ -279,6 +281,12 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                     )
                 atomic_json(record_path, record)
                 if valid_cost:
+                    self.ledger_server.complete_request(float(cost))
+                elif upstream.status >= 400 and not generation_id:
+                    self.ledger_server.complete_request(0.0)
+                else:
+                    self.ledger_server.require_cost_recovery()
+                if valid_cost:
                     try:
                         _allowed, snapshot = self.ledger_server.budget_snapshot()
                     except (OSError, ValueError, KeyError, json.JSONDecodeError):
@@ -295,14 +303,23 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                         self.ledger_server.write_stop(snapshot)
         except Exception as exc:  # noqa: BLE001
             if record_usage:
-                record.update(
-                    {
-                        "state": "cost_recovery_required",
-                        "response_ended_at": utc_now(),
-                        "proxy_error_type": type(exc).__name__,
-                    }
+                cost = record.get("provider_reported_cost_usd")
+                valid_recorded_cost = (
+                    isinstance(cost, (int, float))
+                    and not isinstance(cost, bool)
+                    and math.isfinite(float(cost))
+                    and float(cost) >= 0
                 )
-                atomic_json(record_path, record)
+                if not valid_recorded_cost:
+                    record.update(
+                        {
+                            "state": "cost_recovery_required",
+                            "response_ended_at": utc_now(),
+                            "proxy_error_type": type(exc).__name__,
+                        }
+                    )
+                    atomic_json(record_path, record)
+                    self.ledger_server.require_cost_recovery()
             if not self.wfile.closed:
                 try:
                     self.send_error(HTTPStatus.BAD_GATEWAY, "upstream request failed")
@@ -339,17 +356,24 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
         self.runtime_dir = runtime_dir
         self.billing_lock = threading.Lock()
         self.requests_dir.mkdir(parents=True, exist_ok=True)
+        (
+            self.api_cost_usd,
+            self.completed_request_count,
+            self.in_flight_request_count,
+            self.cost_recovery_required_count,
+        ) = self._rebuild_totals()
+        self.write_summary()
         super().__init__(address, LedgerProxyHandler)
 
-    def budget_snapshot(self) -> tuple[bool, dict[str, Any]]:
-        """Return whether another paid request may start under the run cap."""
-        run = json.loads((self.run_root / "state/run.json").read_text())
-        if run.get("run_id") != self.run_id:
-            raise ValueError("run identity mismatch")
-        budget = float(run["agent_cost_budget_usd"])
-        if not math.isfinite(budget) or budget <= 0:
-            raise ValueError("invalid agent cost budget")
-        api_cost = 0.0
+    @property
+    def summary_path(self) -> Path:
+        return self.requests_dir.parent / "summary.json"
+
+    def _rebuild_totals(self) -> tuple[float, int, int, int]:
+        total = 0.0
+        completed = 0
+        in_flight = 0
+        recovery_required = 0
         for path in sorted(self.requests_dir.glob("*.json")):
             record = json.loads(path.read_text())
             if record.get("run_id") != self.run_id:
@@ -359,16 +383,71 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
                 value = float(cost)
                 if not math.isfinite(value) or value < 0:
                     raise ValueError("invalid provider-reported cost")
-                api_cost += value
-            elif record.get("state") not in {"rejected_not_billed"}:
-                # Never admit another paid request while an earlier charge is
-                # unknown. The watchdog can recover it by generation ID.
-                return False, {
-                    "schema_version": 2,
-                    "run_id": self.run_id,
-                    "reason": "budget_telemetry_unavailable",
-                    "status": "fail_closed",
-                }
+                total += value
+                completed += 1
+            elif record.get("state") == "in_flight":
+                in_flight += 1
+            elif record.get("state") == "cost_recovery_required":
+                recovery_required += 1
+            else:
+                raise ValueError("invalid unpriced ledger record")
+        return total, completed, in_flight, recovery_required
+
+    def write_summary(self) -> None:
+        pending = self.in_flight_request_count + self.cost_recovery_required_count
+        atomic_json(
+            self.summary_path,
+            {
+                "schema_version": 1,
+                "run_id": self.run_id,
+                "updated_at": utc_now(),
+                "model_api_usd": self.api_cost_usd,
+                "completed_request_count": self.completed_request_count,
+                "pending_request_count": pending,
+                "in_flight_request_count": self.in_flight_request_count,
+                "cost_recovery_required_count": self.cost_recovery_required_count,
+            },
+        )
+
+    def begin_request(self) -> None:
+        self.in_flight_request_count += 1
+        self.write_summary()
+
+    def complete_request(self, cost: float) -> None:
+        if not math.isfinite(cost) or cost < 0:
+            raise ValueError("invalid provider-reported cost")
+        if self.in_flight_request_count <= 0:
+            raise ValueError("ledger has no in-flight request to complete")
+        self.in_flight_request_count -= 1
+        self.completed_request_count += 1
+        self.api_cost_usd += cost
+        self.write_summary()
+
+    def require_cost_recovery(self) -> None:
+        if self.in_flight_request_count <= 0:
+            return
+        self.in_flight_request_count -= 1
+        self.cost_recovery_required_count += 1
+        self.write_summary()
+
+    def budget_snapshot(self) -> tuple[bool, dict[str, Any]]:
+        """Return whether another paid request may start under the run cap."""
+        run = json.loads((self.run_root / "state/run.json").read_text())
+        if run.get("run_id") != self.run_id:
+            raise ValueError("run identity mismatch")
+        budget = float(run["agent_cost_budget_usd"])
+        if not math.isfinite(budget) or budget <= 0:
+            raise ValueError("invalid agent cost budget")
+        api_cost = self.api_cost_usd
+        if self.in_flight_request_count or self.cost_recovery_required_count:
+            # Never admit another paid request while an earlier charge is
+            # unknown. The watchdog can recover it by generation ID.
+            return False, {
+                "schema_version": 2,
+                "run_id": self.run_id,
+                "reason": "budget_telemetry_unavailable",
+                "status": "fail_closed",
+            }
         modal_cost = 0.0
         watchdog_path = self.run_root / "budget/watchdog.json"
         if watchdog_path.is_file():

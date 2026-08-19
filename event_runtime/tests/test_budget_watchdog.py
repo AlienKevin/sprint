@@ -371,6 +371,38 @@ def test_interrupted_openrouter_stream_recovers_exact_generation_cost(
     assert recovered["provider_reported_cost_usd"] == 0.456
 
 
+def test_openrouter_watchdog_uses_exact_rollup_without_rescanning_shards(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "run"
+    requests = root / "api-usage/requests"
+    requests.mkdir(parents=True)
+    # A malformed historical shard proves the steady-state watchdog did not
+    # touch the growing audit directory once the proxy published its rollup.
+    (requests / "historical.json").write_text("{not-json}\n")
+    (requests.parent / "summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "run_id": "unit",
+                "updated_at": "2026-08-19T00:00:00Z",
+                "model_api_usd": 1.25,
+                "completed_request_count": 2_000,
+                "pending_request_count": 0,
+                "in_flight_request_count": 0,
+                "cost_recovery_required_count": 0,
+            }
+        )
+        + "\n"
+    )
+
+    assert watchdog.openrouter_api_cost(root, run_id="unit", api_key=None) == (
+        1.25,
+        2_000,
+        0,
+    )
+
+
 def test_live_watchdog_stops_before_cap_using_shutdown_reserve(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -424,3 +456,66 @@ def test_gpu_worker_observes_durable_budget_marker(tmp_path: Path) -> None:
     worker = importlib.util.module_from_spec(worker_spec)
     worker_spec.loader.exec_module(worker)
     assert worker.budget_stop_requested("unit", str(tmp_path))
+
+
+def load_gpu_worker():
+    worker_spec = importlib.util.spec_from_file_location(
+        "sprint_gpu_worker_budget_snapshot",
+        ROOT / "event_runtime/container/sprint-gpu-worker-run.py",
+    )
+    assert worker_spec and worker_spec.loader
+    worker = importlib.util.module_from_spec(worker_spec)
+    worker_spec.loader.exec_module(worker)
+    return worker
+
+
+def write_budget_snapshot(
+    root: Path, *, checked_at: float, total: float = 1.0, threshold: float = 9.9
+) -> None:
+    path = root / "runs/unit/budget/watchdog.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "run_id": "unit",
+                "checked_at_epoch_s": checked_at,
+                "total_usd": total,
+                "stop_threshold_usd": threshold,
+                "status": "stop_requested" if total >= threshold else "within_budget",
+            }
+        )
+        + "\n"
+    )
+
+
+def test_gpu_worker_accepts_fresh_budget_snapshot(tmp_path: Path) -> None:
+    worker = load_gpu_worker()
+    write_budget_snapshot(tmp_path, checked_at=1_000)
+
+    assert not worker.refresh_budget_stop("unit", str(tmp_path), now=1_010)
+    assert not (tmp_path / "runs/unit/BUDGET_STOP_REQUESTED.json").exists()
+
+
+def test_gpu_worker_fails_closed_on_stale_budget_snapshot(tmp_path: Path) -> None:
+    worker = load_gpu_worker()
+    write_budget_snapshot(tmp_path, checked_at=1_000)
+
+    assert worker.refresh_budget_stop("unit", str(tmp_path), now=1_031)
+    marker = json.loads(
+        (tmp_path / "runs/unit/BUDGET_STOP_REQUESTED.json").read_text()
+    )
+    assert marker["reason"] == "budget_telemetry_unavailable"
+    assert "stale" in marker["error"]
+
+
+def test_gpu_worker_propagates_fresh_budget_stop(tmp_path: Path) -> None:
+    worker = load_gpu_worker()
+    write_budget_snapshot(tmp_path, checked_at=1_000, total=9.9)
+
+    assert worker.refresh_budget_stop("unit", str(tmp_path), now=1_010)
+    marker = json.loads(
+        (tmp_path / "runs/unit/BUDGET_STOP_REQUESTED.json").read_text()
+    )
+    assert marker["reason"] == "agent_cost_budget_exhausted"
+    assert marker["total_usd"] == pytest.approx(9.9)

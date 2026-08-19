@@ -70,9 +70,41 @@ def openrouter_api_cost(
 ) -> tuple[float, int, int]:
     """Sum exact OpenRouter charges, recovering interrupted streams by ID."""
     requests_dir = run_root / "api-usage" / "requests"
+    summary_path = requests_dir.parent / "summary.json"
+    if summary_path.is_file():
+        try:
+            summary = json.loads(summary_path.read_text())
+            if summary.get("schema_version") != 1 or summary.get("run_id") != run_id:
+                raise BudgetTelemetryError("OpenRouter ledger summary identity mismatch")
+            total = float(summary["model_api_usd"])
+            completed = int(summary["completed_request_count"])
+            pending = int(summary["pending_request_count"])
+            in_flight = int(summary["in_flight_request_count"])
+            recovery_required = int(summary["cost_recovery_required_count"])
+            if not (
+                math.isfinite(total)
+                and total >= 0
+                and completed >= 0
+                and pending >= 0
+                and in_flight >= 0
+                and recovery_required >= 0
+                and pending == in_flight + recovery_required
+            ):
+                raise BudgetTelemetryError("invalid OpenRouter ledger summary")
+            if recovery_required == 0 or not api_key:
+                if recovery_required and not api_key:
+                    raise BudgetTelemetryError(
+                        "OpenRouter charge recovery requires controller credentials"
+                    )
+                return total, completed, pending
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+            raise BudgetTelemetryError("invalid OpenRouter ledger summary") from exc
+
     total = 0.0
     completed = 0
     pending = 0
+    in_flight = 0
+    recovery_required = 0
     for path in sorted(requests_dir.glob("*.json")) if requests_dir.is_dir() else ():
         try:
             record = json.loads(path.read_text())
@@ -127,6 +159,25 @@ def openrouter_api_cost(
         if state not in {"in_flight", "cost_recovery_required"}:
             raise BudgetTelemetryError(f"invalid OpenRouter ledger state: {path}")
         pending += 1
+        if state == "in_flight":
+            in_flight += 1
+        else:
+            recovery_required += 1
+    atomic_json(
+        summary_path,
+        {
+            "schema_version": 1,
+            "run_id": run_id,
+            "updated_at": dt.datetime.now(dt.timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z"),
+            "model_api_usd": total,
+            "completed_request_count": completed,
+            "pending_request_count": pending,
+            "in_flight_request_count": in_flight,
+            "cost_recovery_required_count": recovery_required,
+        },
+    )
     return total, completed, pending
 
 

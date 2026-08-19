@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import signal
 import shutil
@@ -38,6 +39,7 @@ from sprint_resilience import CheckpointStore, Interruption, Lease
 
 MAX_ARCHIVE_MEMBERS = 20_000
 MAX_ARCHIVE_EXPANDED_BYTES = 512 * 1024 * 1024
+MAX_BUDGET_SNAPSHOT_AGE_SECONDS = 30.0
 
 
 def file_sha256(path: Path) -> str:
@@ -549,46 +551,69 @@ def budget_stop_requested(run_id: str, durable_dir: str = "/durable") -> bool:
     ).is_file()
 
 
-def refresh_budget_stop(run_id: str) -> bool:
-    watchdog = Path("/opt/sprint-budget-watchdog.py")
-    if watchdog.is_file():
-        try:
-            completed = subprocess.run(
-                [
-                    str(watchdog),
-                    "--run-id",
-                    run_id,
-                    "--codex-home",
-                    "/nonexistent-codex-home",
-                    "--runtime-dir",
-                    "/tmp/sprint-budget-runtime",
-                ],
-                check=False,
-                timeout=10,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            if completed.returncode not in {0, 10, 20}:
-                raise RuntimeError(
-                    f"budget watchdog exited unexpectedly: {completed.returncode}"
-                )
-        except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
-            # Accounting uncertainty must terminate work even if this GPU's
-            # independent watchdog is the only surviving budget monitor.
-            marker = Path("/durable") / "runs" / run_id / "BUDGET_STOP_REQUESTED.json"
-            if not marker.exists():
-                write_status(
-                    marker,
-                    {
-                        "schema_version": 1,
-                        "run_id": run_id,
-                        "status": "fail_closed",
-                        "reason": "budget_telemetry_unavailable",
-                        "error": f"{type(exc).__name__}: {exc}",
-                        "checked_at_epoch_s": time.time(),
-                    },
-                )
-    return budget_stop_requested(run_id)
+def refresh_budget_stop(
+    run_id: str,
+    durable_dir: str = "/durable",
+    *,
+    now: float | None = None,
+    max_snapshot_age_seconds: float = MAX_BUDGET_SNAPSHOT_AGE_SECONDS,
+) -> bool:
+    """Observe the CPU watchdog's constant-size durable budget snapshot.
+
+    Re-running the full watchdog from a newly mounted GPU sandbox requires
+    reading every per-request OpenRouter ledger shard. That cold-volume scan
+    grows with the experiment and can exceed the worker's supervision
+    deadline. The CPU sandbox already reconstructs the authoritative ledger
+    every five seconds, so GPU workers consume that snapshot and fail closed
+    if it is missing, malformed, inconsistent, or stale.
+    """
+    run_root = Path(durable_dir) / "runs" / run_id
+    marker = run_root / "BUDGET_STOP_REQUESTED.json"
+    if marker.is_file():
+        return True
+
+    checked_at = time.time() if now is None else float(now)
+    try:
+        snapshot = json.loads((run_root / "budget" / "watchdog.json").read_text())
+        if snapshot.get("schema_version") != 2:
+            raise ValueError("budget watchdog schema mismatch")
+        if snapshot.get("run_id") != run_id:
+            raise ValueError("budget watchdog identity mismatch")
+        snapshot_epoch = float(snapshot["checked_at_epoch_s"])
+        age = checked_at - snapshot_epoch
+        if not math.isfinite(age) or age < -max_snapshot_age_seconds:
+            raise ValueError("budget watchdog timestamp is invalid")
+        if age > max_snapshot_age_seconds:
+            raise ValueError(f"budget watchdog snapshot is stale ({age:.1f}s)")
+        total = float(snapshot["total_usd"])
+        threshold = float(snapshot["stop_threshold_usd"])
+        if not (
+            math.isfinite(total)
+            and total >= 0
+            and math.isfinite(threshold)
+            and threshold > 0
+        ):
+            raise ValueError("budget watchdog totals are invalid")
+        status = snapshot.get("status")
+        if status == "within_budget" and total < threshold:
+            return False
+        if status != "stop_requested" or total < threshold:
+            raise ValueError("budget watchdog status is inconsistent")
+        payload = {**snapshot, "reason": "agent_cost_budget_exhausted"}
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        # A stale snapshot proves that the independent CPU circuit breaker is
+        # no longer healthy. Stop GPU spend within a bounded 30-second window.
+        payload = {
+            "schema_version": 1,
+            "run_id": run_id,
+            "status": "fail_closed",
+            "reason": "budget_telemetry_unavailable",
+            "error": f"{type(exc).__name__}: {exc}",
+            "checked_at_epoch_s": checked_at,
+        }
+    if not marker.exists():
+        write_status(marker, payload)
+    return True
 
 
 def supervise_child(

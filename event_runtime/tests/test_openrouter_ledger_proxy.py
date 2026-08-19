@@ -163,3 +163,38 @@ def test_generic_openrouter_budget_gate_fails_closed_on_unknown_prior_charge(
     assert allowed is False
     assert snapshot["status"] == "fail_closed"
     assert snapshot["reason"] == "budget_telemetry_unavailable"
+
+
+def test_proxy_maintains_constant_size_exact_cost_summary(tmp_path: Path) -> None:
+    run_root = tmp_path / "runs/run-1"
+    state = run_root / "state"
+    state.mkdir(parents=True)
+    (state / "run.json").write_text(
+        json.dumps({"run_id": "run-1", "agent_cost_budget_usd": 10.0})
+    )
+    server = proxy.LedgerProxyServer(
+        ("127.0.0.1", 0),
+        upstream="https://openrouter.ai/api/v1",
+        ledger_root=run_root / "api-usage",
+        run_id="run-1",
+        cpu_attempt=1,
+        runtime_dir=tmp_path / "runtime",
+    )
+    try:
+        server.begin_request()
+        in_flight = json.loads(server.summary_path.read_text())
+        assert in_flight["pending_request_count"] == 1
+        assert in_flight["in_flight_request_count"] == 1
+        assert server.budget_snapshot()[0] is False
+
+        server.complete_request(0.125)
+        complete = json.loads(server.summary_path.read_text())
+        assert complete["model_api_usd"] == pytest.approx(0.125)
+        assert complete["completed_request_count"] == 1
+        assert complete["pending_request_count"] == 0
+        assert server.budget_snapshot()[0] is True
+        server.begin_request()
+        with pytest.raises(ValueError, match="invalid provider-reported cost"):
+            server.complete_request(float("nan"))
+    finally:
+        server.server_close()
