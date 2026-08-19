@@ -240,7 +240,10 @@ def mirror_agent_cost(run: dict[str, Any], payload: dict[str, Any]) -> dict[str,
     this document, then installs it under the existing host-owned /run mirror.
     """
     state_dir_raw = str(run.get("state_dir") or "")
-    if state_dir_raw and (Path(state_dir_raw) / "STOP_ACK.json").is_file():
+    if state_dir_raw and any(
+        (Path(state_dir_raw) / name).is_file()
+        for name in ("STOP_REQUESTED.json", "STOP_ACK.json")
+    ):
         return {"agent_cost_mirror": "agent_stopped"}
     container_id = str(run.get("agent_container_id") or "")
     if not container_id.startswith("ta-"):
@@ -313,12 +316,16 @@ print("STALE_IGNORED" if stale else "UPDATED")
             timeout=20,
         )
     except Exception as exc:  # noqa: BLE001
+        if "Task has already finished with status" in str(exc):
+            return {"agent_cost_mirror": "agent_stopped"}
         return {
             "agent_cost_mirror": "error",
             "agent_cost_mirror_error": f"{type(exc).__name__}: {exc}",
         }
     if result.returncode != 0:
         error = (result.stderr or result.stdout or "container exec failed").strip()
+        if "Task has already finished with status" in error:
+            return {"agent_cost_mirror": "agent_stopped"}
         return {
             "agent_cost_mirror": "error",
             "agent_cost_mirror_error": error[-1000:],

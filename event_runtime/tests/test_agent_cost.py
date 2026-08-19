@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 OPS = ROOT / "runs/ops"
 sys.path.insert(0, str(OPS))
@@ -323,8 +325,11 @@ def test_agent_cost_mirror_refuses_to_replace_newer_snapshot(
     assert json.loads((mirror / "cost.json").read_text()) == current
 
 
-def test_host_skips_cost_mirror_after_agent_stop(tmp_path: Path, monkeypatch) -> None:
-    (tmp_path / "STOP_ACK.json").write_text("{}")
+@pytest.mark.parametrize("marker", ["STOP_REQUESTED.json", "STOP_ACK.json"])
+def test_host_skips_cost_mirror_after_agent_stop(
+    tmp_path: Path, monkeypatch, marker: str
+) -> None:
+    (tmp_path / marker).write_text("{}")
     execute = mock.Mock(side_effect=AssertionError("stopped agent must not be called"))
     monkeypatch.setattr(gpu_worker.sprintctl, "exec_container", execute)
 
@@ -335,3 +340,23 @@ def test_host_skips_cost_mirror_after_agent_stop(tmp_path: Path, monkeypatch) ->
 
     assert detail == {"agent_cost_mirror": "agent_stopped"}
     execute.assert_not_called()
+
+
+def test_host_treats_finished_agent_task_as_stopped(monkeypatch) -> None:
+    monkeypatch.setattr(
+        gpu_worker.sprintctl,
+        "exec_container",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [],
+            1,
+            "",
+            "Task has already finished with status success",
+        ),
+    )
+
+    detail = gpu_worker.mirror_agent_cost(
+        {"agent_container_id": "ta-agent"},
+        {"schema_version": 1, "total_usd": 10.0},
+    )
+
+    assert detail == {"agent_cost_mirror": "agent_stopped"}
