@@ -64,7 +64,9 @@ start_openrouter_proxy() {
   proxy_pid=$!
   printf '%s\n' "$proxy_pid" >"$AGENT_STATE_DIR/openrouter-proxy.pid"
   local ready=0
-  for _ in $(seq 1 50); do
+  # A legacy run may need one bounded ledger migration before the proxy can
+  # serve health checks. New rollup-backed restarts are constant-time.
+  for _ in $(seq 1 600); do
     if ! kill -0 "$proxy_pid" 2>/dev/null; then
       break
     fi

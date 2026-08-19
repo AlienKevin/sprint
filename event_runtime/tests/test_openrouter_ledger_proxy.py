@@ -14,6 +14,9 @@ spec = importlib.util.spec_from_file_location("sprint_openrouter_ledger_proxy", 
 assert spec and spec.loader
 proxy = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(proxy)
+REQUEST_1 = "a" * 32
+REQUEST_2 = "b" * 32
+PENDING_REQUEST = "c" * 32
 
 
 def test_terminal_response_event_exposes_exact_usage_cost() -> None:
@@ -94,11 +97,12 @@ def test_generic_openrouter_budget_gate_blocks_a_second_paid_request(
             }
         )
     )
-    record = run_root / "api-usage/requests/first.json"
+    record = run_root / f"api-usage/requests/{REQUEST_1}.json"
     record.parent.mkdir(parents=True)
     record.write_text(
         json.dumps(
             {
+                "ledger_request_id": REQUEST_1,
                 "run_id": "run-1",
                 "state": "complete",
                 "provider_reported_cost_usd": 9.95,
@@ -127,6 +131,67 @@ def test_generic_openrouter_budget_gate_blocks_a_second_paid_request(
     assert marker["status"] == "stop_requested"
 
 
+def test_live_proxy_observes_watchdog_recovered_pending_cost(tmp_path: Path) -> None:
+    run_root = tmp_path / "runs/run-1"
+    state = run_root / "state"
+    state.mkdir(parents=True)
+    (state / "run.json").write_text(
+        json.dumps({"run_id": "run-1", "agent_cost_budget_usd": 10.0})
+    )
+    record = run_root / f"api-usage/requests/{PENDING_REQUEST}.json"
+    record.parent.mkdir(parents=True)
+    record.write_text(
+        json.dumps(
+            {
+                "ledger_request_id": PENDING_REQUEST,
+                "run_id": "run-1",
+                "state": "cost_recovery_required",
+                "provider_reported_cost_usd": None,
+            }
+        )
+    )
+    (record.parent.parent / "summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "run_id": "run-1",
+                "model_api_usd": 1.0,
+                "completed_request_count": 10,
+                "pending_request_count": 1,
+                "in_flight_request_count": 0,
+                "cost_recovery_required_count": 1,
+                "in_flight_request_ids": [],
+                "cost_recovery_required_request_ids": [PENDING_REQUEST],
+            }
+        )
+    )
+    server = proxy.LedgerProxyServer(
+        ("127.0.0.1", 0),
+        upstream="https://openrouter.ai/api/v1",
+        ledger_root=run_root / "api-usage",
+        run_id="run-1",
+        cpu_attempt=2,
+        runtime_dir=tmp_path / "runtime",
+    )
+    try:
+        recovered = json.loads(record.read_text())
+        recovered.update(
+            {
+                "state": "recovered_complete",
+                "provider_reported_cost_usd": 0.5,
+            }
+        )
+        record.write_text(json.dumps(recovered))
+
+        allowed, snapshot = server.budget_snapshot()
+        assert allowed is True
+        assert snapshot["component_totals_usd"]["model_api_usd"] == 1.5
+        assert server.completed_request_count == 11
+        assert not server.cost_recovery_required_request_ids
+    finally:
+        server.server_close()
+
+
 def test_generic_openrouter_budget_gate_fails_closed_on_unknown_prior_charge(
     tmp_path: Path,
 ) -> None:
@@ -136,11 +201,12 @@ def test_generic_openrouter_budget_gate_fails_closed_on_unknown_prior_charge(
     (state / "run.json").write_text(
         json.dumps({"run_id": "run-1", "agent_cost_budget_usd": 10.0})
     )
-    record = run_root / "api-usage/requests/in-flight.json"
+    record = run_root / f"api-usage/requests/{REQUEST_1}.json"
     record.parent.mkdir(parents=True)
     record.write_text(
         json.dumps(
             {
+                "ledger_request_id": REQUEST_1,
                 "run_id": "run-1",
                 "state": "cost_recovery_required",
                 "provider_reported_cost_usd": None,
@@ -181,20 +247,118 @@ def test_proxy_maintains_constant_size_exact_cost_summary(tmp_path: Path) -> Non
         runtime_dir=tmp_path / "runtime",
     )
     try:
-        server.begin_request()
+        server.begin_request(REQUEST_1)
         in_flight = json.loads(server.summary_path.read_text())
         assert in_flight["pending_request_count"] == 1
         assert in_flight["in_flight_request_count"] == 1
         assert server.budget_snapshot()[0] is False
 
-        server.complete_request(0.125)
+        server.complete_request(REQUEST_1, 0.125)
         complete = json.loads(server.summary_path.read_text())
         assert complete["model_api_usd"] == pytest.approx(0.125)
         assert complete["completed_request_count"] == 1
         assert complete["pending_request_count"] == 0
         assert server.budget_snapshot()[0] is True
-        server.begin_request()
+        server.begin_request(REQUEST_2)
         with pytest.raises(ValueError, match="invalid provider-reported cost"):
-            server.complete_request(float("nan"))
+            server.complete_request(REQUEST_2, float("nan"))
+    finally:
+        server.server_close()
+
+
+def test_proxy_restart_trusts_completed_rollup_without_scanning_history(
+    tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "runs/run-1"
+    state = run_root / "state"
+    state.mkdir(parents=True)
+    (state / "run.json").write_text(
+        json.dumps({"run_id": "run-1", "agent_cost_budget_usd": 10.0})
+    )
+    requests = run_root / "api-usage/requests"
+    requests.mkdir(parents=True)
+    (requests / "historical.json").write_text("{not-json}\n")
+    (requests.parent / "summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "run_id": "run-1",
+                "model_api_usd": 1.5,
+                "completed_request_count": 2_000,
+                "pending_request_count": 0,
+                "in_flight_request_count": 0,
+                "cost_recovery_required_count": 0,
+                "in_flight_request_ids": [],
+                "cost_recovery_required_request_ids": [],
+            }
+        )
+        + "\n"
+    )
+
+    server = proxy.LedgerProxyServer(
+        ("127.0.0.1", 0),
+        upstream="https://openrouter.ai/api/v1",
+        ledger_root=run_root / "api-usage",
+        run_id="run-1",
+        cpu_attempt=2,
+    )
+    try:
+        assert server.api_cost_usd == pytest.approx(1.5)
+        assert server.completed_request_count == 2_000
+    finally:
+        server.server_close()
+
+
+def test_proxy_restart_reconciles_only_named_pending_request(tmp_path: Path) -> None:
+    run_root = tmp_path / "runs/run-1"
+    state = run_root / "state"
+    state.mkdir(parents=True)
+    (state / "run.json").write_text(
+        json.dumps({"run_id": "run-1", "agent_cost_budget_usd": 10.0})
+    )
+    requests = run_root / "api-usage/requests"
+    requests.mkdir(parents=True)
+    (requests / "historical.json").write_text("{not-json}\n")
+    (requests / f"{PENDING_REQUEST}.json").write_text(
+        json.dumps(
+            {
+                "ledger_request_id": PENDING_REQUEST,
+                "run_id": "run-1",
+                "state": "complete",
+                "provider_reported_cost_usd": 0.25,
+            }
+        )
+        + "\n"
+    )
+    (requests.parent / "summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "run_id": "run-1",
+                "model_api_usd": 1.0,
+                "completed_request_count": 100,
+                "pending_request_count": 1,
+                "in_flight_request_count": 1,
+                "cost_recovery_required_count": 0,
+                "in_flight_request_ids": [PENDING_REQUEST],
+                "cost_recovery_required_request_ids": [],
+            }
+        )
+        + "\n"
+    )
+
+    server = proxy.LedgerProxyServer(
+        ("127.0.0.1", 0),
+        upstream="https://openrouter.ai/api/v1",
+        ledger_root=run_root / "api-usage",
+        run_id="run-1",
+        cpu_attempt=2,
+    )
+    try:
+        assert server.api_cost_usd == pytest.approx(1.25)
+        assert server.completed_request_count == 101
+        assert not server.in_flight_request_ids
+        summary = json.loads(server.summary_path.read_text())
+        assert summary["pending_request_count"] == 0
     finally:
         server.server_close()

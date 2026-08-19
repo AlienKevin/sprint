@@ -31,6 +31,14 @@ HOP_BY_HOP = {
 }
 
 
+def valid_ledger_request_id(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 32
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
 def utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -157,7 +165,7 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                 "generation_id": None,
                 "provider_reported_cost_usd": None,
             }
-            self.ledger_server.begin_request()
+            self.ledger_server.begin_request(request_id)
             atomic_json(record_path, record)
         else:
             record = {}
@@ -281,11 +289,11 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                     )
                 atomic_json(record_path, record)
                 if valid_cost:
-                    self.ledger_server.complete_request(float(cost))
+                    self.ledger_server.complete_request(request_id, float(cost))
                 elif upstream.status >= 400 and not generation_id:
-                    self.ledger_server.complete_request(0.0)
+                    self.ledger_server.complete_request(request_id, 0.0)
                 else:
-                    self.ledger_server.require_cost_recovery()
+                    self.ledger_server.require_cost_recovery(request_id)
                 if valid_cost:
                     try:
                         _allowed, snapshot = self.ledger_server.budget_snapshot()
@@ -319,7 +327,7 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                         }
                     )
                     atomic_json(record_path, record)
-                    self.ledger_server.require_cost_recovery()
+                    self.ledger_server.require_cost_recovery(request_id)
             if not self.wfile.closed:
                 try:
                     self.send_error(HTTPStatus.BAD_GATEWAY, "upstream request failed")
@@ -356,12 +364,16 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
         self.runtime_dir = runtime_dir
         self.billing_lock = threading.Lock()
         self.requests_dir.mkdir(parents=True, exist_ok=True)
+        loaded = self._load_summary()
+        if loaded is None:
+            loaded = self._rebuild_totals()
         (
             self.api_cost_usd,
             self.completed_request_count,
-            self.in_flight_request_count,
-            self.cost_recovery_required_count,
-        ) = self._rebuild_totals()
+            self.in_flight_request_ids,
+            self.cost_recovery_required_request_ids,
+        ) = loaded
+        self._reconcile_pending_requests()
         self.write_summary()
         super().__init__(address, LedgerProxyHandler)
 
@@ -369,15 +381,60 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
     def summary_path(self) -> Path:
         return self.requests_dir.parent / "summary.json"
 
-    def _rebuild_totals(self) -> tuple[float, int, int, int]:
+    def _load_summary(self) -> tuple[float, int, set[str], set[str]] | None:
+        if not self.summary_path.is_file():
+            return None
+        summary = json.loads(self.summary_path.read_text())
+        if summary.get("schema_version") != 1 or summary.get("run_id") != self.run_id:
+            raise ValueError("ledger summary identity mismatch")
+        total = float(summary["model_api_usd"])
+        completed = int(summary["completed_request_count"])
+        pending = int(summary["pending_request_count"])
+        in_flight_count = int(summary["in_flight_request_count"])
+        recovery_count = int(summary["cost_recovery_required_count"])
+        in_flight_raw = summary.get("in_flight_request_ids")
+        recovery_raw = summary.get("cost_recovery_required_request_ids")
+        if in_flight_raw is None and recovery_raw is None and pending == 0:
+            in_flight_raw, recovery_raw = [], []
+        if not isinstance(in_flight_raw, list) or not isinstance(recovery_raw, list):
+            # A legacy pending summary lacks identities, so rebuild it once.
+            return None
+        if not all(
+            valid_ledger_request_id(item) for item in in_flight_raw + recovery_raw
+        ):
+            raise ValueError("invalid pending ledger request identity")
+        in_flight = set(in_flight_raw)
+        recovery_required = set(recovery_raw)
+        if not (
+            math.isfinite(total)
+            and total >= 0
+            and completed >= 0
+            and pending >= 0
+            and in_flight_count >= 0
+            and recovery_count >= 0
+            and pending == in_flight_count + recovery_count
+            and len(in_flight) == in_flight_count
+            and len(recovery_required) == recovery_count
+            and in_flight.isdisjoint(recovery_required)
+            and all(in_flight | recovery_required)
+        ):
+            raise ValueError("invalid ledger summary")
+        return total, completed, in_flight, recovery_required
+
+    def _rebuild_totals(self) -> tuple[float, int, set[str], set[str]]:
         total = 0.0
         completed = 0
-        in_flight = 0
-        recovery_required = 0
+        in_flight: set[str] = set()
+        recovery_required: set[str] = set()
         for path in sorted(self.requests_dir.glob("*.json")):
             record = json.loads(path.read_text())
             if record.get("run_id") != self.run_id:
                 raise ValueError("ledger identity mismatch")
+            request_id = str(record.get("ledger_request_id") or path.stem)
+            if not valid_ledger_request_id(request_id):
+                raise ValueError("invalid ledger request identity")
+            if request_id in in_flight or request_id in recovery_required:
+                raise ValueError("duplicate pending ledger request identity")
             cost = record.get("provider_reported_cost_usd")
             if isinstance(cost, (int, float)) and not isinstance(cost, bool):
                 value = float(cost)
@@ -386,15 +443,84 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
                 total += value
                 completed += 1
             elif record.get("state") == "in_flight":
-                in_flight += 1
+                in_flight.add(request_id)
             elif record.get("state") == "cost_recovery_required":
-                recovery_required += 1
+                recovery_required.add(request_id)
             else:
                 raise ValueError("invalid unpriced ledger record")
         return total, completed, in_flight, recovery_required
 
+    def _reconcile_pending_requests(self, *, include_in_flight: bool = True) -> None:
+        for request_id in (
+            sorted(self.in_flight_request_ids) if include_in_flight else ()
+        ):
+            path = self.requests_dir / f"{request_id}.json"
+            if not path.is_file():
+                # The summary is persisted before the request record and before
+                # any upstream I/O. A missing record therefore cannot be billed.
+                atomic_json(
+                    path,
+                    {
+                        "schema_version": 1,
+                        "ledger_request_id": request_id,
+                        "run_id": self.run_id,
+                        "cpu_attempt": self.cpu_attempt,
+                        "state": "rejected_not_billed",
+                        "completed_at": utc_now(),
+                        "provider_reported_cost_usd": 0.0,
+                        "recovered_after_proxy_restart": True,
+                    },
+                )
+                self.in_flight_request_ids.remove(request_id)
+                self.completed_request_count += 1
+                continue
+            record = json.loads(path.read_text())
+            if record.get("run_id") != self.run_id:
+                raise ValueError("pending ledger identity mismatch")
+            cost = record.get("provider_reported_cost_usd")
+            if (
+                isinstance(cost, (int, float))
+                and not isinstance(cost, bool)
+                and math.isfinite(float(cost))
+                and float(cost) >= 0
+            ):
+                self.in_flight_request_ids.remove(request_id)
+                self.completed_request_count += 1
+                self.api_cost_usd += float(cost)
+                continue
+            record.update(
+                {
+                    "state": "cost_recovery_required",
+                    "response_ended_at": utc_now(),
+                    "proxy_error_type": "ProxyRestart",
+                }
+            )
+            atomic_json(path, record)
+            self.in_flight_request_ids.remove(request_id)
+            self.cost_recovery_required_request_ids.add(request_id)
+
+        for request_id in sorted(self.cost_recovery_required_request_ids):
+            path = self.requests_dir / f"{request_id}.json"
+            record = json.loads(path.read_text())
+            if record.get("run_id") != self.run_id:
+                raise ValueError("recovery ledger identity mismatch")
+            cost = record.get("provider_reported_cost_usd")
+            if (
+                isinstance(cost, (int, float))
+                and not isinstance(cost, bool)
+                and math.isfinite(float(cost))
+                and float(cost) >= 0
+            ):
+                self.cost_recovery_required_request_ids.remove(request_id)
+                self.completed_request_count += 1
+                self.api_cost_usd += float(cost)
+            elif record.get("state") != "cost_recovery_required":
+                raise ValueError("invalid recovery ledger state")
+
     def write_summary(self) -> None:
-        pending = self.in_flight_request_count + self.cost_recovery_required_count
+        pending = len(self.in_flight_request_ids) + len(
+            self.cost_recovery_required_request_ids
+        )
         atomic_json(
             self.summary_path,
             {
@@ -404,34 +530,65 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
                 "model_api_usd": self.api_cost_usd,
                 "completed_request_count": self.completed_request_count,
                 "pending_request_count": pending,
-                "in_flight_request_count": self.in_flight_request_count,
-                "cost_recovery_required_count": self.cost_recovery_required_count,
+                "in_flight_request_count": len(self.in_flight_request_ids),
+                "cost_recovery_required_count": len(
+                    self.cost_recovery_required_request_ids
+                ),
+                "in_flight_request_ids": sorted(self.in_flight_request_ids),
+                "cost_recovery_required_request_ids": sorted(
+                    self.cost_recovery_required_request_ids
+                ),
             },
         )
 
-    def begin_request(self) -> None:
-        self.in_flight_request_count += 1
+    def begin_request(self, request_id: str) -> None:
+        if (
+            not valid_ledger_request_id(request_id)
+            or request_id in self.in_flight_request_ids
+            or request_id in self.cost_recovery_required_request_ids
+        ):
+            raise ValueError("duplicate or invalid ledger request identity")
+        self.in_flight_request_ids.add(request_id)
         self.write_summary()
 
-    def complete_request(self, cost: float) -> None:
+    def complete_request(self, request_id: str, cost: float) -> None:
         if not math.isfinite(cost) or cost < 0:
             raise ValueError("invalid provider-reported cost")
-        if self.in_flight_request_count <= 0:
+        if request_id not in self.in_flight_request_ids:
             raise ValueError("ledger has no in-flight request to complete")
-        self.in_flight_request_count -= 1
+        self.in_flight_request_ids.remove(request_id)
         self.completed_request_count += 1
         self.api_cost_usd += cost
         self.write_summary()
 
-    def require_cost_recovery(self) -> None:
-        if self.in_flight_request_count <= 0:
+    def require_cost_recovery(self, request_id: str) -> None:
+        if request_id not in self.in_flight_request_ids:
             return
-        self.in_flight_request_count -= 1
-        self.cost_recovery_required_count += 1
+        self.in_flight_request_ids.remove(request_id)
+        self.cost_recovery_required_request_ids.add(request_id)
         self.write_summary()
 
     def budget_snapshot(self) -> tuple[bool, dict[str, Any]]:
         """Return whether another paid request may start under the run cap."""
+        if self.in_flight_request_ids or self.cost_recovery_required_request_ids:
+            # The independent watchdog can recover an interrupted OpenRouter
+            # generation while this proxy remains alive. Reconcile only the
+            # named pending records so the next request can safely proceed.
+            before = (
+                self.api_cost_usd,
+                self.completed_request_count,
+                frozenset(self.in_flight_request_ids),
+                frozenset(self.cost_recovery_required_request_ids),
+            )
+            self._reconcile_pending_requests(include_in_flight=False)
+            after = (
+                self.api_cost_usd,
+                self.completed_request_count,
+                frozenset(self.in_flight_request_ids),
+                frozenset(self.cost_recovery_required_request_ids),
+            )
+            if after != before:
+                self.write_summary()
         run = json.loads((self.run_root / "state/run.json").read_text())
         if run.get("run_id") != self.run_id:
             raise ValueError("run identity mismatch")
@@ -439,7 +596,7 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
         if not math.isfinite(budget) or budget <= 0:
             raise ValueError("invalid agent cost budget")
         api_cost = self.api_cost_usd
-        if self.in_flight_request_count or self.cost_recovery_required_count:
+        if self.in_flight_request_ids or self.cost_recovery_required_request_ids:
             # Never admit another paid request while an earlier charge is
             # unknown. The watchdog can recover it by generation ID.
             return False, {

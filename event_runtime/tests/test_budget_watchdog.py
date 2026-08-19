@@ -371,6 +371,60 @@ def test_interrupted_openrouter_stream_recovers_exact_generation_cost(
     assert recovered["provider_reported_cost_usd"] == 0.456
 
 
+def test_openrouter_recovery_reads_only_named_pending_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "run"
+    requests = root / "api-usage/requests"
+    requests.mkdir(parents=True)
+    request_id = "d" * 32
+    path = requests / f"{request_id}.json"
+    path.write_text(
+        json.dumps(
+            {
+                "ledger_request_id": request_id,
+                "run_id": "unit",
+                "state": "cost_recovery_required",
+                "generation_id": "gen-recover",
+                "provider_reported_cost_usd": None,
+            }
+        )
+    )
+    (requests / "historical-malformed.json").write_text("{not-json}\n")
+    (requests.parent / "summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "run_id": "unit",
+                "model_api_usd": 1.25,
+                "completed_request_count": 2_000,
+                "pending_request_count": 1,
+                "in_flight_request_count": 0,
+                "cost_recovery_required_count": 1,
+                "in_flight_request_ids": [],
+                "cost_recovery_required_request_ids": [request_id],
+            }
+        )
+    )
+    monkeypatch.setattr(
+        watchdog,
+        "recover_openrouter_generation",
+        lambda generation_id, api_key: {
+            "id": generation_id,
+            "total_cost": 0.456,
+        },
+    )
+
+    cost, complete, pending = watchdog.openrouter_api_cost(
+        root, run_id="unit", api_key="test-key"
+    )
+    assert cost == pytest.approx(1.706)
+    assert (complete, pending) == (2_001, 0)
+    summary = json.loads((requests.parent / "summary.json").read_text())
+    assert summary["in_flight_request_ids"] == []
+    assert summary["cost_recovery_required_request_ids"] == []
+
+
 def test_openrouter_watchdog_uses_exact_rollup_without_rescanning_shards(
     tmp_path: Path,
 ) -> None:

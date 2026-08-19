@@ -34,6 +34,14 @@ class BudgetTelemetryError(RuntimeError):
     """A condition that makes safe live cost reconstruction impossible."""
 
 
+def valid_ledger_request_id(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 32
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
 def atomic_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
@@ -81,6 +89,24 @@ def openrouter_api_cost(
             pending = int(summary["pending_request_count"])
             in_flight = int(summary["in_flight_request_count"])
             recovery_required = int(summary["cost_recovery_required_count"])
+            in_flight_ids_raw = summary.get("in_flight_request_ids")
+            recovery_ids_raw = summary.get("cost_recovery_required_request_ids")
+            has_pending_ids = isinstance(in_flight_ids_raw, list) and isinstance(
+                recovery_ids_raw, list
+            )
+            if has_pending_ids:
+                if not all(
+                    valid_ledger_request_id(item)
+                    for item in in_flight_ids_raw + recovery_ids_raw
+                ):
+                    raise BudgetTelemetryError(
+                        "invalid OpenRouter pending request identity"
+                    )
+                in_flight_ids = set(in_flight_ids_raw)
+                recovery_ids = set(recovery_ids_raw)
+            else:
+                in_flight_ids = set()
+                recovery_ids = set()
             if not (
                 math.isfinite(total)
                 and total >= 0
@@ -89,6 +115,14 @@ def openrouter_api_cost(
                 and in_flight >= 0
                 and recovery_required >= 0
                 and pending == in_flight + recovery_required
+                and (
+                    not has_pending_ids
+                    or (
+                        len(in_flight_ids) == in_flight
+                        and len(recovery_ids) == recovery_required
+                        and in_flight_ids.isdisjoint(recovery_ids)
+                    )
+                )
             ):
                 raise BudgetTelemetryError("invalid OpenRouter ledger summary")
             if recovery_required == 0 or not api_key:
@@ -96,6 +130,86 @@ def openrouter_api_cost(
                     raise BudgetTelemetryError(
                         "OpenRouter charge recovery requires controller credentials"
                     )
+                return total, completed, pending
+            if has_pending_ids:
+                remaining_recovery_ids: set[str] = set()
+                for request_id in sorted(recovery_ids):
+                    path = requests_dir / f"{request_id}.json"
+                    try:
+                        record = json.loads(path.read_text())
+                    except (OSError, json.JSONDecodeError) as exc:
+                        raise BudgetTelemetryError(
+                            f"invalid OpenRouter ledger record: {path}"
+                        ) from exc
+                    if (
+                        not isinstance(record, dict)
+                        or record.get("run_id") != run_id
+                        or record.get("ledger_request_id") != request_id
+                    ):
+                        raise BudgetTelemetryError(
+                            f"OpenRouter ledger identity mismatch: {path}"
+                        )
+                    cost = record.get("provider_reported_cost_usd")
+                    if (
+                        isinstance(cost, (int, float))
+                        and not isinstance(cost, bool)
+                        and math.isfinite(float(cost))
+                        and float(cost) >= 0
+                    ):
+                        recovered_cost = float(cost)
+                    else:
+                        generation_id = record.get("generation_id")
+                        recovered = (
+                            recover_openrouter_generation(str(generation_id), api_key)
+                            if generation_id
+                            and record.get("state") == "cost_recovery_required"
+                            else None
+                        )
+                        candidate = recovered.get("total_cost") if recovered else None
+                        if not (
+                            isinstance(candidate, (int, float))
+                            and not isinstance(candidate, bool)
+                            and math.isfinite(float(candidate))
+                            and float(candidate) >= 0
+                        ):
+                            remaining_recovery_ids.add(request_id)
+                            continue
+                        recovered_cost = float(candidate)
+                        record.update(
+                            {
+                                "state": "recovered_complete",
+                                "completed_at": dt.datetime.now(dt.timezone.utc)
+                                .isoformat()
+                                .replace("+00:00", "Z"),
+                                "provider_reported_cost_usd": recovered_cost,
+                                "generation_audit": recovered,
+                            }
+                        )
+                        atomic_json(path, record)
+                    total += recovered_cost
+                    completed += 1
+                pending = len(in_flight_ids) + len(remaining_recovery_ids)
+                atomic_json(
+                    summary_path,
+                    {
+                        "schema_version": 1,
+                        "run_id": run_id,
+                        "updated_at": dt.datetime.now(dt.timezone.utc)
+                        .isoformat()
+                        .replace("+00:00", "Z"),
+                        "model_api_usd": total,
+                        "completed_request_count": completed,
+                        "pending_request_count": pending,
+                        "in_flight_request_count": len(in_flight_ids),
+                        "cost_recovery_required_count": len(
+                            remaining_recovery_ids
+                        ),
+                        "in_flight_request_ids": sorted(in_flight_ids),
+                        "cost_recovery_required_request_ids": sorted(
+                            remaining_recovery_ids
+                        ),
+                    },
+                )
                 return total, completed, pending
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
             raise BudgetTelemetryError("invalid OpenRouter ledger summary") from exc
@@ -105,6 +219,8 @@ def openrouter_api_cost(
     pending = 0
     in_flight = 0
     recovery_required = 0
+    in_flight_ids: set[str] = set()
+    recovery_ids: set[str] = set()
     for path in sorted(requests_dir.glob("*.json")) if requests_dir.is_dir() else ():
         try:
             record = json.loads(path.read_text())
@@ -159,10 +275,17 @@ def openrouter_api_cost(
         if state not in {"in_flight", "cost_recovery_required"}:
             raise BudgetTelemetryError(f"invalid OpenRouter ledger state: {path}")
         pending += 1
+        request_id = record.get("ledger_request_id") or path.stem
+        if not valid_ledger_request_id(request_id):
+            raise BudgetTelemetryError(
+                f"invalid OpenRouter pending request identity: {path}"
+            )
         if state == "in_flight":
             in_flight += 1
+            in_flight_ids.add(request_id)
         else:
             recovery_required += 1
+            recovery_ids.add(request_id)
     atomic_json(
         summary_path,
         {
@@ -176,6 +299,8 @@ def openrouter_api_cost(
             "pending_request_count": pending,
             "in_flight_request_count": in_flight,
             "cost_recovery_required_count": recovery_required,
+            "in_flight_request_ids": sorted(in_flight_ids),
+            "cost_recovery_required_request_ids": sorted(recovery_ids),
         },
     )
     return total, completed, pending
