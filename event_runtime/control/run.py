@@ -50,6 +50,8 @@ RECONSTRUCT_CODEX_USAGE_SCRIPT = ROOT / "event_runtime/cost/model_usage.py"
 UV = Path("/home/ubuntu/.local/bin/uv")
 POLL_SECONDS = 30
 DEFAULT_WAIT_SECONDS = 3 * 60 * 60
+BUDGET_PULSE_MAX_UPSTREAM_AGE_SECONDS = 60.0
+BUDGET_PULSE_MAX_CLOCK_SKEW_SECONDS = 60.0
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,80}$")
 Uploader = Callable[[Path, str], None]
 
@@ -2104,6 +2106,18 @@ def monitor_loop(run_id: str, poll_seconds: int) -> int:
                 pid_path.unlink(missing_ok=True)
 
 
+def _budget_watchdog_age(ref: float, checked_at: float) -> float:
+    """Validate freshness while allowing bounded cross-sandbox clock skew."""
+    age = ref - checked_at
+    if (
+        not math.isfinite(age)
+        or age < -BUDGET_PULSE_MAX_CLOCK_SKEW_SECONDS
+        or age > BUDGET_PULSE_MAX_UPSTREAM_AGE_SECONDS
+    ):
+        raise RuntimeError(f"budget pulse watchdog snapshot is stale ({age:.1f}s)")
+    return age
+
+
 def _budget_pulse_once_unlocked(
     run_id: str, *, now: float | None = None
 ) -> dict[str, Any]:
@@ -2118,11 +2132,7 @@ def _budget_pulse_once_unlocked(
     checked_at = canonical.get("checked_at_epoch_s")
     if not isinstance(checked_at, (int, float)) or isinstance(checked_at, bool):
         raise RuntimeError("budget pulse watchdog timestamp is missing")
-    upstream_age = ref - float(checked_at)
-    if upstream_age < -5 or upstream_age > 60:
-        raise RuntimeError(
-            f"budget pulse watchdog snapshot is stale ({upstream_age:.1f}s)"
-        )
+    upstream_age = _budget_watchdog_age(ref, float(checked_at))
 
     # This is local-only and fast: provider charges come from the freshly
     # fetched watchdog, while host GPU lifecycle events are already persisted

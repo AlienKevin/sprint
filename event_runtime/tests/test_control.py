@@ -362,6 +362,15 @@ class DurableOpsTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "snapshot is stale"):
                     sprintctl.budget_pulse_once("pulse-run", now=1000.0)
 
+    def test_budget_watchdog_age_allows_bounded_cross_sandbox_clock_skew(
+        self,
+    ) -> None:
+        self.assertEqual(sprintctl._budget_watchdog_age(1000.0, 1005.5), -5.5)
+
+    def test_budget_watchdog_age_rejects_implausible_future_timestamp(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "snapshot is stale"):
+            sprintctl._budget_watchdog_age(1000.0, 1060.001)
+
     def test_budget_pulse_exits_after_natural_harbor_completion(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             state = Path(raw)
