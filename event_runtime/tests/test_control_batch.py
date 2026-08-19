@@ -234,6 +234,35 @@ def test_batch_matrix_can_launch_three_luna_and_three_sol_trials() -> None:
     assert [row["trial"] for row in rows if row["family"] == "sol"] == [1, 2, 3]
 
 
+def test_batch_matrix_can_seal_baidu_and_alibaba_deepseek_routes() -> None:
+    rows = batch_eval.matrix(
+        "eval-ds-routes", families=("flash-baidu", "pro-alibaba")
+    )
+    assert len(rows) == 6
+    assert {row["provider_endpoint"] for row in rows} == {
+        "baidu/fp8",
+        "alibaba",
+    }
+    assert {
+        (row["family"], row["model"], row["quantization"])
+        for row in rows
+    } == {
+        (
+            "flash-baidu",
+            "deepseek/deepseek-v4-flash-0731",
+            "fp8",
+        ),
+        (
+            "pro-alibaba",
+            "deepseek/deepseek-v4-pro-0813",
+            "unknown",
+        ),
+    }
+    assert {row["wrapper"] for row in rows} == {
+        str(ROOT / "event_runtime/control/providers/deepseek.sh")
+    }
+
+
 def test_sol_model_lock_preserves_exact_codex_contract() -> None:
     lock = json.loads((ROOT / "event_runtime/models/sol.json").read_text())
     model = lock["model"]
@@ -284,6 +313,41 @@ def test_generic_openai_catalog_installer_supports_sol(tmp_path: Path) -> None:
     config = (codex_home / "config.toml").read_text()
     assert 'model = "@preset/test-sol"' in config
     assert 'wire_api = "responses"' in config
+
+
+def test_generic_deepseek_catalog_installer_supports_pro(tmp_path: Path) -> None:
+    codex_home = tmp_path / "codex-home"
+    env = {
+        **os.environ,
+        "CODEX_HOME": str(codex_home),
+        "SPRINT_CODEX_DEEPSEEK_MODELS_JSON": str(
+            ROOT / "event_runtime/models/deepseek.json"
+        ),
+        "SPRINT_CODEX_DEEPSEEK_MODEL": "deepseek/deepseek-v4-pro-0813",
+        "SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW": "1000000",
+        "SPRINT_CODEX_DEEPSEEK_BASE_URL": "http://127.0.0.1:18080/api/v1",
+    }
+    subprocess.run(
+        [
+            "bash",
+            str(
+                ROOT
+                / "event_runtime/container/sprint-apply-deepseek-codex-config.sh"
+            ),
+        ],
+        env=env,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    catalog = json.loads((codex_home / "models.json").read_text())
+    assert len(catalog["models"]) == 1
+    model = catalog["models"][0]
+    assert model["slug"] == "deepseek/deepseek-v4-pro-0813"
+    assert model["context_window"] == 1_000_000
+    assert model["max_context_window"] == 1_000_000
+    assert model["display_name"] == "DeepSeek-V4-Pro"
 
 
 @pytest.mark.parametrize("trials_per_model", [2, 5])

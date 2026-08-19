@@ -46,7 +46,9 @@ HARBOR_REVISION = "dafb1387151e1c32702963d44fe6c3cea66cf8cb"
 CODEX_VERSION = "0.147.0"
 TRIALS_PER_MODEL = 3
 DEFAULT_FAMILIES = ("deepseek", "luna")
-SUPPORTED_FAMILIES = ("deepseek", "luna", "sol")
+SUPPORTED_FAMILIES = (
+    "deepseek", "luna", "sol", "flash-baidu", "pro-alibaba"
+)
 OPENAI_FAMILY_SPECS: dict[str, dict[str, str]] = {
     "luna": {
         "model": "openai/gpt-5.6-luna",
@@ -61,6 +63,24 @@ OPENAI_FAMILY_SPECS: dict[str, dict[str, str]] = {
         "preset": "@preset/sprint-gpt-5-6-sol-openai-standard",
         "preset_id": "798803cc-8d68-4249-b437-c6eb509df833",
         "resolved_model": "openai/gpt-5.6-sol-20260709",
+    },
+}
+DEEPSEEK_ROUTED_FAMILY_SPECS: dict[str, dict[str, str]] = {
+    "flash-baidu": {
+        "model": "deepseek/deepseek-v4-flash-0731",
+        "resolved_model": "Baidu | deepseek/deepseek-v4-flash-20260731",
+        "provider": "Baidu",
+        "provider_endpoint": "baidu/fp8",
+        "quantization": "fp8",
+        "context_window": "1048576",
+    },
+    "pro-alibaba": {
+        "model": "deepseek/deepseek-v4-pro-0813",
+        "resolved_model": "Alibaba | deepseek/deepseek-v4-pro-20260813",
+        "provider": "Alibaba",
+        "provider_endpoint": "alibaba",
+        "quantization": "unknown",
+        "context_window": "1000000",
     },
 }
 REASONING_EFFORT = "max"
@@ -354,6 +374,14 @@ def matrix(
             }
             for family, spec in OPENAI_FAMILY_SPECS.items()
         },
+        **{
+            family: {
+                **spec,
+                "wrapper": "deepseek.sh",
+                "resolved_model_version": spec["resolved_model"],
+            }
+            for family, spec in DEEPSEEK_ROUTED_FAMILY_SPECS.items()
+        },
     }
     selected = tuple(dict.fromkeys(families))
     unknown = sorted(set(selected) - set(specs))
@@ -379,6 +407,19 @@ def matrix(
                     **(
                         {"openrouter_preset": spec["openrouter_preset"]}
                         if "openrouter_preset" in spec
+                        else {}
+                    ),
+                    **(
+                        {
+                            key: spec[key]
+                            for key in (
+                                "provider",
+                                "provider_endpoint",
+                                "quantization",
+                                "context_window",
+                            )
+                        }
+                        if "provider_endpoint" in spec
                         else {}
                     ),
                 }
@@ -739,6 +780,8 @@ def preflight(
         "deepseek": "OPENROUTER_API_KEY",
         "luna": "OPENROUTER_API_KEY",
         "sol": "OPENROUTER_API_KEY",
+        "flash-baidu": "OPENROUTER_API_KEY",
+        "pro-alibaba": "OPENROUTER_API_KEY",
     }
     for family in families:
         name = required_keys[family]
@@ -891,6 +934,60 @@ def preflight(
     else:
         for family in selected_openai_families:
             key = f"openai_{family}"
+            checks[f"{key}_visible"] = not check_providers
+            checks[f"{key}_inference"] = not check_providers
+    selected_routed_deepseek_families = tuple(
+        family for family in families if family in DEEPSEEK_ROUTED_FAMILY_SPECS
+    )
+    if (
+        selected_routed_deepseek_families
+        and check_providers
+        and checks["secret_openrouter_api_key"]
+    ):
+        models = provider_models(
+            "https://openrouter.ai/api/v1/models", keys["OPENROUTER_API_KEY"]
+        )
+        for family in selected_routed_deepseek_families:
+            spec = DEEPSEEK_ROUTED_FAMILY_SPECS[family]
+            key = f"deepseek_{family.replace('-', '_')}"
+            checks[f"{key}_visible"] = spec["model"] in models
+            provider = {
+                "only": [spec["provider_endpoint"]],
+                "order": [spec["provider_endpoint"]],
+                "allow_fallbacks": False,
+                "require_parameters": True,
+            }
+            if spec["quantization"] != "unknown":
+                provider["quantizations"] = [spec["quantization"]]
+            try:
+                provider_probes[key] = provider_inference_probe(
+                    "https://openrouter.ai/api/v1/responses",
+                    keys["OPENROUTER_API_KEY"],
+                    {
+                        "model": spec["model"],
+                        "input": "Return OK.",
+                        "provider": provider,
+                        "reasoning": {"effort": REASONING_EFFORT},
+                        "max_output_tokens": 16,
+                        "store": False,
+                    },
+                    generation_audit_url="https://openrouter.ai/api/v1/generation",
+                )
+                probe = provider_probes[key]
+                checks[f"{key}_inference"] = (
+                    probe.get("provider") == spec["provider"]
+                    and probe.get("response_model") == spec["model"]
+                )
+                if not checks[f"{key}_inference"]:
+                    provider_errors[key] = (
+                        "sealed route response did not identify the requested provider"
+                    )
+            except RuntimeError as exc:
+                checks[f"{key}_inference"] = False
+                provider_errors[key] = str(exc)
+    else:
+        for family in selected_routed_deepseek_families:
+            key = f"deepseek_{family.replace('-', '_')}"
             checks[f"{key}_visible"] = not check_providers
             checks[f"{key}_inference"] = not check_providers
     if (
@@ -1135,6 +1232,15 @@ def launch(
             env["MODEL"] = arm["model"]
             if arm.get("openrouter_preset"):
                 env["OPENROUTER_PRESET"] = arm["openrouter_preset"]
+            if arm.get("provider_endpoint"):
+                env["OPENROUTER_MODEL"] = arm["model"]
+                env["SPRINT_OPENROUTER_PROVIDER_ENDPOINT"] = arm[
+                    "provider_endpoint"
+                ]
+                env["SPRINT_OPENROUTER_QUANTIZATION"] = arm["quantization"]
+                env["SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW"] = arm[
+                    "context_window"
+                ]
             output = run_checked([arm["wrapper"]], env=env)
             arm["status"] = "launched"
             arm["launch_output_sha256"] = hashlib.sha256(output.encode()).hexdigest()

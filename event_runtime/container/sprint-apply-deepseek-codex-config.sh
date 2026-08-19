@@ -15,6 +15,7 @@ CODEX_HOME_DIR=${CODEX_HOME:-/tmp/codex-home}
 MODELS_SRC=${SPRINT_CODEX_DEEPSEEK_MODELS_JSON:-/opt/sprint-codex-deepseek-models.json}
 BASE_URL=${SPRINT_CODEX_DEEPSEEK_BASE_URL:-https://openrouter.ai/api/v1}
 MODEL_SLUG=${SPRINT_CODEX_DEEPSEEK_MODEL:-@preset/sprint-deepseek-v4-flash-0731-official}
+CONTEXT_WINDOW=${SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW:-1048576}
 
 if [[ ! -f "$MODELS_SRC" ]]; then
   echo "DeepSeek Codex models.json missing: $MODELS_SRC" >&2
@@ -26,7 +27,7 @@ mkdir -p "$CODEX_HOME_DIR"
 cp -f -- "$MODELS_SRC" "$CODEX_HOME_DIR/models.json"
 
 CONFIG_PATH="$CODEX_HOME_DIR/config.toml"
-python3 - "$CONFIG_PATH" "$CODEX_HOME_DIR/models.json" "$BASE_URL" "$MODEL_SLUG" <<'PY'
+python3 - "$CONFIG_PATH" "$CODEX_HOME_DIR/models.json" "$BASE_URL" "$MODEL_SLUG" "$CONTEXT_WINDOW" <<'PY'
 import pathlib
 import json
 import re
@@ -36,6 +37,9 @@ config_path = pathlib.Path(sys.argv[1])
 models_path = pathlib.Path(sys.argv[2])
 base_url = sys.argv[3]
 model_slug = sys.argv[4]
+context_window = int(sys.argv[5])
+if not 1_000 <= context_window <= 10_000_000:
+    raise SystemExit("DeepSeek context window is invalid")
 
 # The provider preset is the wire-level model identifier. Preserve every field
 # from DeepSeek's official Codex catalog while making its slug match the model
@@ -47,7 +51,13 @@ if not isinstance(models, list):
 flash_models = [model for model in models if model.get("slug") == "deepseek-v4-flash"]
 if len(flash_models) != 1:
     raise SystemExit("DeepSeek model catalog must contain exactly one V4 Flash model")
-flash_models[0]["slug"] = model_slug
+selected = flash_models[0]
+selected["slug"] = model_slug
+selected["context_window"] = context_window
+selected["max_context_window"] = context_window
+if "pro" in model_slug.lower():
+    selected["display_name"] = "DeepSeek-V4-Pro"
+catalog["models"] = [selected]
 models_path.write_text(
     json.dumps(catalog, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
 )

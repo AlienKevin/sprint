@@ -368,21 +368,19 @@ def main() -> int:
         f"--run-id training-canary --interval-seconds 5 --out-dir /warm{remote_root}/telemetry "
         "--durable-dir /nonexistent --force & telemetry_pid=$!; "
         "trap 'kill $telemetry_pid 2>/dev/null || true' EXIT; "
-        f"export SPRINT_GPU_CHECKPOINT_DIR=/warm{remote_root}/checkpoints; "
-        f"export SPRINT_GPU_PROGRESS_FILE=/warm{remote_root}/progress.json; "
+        f"export SPRINT_TRAIN_ROOT=/warm{remote_root}/logs; "
+        "export PYTHONPATH=/opt/event-verifier:/app; "
         "timeout --signal=TERM --kill-after=30 900 "
         "python3 /opt/sprint-isaac-bootstrap.py /app/train_sprint.py "
-        "--headless --device cuda:0 --num_envs 128 --max_iters 10 "
-        "--chunk_iters 1 --save_interval 1 --episode_length 2 "
-        f"--exp_name sealed_training_canary --log_root /warm{remote_root}/logs "
+        "--task=Isaac-G1-SprintTrain-v0 --num_envs=128 --max_iterations=10 "
+        "--seed=20260819 --headless --device=cuda:0 "
         f"2>&1 | tee /warm{remote_root}/training.log; "
         "kill $telemetry_pid 2>/dev/null || true; wait $telemetry_pid 2>/dev/null || true; "
+        f"cp /app/policy_train.pt /warm{remote_root}/checkpoints/policy_final.pt; "
         f"test -s /warm{remote_root}/checkpoints/policy_final.pt; "
         f"python3 /warm{remote_root}/canary_policy_adapter.py "
         f"/warm{remote_root}/checkpoints/policy_final.pt; "
-        f"python3 -c \"import json; p=json.load(open('/warm{remote_root}/progress.json')); "
-        "assert p['finished'] is True and p['iteration'] >= 10\"; "
-        f"grep -F '[sprint] iter=10' /warm{remote_root}/training.log; "
+        f"grep -F 'Learning iteration 9/10' /warm{remote_root}/training.log; "
         f'python3 -c "import json; rows=[json.loads(x) for x in '
         f"open('/warm{remote_root}/telemetry/samples.jsonl') if x.strip()]; "
         "gpus=[g for p in rows for g in p['gpus']]; "
@@ -454,7 +452,7 @@ def main() -> int:
                 command=command,
                 timeout=1200,
                 required_output_substrings=(
-                    "[sprint] iter=10",
+                    "EXPORTED /app/policy_train.pt",
                     "AGENT_PUBLISHED_VERIFIER_COMPLETED",
                 ),
             )

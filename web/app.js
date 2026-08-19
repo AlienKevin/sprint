@@ -1,16 +1,18 @@
 (() => {
-  const APP_VERSION = '20260819-6';
+  const APP_VERSION = '20260819-7';
   const $ = selector => document.querySelector(selector);
   const MODEL = {
     deepseek: {label:'DeepSeek V4 Flash 0731', color:'#4D6BFF', cls:'deepseek'},
+    'flash-baidu': {label:'DeepSeek V4 Flash 0731 · Baidu', color:'#4D6BFF', cls:'flash-baidu'},
+    'pro-alibaba': {label:'DeepSeek V4 Pro 0813 · Alibaba', color:'#ff9f43', cls:'pro-alibaba'},
     luna: {label:'GPT‑5.6 Luna', color:'#66D693', cls:'luna'},
     sol: {label:'GPT‑5.6 Sol', color:'#f1c35b', cls:'sol'}
   };
-  const DISPLAY_FAMILIES = ['deepseek','luna','sol'];
+  const DISPLAY_FAMILIES = ['deepseek','flash-baidu','pro-alibaba','luna','sol'];
   const state = {runs:[], performance:null, batch:null, timelineUpdatedAt:null, refreshing:false};
   const finite = value => typeof value === 'number' && Number.isFinite(value);
   const groupBy = (rows,key) => rows.reduce((out,row)=>{const value=key(row);(out[value]??=[]).push(row);return out},{});
-  const family = model => {const value=String(model||'').toLowerCase();return value.includes('deepseek')?'deepseek':value.includes('luna')?'luna':value.includes('gpt-5.6-sol')?'sol':null};
+  const family = model => {const value=String(model||'').toLowerCase();return value.includes('deepseek-v4-pro-0813')?'pro-alibaba':value.includes('deepseek-v4-flash-0731')?'flash-baidu':value.includes('deepseek')?'deepseek':value.includes('luna')?'luna':value.includes('gpt-5.6-sol')?'sol':null};
   const failureLabel = name => ({finished:'did not finish',in_lane:'left the lane',lane:'left the lane',self_collision:'self-collision','self-collision':'self-collision'})[name]||String(name||'invalid result').replaceAll('_',' ');
   const fmtMoney = value => finite(value) ? `$${value.toFixed(value < 10 ? 2 : 0)}` : '—';
   const fmtTime = ms => finite(ms) ? (ms/3600000).toFixed(1)+' h' : '—';
@@ -70,7 +72,7 @@
     return {value:finite(estimated)?estimated:0,basis:'Modal tariff estimate'};
   }
   function renderResources(){
-    const order=['deepseek','luna','sol'],rows=state.runs.filter(run=>order.includes(family(run.model))).map(run=>{
+    const order=['deepseek','flash-baidu','pro-alibaba','luna','sol'],rows=state.runs.filter(run=>order.includes(family(run.model))).map(run=>{
       const api=Number(run.timeline?.comparison_summary?.final_api_cost_usd),cpu=modalRoleCost(run,'cpu_agent'),training=modalRoleCost(run,'training_gpu');
       const apiBasis=(run.timeline?.usage_summary?.calculated_api_usage_cost_basis||[]).includes('openrouter_reported_cost')?'OpenRouter reported request cost':'reconstructed at published list price';
       const parts=[{key:'api',label:'Model API',value:finite(api)?api:0,basis:apiBasis},{key:'cpu',label:'CPU agent',...cpu},{key:'training',label:'Training sandbox',...training}];

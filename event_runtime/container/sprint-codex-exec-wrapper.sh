@@ -23,6 +23,8 @@ CODEX_EXECUTABLE=${SPRINT_CODEX_EXECUTABLE:-}
 OPENROUTER_PROXY_BIN=${SPRINT_OPENROUTER_PROXY_BIN:-/opt/sprint-openrouter-ledger-proxy.py}
 OPENROUTER_PROXY_BASE_URL=${SPRINT_OPENROUTER_PROXY_BASE_URL:-http://127.0.0.1:18080/api/v1}
 OPENROUTER_UPSTREAM_URL=${SPRINT_OPENROUTER_UPSTREAM_URL:-https://openrouter.ai/api/v1}
+OPENROUTER_PROVIDER_ENDPOINT=${SPRINT_OPENROUTER_PROVIDER_ENDPOINT:-}
+OPENROUTER_QUANTIZATION=${SPRINT_OPENROUTER_QUANTIZATION:-}
 
 if [[ ! "$STOP_ACK_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
   echo "SPRINT_STOP_ACK_TIMEOUT_SECONDS must be a positive integer" >&2
@@ -54,12 +56,20 @@ start_openrouter_proxy() {
   }
   local ledger_root="$DURABLE_DIR/runs/$RUN_ID/api-usage"
   local attempt=${SPRINT_CPU_LAUNCH_ATTEMPT:-1}
+  local -a route_args=()
+  if [[ -n "$OPENROUTER_PROVIDER_ENDPOINT" ]]; then
+    route_args+=(--provider-endpoint "$OPENROUTER_PROVIDER_ENDPOINT")
+  fi
+  if [[ -n "$OPENROUTER_QUANTIZATION" ]]; then
+    route_args+=(--quantization "$OPENROUTER_QUANTIZATION")
+  fi
   "$OPENROUTER_PROXY_BIN" \
     --upstream "$OPENROUTER_UPSTREAM_URL" \
     --ledger-root "$ledger_root" \
     --run-id "$RUN_ID" \
     --cpu-attempt "$attempt" \
     --runtime-dir "$RUNTIME_DIR" \
+    "${route_args[@]}" \
     >>"$AGENT_LOG_DIR/openrouter-ledger-proxy.log" 2>&1 &
   proxy_pid=$!
   printf '%s\n' "$proxy_pid" >"$AGENT_STATE_DIR/openrouter-proxy.pid"

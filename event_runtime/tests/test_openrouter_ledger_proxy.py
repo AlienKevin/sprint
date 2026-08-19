@@ -43,6 +43,29 @@ def test_terminal_response_event_exposes_exact_usage_cost() -> None:
     assert response["id"] == "gen-1"
 
 
+def test_generic_proxy_seals_provider_endpoint_and_quantization() -> None:
+    body, payload = proxy.pin_provider_route(
+        json.dumps(
+            {
+                "model": "deepseek/deepseek-v4-flash-0731",
+                "input": "hello",
+                "provider": {"sort": "price", "allow_fallbacks": True},
+            }
+        ).encode(),
+        provider_endpoint="baidu/fp8",
+        quantization="fp8",
+    )
+
+    assert json.loads(body) == payload
+    assert payload["provider"] == {
+        "only": ["baidu/fp8"],
+        "order": ["baidu/fp8"],
+        "allow_fallbacks": False,
+        "require_parameters": True,
+        "quantizations": ["fp8"],
+    }
+
+
 def test_endpoint_promotion_is_reversed_without_changing_cache_skus() -> None:
     # Exercise the pure parser used by the live fetcher. Cache-read pricing is
     # deliberately irrelevant here: the endpoint promotion is a single factor

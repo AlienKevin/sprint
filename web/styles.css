@@ -8,6 +8,7 @@
   --muted: #9d9d99;
   --luna: #66D693;
   --deep: #4D6BFF;
+  --pro: #ff9f43;
   --sol: #bdbdb9;
   --valid: #f4f4f1;
   --cost-cpu: #8d8d8a;
@@ -269,6 +270,12 @@ main {
 }
 .experiment-card.sol {
   --model-accent: var(--sol);
+}
+.experiment-card.flash-baidu {
+  --model-accent: var(--deep);
+}
+.experiment-card.pro-alibaba {
+  --model-accent: var(--pro);
 }
 .experiment-card-head {
   display: flex;
@@ -703,8 +710,12 @@ main {
   align-items: center;
   font: 12px var(--mono);
 }
-.cost-trial-row.deepseek {
+.cost-trial-row.deepseek,
+.cost-trial-row.flash-baidu {
   --model-accent: var(--deep);
+}
+.cost-trial-row.pro-alibaba {
+  --model-accent: var(--pro);
 }
 .cost-trial-row.luna {
   --model-accent: var(--luna);

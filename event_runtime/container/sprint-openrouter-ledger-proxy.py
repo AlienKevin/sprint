@@ -76,6 +76,28 @@ def usage_from_event(event: object) -> tuple[dict[str, Any] | None, dict[str, An
     return (usage if isinstance(usage, dict) else None), response
 
 
+def pin_provider_route(
+    body: bytes, *, provider_endpoint: str, quantization: str | None
+) -> tuple[bytes, dict[str, Any]]:
+    """Replace any caller routing preference with the sealed eval route."""
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise ValueError("request body is not JSON") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("request body is not an object")
+    provider: dict[str, Any] = {
+        "only": [provider_endpoint],
+        "order": [provider_endpoint],
+        "allow_fallbacks": False,
+        "require_parameters": True,
+    }
+    if quantization:
+        provider["quantizations"] = [quantization]
+    payload["provider"] = provider
+    return json.dumps(payload, separators=(",", ":")).encode(), payload
+
+
 class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "SprintOpenRouterLedger/1"
@@ -154,6 +176,16 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
         except (TypeError, ValueError) as exc:
             self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
             return
+        if record_usage and self.ledger_server.provider_endpoint:
+            try:
+                body, request_payload = pin_provider_route(
+                    body,
+                    provider_endpoint=self.ledger_server.provider_endpoint,
+                    quantization=self.ledger_server.quantization,
+                )
+            except ValueError as exc:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
         request_id = secrets.token_hex(16)
         record_path = self.ledger_server.requests_dir / f"{request_id}.json"
         requested_model = None
@@ -404,16 +436,31 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
         run_id: str,
         cpu_attempt: int,
         runtime_dir: Path = Path("/run"),
+        provider_endpoint: str | None = None,
+        quantization: str | None = None,
     ) -> None:
         parsed = urlsplit(upstream)
         if parsed.scheme != "https" or parsed.hostname != "openrouter.ai":
             raise ValueError("upstream must be https://openrouter.ai")
         if parsed.path.rstrip("/") != "/api/v1" or parsed.query or parsed.fragment:
             raise ValueError("upstream must be the OpenRouter /api/v1 root")
+        if provider_endpoint is not None and (
+            not provider_endpoint
+            or len(provider_endpoint) > 128
+            or any(character.isspace() for character in provider_endpoint)
+        ):
+            raise ValueError("provider endpoint must be one OpenRouter slug")
+        allowed_quantizations = {
+            "int4", "int8", "fp4", "fp6", "fp8", "fp16", "bf16", "fp32", "unknown"
+        }
+        if quantization is not None and quantization not in allowed_quantizations:
+            raise ValueError("invalid OpenRouter quantization")
         self.upstream_host = parsed.hostname
         self.upstream_port = parsed.port or 443
         self.run_id = run_id
         self.cpu_attempt = cpu_attempt
+        self.provider_endpoint = provider_endpoint
+        self.quantization = quantization
         self.run_root = ledger_root.parent
         run = json.loads((self.run_root / "state/run.json").read_text())
         if run.get("run_id") != run_id:
@@ -776,6 +823,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--cpu-attempt", type=int, required=True)
     parser.add_argument("--runtime-dir", type=Path, default=Path("/run"))
+    parser.add_argument("--provider-endpoint")
+    parser.add_argument("--quantization")
     return parser.parse_args()
 
 
@@ -788,6 +837,8 @@ def main() -> int:
         run_id=args.run_id,
         cpu_attempt=args.cpu_attempt,
         runtime_dir=args.runtime_dir,
+        provider_endpoint=args.provider_endpoint,
+        quantization=args.quantization,
     )
     server.serve_forever(poll_interval=0.25)
     return 0
