@@ -98,6 +98,90 @@ class DurableOpsTests(unittest.TestCase):
             self.assertEqual(observed, [str(os.getpid())])
             self.assertFalse((state / "monitor.pid").exists())
 
+    def test_budget_pulse_uses_fresh_watchdog_and_mirrors_both_consumers(
+        self,
+    ) -> None:
+        from event_runtime.compute import worker as gpu_worker
+
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            run = {"run_id": "pulse-run", "agent_container_id": "ta-agent"}
+            canonical = {
+                "schema_version": 2,
+                "run_id": "pulse-run",
+                "checked_at_epoch_s": 1000.0,
+                "total_usd": 1.0,
+            }
+            merged = {
+                "schema_version": 2,
+                "run_id": "pulse-run",
+                "total_usd": 1.25,
+                "budget_remaining_usd": 8.75,
+                "status": "within_budget",
+            }
+            with (
+                mock.patch.object(
+                    sprintctl, "load_run", return_value=(state, run)
+                ),
+                mock.patch.object(
+                    sprintctl, "fetch_remote_json", return_value=canonical
+                ) as fetch,
+                mock.patch.object(
+                    sprintctl, "build_unified_timeline", return_value={"events": []}
+                ),
+                mock.patch.object(
+                    sprintctl.agent_cost, "build_snapshot", return_value=merged
+                ),
+                mock.patch.object(
+                    gpu_worker,
+                    "mirror_gpu_budget",
+                    return_value={"gpu_budget_mirror": "updated"},
+                ) as gpu_mirror,
+                mock.patch.object(
+                    gpu_worker,
+                    "mirror_agent_cost",
+                    return_value={"agent_cost_mirror": "updated"},
+                ) as agent_mirror,
+                mock.patch.object(
+                    sprintctl, "enforce_agent_cost_budget"
+                ) as enforce,
+            ):
+                payload = sprintctl.budget_pulse_once("pulse-run", now=1010.0)
+
+            fetch.assert_called_once()
+            gpu_mirror.assert_called_once()
+            agent_mirror.assert_called_once()
+            enforce.assert_called_once()
+            self.assertEqual(payload["total_usd"], 1.25)
+            self.assertEqual(payload["upstream_watchdog_age_seconds"], 10.0)
+            persisted = json.loads(
+                (state / "telemetry/budget-pulse.json").read_text()
+            )
+            self.assertEqual(persisted["gpu_mirror"], "updated")
+
+    def test_budget_pulse_rejects_stale_upstream_watchdog(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            with (
+                mock.patch.object(
+                    sprintctl,
+                    "load_run",
+                    return_value=(state, {"run_id": "pulse-run"}),
+                ),
+                mock.patch.object(
+                    sprintctl,
+                    "fetch_remote_json",
+                    return_value={
+                        "schema_version": 2,
+                        "run_id": "pulse-run",
+                        "checked_at_epoch_s": 900.0,
+                        "total_usd": 1.0,
+                    },
+                ),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "snapshot is stale"):
+                    sprintctl.budget_pulse_once("pulse-run", now=1000.0)
+
     def test_final_sync_imports_authoritative_durable_gpu_telemetry_once(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             state = Path(raw)

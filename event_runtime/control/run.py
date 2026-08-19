@@ -1920,6 +1920,120 @@ def monitor_loop(run_id: str, poll_seconds: int) -> int:
                 pid_path.unlink(missing_ok=True)
 
 
+def budget_pulse_once(run_id: str, *, now: float | None = None) -> dict[str, Any]:
+    """Refresh the trusted budget mirror without waiting for artifact sync."""
+    state_dir, run = load_run(run_id)
+    ref = time.time() if now is None else float(now)
+    canonical = fetch_remote_json(
+        state_dir,
+        run,
+        "budget/watchdog.json",
+        "telemetry/budget-watchdog.json",
+    )
+    if not isinstance(canonical, dict) or canonical.get("schema_version") != 2:
+        raise RuntimeError("budget pulse has no valid in-sandbox watchdog snapshot")
+    checked_at = canonical.get("checked_at_epoch_s")
+    if not isinstance(checked_at, (int, float)) or isinstance(checked_at, bool):
+        raise RuntimeError("budget pulse watchdog timestamp is missing")
+    upstream_age = ref - float(checked_at)
+    if upstream_age < -5 or upstream_age > 60:
+        raise RuntimeError(
+            f"budget pulse watchdog snapshot is stale ({upstream_age:.1f}s)"
+        )
+
+    # This is local-only and fast: provider charges come from the freshly
+    # fetched watchdog, while host GPU lifecycle events are already persisted
+    # locally by the dispatcher.  No history archives or Volume uploads block
+    # this path.
+    timeline = build_unified_timeline(state_dir, run, upload=False)
+    payload = agent_cost.build_snapshot(timeline, state_dir=state_dir)
+    payload["budget_pulse"] = {
+        "checked_at": utc_now(),
+        "upstream_watchdog_age_seconds": round(upstream_age, 3),
+        "interval_seconds": 15,
+    }
+    atomic_write_json(
+        state_dir / "telemetry" / "agent-cost.json", payload, mode=0o600
+    )
+
+    from event_runtime.compute import worker as gpu_worker
+
+    gpu_mirror = gpu_worker.mirror_gpu_budget(run, payload)
+    atomic_write_json(
+        state_dir / "telemetry" / "gpu-budget-mirror.json",
+        {"schema_version": 1, "updated_at": utc_now(), **gpu_mirror},
+        mode=0o600,
+    )
+    if gpu_mirror.get("gpu_budget_mirror") == "error":
+        raise RuntimeError(
+            "GPU budget pulse mirror failed: "
+            + str(gpu_mirror.get("errors") or "unknown")
+        )
+
+    agent_mirror = gpu_worker.mirror_agent_cost(run, payload)
+    atomic_write_json(
+        state_dir / "telemetry" / "agent-cost-mirror.json",
+        {"schema_version": 1, "updated_at": utc_now(), **agent_mirror},
+        mode=0o600,
+    )
+    if agent_mirror.get("agent_cost_mirror") == "error":
+        raise RuntimeError(
+            "agent cost pulse mirror failed: "
+            + str(agent_mirror.get("agent_cost_mirror_error") or "unknown")
+        )
+    enforce_agent_cost_budget(run_id, state_dir, run, payload)
+    result = {
+        "schema_version": 1,
+        "run_id": run_id,
+        "updated_at": utc_now(),
+        "total_usd": payload.get("total_usd"),
+        "budget_remaining_usd": payload.get("budget_remaining_usd"),
+        "status": payload.get("status"),
+        "upstream_watchdog_age_seconds": round(upstream_age, 3),
+        "gpu_mirror": gpu_mirror.get("gpu_budget_mirror"),
+        "agent_mirror": agent_mirror.get("agent_cost_mirror"),
+    }
+    atomic_write_json(
+        state_dir / "telemetry" / "budget-pulse.json", result, mode=0o600
+    )
+    return result
+
+
+def budget_pulse_loop(run_id: str, poll_seconds: int) -> int:
+    state_dir, _run = load_run(run_id)
+    with file_lock(state_dir / "budget-pulse.lock", blocking=False) as acquired:
+        if not acquired:
+            print(f"budget pulse already running for {run_id}", file=sys.stderr)
+            return 2
+        pid_path = state_dir / "budget-pulse.pid"
+        own_pid = os.getpid()
+        atomic_write_text(pid_path, f"{own_pid}\n", 0o600)
+        try:
+            while not (state_dir / "FINALIZED.json").is_file():
+                started = time.monotonic()
+                try:
+                    payload = budget_pulse_once(run_id)
+                except Exception as exc:  # noqa: BLE001
+                    record_controller_error(run_id, exc)
+                    payload = {
+                        "run_id": run_id,
+                        "updated_at": utc_now(),
+                        "status": "pulse_error",
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                print(json.dumps(payload, sort_keys=True), flush=True)
+                elapsed = time.monotonic() - started
+                time.sleep(max(1.0, float(poll_seconds) - elapsed))
+            return 0
+        finally:
+            try:
+                registered = int(pid_path.read_text().strip())
+            except (OSError, ValueError):
+                registered = None
+            if registered == own_pid:
+                pid_path.unlink(missing_ok=True)
+
+
 def download_run_volume(
     state_dir: Path, run: dict[str, Any], destination: Path
 ) -> Path:
@@ -2035,6 +2149,7 @@ def build_parser() -> argparse.ArgumentParser:
         "stop",
         "finalize",
         "monitor",
+        "budget-pulse",
         "wait",
         "check",
         "recover",
@@ -2044,7 +2159,7 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         command = sub.add_parser(name)
         command.add_argument("--run-id", required=True)
-        if name in {"monitor", "wait"}:
+        if name in {"monitor", "budget-pulse", "wait"}:
             command.add_argument("--poll-seconds", type=int, default=POLL_SECONDS)
         if name == "wait":
             command.add_argument(
@@ -2073,6 +2188,8 @@ def main() -> int:
             payload = request_stop(args.run_id)
         elif args.command == "monitor":
             return monitor_loop(args.run_id, args.poll_seconds)
+        elif args.command == "budget-pulse":
+            return budget_pulse_loop(args.run_id, args.poll_seconds)
         elif args.command == "wait":
             return wait_for_run(args.run_id, args.timeout_seconds, args.poll_seconds)
         elif args.command == "finalize":

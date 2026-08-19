@@ -1105,6 +1105,19 @@ if ((START_MONITOR)); then
       >>"$STATE_DIR/monitor.log" 2>&1 </dev/null &
     printf '%s\n' "$!" >"$STATE_DIR/monitor.pid"
   fi
+
+  budget_pulse_alive=0
+  if [[ -f "$STATE_DIR/budget-pulse.pid" ]]; then
+    budget_pulse_pid=$(tr -dc '0-9' <"$STATE_DIR/budget-pulse.pid" || true)
+    if [[ -n "$budget_pulse_pid" ]] && kill -0 "$budget_pulse_pid" 2>/dev/null; then
+      budget_pulse_alive=1
+    fi
+  fi
+  if (( ! budget_pulse_alive )); then
+    nohup python3 "$CONTROL" budget-pulse --run-id "$RUN_ID" --poll-seconds 15 \
+      >>"$STATE_DIR/budget-pulse.log" 2>&1 </dev/null &
+    printf '%s\n' "$!" >"$STATE_DIR/budget-pulse.pid"
+  fi
 fi
 
 printf '%s\n' "$$" >"$STATE_DIR/harbor.pid"
