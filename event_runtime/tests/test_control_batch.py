@@ -348,6 +348,15 @@ def test_generic_deepseek_catalog_installer_supports_pro(tmp_path: Path) -> None
     assert model["context_window"] == 1_000_000
     assert model["max_context_window"] == 1_000_000
     assert model["display_name"] == "DeepSeek-V4-Pro"
+    assert model["support_verbosity"] is False
+
+
+def test_deepseek_catalog_never_emits_unsupported_verbosity() -> None:
+    catalog = json.loads(
+        (ROOT / "event_runtime/models/deepseek.json").read_text()
+    )
+    assert catalog["models"]
+    assert all(model["support_verbosity"] is False for model in catalog["models"])
 
 
 @pytest.mark.parametrize("trials_per_model", [2, 5])

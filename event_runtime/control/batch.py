@@ -973,6 +973,27 @@ def preflight(
                         "provider": provider,
                         "reasoning": {"effort": REASONING_EFFORT},
                         "max_output_tokens": 16,
+                        # Exercise the same Responses features Codex adds to a
+                        # real agent turn. A text.verbosity field is
+                        # intentionally absent because routed DeepSeek
+                        # endpoints do not advertise or accept it when strict
+                        # parameter routing is enabled.
+                        "parallel_tool_calls": True,
+                        "tools": [
+                            {
+                                "type": "function",
+                                "name": "sprint_preflight_noop",
+                                "description": "Preflight-only no-op tool.",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {},
+                                    "additionalProperties": False,
+                                },
+                            }
+                        ],
+                        "tool_choice": "auto",
+                        "include": ["reasoning.encrypted_content"],
+                        "prompt_cache_key": "sprint-provider-preflight",
                         "store": False,
                     },
                     generation_audit_url="https://openrouter.ai/api/v1/generation",
