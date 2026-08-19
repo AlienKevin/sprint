@@ -1621,6 +1621,7 @@ def final_conditions(
     job, trial = discover_job_and_trial(state_dir, run)
     all_submissions = run.get("evaluation_result_policy") in {
         "all_blind_submissions",
+        "all_blind_archival_submissions",
         # Retained while the stopped 2026-08-08 batch finishes draining.
         "all_blind_submissions_by_deadline",
     }

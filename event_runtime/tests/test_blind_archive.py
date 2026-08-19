@@ -276,7 +276,7 @@ def test_all_submission_finalization_needs_no_final_policy_or_verifier(
         "run_id": "run",
         "state_dir": str(state),
         "jobs_root": str(jobs),
-        "evaluation_result_policy": "all_blind_submissions_by_deadline",
+        "evaluation_result_policy": "all_blind_archival_submissions",
         "model": "openai/gpt-5.6-luna",
         "resolved_model_version": "gpt-5.6-luna",
         "reasoning_effort": "max",
