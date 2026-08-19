@@ -64,6 +64,65 @@ def row(index: int, name: str, best: float | None) -> dict:
 
 
 class DurableOpsTests(unittest.TestCase):
+    def test_codex_wrapper_waits_for_delayed_setsid(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            runtime = root / "run"
+            logs = root / "logs"
+            codex_home = root / "codex-home"
+            fake_bin = root / "bin"
+            package_root = root / "codex-package"
+            launcher = package_root / "bin/codex.js"
+            native = (
+                package_root
+                / "node_modules/@openai/codex-linux-test/vendor/test/bin/codex"
+            )
+            for path in (
+                runtime,
+                logs,
+                codex_home,
+                fake_bin,
+                launcher.parent,
+                native.parent,
+            ):
+                path.mkdir(parents=True, exist_ok=True)
+            launcher.write_text("#!/usr/bin/env node\n")
+            launcher.chmod(0o755)
+            native.write_text("#!/usr/bin/env bash\nsleep 0.5\nexit 0\n")
+            native.chmod(0o755)
+            delayed_setsid = fake_bin / "setsid"
+            delayed_setsid.write_text(
+                "#!/usr/bin/env bash\nsleep 0.1\nexec /usr/bin/setsid \"$@\"\n"
+            )
+            delayed_setsid.chmod(0o755)
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{fake_bin}:{env['PATH']}",
+                    "CODEX_HOME": str(codex_home),
+                    "SPRINT_RUNTIME_DIR": str(runtime),
+                    "SPRINT_AGENT_LOG_DIR": str(logs),
+                }
+            )
+            result = subprocess.run(
+                [
+                    "bash",
+                    str(ROOT / "event_runtime/container/sprint-codex-exec-wrapper.sh"),
+                    str(launcher),
+                    "exec",
+                    "--json",
+                ],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn(
+                "failed to create an isolated Codex process group", result.stderr
+            )
+
     def test_monitor_loop_self_registers_and_cleans_own_pid(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             state = Path(raw)

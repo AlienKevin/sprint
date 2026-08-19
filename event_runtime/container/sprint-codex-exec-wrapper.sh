@@ -241,8 +241,22 @@ fi
 # while avoiding an extra signal-relay process between the watcher and Codex.
 setsid "$CODEX_EXECUTABLE" "$@" &
 codex_pid=$!
-codex_pgid=$(ps -o pgid= -p "$codex_pid" | tr -d '[:space:]')
-start_time=$(awk '{print $22}' "/proc/$codex_pid/stat" 2>/dev/null || true)
+
+# The shell can resume before the new child has executed setsid(2).  Reading
+# its PGID immediately can therefore observe the parent's process group and
+# falsely classify a healthy launch as unsafe.  Wait briefly for the child to
+# become its own group leader, while still failing closed if it exits first.
+codex_pgid=
+start_time=
+for _ in {1..100}; do
+  [[ -r "/proc/$codex_pid/stat" ]] || break
+  codex_pgid=$(ps -o pgid= -p "$codex_pid" | tr -d '[:space:]')
+  start_time=$(awk '{print $22}' "/proc/$codex_pid/stat" 2>/dev/null || true)
+  if [[ "$codex_pgid" == "$codex_pid" && -n "$start_time" ]]; then
+    break
+  fi
+  sleep 0.01
+done
 
 if [[ -z "$codex_pgid" || "$codex_pgid" != "$codex_pid" || -z "$start_time" ]]; then
   kill -TERM "$codex_pid" 2>/dev/null || true
