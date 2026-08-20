@@ -736,6 +736,15 @@ def main() -> int:
     )
     if provider_cost_source:
         apply_provider_reported_costs(requests, provider_records)
+        # A provider request can finish after the Codex process is interrupted,
+        # leaving no local token_count event to carry the configured identity.
+        # Keep the provider response model separately, but attest the benchmark
+        # model and reasoning configuration on the synthetic run-audit row.
+        expected_model = str(run["model"]).split("/", 1)[-1]
+        for request in requests:
+            if request.get("provider_only_usage") is True:
+                request["model"] = expected_model
+                request["reasoning_effort"] = run["reasoning_effort"]
     request_ids = [request["run_api_call_id"] for request in requests]
     if len(request_ids) != len(set(request_ids)):
         raise SystemExit("duplicate run-level Codex API call IDs")

@@ -1621,6 +1621,10 @@ def run_usage_audit_ready(
         details.append(
             "run usage audit does not use undiscounted OpenRouter list price"
         )
+    provider_billing_reconciled = bool(
+        openrouter_list_price
+        and audit.get("provider_billing_reconciled") is True
+    )
     for index, request in enumerate(requests, start=1):
         if not isinstance(request, dict):
             details.append(f"run usage request {index} is not an object")
@@ -1661,7 +1665,14 @@ def run_usage_audit_ready(
         if not isinstance(source, dict):
             details.append("run usage source session is malformed")
             continue
-        if source.get("cost_reconstruction_complete") is not True:
+        # Codex session logs contain token usage, but OpenRouter owns the exact
+        # per-request charge. The run-level audit binds every signed session
+        # request to that durable provider ledger above, so session-local cost
+        # completeness is neither expected nor authoritative on this path.
+        if (
+            source.get("cost_reconstruction_complete") is not True
+            and not provider_billing_reconciled
+        ):
             details.append("run usage source session cost is incomplete")
         chunks = source.get("chunks")
         if not isinstance(chunks, list) or not chunks:

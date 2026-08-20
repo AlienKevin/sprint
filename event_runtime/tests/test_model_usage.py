@@ -325,6 +325,114 @@ def test_provider_only_billed_request_is_retained_after_interruption() -> None:
     assert request["provider_reported_cost_usd"] == 0.123
 
 
+def test_openrouter_run_audit_uses_reconciled_provider_cost_over_session_cost(
+    tmp_path: Path,
+) -> None:
+    run = {
+        "run_id": "openrouter-session-cost",
+        "model": "deepseek/deepseek-v4-flash",
+        "resolved_model_version": "DeepSeek-V4-Flash-0731",
+        "reasoning_effort": "high",
+        "cpu_launch_history": [{"attempt": 1}],
+        "budget_enforcement": {
+            "api_cost_source": "openrouter_reported_per_request",
+            "api_budget_cost_basis": (
+                "openrouter_list_price_before_endpoint_discount"
+            ),
+        },
+    }
+    (tmp_path / "run.json").write_text(json.dumps(run))
+    write_session(tmp_path, 1, "session-one", "2026-08-20T00:00:00Z")
+    record = tmp_path / "provider-api-usage/api-usage/requests/request.json"
+    record.parent.mkdir(parents=True)
+    record.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "run_id": run["run_id"],
+                "cpu_attempt": 1,
+                "ledger_request_id": "ledger-1",
+                "generation_id": "generation-1",
+                "requested_at": "2026-08-20T00:00:00Z",
+                "completed_at": "2026-08-20T00:00:01Z",
+                "state": "complete",
+                "requested_model": "deepseek-v4-flash",
+                "response_model": "deepseek-v4-flash",
+                "provider_reported_cost_usd": 0.1,
+                "undiscounted_cost_usd": 0.2,
+                "promotion_snapshot": {"discount_fraction": 0.5},
+                "usage": {
+                    "input_tokens": 1000,
+                    "input_tokens_details": {
+                        "cached_tokens": 800,
+                        "cache_write_tokens": 0,
+                    },
+                    "output_tokens": 100,
+                    "output_tokens_details": {"reasoning_tokens": 50},
+                    "total_tokens": 1100,
+                },
+            }
+        )
+    )
+    provider_only = record.with_name("provider-only.json")
+    provider_only.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "run_id": run["run_id"],
+                "cpu_attempt": 1,
+                "ledger_request_id": "ledger-provider-only",
+                "generation_id": "generation-provider-only",
+                "requested_at": "2026-08-20T00:00:02Z",
+                "completed_at": "2026-08-20T00:00:03Z",
+                "state": "complete",
+                "requested_model": "deepseek-v4-flash",
+                "response_model": "provider/deepseek-v4-flash-versioned",
+                "provider_reported_cost_usd": 0.05,
+                "undiscounted_cost_usd": 0.1,
+                "promotion_snapshot": {"discount_fraction": 0.5},
+                "usage": {
+                    "input_tokens": 2000,
+                    "input_tokens_details": {
+                        "cached_tokens": 1900,
+                        "cache_write_tokens": 0,
+                    },
+                    "output_tokens": 50,
+                    "output_tokens_details": {"reasoning_tokens": 20},
+                    "total_tokens": 2050,
+                },
+            }
+        )
+    )
+    subprocess.run(
+        [sys.executable, str(SCRIPT), "--state-dir", str(tmp_path)],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    audit_path = tmp_path / "usage/run-usage-audit.json"
+    audit = json.loads(audit_path.read_text())
+    provider_only_row = next(
+        row for row in audit["requests"] if row.get("provider_only_usage") is True
+    )
+    assert provider_only_row["model"] == "deepseek-v4-flash"
+    assert provider_only_row["reasoning_effort"] == "high"
+    assert provider_only_row["openrouter_response_model"] == (
+        "provider/deepseek-v4-flash-versioned"
+    )
+    audit["source_sessions"][0]["cost_reconstruction_complete"] = False
+    audit_path.write_text(json.dumps(audit))
+
+    assert sprintctl.run_usage_audit_ready(tmp_path, run) == (True, [])
+
+    audit["provider_billing_reconciled"] = False
+    audit_path.write_text(json.dumps(audit))
+    ready, details = sprintctl.run_usage_audit_ready(tmp_path, run)
+    assert ready is False
+    assert "run usage source session cost is incomplete" in details
+
+
 def test_dominating_harbor_final_supersedes_shifted_durable_ordinals(
     tmp_path: Path,
 ) -> None:
