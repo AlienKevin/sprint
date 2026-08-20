@@ -531,6 +531,34 @@ class DurableOpsTests(unittest.TestCase):
             pulse.assert_not_called()
             self.assertFalse((state / "budget-pulse.pid").exists())
 
+    def test_finished_attempt_does_not_close_supervisor_owned_services(self) -> None:
+        import fcntl
+
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            job = state / "jobs" / "retry-run"
+            trial = job / "task__abc"
+            trial.mkdir(parents=True)
+            for path in (job / "result.json", trial / "result.json"):
+                path.write_text(json.dumps({"finished_at": "2026-08-20T19:00:00Z"}))
+            run = {
+                "run_id": "retry-run",
+                "jobs_root": str(state / "jobs"),
+                "job_path": str(job),
+                "trial_path": str(trial),
+            }
+            (state / "run.json").write_text(json.dumps(run))
+            lock_path = state / "supervise.lock"
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.assertFalse(sprintctl.run_services_should_exit(state, run))
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                os.close(fd)
+
+            self.assertTrue(sprintctl.run_services_should_exit(state, run))
+
     def test_recoverable_agent_exit_ack_does_not_close_run_services(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             state = Path(raw)

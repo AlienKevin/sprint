@@ -2143,6 +2143,24 @@ def _budget_watchdog_age(ref: float, checked_at: float) -> float:
     return age
 
 
+def _supervisor_lock_held(state_dir: Path) -> bool:
+    """Return whether the lane supervisor still owns its retry lifecycle."""
+    lock_path = state_dir / "supervise.lock"
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        import fcntl
+
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        else:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            return False
+    finally:
+        os.close(fd)
+
+
 def _supervised_retry_gap_allows_host_pulse(
     state_dir: Path, run: dict[str, Any], canonical: dict[str, Any]
 ) -> bool:
@@ -2182,20 +2200,7 @@ def _supervised_retry_gap_allows_host_pulse(
     if isinstance(pending, bool) or not isinstance(pending, int) or pending != 0:
         return False
 
-    lock_path = state_dir / "supervise.lock"
-    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
-    try:
-        import fcntl
-
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return True
-        else:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-            return False
-    finally:
-        os.close(fd)
+    return _supervisor_lock_held(state_dir)
 
 
 def _budget_pulse_once_unlocked(
@@ -2340,6 +2345,20 @@ def terminal_stop_acknowledged(state_dir: Path) -> bool:
     return reason != "agent_exit"
 
 
+def run_services_should_exit(state_dir: Path, run: dict[str, Any]) -> bool:
+    """Keep retry-owned safety services alive across Harbor attempt results."""
+    if (state_dir / "FINALIZED.json").is_file() or terminal_stop_acknowledged(
+        state_dir
+    ):
+        return True
+    # Each supervised CPU attempt writes finished Harbor results, including
+    # transient provider failures.  Those files are not a run boundary while
+    # the supervisor still owns the lane and may relaunch the next attempt.
+    if _supervisor_lock_held(state_dir):
+        return False
+    return run_results_finished(state_dir, run)
+
+
 def budget_pulse_loop(run_id: str, poll_seconds: int) -> int:
     state_dir, run = load_run(run_id)
     with file_lock(state_dir / "budget-pulse.lock", blocking=False) as acquired:
@@ -2350,11 +2369,7 @@ def budget_pulse_loop(run_id: str, poll_seconds: int) -> int:
         own_pid = os.getpid()
         atomic_write_text(pid_path, f"{own_pid}\n", 0o600)
         try:
-            while not (
-                (state_dir / "FINALIZED.json").is_file()
-                or terminal_stop_acknowledged(state_dir)
-                or run_results_finished(state_dir, run)
-            ):
+            while not run_services_should_exit(state_dir, run):
                 started = time.monotonic()
                 try:
                     payload = budget_pulse_once(run_id)
@@ -2393,11 +2408,7 @@ def gpu_dispatch_loop(run_id: str, poll_seconds: int) -> int:
         own_pid = os.getpid()
         atomic_write_text(pid_path, f"{own_pid}\n", 0o600)
         try:
-            while not (
-                (state_dir / "FINALIZED.json").is_file()
-                or terminal_stop_acknowledged(state_dir)
-                or run_results_finished(state_dir, run)
-            ):
+            while not run_services_should_exit(state_dir, run):
                 started = time.monotonic()
                 try:
                     from event_runtime.compute import worker as gpu_worker
