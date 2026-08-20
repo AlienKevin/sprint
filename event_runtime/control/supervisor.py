@@ -12,6 +12,7 @@ Does **not** launch paid bakeoffs by itself; callers pass ``--launch-cmd``
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -31,6 +32,7 @@ DEFAULT_MAX_BACKOFF_S = 600
 DEFAULT_MAX_RESTARTS = 50
 UNRECOVERABLE_EXIT_CODES = {78}
 SUPERVISOR_EXHAUSTED_EXIT = 75
+RECOVERABLE_RATE_LIMIT_EXIT = 76
 
 
 def utc_now() -> str:
@@ -76,6 +78,59 @@ def next_backoff_s(
         attempt = 1
     delay = float(min_s) * (2 ** (attempt - 1))
     return float(min(max_s, delay))
+
+
+def restart_jitter_s(run_id: str, restart: int, *, ceiling_s: float) -> float:
+    """Return stable per-lane jitter so parallel trials do not retry together."""
+    ceiling_ms = max(0, int(float(ceiling_s) * 1000))
+    if ceiling_ms == 0:
+        return 0.0
+    digest = hashlib.sha256(f"{run_id}:{restart}".encode()).digest()
+    return (int.from_bytes(digest[:4], "big") % (ceiling_ms + 1)) / 1000.0
+
+
+def classify_launch_exit(state_dir: Path, attempt: int, raw_code: int) -> int:
+    """Recover Harbor trial failures hidden behind a successful job exit.
+
+    Harbor intentionally completes the orchestration command after persisting a
+    failed trial result.  The lane supervisor, however, needs to distinguish a
+    normal agent exit from a provider 429 so its exponential backoff remains
+    effective.
+    """
+    if raw_code != 0:
+        return raw_code
+    try:
+        run = json.loads((state_dir / "run.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return raw_code
+    jobs_root: Path | None = None
+    for row in reversed(run.get("cpu_launch_history") or []):
+        if isinstance(row, dict) and int(row.get("attempt") or 0) == attempt:
+            raw_root = row.get("jobs_root")
+            if raw_root:
+                jobs_root = Path(str(raw_root))
+            break
+    if jobs_root is None or not jobs_root.is_dir():
+        return raw_code
+    try:
+        results = sorted(
+            jobs_root.rglob("result.json"),
+            key=lambda path: path.stat().st_mtime_ns,
+            reverse=True,
+        )
+    except OSError:
+        return raw_code
+    for path in results:
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        exception = payload.get("exception_info")
+        if not isinstance(exception, dict):
+            continue
+        if exception.get("exception_type") == "ApiRateLimitError":
+            return RECOVERABLE_RATE_LIMIT_EXIT
+    return raw_code
 
 
 def load_supervise_state(state_dir: Path) -> dict[str, Any]:
@@ -239,9 +294,17 @@ def run_loop(
             # and never launched; still backoff after failures).
             failures = int(state.get("consecutive_failures") or 0)
             if failures > 0 or int(state.get("restarts") or 0) > 0:
-                delay = next_backoff_s(
+                base_delay = next_backoff_s(
                     max(1, failures), min_s=min_backoff_s, max_s=max_backoff_s
                 )
+                jitter = restart_jitter_s(
+                    run_id,
+                    int(state.get("restarts") or 0) + 1,
+                    ceiling_s=min(30.0, base_delay / 4),
+                )
+                delay = min(float(max_backoff_s), base_delay + jitter)
+                entry["backoff_base_s"] = base_delay
+                entry["backoff_jitter_s"] = jitter
                 entry["backoff_s"] = delay
                 sleep_fn(delay)
                 # Re-check stop after sleep.
@@ -268,7 +331,8 @@ def run_loop(
                     "at": launch_started_at,
                 },
             )
-            code = int(launch_fn())
+            raw_code = int(launch_fn())
+            code = classify_launch_exit(state_dir, cpu_attempt, raw_code)
             append_cpu_lifecycle(
                 state_dir,
                 {
@@ -278,6 +342,7 @@ def run_loop(
                     "attempt": cpu_attempt,
                     "at": utc_now(),
                     "exit_code": code,
+                    "raw_exit_code": raw_code,
                     "started_at": launch_started_at,
                 },
             )

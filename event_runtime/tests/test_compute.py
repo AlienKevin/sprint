@@ -1685,6 +1685,49 @@ class SuperviseTests(unittest.TestCase):
         self.assertEqual(supervise_lane.next_backoff_s(2, min_s=30, max_s=600), 60)
         self.assertEqual(supervise_lane.next_backoff_s(10, min_s=30, max_s=600), 600)
 
+    def test_parallel_lane_restart_jitter_is_stable_and_distinct(self) -> None:
+        first = supervise_lane.restart_jitter_s("lane-1", 3, ceiling_s=30)
+        self.assertEqual(
+            first, supervise_lane.restart_jitter_s("lane-1", 3, ceiling_s=30)
+        )
+        self.assertNotEqual(
+            first, supervise_lane.restart_jitter_s("lane-2", 3, ceiling_s=30)
+        )
+        self.assertGreaterEqual(first, 0)
+        self.assertLessEqual(first, 30)
+
+    def test_rate_limit_result_hidden_by_successful_harbor_exit_is_retryable(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            jobs = state / "attempt-1"
+            trial = jobs / "trial"
+            trial.mkdir(parents=True)
+            (trial / "result.json").write_text(
+                json.dumps(
+                    {
+                        "exception_info": {
+                            "exception_type": "ApiRateLimitError",
+                            "exception_message": "429 Too Many Requests",
+                        }
+                    }
+                )
+            )
+            (state / "run.json").write_text(
+                json.dumps(
+                    {
+                        "cpu_launch_history": [
+                            {"attempt": 1, "jobs_root": str(jobs)}
+                        ]
+                    }
+                )
+            )
+
+            self.assertEqual(
+                supervise_lane.classify_launch_exit(state, 1, 0),
+                supervise_lane.RECOVERABLE_RATE_LIMIT_EXIT,
+            )
+            self.assertEqual(supervise_lane.classify_launch_exit(state, 1, 9), 9)
+
     def test_stop_requested_file(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             state = Path(raw)
