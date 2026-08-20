@@ -380,6 +380,113 @@ class DurableOpsTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "snapshot is stale"):
                     sprintctl.budget_pulse_once("pulse-run", now=1000.0)
 
+    def test_budget_pulse_advances_host_mirror_during_supervised_retry_gap(
+        self,
+    ) -> None:
+        from event_runtime.compute import worker as gpu_worker
+
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            run = {"run_id": "retry-gap"}
+            canonical = {
+                "schema_version": 2,
+                "run_id": "retry-gap",
+                "checked_at_epoch_s": 800.0,
+                "components": {"model_api": {"pending_request_count": 0}},
+            }
+            merged = {
+                "schema_version": 2,
+                "run_id": "retry-gap",
+                "checked_at_epoch_s": 800.0,
+                "as_of_epoch_ms": 800000,
+                "as_of": "1970-01-01T00:13:20Z",
+                "total_usd": 2.5,
+                "budget_remaining_usd": 7.5,
+                "status": "within_budget",
+            }
+            with (
+                mock.patch.object(sprintctl, "load_run", return_value=(state, run)),
+                mock.patch.object(
+                    sprintctl, "fetch_budget_watchdog", return_value=canonical
+                ),
+                mock.patch.object(
+                    sprintctl,
+                    "_supervised_retry_gap_allows_host_pulse",
+                    return_value=True,
+                ) as retry_gap,
+                mock.patch.object(
+                    sprintctl, "build_unified_timeline", return_value={"events": []}
+                ),
+                mock.patch.object(
+                    sprintctl.agent_cost, "build_snapshot", return_value=merged
+                ),
+                mock.patch.object(
+                    gpu_worker,
+                    "mirror_gpu_budget",
+                    return_value={"gpu_budget_mirror": "updated"},
+                ) as gpu_mirror,
+                mock.patch.object(
+                    gpu_worker,
+                    "mirror_agent_cost",
+                    return_value={"agent_cost_mirror": "agent_stopped"},
+                ),
+                mock.patch.object(sprintctl, "enforce_agent_cost_budget"),
+            ):
+                payload = sprintctl.budget_pulse_once("retry-gap", now=1000.0)
+
+            retry_gap.assert_called_once_with(state, run, canonical)
+            mirrored = gpu_mirror.call_args.args[1]
+            self.assertEqual(mirrored["checked_at_epoch_s"], 1000.0)
+            self.assertEqual(
+                mirrored["budget_pulse"]["source"],
+                "host_supervised_retry_gap",
+            )
+            self.assertEqual(payload["source"], "host_supervised_retry_gap")
+            self.assertEqual(payload["upstream_watchdog_age_seconds"], 200.0)
+
+    def test_retry_gap_host_pulse_requires_supervisor_and_no_pending_request(
+        self,
+    ) -> None:
+        import fcntl
+
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            (state / "STOP_ACK.json").write_text(
+                json.dumps({"reason": "agent_exit"})
+            )
+            canonical = {
+                "components": {"model_api": {"pending_request_count": 0}}
+            }
+            lock_path = state / "supervise.lock"
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                with mock.patch.object(sprintctl, "harbor_alive", return_value=False):
+                    self.assertTrue(
+                        sprintctl._supervised_retry_gap_allows_host_pulse(
+                            state, {}, canonical
+                        )
+                    )
+                    canonical["components"]["model_api"][
+                        "pending_request_count"
+                    ] = 1
+                    self.assertFalse(
+                        sprintctl._supervised_retry_gap_allows_host_pulse(
+                            state, {}, canonical
+                        )
+                    )
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                os.close(fd)
+
+            canonical["components"]["model_api"]["pending_request_count"] = 0
+            with mock.patch.object(sprintctl, "harbor_alive", return_value=False):
+                self.assertFalse(
+                    sprintctl._supervised_retry_gap_allows_host_pulse(
+                        state, {}, canonical
+                    )
+                )
+
     def test_budget_watchdog_age_allows_bounded_cross_sandbox_clock_skew(
         self,
     ) -> None:

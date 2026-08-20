@@ -2143,6 +2143,61 @@ def _budget_watchdog_age(ref: float, checked_at: float) -> float:
     return age
 
 
+def _supervised_retry_gap_allows_host_pulse(
+    state_dir: Path, run: dict[str, Any], canonical: dict[str, Any]
+) -> bool:
+    """Allow host accounting while no billable CPU attempt is alive.
+
+    A provider-rate-limit exit can leave the lane supervisor in exponential
+    backoff while an already-dispatched GPU job keeps accruing cost.  There is
+    no sandbox watchdog during that gap, so requiring its timestamp to remain
+    fresh eventually starves the GPU mirror and makes the worker fail closed.
+
+    The host pulse is authoritative during this narrow state only when the
+    last sandbox acknowledged a recoverable ``agent_exit``, the supervisor
+    still owns its lock, Harbor is not alive, and the last trusted snapshot
+    proves there was no API request in flight.  Completed OpenRouter charges
+    are immutable in the durable ledger and CPU/GPU allocation is tracked by
+    host lifecycle events, so advancing the host mirror here cannot hide new
+    spend.  As soon as the next Harbor attempt is alive, freshness is required
+    again.
+    """
+    if terminal_stop_acknowledged(state_dir):
+        return False
+    ack_path = state_dir / "STOP_ACK.json"
+    try:
+        ack_reason = str(json.loads(ack_path.read_text()).get("reason") or "")
+    except (OSError, json.JSONDecodeError):
+        return False
+    if ack_reason != "agent_exit":
+        return False
+    try:
+        if harbor_alive(run):
+            return False
+    except (KeyError, OSError, ValueError):
+        return False
+
+    model_api = (canonical.get("components") or {}).get("model_api") or {}
+    pending = model_api.get("pending_request_count")
+    if isinstance(pending, bool) or not isinstance(pending, int) or pending != 0:
+        return False
+
+    lock_path = state_dir / "supervise.lock"
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        import fcntl
+
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        else:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            return False
+    finally:
+        os.close(fd)
+
+
 def _budget_pulse_once_unlocked(
     run_id: str, *, now: float | None = None
 ) -> dict[str, Any]:
@@ -2157,7 +2212,14 @@ def _budget_pulse_once_unlocked(
     checked_at = canonical.get("checked_at_epoch_s")
     if not isinstance(checked_at, (int, float)) or isinstance(checked_at, bool):
         raise RuntimeError("budget pulse watchdog timestamp is missing")
-    upstream_age = _budget_watchdog_age(ref, float(checked_at))
+    pulse_source = "in_sandbox_watchdog"
+    try:
+        upstream_age = _budget_watchdog_age(ref, float(checked_at))
+    except RuntimeError:
+        if not _supervised_retry_gap_allows_host_pulse(state_dir, run, canonical):
+            raise
+        upstream_age = ref - float(checked_at)
+        pulse_source = "host_supervised_retry_gap"
 
     # This is local-only and fast: provider charges come from the freshly
     # fetched watchdog, while host GPU lifecycle events are already persisted
@@ -2181,6 +2243,7 @@ def _budget_pulse_once_unlocked(
         "checked_at": utc_now(),
         "upstream_watchdog_age_seconds": round(upstream_age, 3),
         "interval_seconds": 15,
+        "source": pulse_source,
     }
     atomic_write_json(
         state_dir / "telemetry" / "agent-cost.json", payload, mode=0o600
@@ -2220,6 +2283,7 @@ def _budget_pulse_once_unlocked(
         "budget_remaining_usd": payload.get("budget_remaining_usd"),
         "status": payload.get("status"),
         "upstream_watchdog_age_seconds": round(upstream_age, 3),
+        "source": pulse_source,
         "gpu_mirror": gpu_mirror.get("gpu_budget_mirror"),
         "agent_mirror": agent_mirror.get("agent_cost_mirror"),
     }
