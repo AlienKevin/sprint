@@ -1434,9 +1434,13 @@ def modal_billing_ready(state_dir: Path, run_id: str) -> tuple[bool, list[str]]:
         details.append("Modal cost artifact schema is stale")
     if payload.get("run_id") != run_id:
         details.append("Modal cost artifact run ID mismatch")
-    if payload.get("provider_complete") is not True:
+    provider_compute_complete = bool(
+        payload.get("provider_complete") is True
+        or payload.get("provider_compute_complete") is True
+    )
+    if not provider_compute_complete:
         details.append(
-            "Modal provider billing is not complete: "
+            "Modal provider compute billing is not complete: "
             + str(payload.get("pending_reason") or payload.get("error") or "pending")
         )
     if payload.get("provider_cost_precredits_usd") is None:
@@ -1445,10 +1449,15 @@ def modal_billing_ready(state_dir: Path, run_id: str) -> tuple[bool, list[str]]:
         if not isinstance(payload.get(key), dict):
             details.append(f"Modal provider billing {key} is missing")
     volume_storage = payload.get("volume_storage")
+    volume_unavailable_but_excluded = bool(
+        provider_compute_complete
+        and payload.get("pending_reason")
+        == "provider_volume_storage_snapshot_unavailable"
+    )
     if (
         not isinstance(volume_storage, dict)
         or volume_storage.get("status") != "captured"
-    ):
+    ) and not volume_unavailable_but_excluded:
         details.append("Modal Volume storage snapshot is missing")
     return not details, details
 

@@ -425,6 +425,34 @@ def test_modal_billing_readiness_rejects_pending_artifact(tmp_path: Path) -> Non
     assert any("Volume storage snapshot" in detail for detail in details)
 
 
+def test_modal_billing_readiness_accepts_exact_compute_when_excluded_volume_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "cost-run"
+    (state / "telemetry").mkdir(parents=True)
+    (state / "telemetry" / "modal-cost.json").write_text(
+        json.dumps(
+            {
+                "schema_version": modal_cost.SCHEMA_VERSION,
+                "run_id": "cost-run",
+                "provider_complete": False,
+                "provider_compute_complete": True,
+                "pending_reason": "provider_volume_storage_snapshot_unavailable",
+                "by_role_usd": {"cpu_agent": 0.5},
+                "by_category_usd": {"CPU": 0.5},
+                "by_role_category_usd": {"cpu_agent": {"CPU": 0.5}},
+                "provider_cost_precredits_usd": 0.5,
+                "volume_storage": {
+                    "status": "unavailable",
+                    "reason": "volume no longer exists",
+                },
+            }
+        )
+    )
+
+    assert sprintctl.modal_billing_ready(state, "cost-run") == (True, [])
+
+
 def test_collection_waits_when_expected_role_is_missing(tmp_path: Path) -> None:
     state = tmp_path / "cost-run"
     (state / "telemetry").mkdir(parents=True)
