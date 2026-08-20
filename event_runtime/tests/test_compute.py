@@ -1716,6 +1716,42 @@ class SuperviseTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(reason, "already_alive")
 
+    def test_relaunch_clears_stale_stopped_state_before_launch(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state_dir = Path(raw)
+            supervise_lane.save_supervise_state(
+                state_dir,
+                {
+                    "schema_version": 1,
+                    "restarts": 0,
+                    "consecutive_failures": 0,
+                    "last_launch_at": None,
+                    "last_exit_code": None,
+                    "stopped": True,
+                },
+            )
+
+            state_seen_by_launch: dict = {}
+
+            def launch_fn() -> int:
+                state_seen_by_launch.update(
+                    supervise_lane.load_supervise_state(state_dir)
+                )
+                return 78
+
+            supervise_lane.run_loop(
+                "unit-clear-stale-stop",
+                launch_fn=launch_fn,
+                alive_fn=lambda: False,
+                stop_fn=lambda: (False, ""),
+                sleep_fn=lambda _s: None,
+                max_restarts=5,
+                state_dir=state_dir,
+            )
+
+            self.assertFalse(state_seen_by_launch["stopped"])
+            self.assertEqual(state_seen_by_launch["last_decision"], "relaunch")
+
     def test_backoff_grows_and_caps(self) -> None:
         self.assertEqual(supervise_lane.next_backoff_s(1, min_s=30, max_s=600), 30)
         self.assertEqual(supervise_lane.next_backoff_s(2, min_s=30, max_s=600), 60)

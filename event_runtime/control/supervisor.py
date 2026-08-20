@@ -290,6 +290,14 @@ def run_loop(
                 sleep_fn(min_backoff_s)
                 continue
 
+            # A prior stop marker may have been cleared after an operator or
+            # watchdog recovery. Once the current decision authorizes a
+            # relaunch, make the durable state match that live decision before
+            # entering backoff or starting the new CPU attempt.
+            state["stopped"] = False
+            state["last_decision"] = reason
+            save_supervise_state(state_dir, state)
+
             # Backoff before relaunch (not before first ever launch if restarts==0
             # and never launched; still backoff after failures).
             failures = int(state.get("consecutive_failures") or 0)
