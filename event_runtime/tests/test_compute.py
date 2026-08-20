@@ -203,6 +203,42 @@ class ClaimSelectionTests(unittest.TestCase):
                 hashlib.sha256(archive_bytes).hexdigest(),
             )
 
+    def test_host_archive_transfer_retries_without_consuming_gpu_attempt(self) -> None:
+        archive_bytes = b"eventual Modal Volume response"
+        with tempfile.TemporaryDirectory() as raw:
+            run = {
+                "run_id": "run-a",
+                "state_dir": raw,
+                "volume_name": "volume-a",
+            }
+            job = {
+                "job_id": "job-a",
+                "work_archive": "runs/run-a/gpu-jobs/work/job-a/app.tar.gz",
+            }
+            calls = 0
+
+            def download(command, **_kwargs):
+                nonlocal calls
+                calls += 1
+                if calls < 3:
+                    return subprocess.CompletedProcess(
+                        command, 1, "", "VolumeGet rate limit exceeded"
+                    )
+                Path(command[-1]).write_bytes(archive_bytes)
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with (
+                mock.patch.object(gpu_worker.sprintctl, "run_command", download),
+                mock.patch.object(gpu_worker.time, "sleep") as sleep,
+            ):
+                pinned = gpu_worker.pin_work_archive(run, job)
+
+            self.assertEqual(calls, 3)
+            self.assertEqual(
+                pinned["work_archive_sha256"], hashlib.sha256(archive_bytes).hexdigest()
+            )
+            self.assertEqual([call.args[0] for call in sleep.call_args_list], [1.0, 2.0])
+
     def test_retry_rejects_corrupt_host_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             run = {

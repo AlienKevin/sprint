@@ -17,6 +17,7 @@ import os
 import re
 import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -72,6 +73,7 @@ AGENT_GPU_CLI_PATH = "/opt/event_runtime/agent/gpu.py"
 AGENT_COST_CLI_PATH = "/opt/event_runtime/agent/cost.py"
 AGENT_COMMAND_SOURCE = ROOT / "event_runtime" / "agent"
 MAX_WORK_ARCHIVE_BYTES = 256 * 1024 * 1024
+WORK_ARCHIVE_TRANSFER_ATTEMPTS = 5
 GPU_BUDGET_MIRROR_PATH = "/run/sprint-budget-watchdog.json"
 MAX_GPU_BUDGET_MIRROR_BYTES = 1024 * 1024
 
@@ -767,6 +769,11 @@ def _file_sha256(path: Path) -> str:
         return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
+def work_archive_retry_delay(attempt: int) -> float:
+    """Short bounded backoff for Modal Volume control-plane contention."""
+    return float(min(8, 2 ** max(0, attempt - 1)))
+
+
 def pin_work_archive(run: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]:
     """Snapshot the workspace at lease claim for identical retries.
 
@@ -790,21 +797,36 @@ def pin_work_archive(run: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]
         canonical.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory() as raw:
             downloaded = Path(raw) / "app.tar.gz"
-            result = sprintctl.run_command(
-                sprintctl.modal_command(
-                    "volume",
-                    "get",
-                    "--force",
-                    str(run["volume_name"]),
-                    remote,
-                    str(downloaded),
-                ),
-                run=run,
-                check=False,
-                timeout=180,
-            )
-            if result.returncode != 0 or not downloaded.is_file():
-                raise RuntimeError(f"unable to pin GPU work archive: {remote}")
+            last_error = ""
+            for attempt in range(1, WORK_ARCHIVE_TRANSFER_ATTEMPTS + 1):
+                downloaded.unlink(missing_ok=True)
+                try:
+                    result = sprintctl.run_command(
+                        sprintctl.modal_command(
+                            "volume",
+                            "get",
+                            "--force",
+                            str(run["volume_name"]),
+                            remote,
+                            str(downloaded),
+                        ),
+                        run=run,
+                        check=False,
+                        timeout=180,
+                    )
+                    if result.returncode == 0 and downloaded.is_file():
+                        break
+                    last_error = (result.stderr or result.stdout or "").strip()[-500:]
+                except (OSError, subprocess.SubprocessError, TimeoutError) as exc:
+                    last_error = f"{type(exc).__name__}: {exc}"
+                if attempt < WORK_ARCHIVE_TRANSFER_ATTEMPTS:
+                    time.sleep(work_archive_retry_delay(attempt))
+            else:
+                detail = f": {last_error}" if last_error else ""
+                raise RuntimeError(
+                    "unable to pin GPU work archive after "
+                    f"{WORK_ARCHIVE_TRANSFER_ATTEMPTS} attempts: {remote}{detail}"
+                )
             size = downloaded.stat().st_size
             if size <= 0 or size > MAX_WORK_ARCHIVE_BYTES:
                 raise RuntimeError(f"invalid GPU work archive size: {size}")
@@ -842,7 +864,22 @@ def restore_pinned_work_archive(run: dict[str, Any], job: dict[str, Any]) -> Non
         raise RuntimeError("missing host-pinned GPU work archive")
     if _file_sha256(canonical) != expected:
         raise RuntimeError("host-pinned GPU work archive digest mismatch")
-    sprintctl.volume_upload(run, canonical, _validated_work_archive_remote(run, job))
+    last_error: Exception | None = None
+    for attempt in range(1, WORK_ARCHIVE_TRANSFER_ATTEMPTS + 1):
+        try:
+            sprintctl.volume_upload(
+                run, canonical, _validated_work_archive_remote(run, job)
+            )
+            return
+        except (OSError, subprocess.SubprocessError, TimeoutError) as exc:
+            last_error = exc
+            if attempt < WORK_ARCHIVE_TRANSFER_ATTEMPTS:
+                time.sleep(work_archive_retry_delay(attempt))
+    assert last_error is not None
+    raise RuntimeError(
+        "unable to restore host-pinned GPU work archive after "
+        f"{WORK_ARCHIVE_TRANSFER_ATTEMPTS} attempts: {last_error}"
+    ) from last_error
 
 
 def load_host_job(run: dict[str, Any], job_id: str) -> dict[str, Any] | None:
