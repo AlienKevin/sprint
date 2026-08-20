@@ -582,9 +582,23 @@ def gpu_allocated_seconds(
 ) -> float:
     if standing:
         return cpu_seconds
+    lifecycle = _timeline_events(run_root)
+    terminal_epoch_by_lease: dict[str, float] = {}
+    for event in lifecycle:
+        if event.get("phase") != "gpu_lifecycle":
+            continue
+        detail = event.get("detail") if isinstance(event.get("detail"), dict) else {}
+        if detail.get("event") not in {"gpu_released", "gpu_preempted"}:
+            continue
+        lease = str(event.get("lease_id") or "")
+        epoch = float(event.get("epoch_s") or 0)
+        if lease and epoch > 0:
+            terminal_epoch_by_lease[lease] = max(
+                epoch, terminal_epoch_by_lease.get(lease, 0.0)
+            )
     starts: dict[str, float] = {}
     total = 0.0
-    for event in _timeline_events(run_root):
+    for event in lifecycle:
         if event.get("phase") != "gpu_lifecycle":
             continue
         detail = event.get("detail") if isinstance(event.get("detail"), dict) else {}
@@ -594,6 +608,13 @@ def gpu_allocated_seconds(
         if not lease or epoch <= 0:
             raise BudgetTelemetryError("GPU lifecycle event lacks lease or timestamp")
         if kind in {"gpu_allocated", "gpu_reallocated"}:
+            # A very short worker can publish its terminal attempt while the
+            # controller is still returning from Sandbox.create. The recovered
+            # release event then precedes a late allocation event for the same
+            # immutable lease. That late event is not a new allocation and
+            # must not remain open until the run ends.
+            if terminal_epoch_by_lease.get(lease, float("inf")) <= epoch:
+                continue
             starts.setdefault(lease, epoch)
         elif kind in {"gpu_released", "gpu_preempted"} and lease in starts:
             total += max(0.0, epoch - starts.pop(lease))

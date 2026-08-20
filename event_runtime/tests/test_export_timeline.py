@@ -1100,6 +1100,62 @@ def test_host_registry_clamps_legacy_pre_spawn_training_interval(
     assert payload["coverage"]["requirements"]["training_gpu_metrics"] is True
 
 
+def test_host_registry_drops_allocation_published_after_terminal_attempt(
+    tmp_path: Path,
+) -> None:
+    state = fixture_run(tmp_path)
+    lifecycle_path = state / "telemetry" / "gpu_timeline.jsonl"
+    write_jsonl(
+        lifecycle_path,
+        [
+            {
+                "event_id": "terminal-before-controller-return",
+                "epoch_s": 1786104057,
+                "phase": "gpu_lifecycle",
+                "action": "instant",
+                "job_id": "short-race",
+                "attempt": 2,
+                "lease_id": "lease-race",
+                "detail": {"event": "gpu_released"},
+            },
+            {
+                "event_id": "late-controller-allocation",
+                "epoch_s": 1786104060,
+                "phase": "gpu_lifecycle",
+                "action": "instant",
+                "job_id": "short-race",
+                "attempt": 2,
+                "lease_id": "lease-race",
+                "detail": {"event": "gpu_reallocated"},
+            },
+        ],
+    )
+    registry = state / "gpu-job-registry" / "short-race.json"
+    registry.parent.mkdir(parents=True)
+    registry.write_text(
+        json.dumps(
+            {
+                "job_id": "short-race",
+                "attempt": 2,
+                "status": "failed",
+                "started_at_epoch_s": 1786104056,
+                "finished_at_epoch_s": 1786104057,
+            }
+        )
+    )
+
+    payload = unified_timeline.build_timeline(state)
+
+    intervals = payload["resource_usage_summary"]["training_gpu"]["intervals"]
+    assert not any(item.get("gpu_job_id") == "short-race" for item in intervals)
+    assert (
+        payload["coverage"]["counts"][
+            "gpu_registry_post_terminal_starts_dropped"
+        ]
+        == 1
+    )
+
+
 def test_legacy_training_lifecycle_uses_worker_exit_and_durable_attempt(
     tmp_path: Path,
 ) -> None:

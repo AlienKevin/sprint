@@ -228,6 +228,38 @@ def test_live_watchdog_prices_api_cpu_and_gpu(tmp_path: Path, monkeypatch) -> No
     assert not (root / "BUDGET_STOP_REQUESTED.json").exists()
 
 
+def test_gpu_cost_ignores_late_allocation_after_same_lease_terminal(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "run"
+    events = root / "telemetry/gpu_timeline/events"
+    events.mkdir(parents=True)
+    rows = [
+        {
+            "event_id": "terminal",
+            "epoch_s": 1_020,
+            "lease_id": "lease-race",
+            "phase": "gpu_lifecycle",
+            "action": "instant",
+            "detail": {"event": "gpu_released"},
+        },
+        {
+            "event_id": "late-allocation",
+            "epoch_s": 1_023,
+            "lease_id": "lease-race",
+            "phase": "gpu_lifecycle",
+            "action": "instant",
+            "detail": {"event": "gpu_reallocated"},
+        },
+    ]
+    for row in rows:
+        (events / f"{row['event_id']}.json").write_text(json.dumps(row))
+
+    assert watchdog.gpu_allocated_seconds(
+        root, 2_000, standing=False, cpu_seconds=0
+    ) == 0
+
+
 def test_live_watchdog_merges_fresh_host_training_cost_and_stops(
     tmp_path: Path, monkeypatch
 ) -> None:

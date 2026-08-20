@@ -782,7 +782,12 @@ class Builder:
                 )
             if end is not None and int(end) < start:
                 self.counts["gpu_registry_invalid_lifecycle_bounds"] += 1
-                result.append(item)
+                # The worker may finish while Sandbox.create is still
+                # returning. In that race, the registry terminal timestamp is
+                # earlier than a late controller allocation event. The event
+                # cannot describe billable post-create work; retaining it as
+                # open would double-count every later GPU job until run end.
+                self.counts["gpu_registry_post_terminal_starts_dropped"] += 1
                 continue
             if start != raw_start:
                 item["raw_start_epoch_ms"] = raw_start
