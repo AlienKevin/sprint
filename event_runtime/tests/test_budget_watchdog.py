@@ -260,6 +260,44 @@ def test_gpu_cost_ignores_late_allocation_after_same_lease_terminal(
     ) == 0
 
 
+def test_gpu_cost_closes_missing_release_from_terminal_attempt_record(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "run"
+    events = root / "telemetry/gpu_timeline/events"
+    events.mkdir(parents=True)
+    (events / "allocated.json").write_text(
+        json.dumps(
+            {
+                "event_id": "allocated",
+                "epoch_s": 1_000,
+                "lease_id": "lease-stopped",
+                "phase": "gpu_lifecycle",
+                "action": "instant",
+                "detail": {"event": "gpu_allocated"},
+            }
+        )
+    )
+    attempt = root / "gpu-jobs/attempts/job-stopped/1.json"
+    attempt.parent.mkdir(parents=True)
+    attempt.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "job_id": "job-stopped",
+                "attempt": 1,
+                "lease_id": "lease-stopped",
+                "status": "terminated",
+                "finished_at_epoch_s": 1_020,
+            }
+        )
+    )
+
+    assert watchdog.gpu_allocated_seconds(
+        root, 2_000, standing=False, cpu_seconds=0
+    ) == 20
+
+
 def test_live_watchdog_merges_fresh_host_training_cost_and_stops(
     tmp_path: Path, monkeypatch
 ) -> None:

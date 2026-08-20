@@ -577,13 +577,48 @@ def _timeline_events(run_root: Path) -> list[dict[str, Any]]:
     return sorted(events.values(), key=lambda row: float(row.get("epoch_s") or 0))
 
 
+def _terminal_attempt_epochs_by_lease(run_root: Path) -> dict[str, float]:
+    """Return provider-backed GPU termination bounds keyed by immutable lease.
+
+    A budget stop can terminate the dispatcher before it appends the separate
+    ``gpu_released`` lifecycle event.  The worker writes its terminal attempt
+    record first, so that append-only record is the durable billing boundary
+    for an otherwise-open allocation.
+    """
+    terminal: dict[str, float] = {}
+    attempts = run_root / "gpu-jobs" / "attempts"
+    for path in sorted(attempts.glob("*/*.json")) if attempts.is_dir() else ():
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise BudgetTelemetryError(
+                f"invalid GPU terminal attempt record {path}: {exc}"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise BudgetTelemetryError(f"invalid GPU terminal attempt record {path}")
+        lease = str(payload.get("lease_id") or "")
+        raw_epoch = payload.get("finished_at_epoch_s")
+        if not lease or raw_epoch is None:
+            continue
+        try:
+            epoch = float(raw_epoch)
+        except (TypeError, ValueError) as exc:
+            raise BudgetTelemetryError(
+                f"invalid GPU terminal timestamp in {path}"
+            ) from exc
+        if not math.isfinite(epoch) or epoch <= 0:
+            raise BudgetTelemetryError(f"invalid GPU terminal timestamp in {path}")
+        terminal[lease] = min(epoch, terminal.get(lease, epoch))
+    return terminal
+
+
 def gpu_allocated_seconds(
     run_root: Path, now: float, *, standing: bool, cpu_seconds: float
 ) -> float:
     if standing:
         return cpu_seconds
     lifecycle = _timeline_events(run_root)
-    terminal_epoch_by_lease: dict[str, float] = {}
+    terminal_epoch_by_lease = _terminal_attempt_epochs_by_lease(run_root)
     for event in lifecycle:
         if event.get("phase") != "gpu_lifecycle":
             continue
@@ -593,8 +628,8 @@ def gpu_allocated_seconds(
         lease = str(event.get("lease_id") or "")
         epoch = float(event.get("epoch_s") or 0)
         if lease and epoch > 0:
-            terminal_epoch_by_lease[lease] = max(
-                epoch, terminal_epoch_by_lease.get(lease, 0.0)
+            terminal_epoch_by_lease[lease] = min(
+                epoch, terminal_epoch_by_lease.get(lease, epoch)
             )
     starts: dict[str, float] = {}
     total = 0.0
@@ -617,8 +652,13 @@ def gpu_allocated_seconds(
                 continue
             starts.setdefault(lease, epoch)
         elif kind in {"gpu_released", "gpu_preempted"} and lease in starts:
-            total += max(0.0, epoch - starts.pop(lease))
-    total += sum(max(0.0, now - start) for start in starts.values())
+            start = starts.pop(lease)
+            end = min(epoch, terminal_epoch_by_lease.get(lease, epoch))
+            total += max(0.0, end - start)
+    total += sum(
+        max(0.0, min(now, terminal_epoch_by_lease.get(lease, now)) - start)
+        for lease, start in starts.items()
+    )
     return total
 
 
