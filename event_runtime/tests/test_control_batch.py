@@ -1450,6 +1450,55 @@ def test_rejected_submission_cannot_mask_an_old_stuck_verifier_lane(
     assert alerts[0]["last_progress_at"] == "2026-08-08T11:59:59+00:00"
 
 
+def test_resumed_cpu_attempt_progress_prevents_false_verifier_stall(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ops = tmp_path / "ops"
+    old_ledger = (
+        ops
+        / "eval-deepseek-1/harbor-jobs/job/task__old/artifacts/continuous/ledger.jsonl"
+    )
+    resumed_ledger = (
+        ops
+        / "eval-deepseek-1/cpu-attempts/04/harbor-jobs/job/task__current"
+        / "artifacts/continuous/ledger.jsonl"
+    )
+    old_ledger.parent.mkdir(parents=True)
+    resumed_ledger.parent.mkdir(parents=True)
+    old_ledger.write_text(
+        json.dumps(
+            {
+                "submitted_at": "2026-08-08T11:00:00Z",
+                "accepted": True,
+                "finished_at": None,
+            }
+        )
+        + "\n"
+    )
+    resumed_ledger.write_text(
+        json.dumps(
+            {
+                "submitted_at": "2026-08-08T12:19:30Z",
+                "accepted": True,
+                "finished_at": None,
+            }
+        )
+        + "\n"
+    )
+    monkeypatch.setattr(batch_eval, "SCRIPT_DIR", ops)
+    payload = {
+        "arms": [
+            {
+                "run_id": "eval-deepseek-1",
+                "ledger": {"queued": 0, "running": 1},
+            }
+        ]
+    }
+
+    now = batch_eval.parse_time("2026-08-08T12:20:00Z")
+    assert batch_eval.verifier_lane_stall_alerts(payload, now=now) == []
+
+
 def test_dq_replay_is_queued_and_public_index_is_path_safe(tmp_path: Path) -> None:
     job = tmp_path / "job"
     trial = job / "task__trial"

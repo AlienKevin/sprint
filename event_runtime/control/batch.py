@@ -1354,9 +1354,18 @@ def verifier_lane_stall_alerts(
         if pending == 0:
             continue
         progress: list[dt.datetime] = []
-        for ledger in (SCRIPT_DIR / run_id / "harbor-jobs").glob(
-            "*/*/artifacts/continuous/ledger.jsonl"
-        ):
+        run_dir = SCRIPT_DIR / run_id
+        ledgers = list(
+            (run_dir / "harbor-jobs").glob(
+                "*/*/artifacts/continuous/ledger.jsonl"
+            )
+        )
+        ledgers.extend(
+            (run_dir / "cpu-attempts").glob(
+                "*/harbor-jobs/*/*/artifacts/continuous/ledger.jsonl"
+            )
+        )
+        for ledger in ledgers:
             try:
                 rows = ledger.read_text().splitlines()
             except OSError:
