@@ -717,6 +717,10 @@ def test_stop_ack_closes_supervised_cpu_allocation(
         json.dumps({"acknowledged_at": "2026-08-07T12:00:20Z"})
     )
     payload = unified_timeline.build_timeline(state)
+    ack = next(
+        event for event in payload["events"] if event["kind"] == "stop_acknowledged"
+    )
+    assert ack["reason"] == ""
     cpu = payload["coverage"]["cpu_metric_coverage"]["attempts"]
     assert cpu == [
         {

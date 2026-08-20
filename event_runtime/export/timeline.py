@@ -289,7 +289,10 @@ class Builder:
                 source=name,
                 identity=json.dumps(payload, sort_keys=True),
                 data=(
-                    {"cpu_attempt": int(self.run.get("cpu_launch_attempt") or 1)}
+                    {
+                        "cpu_attempt": int(self.run.get("cpu_launch_attempt") or 1),
+                        "reason": str(payload.get("reason") or ""),
+                    }
                     if kind == "stop_acknowledged"
                     else None
                 ),

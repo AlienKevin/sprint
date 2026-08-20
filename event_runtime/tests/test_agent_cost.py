@@ -308,6 +308,50 @@ def test_host_merged_cost_uses_previous_snapshot_as_monotonic_floor(
     assert payload["budget_remaining_usd"] == 46.5
 
 
+def test_recoverable_agent_exit_ack_keeps_live_cost_high_water_mark(
+    tmp_path: Path,
+) -> None:
+    telemetry = tmp_path / "telemetry"
+    telemetry.mkdir(parents=True)
+    (telemetry / "budget-watchdog.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "run_id": "run-1",
+                "status": "within_budget",
+                "budget_usd": 100.0,
+                "stop_threshold_usd": 99.9,
+                "total_usd": 60.0,
+                "components": {
+                    "model_api": {"cost_usd": 6.0, "request_count": 2},
+                    "cpu_agent": {"cost_usd": 15.0, "allocated_seconds": 5.0},
+                    "training_sandboxes": {
+                        "cost_usd": 39.0,
+                        "allocated_seconds": 3.0,
+                    },
+                },
+            }
+        )
+    )
+    timeline = timeline_fixture()
+    timeline["events"].append(
+        {
+            "kind": "stop_acknowledged",
+            "reason": "agent_exit",
+            "epoch_ms": 4000,
+        }
+    )
+
+    payload = agent_cost.build_snapshot(timeline, state_dir=tmp_path)
+
+    assert payload["total_usd"] == 60.0
+    assert payload["component_totals_usd"]["cpu_agent_usd"] == 15.0
+    assert payload["component_totals_usd"]["training_sandboxes_usd"] == 39.0
+    assert payload["component_snapshot_sources"]["cpu_agent"] == (
+        "max(in_sandbox_lifecycle,host_timeline)"
+    )
+
+
 def test_stop_ack_makes_reconciled_host_compute_lifecycle_authoritative(
     tmp_path: Path,
 ) -> None:

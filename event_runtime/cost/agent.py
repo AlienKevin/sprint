@@ -417,8 +417,10 @@ def build_snapshot(
                 result[key] = max(candidates)
         return result
 
-    stop_acknowledged = any(
-        event.get("kind") == "stop_acknowledged" for event in events
+    terminal_stop_acknowledged = any(
+        event.get("kind") == "stop_acknowledged"
+        and str(event.get("reason") or "") != "agent_exit"
+        for event in events
     )
 
     def merged_component(name: str) -> dict[str, Any]:
@@ -431,7 +433,7 @@ def build_snapshot(
         # stale sandbox mount has not yet observed those tighter bounds.  Do
         # not let that provisional estimate permanently inflate finalized
         # cost or make the website disagree with the reconciled timeline.
-        if stop_acknowledged and name != "model_api":
+        if terminal_stop_acknowledged and name != "model_api":
             return host
         merged = {**host, **prior, **remote}
         merged["cost_usd"] = max(
@@ -514,12 +516,12 @@ def build_snapshot(
                 "model_api": "max(openrouter_watchdog,host_provider_usage)",
                 "cpu_agent": (
                     "host_timeline_after_stop_ack"
-                    if stop_acknowledged
+                    if terminal_stop_acknowledged
                     else "max(in_sandbox_lifecycle,host_timeline)"
                 ),
                 "training_sandboxes": (
                     "host_timeline_after_stop_ack"
-                    if stop_acknowledged
+                    if terminal_stop_acknowledged
                     else "max(in_sandbox_lifecycle,host_timeline)"
                 ),
             },
