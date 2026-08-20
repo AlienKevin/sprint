@@ -39,7 +39,11 @@ VERCEL_SCOPE = "alienkevins-projects"
 PUBLIC_RUN_LIMIT = 6
 TIME_TOLERANCE_SECONDS = 0.001
 DEPLOY_DEBOUNCE_SECONDS = 300
-DEPLOY_COMMAND_TIMEOUT_SECONDS = 180
+# Vercel may spend several minutes retrieving and building a large replay-heavy
+# site after the upload has completed.  The CLI remains the authoritative wait
+# for both deployment readiness and the subsequent alias step, so keep this
+# bounded but comfortably above the observed six-minute production build.
+DEPLOY_COMMAND_TIMEOUT_SECONDS = 15 * 60
 CAPTURE_MAX_ATTEMPTS = 3
 PIPELINE_LOCK = ROOT / "runs" / "ops" / ".frontier-pipeline.lock"
 
