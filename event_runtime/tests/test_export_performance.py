@@ -184,7 +184,7 @@ def test_cli_prints_empty_single_family_snapshot(
 @pytest.mark.parametrize(
     ("model", "expected"),
     [
-        ("deepseek/deepseek-v4-flash", "deepseek"),
+        ("deepseek/deepseek-v4-flash", "flash-baidu"),
         ("deepseek/deepseek-v4-flash-0731", "flash-baidu"),
         ("deepseek/deepseek-v4-pro-0813", "pro-alibaba"),
         ("openai/gpt-5.6-luna", "luna"),
