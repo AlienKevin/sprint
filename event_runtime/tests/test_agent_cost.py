@@ -251,7 +251,7 @@ def test_host_conservatively_merges_watchdog_and_host_allocation_ledgers(
     assert payload["schema_version"] == 2
 
 
-def test_host_merged_cost_uses_previous_snapshot_as_monotonic_floor(
+def test_host_merged_cost_uses_previous_api_as_monotonic_floor_only(
     tmp_path: Path,
 ) -> None:
     telemetry = tmp_path / "telemetry"
@@ -299,16 +299,16 @@ def test_host_merged_cost_uses_previous_snapshot_as_monotonic_floor(
 
     assert payload["component_totals_usd"] == {
         "model_api_usd": 0.5,
-        "cpu_agent_usd": 13.0,
-        "training_sandboxes_usd": 40.0,
+        "cpu_agent_usd": 12.0,
+        "training_sandboxes_usd": 26.0,
     }
-    assert payload["total_usd"] == 53.5
-    assert payload["cpu_allocated_seconds"] == 5.0
-    assert payload["training_allocated_seconds"] == 4.0
-    assert payload["budget_remaining_usd"] == 46.5
+    assert payload["total_usd"] == 38.5
+    assert payload["cpu_allocated_seconds"] == 4.0
+    assert payload["training_allocated_seconds"] == 2.0
+    assert payload["budget_remaining_usd"] == 61.5
 
 
-def test_recoverable_agent_exit_ack_keeps_live_cost_high_water_mark(
+def test_recoverable_agent_exit_ack_keeps_only_api_high_water_mark(
     tmp_path: Path,
 ) -> None:
     telemetry = tmp_path / "telemetry"
@@ -344,12 +344,10 @@ def test_recoverable_agent_exit_ack_keeps_live_cost_high_water_mark(
 
     payload = agent_cost.build_snapshot(timeline, state_dir=tmp_path)
 
-    assert payload["total_usd"] == 60.0
-    assert payload["component_totals_usd"]["cpu_agent_usd"] == 15.0
-    assert payload["component_totals_usd"]["training_sandboxes_usd"] == 39.0
-    assert payload["component_snapshot_sources"]["cpu_agent"] == (
-        "max(in_sandbox_lifecycle,host_timeline)"
-    )
+    assert payload["total_usd"] == 44.0
+    assert payload["component_totals_usd"]["cpu_agent_usd"] == 12.0
+    assert payload["component_totals_usd"]["training_sandboxes_usd"] == 26.0
+    assert payload["component_snapshot_sources"]["cpu_agent"] == "host_timeline"
 
 
 def test_stop_ack_makes_reconciled_host_compute_lifecycle_authoritative(
@@ -416,7 +414,7 @@ def test_stop_ack_makes_reconciled_host_compute_lifecycle_authoritative(
         "Memory": 8,
     }
     assert payload["component_snapshot_sources"]["training_sandboxes"] == (
-        "host_timeline_after_stop_ack"
+        "host_timeline"
     )
 
 

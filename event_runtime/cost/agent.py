@@ -392,12 +392,10 @@ def build_snapshot(
     if canonical is None:
         return snapshot
 
-    # The in-sandbox watchdog sees API requests and CPU lifetime immediately,
-    # but a long-lived Modal Volume mount does not see host-written GPU
-    # lifecycle shards without a reload.  The host timeline has those GPU
-    # allocation events.  Merge component-wise using the greater cumulative
-    # value so a stale view can never lower spend, then mirror this exact
-    # document back to the agent and active GPU workers.
+    # The in-sandbox watchdog sees API requests immediately, but a long-lived
+    # Modal Volume mount does not see host-written lifecycle shards without a
+    # reload. The host timeline owns exact CPU exits and provider-backed GPU
+    # termination bounds, so only API usage needs a cumulative high-water merge.
     canonical_components = canonical.get("components") or {}
     previous_components = (previous or {}).get("components") or {}
     host_components = snapshot["components"]
@@ -417,23 +415,16 @@ def build_snapshot(
                 result[key] = max(candidates)
         return result
 
-    terminal_stop_acknowledged = any(
-        event.get("kind") == "stop_acknowledged"
-        and str(event.get("reason") or "") != "agent_exit"
-        for event in events
-    )
-
     def merged_component(name: str) -> dict[str, Any]:
         host = dict(host_components.get(name) or {})
         prior = dict(previous_components.get(name) or {})
         remote = dict(canonical_components.get(name) or {})
-        # Once STOP_ACK exists, the host timeline has exact CPU termination
-        # and provider-backed terminal bounds for every training allocation.
-        # A pre-ACK high-water mark can be conservatively larger because a
-        # stale sandbox mount has not yet observed those tighter bounds.  Do
-        # not let that provisional estimate permanently inflate finalized
-        # cost or make the website disagree with the reconciled timeline.
-        if terminal_stop_acknowledged and name != "model_api":
+        # Sandbox infrastructure values are fallback estimates until the host
+        # mirror arrives. Feeding them back into the host with max() creates a
+        # circular high-water mark across recovery gaps, permanently charging
+        # idle supervisor backoff as CPU time. Host infrastructure is always
+        # authoritative, both live and after STOP_ACK.
+        if name != "model_api":
             return host
         merged = {**host, **prior, **remote}
         merged["cost_usd"] = max(
@@ -514,16 +505,8 @@ def build_snapshot(
             "invoice_exact": snapshot["invoice_exact"],
             "component_snapshot_sources": {
                 "model_api": "max(openrouter_watchdog,host_provider_usage)",
-                "cpu_agent": (
-                    "host_timeline_after_stop_ack"
-                    if terminal_stop_acknowledged
-                    else "max(in_sandbox_lifecycle,host_timeline)"
-                ),
-                "training_sandboxes": (
-                    "host_timeline_after_stop_ack"
-                    if terminal_stop_acknowledged
-                    else "max(in_sandbox_lifecycle,host_timeline)"
-                ),
+                "cpu_agent": "host_timeline",
+                "training_sandboxes": "host_timeline",
             },
         }
     )
