@@ -30,6 +30,7 @@ SCHEMA_VERSION = 6
 DEFAULT_BUCKET_SECONDS = 60
 PUBLIC_RUN_LIMIT = 6
 DEFAULT_GPU_MAX_GAP_SECONDS = 45
+DEFAULT_GPU_TERMINAL_TAIL_GRACE_SECONDS = 180
 ISO_KEYS = ("timestamp", "ts_utc", "created_at", "at", "submitted_at")
 RESOURCE_ROLES = {"cpu-agent", "training-gpu", "verifier-gpu", "host-controller"}
 GPU_PIPELINE_FIELDS = (
@@ -1468,6 +1469,7 @@ class Builder:
         max_gap_ms: int,
         match_fields: tuple[str, ...] = (),
         allow_empty_within_gap: bool = False,
+        terminal_tail_grace_ms: int | None = None,
     ) -> list[dict[str, Any]]:
         coverage: list[dict[str, Any]] = []
         for interval in intervals:
@@ -1486,10 +1488,20 @@ class Builder:
                         continue
                     matching.append(sample["epoch_ms"])
             matching.sort()
-            gaps = [] if end is None or not matching else [matching[0] - start]
+            leading_gap = (
+                matching[0] - start if end is not None and matching else None
+            )
+            internal_gaps = [b - a for a, b in zip(matching, matching[1:])]
+            internal_max_gap = max(internal_gaps, default=0) if matching else None
+            trailing_gap = (
+                end - matching[-1]
+                if end is not None and matching
+                else None
+            )
+            gaps = [] if leading_gap is None else [leading_gap]
             if matching:
-                gaps.extend(b - a for a, b in zip(matching, matching[1:]))
-                gaps.append(end - matching[-1])
+                gaps.extend(internal_gaps)
+                gaps.append(trailing_gap)
             interval_gap = end - start if end is not None else None
             worst_gap = (
                 max(gaps)
@@ -1498,19 +1510,44 @@ class Builder:
                 if allow_empty_within_gap
                 else None
             )
-            coverage.append(
-                {
-                    **interval,
-                    "sample_count": len(matching),
-                    "max_gap_ms": worst_gap,
-                    "covered": bool(
-                        end is not None
-                        and (matching or allow_empty_within_gap)
-                        and worst_gap is not None
-                        and worst_gap <= max_gap_ms
-                    ),
-                }
-            )
+            item = {
+                **interval,
+                "sample_count": len(matching),
+                "max_gap_ms": worst_gap,
+                "covered": bool(
+                    end is not None
+                    and (matching or allow_empty_within_gap)
+                    and worst_gap is not None
+                    and (
+                        (
+                            matching
+                            and leading_gap is not None
+                            and leading_gap <= max_gap_ms
+                            and internal_max_gap is not None
+                            and internal_max_gap <= max_gap_ms
+                            and trailing_gap is not None
+                            and trailing_gap
+                            <= (terminal_tail_grace_ms or max_gap_ms)
+                        )
+                        or (not matching and worst_gap <= max_gap_ms)
+                    )
+                ),
+            }
+            if terminal_tail_grace_ms is not None:
+                item.update(
+                    {
+                        "leading_gap_ms": leading_gap,
+                        "internal_max_gap_ms": internal_max_gap,
+                        "trailing_gap_ms": trailing_gap,
+                        "terminal_tail_grace_ms": terminal_tail_grace_ms,
+                        "terminal_tail_grace_used": bool(
+                            item["covered"]
+                            and trailing_gap is not None
+                            and trailing_gap > max_gap_ms
+                        ),
+                    }
+                )
+            coverage.append(item)
         return coverage
 
     @classmethod
@@ -1954,6 +1991,13 @@ class Builder:
             max_gap_ms=max_gap_ms,
             match_fields=("gpu_job_id", "gpu_attempt"),
             allow_empty_within_gap=True,
+            terminal_tail_grace_ms=(
+                int(
+                    self.run.get("telemetry_gpu_terminal_tail_grace_seconds")
+                    or DEFAULT_GPU_TERMINAL_TAIL_GRACE_SECONDS
+                )
+                * 1000
+            ),
         )
         verifier_coverage = self._metric_coverage(
             verifier_intervals,
@@ -2009,6 +2053,10 @@ class Builder:
         )
         self.counts["training_gpu_intervals_covered"] = sum(
             bool(item["covered"]) for item in training_coverage
+        )
+        self.counts["training_gpu_terminal_tail_grace_intervals"] = sum(
+            bool(item.get("terminal_tail_grace_used"))
+            for item in training_coverage
         )
         self.counts["verifier_gpu_intervals"] = len(verifier_intervals)
         self.counts["verifier_evaluation_intervals"] = len(
@@ -2133,6 +2181,11 @@ class Builder:
             self.warnings.append(
                 "training GPU telemetry does not cover every allocation interval"
             )
+        if self.counts["training_gpu_terminal_tail_grace_intervals"]:
+            self.warnings.append(
+                f"{self.counts['training_gpu_terminal_tail_grace_intervals']} "
+                "training GPU intervals used the bounded terminal teardown grace"
+            )
         if verifier_expected and not requirements["verifier_gpu_metrics"]:
             self.warnings.append(
                 "verifier GPU telemetry does not cover every scoring interval"
@@ -2152,6 +2205,15 @@ class Builder:
             "requirements": requirements,
             "gpu_metric_coverage": {
                 "max_gap_ms": max_gap_ms,
+                "terminal_tail_grace_ms": (
+                    int(
+                        self.run.get(
+                            "telemetry_gpu_terminal_tail_grace_seconds"
+                        )
+                        or DEFAULT_GPU_TERMINAL_TAIL_GRACE_SECONDS
+                    )
+                    * 1000
+                ),
                 "training": training_coverage,
                 "verifier": verifier_coverage,
             },

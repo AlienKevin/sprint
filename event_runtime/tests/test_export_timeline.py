@@ -1092,6 +1092,11 @@ def test_host_registry_clamps_legacy_pre_spawn_training_interval(
             "sample_count": 0,
             "max_gap_ms": 12000,
             "covered": True,
+            "leading_gap_ms": None,
+            "internal_max_gap_ms": None,
+            "trailing_gap_ms": None,
+            "terminal_tail_grace_ms": 180000,
+            "terminal_tail_grace_used": False,
         }
     ]
     counts = payload["coverage"]["counts"]
@@ -1301,6 +1306,44 @@ def test_short_training_allocation_without_sample_stays_within_gap_budget() -> N
             "covered": True,
         }
     ]
+
+
+def test_terminal_tail_grace_never_masks_an_internal_metric_gap() -> None:
+    interval = {
+        "start_epoch_ms": 0,
+        "end_epoch_ms": 200_000,
+        "gpu_job_id": "cleanup-tail",
+        "gpu_attempt": 1,
+    }
+    continuous = [
+        {
+            "epoch_ms": epoch_ms,
+            "gpu_job_id": "cleanup-tail",
+            "gpu_attempt": 1,
+        }
+        for epoch_ms in (10_000, 20_000, 30_000, 40_000, 50_000, 60_000, 70_000)
+    ]
+    covered = unified_timeline.Builder._metric_coverage(
+        [interval],
+        continuous,
+        max_gap_ms=45_000,
+        match_fields=("gpu_job_id", "gpu_attempt"),
+        terminal_tail_grace_ms=180_000,
+    )[0]
+    assert covered["covered"] is True
+    assert covered["trailing_gap_ms"] == 130_000
+    assert covered["terminal_tail_grace_used"] is True
+
+    with_internal_gap = continuous[:2] + continuous[-1:]
+    rejected = unified_timeline.Builder._metric_coverage(
+        [interval],
+        with_internal_gap,
+        max_gap_ms=45_000,
+        match_fields=("gpu_job_id", "gpu_attempt"),
+        terminal_tail_grace_ms=180_000,
+    )[0]
+    assert rejected["internal_max_gap_ms"] == 50_000
+    assert rejected["covered"] is False
 
 
 def test_pipeline_coverage_counts_explicit_failed_attempts_without_values() -> None:
