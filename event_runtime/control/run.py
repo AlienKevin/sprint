@@ -1339,7 +1339,7 @@ def monitor_once(
     # runtime sandbox exists. Keep reapplying the durable request until the
     # actual agent acknowledges it; never mistake an image-build container for
     # the CPU agent or let a post-build sandbox escape an earlier stop.
-    if stop_marker.is_file() and not (state_dir / "STOP_ACK.json").is_file():
+    if stop_marker.is_file() and not terminal_stop_acknowledged(state_dir):
         try:
             stop_payload = json.loads(stop_marker.read_text())
             request_stop(
@@ -1757,7 +1757,7 @@ def final_conditions(
         # before it can acknowledge a late fail-closed telemetry stop.
         "stop_ack": (
             not stop_was_requested
-            or (state_dir / "STOP_ACK.json").is_file()
+            or terminal_stop_acknowledged(state_dir)
             or run_results_finished(state_dir, run)
         ),
         "job_found": job is not None,
@@ -1972,7 +1972,7 @@ def finalize(
         include_remote=include_remote,
         launch_worker=False,
     )
-    if (state_dir / "STOP_ACK.json").is_file():
+    if terminal_stop_acknowledged(state_dir):
         sync_durable_telemetry(state_dir, run, force=True)
     if run.get("usage_audit_required"):
         sync_durable_trace(state_dir, run, force=True)
@@ -2261,6 +2261,21 @@ def run_results_finished(state_dir: Path, run: dict[str, Any]) -> bool:
     return True
 
 
+def terminal_stop_acknowledged(state_dir: Path) -> bool:
+    """Return whether STOP_ACK closes the run rather than one CPU attempt."""
+    path = state_dir / "STOP_ACK.json"
+    if not path.is_file():
+        return False
+    try:
+        reason = str(json.loads(path.read_text()).get("reason") or "")
+    except (OSError, json.JSONDecodeError):
+        # An unreadable acknowledgement cannot safely authorize more work.
+        return True
+    # Supervised provider retries write this when the current CPU sandbox
+    # exits.  The next attempt must keep its budget pulse and GPU dispatcher.
+    return reason != "agent_exit"
+
+
 def budget_pulse_loop(run_id: str, poll_seconds: int) -> int:
     state_dir, run = load_run(run_id)
     with file_lock(state_dir / "budget-pulse.lock", blocking=False) as acquired:
@@ -2273,7 +2288,7 @@ def budget_pulse_loop(run_id: str, poll_seconds: int) -> int:
         try:
             while not (
                 (state_dir / "FINALIZED.json").is_file()
-                or (state_dir / "STOP_ACK.json").is_file()
+                or terminal_stop_acknowledged(state_dir)
                 or run_results_finished(state_dir, run)
             ):
                 started = time.monotonic()
@@ -2316,7 +2331,7 @@ def gpu_dispatch_loop(run_id: str, poll_seconds: int) -> int:
         try:
             while not (
                 (state_dir / "FINALIZED.json").is_file()
-                or (state_dir / "STOP_ACK.json").is_file()
+                or terminal_stop_acknowledged(state_dir)
                 or run_results_finished(state_dir, run)
             ):
                 started = time.monotonic()

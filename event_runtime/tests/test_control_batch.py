@@ -85,6 +85,39 @@ def test_terminal_batch_bypasses_live_deploy_debounce() -> None:
         )
         == 0
     )
+
+
+def test_provider_retry_does_not_make_batch_terminal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = "eval-deepseek-1"
+    state_dir = tmp_path / run_id
+    state_dir.mkdir()
+    (state_dir / "STOP_ACK.json").write_text('{"reason":"agent_exit"}\n')
+    monkeypatch.setattr(batch_eval, "SCRIPT_DIR", tmp_path)
+    monkeypatch.setattr(batch_eval, "supervisor_active", lambda _run_id: True)
+
+    assert not batch_eval.arm_terminal(
+        {
+            "run_id": run_id,
+            "harbor_alive": False,
+            "stop_ack": {"reason": "agent_exit"},
+        }
+    )
+    assert (
+        batch_eval.deployment_debounce_seconds(
+            {
+                "arms": [
+                    {
+                        "run_id": run_id,
+                        "harbor_alive": False,
+                        "stop_ack": {"reason": "agent_exit"},
+                    }
+                ]
+            }
+        )
+        == batch_eval.LIVE_SITE_DEPLOY_SECONDS
+    )
     assert (
         batch_eval.deployment_debounce_seconds(
             {"arms": [{"harbor_alive": False}, {"harbor_alive": True}]}
@@ -1826,6 +1859,32 @@ def test_batch_monitor_reads_stopped_lane_locally_without_modal_poll(
         batch_eval.sprintctl,
         "monitor_once",
         lambda *_args, **_kwargs: pytest.fail("stopped lane polled Modal"),
+    )
+
+    assert batch_eval.live_run_monitor_status(run_id) == expected
+
+
+def test_batch_monitor_does_not_treat_agent_exit_ack_as_terminal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = "eval-deepseek-1"
+    state_dir = tmp_path / run_id
+    state_dir.mkdir()
+    (state_dir / "STOP_ACK.json").write_text('{"reason":"agent_exit"}\n')
+    (state_dir / "monitor.pid").write_text("1234\n")
+    expected = {
+        "schema_version": 2,
+        "run_id": run_id,
+        "harbor_alive": True,
+        "stop_ack": {"reason": "agent_exit"},
+    }
+    (state_dir / "status.json").write_text(json.dumps(expected))
+    monkeypatch.setattr(batch_eval, "SCRIPT_DIR", tmp_path)
+    monkeypatch.setattr(batch_eval.sprintctl, "process_alive", lambda *_args: True)
+    monkeypatch.setattr(
+        batch_eval.sprintctl,
+        "status_snapshot",
+        lambda *_args, **_kwargs: pytest.fail("retry ack is not terminal"),
     )
 
     assert batch_eval.live_run_monitor_status(run_id) == expected

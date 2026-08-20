@@ -243,11 +243,25 @@ def mirror_agent_cost(run: dict[str, Any], payload: dict[str, Any]) -> dict[str,
     this document, then installs it under the existing host-owned /run mirror.
     """
     state_dir_raw = str(run.get("state_dir") or "")
-    if state_dir_raw and any(
-        (Path(state_dir_raw) / name).is_file()
-        for name in ("STOP_REQUESTED.json", "STOP_ACK.json")
-    ):
-        return {"agent_cost_mirror": "agent_stopped"}
+    if state_dir_raw:
+        state_dir = Path(state_dir_raw)
+        if (state_dir / "STOP_REQUESTED.json").is_file() or (
+            state_dir / "STOP"
+        ).is_file():
+            return {"agent_cost_mirror": "agent_stopped"}
+        ack = state_dir / "STOP_ACK.json"
+        if ack.is_file():
+            try:
+                ack_reason = str(json.loads(ack.read_text()).get("reason") or "")
+            except (OSError, json.JSONDecodeError):
+                return {"agent_cost_mirror": "agent_stopped"}
+            # A supervised provider retry replaces the previous attempt's ACK
+            # with ``agent_exit`` before the next CPU sandbox starts.  That ACK
+            # is an attempt boundary, not a run stop, so the fresh sandbox must
+            # continue receiving the trusted cost mirror.  Every explicit stop
+            # is fenced by STOP_REQUESTED; unknown ACK reasons stay fail-closed.
+            if ack_reason != "agent_exit":
+                return {"agent_cost_mirror": "agent_stopped"}
     container_id = str(run.get("agent_container_id") or "")
     if not container_id.startswith("ta-"):
         return {"agent_cost_mirror": "unavailable"}

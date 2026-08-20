@@ -424,6 +424,50 @@ class DurableOpsTests(unittest.TestCase):
             pulse.assert_not_called()
             self.assertFalse((state / "budget-pulse.pid").exists())
 
+    def test_recoverable_agent_exit_ack_does_not_close_run_services(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            (state / "STOP_ACK.json").write_text(
+                json.dumps({"reason": "agent_exit"})
+            )
+
+            self.assertFalse(sprintctl.terminal_stop_acknowledged(state))
+
+            (state / "STOP_ACK.json").write_text(
+                json.dumps({"reason": "agent_cost_budget_exhausted"})
+            )
+            self.assertTrue(sprintctl.terminal_stop_acknowledged(state))
+
+    def test_budget_pulse_continues_after_recoverable_agent_exit_ack(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            (state / "STOP_ACK.json").write_text(
+                json.dumps({"reason": "agent_exit"})
+            )
+            run = {"run_id": "retry-run"}
+
+            @contextlib.contextmanager
+            def owned_lock(_path: Path, *, blocking: bool = True):
+                self.assertFalse(blocking)
+                yield True
+
+            def pulse(_run_id: str) -> dict:
+                (state / "FINALIZED.json").write_text("{}\n")
+                return {"run_id": "retry-run", "status": "within_budget"}
+
+            with (
+                mock.patch.object(sprintctl, "load_run", return_value=(state, run)),
+                mock.patch.object(sprintctl, "file_lock", side_effect=owned_lock),
+                mock.patch.object(
+                    sprintctl, "run_results_finished", return_value=False
+                ),
+                mock.patch.object(sprintctl, "budget_pulse_once", side_effect=pulse) as run_pulse,
+                mock.patch.object(sprintctl.time, "sleep"),
+            ):
+                self.assertEqual(sprintctl.budget_pulse_loop("retry-run", 15), 0)
+
+            run_pulse.assert_called_once_with("retry-run")
+
     def test_gpu_dispatch_loop_registers_and_dispatches_independently(self) -> None:
         from event_runtime.compute import worker as gpu_worker
 

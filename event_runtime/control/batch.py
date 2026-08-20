@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import fcntl
 import hashlib
 import json
 import math
@@ -1429,7 +1430,7 @@ def live_run_monitor_status(run_id: str) -> dict[str, Any] | None:
     # cycle. Its STOP_ACK is already authoritative local state; do not fall
     # back to a synchronous Modal Volume download that can hang publication
     # after the remote App has gone away.
-    if (state_dir / "STOP_ACK.json").is_file():
+    if sprintctl.terminal_stop_acknowledged(state_dir):
         try:
             _, run = sprintctl.load_run(run_id)
             return sprintctl.status_snapshot(state_dir, run, include_remote=False)
@@ -1449,6 +1450,44 @@ def live_run_monitor_status(run_id: str) -> dict[str, Any] | None:
     if not isinstance(payload, dict) or payload.get("run_id") != run_id:
         return None
     return payload
+
+
+def supervisor_active(run_id: str) -> bool:
+    """Return whether the durable lane supervisor still owns its run lock."""
+    lock_path = SCRIPT_DIR / run_id / "supervise.lock"
+    if not lock_path.is_file():
+        return False
+    try:
+        with lock_path.open("r+") as handle:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            finally:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
+    except OSError:
+        # Fail closed: an unreadable supervisor lock must not authorize
+        # finalization while a replacement CPU attempt may still be starting.
+        return True
+    return False
+
+
+def arm_terminal(arm: dict[str, Any]) -> bool:
+    """Distinguish a terminal run from a supervised provider-retry boundary."""
+    run_id = str(arm.get("run_id") or "")
+    state_dir = SCRIPT_DIR / run_id
+    if sprintctl.terminal_stop_acknowledged(state_dir):
+        return True
+    ack = arm.get("stop_ack")
+    if ack:
+        if not isinstance(ack, dict):
+            return True
+        if str(ack.get("reason") or "") != "agent_exit":
+            return True
+    return arm.get("harbor_alive") is False and not supervisor_active(run_id)
 
 
 def public_batch(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1609,10 +1648,7 @@ def deployment_debounce_seconds(payload: dict[str, Any]) -> int:
     """Publish immediately after every lane has reached a terminal state."""
     return (
         0
-        if all(
-            arm.get("harbor_alive") is False or arm.get("stop_ack")
-            for arm in payload["arms"]
-        )
+        if all(arm_terminal(arm) for arm in payload["arms"])
         else LIVE_SITE_DEPLOY_SECONDS
     )
 
@@ -1901,9 +1937,7 @@ def monitor_cycle(batch_id: str, *, deploy: bool = True) -> dict[str, Any]:
         for arm in payload["arms"]:
             run_id = arm["run_id"]
             finalized_path = SCRIPT_DIR / run_id / "FINALIZED.json"
-            if not finalized_path.is_file() and (
-                arm.get("harbor_alive") is False or arm.get("stop_ack")
-            ):
+            if not finalized_path.is_file() and arm_terminal(arm):
                 try:
                     complete, result = sprintctl.finalize(run_id)
                     arm["finalization_conditions"] = result.get("conditions", {})
