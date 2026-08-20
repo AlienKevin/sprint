@@ -185,6 +185,8 @@ def test_cli_prints_empty_single_family_snapshot(
     ("model", "expected"),
     [
         ("deepseek/deepseek-v4-flash", "deepseek"),
+        ("deepseek/deepseek-v4-flash-0731", "flash-baidu"),
+        ("deepseek/deepseek-v4-pro-0813", "pro-alibaba"),
         ("openai/gpt-5.6-luna", "luna"),
         ("openai/gpt-5.6-sol", "sol"),
     ],
@@ -193,6 +195,44 @@ def test_model_family_supports_controlled_openrouter_models(
     model: str, expected: str
 ) -> None:
     assert continuous.model_family(model) == expected
+
+
+def test_flash_and_pro_are_aggregated_as_separate_competitors() -> None:
+    runs = [
+        {
+            "run_id": f"batch-{name}-{trial}",
+            "model": model,
+            "points": [],
+            "summary": {
+                "final_agent_cost_usd": cost,
+                "missing_readout_indices": [],
+            },
+        }
+        for name, model, cost in (
+            ("flash", "deepseek/deepseek-v4-flash-0731", 7.5),
+            ("pro", "deepseek/deepseek-v4-pro-0813", 9.5),
+        )
+        for trial in range(1, 4)
+    ]
+    ledgers = {
+        run["run_id"]: {"origin_epoch_ms": 0}
+        for run in runs
+    }
+
+    models, cap = continuous.aggregate_models(
+        runs,
+        common_time_cap=1.0,
+        cost_ledgers=ledgers,
+        requested_cost_cap=None,
+        complete=True,
+    )
+
+    assert [model["family"] for model in models] == [
+        "flash-baidu",
+        "pro-alibaba",
+    ]
+    assert [len(model["run_ids"]) for model in models] == [3, 3]
+    assert cap == pytest.approx(22.5)
 
 
 def test_frontier_replays_are_union_of_cost_and_time_record_setters() -> None:
