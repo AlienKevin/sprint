@@ -669,6 +669,34 @@ PY
     echo "cannot resume without run secret files: $RUN_ID" >&2
     exit 1
   }
+  # A resumed evaluation must keep the credential that authenticated its first
+  # request.  In particular, a host may have both an official OpenAI key and an
+  # OpenRouter key in different env vars; silently rewriting harbor.env from a
+  # newly-created supervisor can otherwise switch credentials mid-run.  Refuse
+  # that drift before touching the sealed env file.
+  STORED_AGENT_SECRET=$(python3 - "$ENV_FILE" "$AGENT_SECRET_NAME" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+name = sys.argv[2]
+values = {}
+for raw in path.read_text(encoding="utf-8").splitlines():
+    if not raw or raw.lstrip().startswith("#") or "=" not in raw:
+        continue
+    key, value = raw.split("=", 1)
+    values[key] = value
+value = values.get(name)
+if not value:
+    raise SystemExit(f"sealed agent env is missing {name}")
+print(value, end="")
+PY
+)
+  if [[ "$STORED_AGENT_SECRET" != "$AGENT_SECRET" ]]; then
+    echo "refusing to resume $RUN_ID with a different $AGENT_SECRET_NAME" >&2
+    echo "restore the run's original provider credential before resuming" >&2
+    exit 78
+  fi
 elif [[ -e "$SECRET_DIR" || -e "$JOBS_ROOT" ]]; then
   echo "partial run state already exists: $RUN_ID" >&2
   exit 1

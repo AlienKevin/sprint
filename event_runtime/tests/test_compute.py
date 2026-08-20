@@ -2903,6 +2903,14 @@ class LauncherWiringTests(unittest.TestCase):
             launcher.index('python3 "$ROOT/event_runtime/preflight/check_images.py"'),
             launcher.index("if (( ! RESUMING )); then"),
         )
+        self.assertIn(
+            'if [[ "$STORED_AGENT_SECRET" != "$AGENT_SECRET" ]]; then',
+            launcher,
+        )
+        self.assertIn(
+            'refusing to resume $RUN_ID with a different $AGENT_SECRET_NAME',
+            launcher,
+        )
 
     def test_all_model_launchers_default_to_systemd_supervisor(self) -> None:
         for name in ("openai.sh", "deepseek.sh"):
