@@ -327,6 +327,57 @@ def test_live_watchdog_merges_fresh_host_training_cost_and_stops(
     assert (runtime / "sprint-stop").read_text() == "agent_cost_budget_exhausted\n"
 
 
+def test_fresh_host_mirror_is_authoritative_over_idle_gap_fallbacks(
+    tmp_path: Path, monkeypatch
+) -> None:
+    durable = tmp_path / "durable"
+    runtime = tmp_path / "run"
+    codex_home = tmp_path / "codex"
+    root = write_run(durable, "unit")
+    monkeypatch.setenv("SPRINT_CPU_LAUNCH_ATTEMPT", "1")
+    watchdog.ensure_cpu_start(root, 1, 1_000)
+    events = root / "telemetry/gpu_timeline/events"
+    events.mkdir(parents=True)
+    (events / "open.json").write_text(
+        json.dumps(
+            {
+                "event_id": "open",
+                "epoch_s": 1_000,
+                "lease_id": "stale-open-lease",
+                "phase": "gpu_lifecycle",
+                "detail": {"event": "gpu_allocated"},
+            }
+        )
+        + "\n"
+    )
+    write_host_cost_mirror(
+        runtime,
+        checked_at=9_999,
+        cpu=0.02,
+        training=0.03,
+    )
+
+    payload = watchdog.check_once(
+        run_id="unit",
+        durable_dir=durable,
+        runtime_dir=runtime,
+        codex_home=codex_home,
+        pricing_path=PRICING,
+        now=10_000,
+    )
+
+    assert payload["components"]["cpu_agent"]["cost_usd"] == pytest.approx(0.02)
+    assert payload["components"]["training_sandboxes"]["cost_usd"] == pytest.approx(
+        0.03
+    )
+    assert payload["cpu_allocated_seconds"] == 100
+    assert payload["training_allocated_seconds"] == 15_000
+    assert payload["component_snapshot_sources"]["cpu_agent"] == "host_cost_mirror"
+    assert payload["component_snapshot_sources"]["training_sandboxes"] == (
+        "host_cost_mirror"
+    )
+
+
 def test_live_watchdog_fails_closed_when_host_cost_mirror_is_stale(
     tmp_path: Path, monkeypatch
 ) -> None:

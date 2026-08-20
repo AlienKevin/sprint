@@ -756,6 +756,11 @@ def load_host_cost_mirror(
         if not isinstance(component, dict):
             raise BudgetTelemetryError(f"host cost mirror {name} is missing")
         costs[name] = finite_number(f"{name}.cost_usd", component.get("cost_usd"))
+    for name in ("cpu_agent", "training_sandboxes"):
+        finite_number(
+            f"{name}.allocated_seconds",
+            components[name].get("allocated_seconds"),
+        )
     total = finite_number("total_usd", payload.get("total_usd"))
     if not math.isclose(total, sum(costs.values()), rel_tol=1e-9, abs_tol=1e-8):
         raise BudgetTelemetryError("host cost mirror component total mismatch")
@@ -852,14 +857,17 @@ def check_once(
         host_cpu = host_components["cpu_agent"]
         host_training = host_components["training_sandboxes"]
         api_usd = max(api_usd, float(host_api["cost_usd"]))
-        cpu_usd = max(cpu_usd, float(host_cpu["cost_usd"]))
-        training_usd = max(training_usd, float(host_training["cost_usd"]))
-        cpu_seconds = max(
-            cpu_seconds, float(host_cpu.get("allocated_seconds") or 0.0)
-        )
-        gpu_seconds = max(
-            gpu_seconds, float(host_training.get("allocated_seconds") or 0.0)
-        )
+        # The host timeline has exact process-exit and provider-backed GPU
+        # termination boundaries. Sandbox-local markers are deliberately only
+        # a fail-safe for the interval before the first mirror arrives; across
+        # recoveries they cannot distinguish an idle supervisor backoff from a
+        # still-billable sandbox. A fresh mirror is therefore authoritative for
+        # infrastructure while the local API ledger remains the lower-latency
+        # source for the request currently in flight.
+        cpu_usd = float(host_cpu["cost_usd"])
+        training_usd = float(host_training["cost_usd"])
+        cpu_seconds = float(host_cpu["allocated_seconds"])
+        gpu_seconds = float(host_training["allocated_seconds"])
         requests = max(requests, int(host_api.get("request_count") or 0))
         pending_requests = max(
             pending_requests, int(host_api.get("pending_request_count") or 0)
@@ -930,8 +938,8 @@ def check_once(
         "component_snapshot_sources": (
             {
                 "model_api": "max(in_sandbox_openrouter_ledger,host_cost_mirror)",
-                "cpu_agent": "max(in_sandbox_lifecycle,host_cost_mirror)",
-                "training_sandboxes": "max(in_sandbox_lifecycle,host_cost_mirror)",
+                "cpu_agent": "host_cost_mirror",
+                "training_sandboxes": "host_cost_mirror",
             }
             if host_mirror is not None
             else {
