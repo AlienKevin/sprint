@@ -46,7 +46,7 @@ def test_step_auc_uses_best_so_far_and_common_cap() -> None:
     assert continuous.step_auc(points, "cost", 10.0) == pytest.approx(1.2)
 
 
-def test_completed_comparison_defaults_to_common_observed_cost_cap() -> None:
+def test_completed_comparison_uses_cost_cap_times_trial_count() -> None:
     runs = [
         {
             "run_id": "batch-luna-1",
@@ -76,14 +76,13 @@ def test_completed_comparison_defaults_to_common_observed_cost_cap() -> None:
         runs,
         common_time_cap=1.0,
         cost_ledgers=ledgers,
-        requested_cost_cap=None,
-        complete=True,
+        per_trial_cost_cap=10.0,
     )
 
-    assert cap == pytest.approx(9.9)
+    assert cap == pytest.approx(10.0)
 
 
-def test_completed_comparison_rejects_explicit_unobserved_cost_cap() -> None:
+def test_completed_comparison_carries_frontier_to_declared_budget() -> None:
     runs = [
         {
             "run_id": "batch-luna-1",
@@ -109,17 +108,17 @@ def test_completed_comparison_rejects_explicit_unobserved_cost_cap() -> None:
         "batch-sol-1": {"origin_epoch_ms": 0},
     }
 
-    with pytest.raises(RuntimeError, match="cap exceeds common observed cost"):
-        continuous.aggregate_models(
-            runs,
-            common_time_cap=1.0,
-            cost_ledgers=ledgers,
-            requested_cost_cap=10.1,
-            complete=True,
-        )
+    _, cap = continuous.aggregate_models(
+        runs,
+        common_time_cap=1.0,
+        cost_ledgers=ledgers,
+        per_trial_cost_cap=10.0,
+    )
+
+    assert cap == pytest.approx(10.0)
 
 
-def test_single_family_snapshot_uses_its_observed_cost_cap() -> None:
+def test_single_family_snapshot_multiplies_cap_by_trial_count() -> None:
     runs = [
         {
             "run_id": "batch-luna-1",
@@ -149,12 +148,11 @@ def test_single_family_snapshot_uses_its_observed_cost_cap() -> None:
         runs,
         common_time_cap=1.0,
         cost_ledgers=ledgers,
-        requested_cost_cap=None,
-        complete=False,
+        per_trial_cost_cap=10.0,
     )
 
     assert [model["family"] for model in models] == ["luna"]
-    assert cap == pytest.approx(10.0)
+    assert cap == pytest.approx(20.0)
 
 
 def test_cli_prints_empty_single_family_snapshot(
@@ -223,8 +221,7 @@ def test_flash_and_pro_are_aggregated_as_separate_competitors() -> None:
         runs,
         common_time_cap=1.0,
         cost_ledgers=ledgers,
-        requested_cost_cap=None,
-        complete=True,
+        per_trial_cost_cap=10.0,
     )
 
     assert [model["family"] for model in models] == [
@@ -232,7 +229,7 @@ def test_flash_and_pro_are_aggregated_as_separate_competitors() -> None:
         "pro-alibaba",
     ]
     assert [len(model["run_ids"]) for model in models] == [3, 3]
-    assert cap == pytest.approx(22.5)
+    assert cap == pytest.approx(30.0)
 
 
 def test_frontier_replays_are_union_of_cost_and_time_record_setters() -> None:
@@ -403,8 +400,8 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "class:'submission-target'" in app
     assert "el.getScreenCTM()" in app
     assert "nearest.distance<=22**2" in app
-    assert "app.js?v=20260819-7" in page
-    assert "const APP_VERSION = '20260819-7'" in app
+    assert "app.js?v=20260820-1" in page
+    assert "const APP_VERSION = '20260820-1'" in app
     assert "state.timelineUpdatedAt=tIndex.updated_at||null" in app
     assert "Date.parse(snapshotUpdatedAt(batch)||'')" in app
     assert "refreshVersion" in app
@@ -453,6 +450,8 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "Cost-Adjusted Effective Speed" in app
     assert "Best Cost-Adjusted Effective Speed" not in app
     assert "cost_auc_mps_at_common_cap" in app
+    assert "path=`M${x(0)},${y(0)} `" in app
+    assert "(run.points||[]).filter(plottable)" in app
     assert "effective speed (m/s)" in app
     assert "showReadout" in app
     assert "active_provisional" in app

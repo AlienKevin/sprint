@@ -1,5 +1,5 @@
 (() => {
-  const APP_VERSION = '20260819-7';
+  const APP_VERSION = '20260820-1';
   const $ = selector => document.querySelector(selector);
   const MODEL = {
     deepseek: {label:'DeepSeek V4 Flash 0731', color:'#4D6BFF', cls:'deepseek'},
@@ -35,8 +35,8 @@
     const xTitle=svg('text',{x:width/2,y:height-3,'text-anchor':'middle',class:'chart-label'});xTitle.textContent=xLabel;el.append(xTitle);
     const yTitle=svg('text',{x:15,y:height/2,'text-anchor':'middle',class:'chart-label',transform:`rotate(-90 15 ${height/2})`});yTitle.textContent='effective speed (m/s) · higher is better';el.append(yTitle);
     for(const run of runs){
-      const rows=(run.points||[]).filter(plottable).sort((a,b)=>a[xKey]-b[xKey]);let best=0,path='';const frontier=new Set();
-      for(const row of rows){if(row.continuous_score_mps>best){best=row.continuous_score_mps;frontier.add(row.policy_sha256)}path+=`${path?'L':'M'}${x(row[xKey])},${y(best)} `}
+      const rows=(run.points||[]).filter(plottable).sort((a,b)=>a[xKey]-b[xKey]);let best=0,path=`M${x(0)},${y(0)} `;const frontier=new Set();
+      for(const row of rows){path+=`L${x(row[xKey])},${y(best)} `;if(row.continuous_score_mps>best){best=row.continuous_score_mps;frontier.add(row.policy_sha256);path+=`L${x(row[xKey])},${y(best)} `}}
       if(path&&finite(aucCap)&&rows.at(-1)[xKey]<aucCap)path+=`L${x(aucCap)},${y(best)} `;
       const color=MODEL[family(run.model)]?.color;if(path)el.append(svg('path',{d:path,class:'best-line',stroke:color}));
       for(const row of rows){const onFrontier=frontier.has(row.policy_sha256),replayable=Boolean(row.replay_url),label=`Open details for ${MODEL[family(run.model)]?.label}, trial ${row.source_trial}, submission ${row.submission_index}`,cx=x(row[xKey]),cy=y(row.continuous_score_mps),target=svg('g',{class:'submission-target'}),dot=svg('circle',{cx,cy,r:onFrontier?9.5:8,fill:color,class:`submission${onFrontier?' frontier':''}${replayable?' replayable':''}`,tabindex:'0',role:'button','aria-label':label}),hit=svg('circle',{cx,cy,r:18,class:'submission-hit',role:'button','aria-label':label}),title=svg('title');const dq=row.first_disqualification_gate?` · first DQ: ${failureLabel(row.first_disqualification_gate)}`:'';title.textContent=`${MODEL[family(run.model)]?.label} · trial ${row.source_trial} · submission ${row.submission_index} · effective speed ${fmtScore(row.continuous_score_mps)} m/s · ${row.max_legal_distance_m.toFixed(3)}m legal in ${row.time_to_max_legal_distance_s.toFixed(2)}s${dq} · aggregate model cost ${fmtMoney(row.cumulative_agent_cost_usd)} · ${row.hours_since_agent_launch.toFixed(2)}h`;dot.addEventListener('keydown',event=>{if(!['Enter',' '].includes(event.key))return;event.preventDefault();showReadout(row,run.model)});selections.push({cx,cy,row,model:run.model});target.append(dot,hit,title);el.append(target)}

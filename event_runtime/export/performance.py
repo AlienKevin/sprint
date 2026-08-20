@@ -18,6 +18,8 @@ import hashlib
 import importlib.util
 import json
 import math
+import os
+import re
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -30,6 +32,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 RUNS = ROOT / "runs" / "ops"
 WEB = ROOT / "web"
+BUDGET_CONFIG = ROOT / "event_runtime" / "control" / "budget.env"
 sys.path.insert(0, str(ROOT))
 from event_runtime.cost import agent as agent_cost  # noqa: E402
 from event_runtime.event import load_event  # noqa: E402
@@ -52,6 +55,25 @@ def finite_number(value: Any) -> float | None:
     if isinstance(value, (int, float)) and math.isfinite(float(value)):
         return float(value)
     return None
+
+
+def configured_per_trial_cost_cap_usd() -> float:
+    """Return the same per-trial cost cap used by the run controller."""
+
+    raw = os.environ.get("AGENT_COST_BUDGET_USD")
+    if raw is None:
+        match = re.search(
+            r"^AGENT_COST_BUDGET_USD=\$\{AGENT_COST_BUDGET_USD:-([^}]+)\}$",
+            BUDGET_CONFIG.read_text(),
+            re.MULTILINE,
+        )
+        if not match:
+            raise RuntimeError("global agent cost cap is unreadable")
+        raw = match.group(1)
+    value = finite_number(float(raw))
+    if value is None or value <= 0:
+        raise RuntimeError("global agent cost cap must be positive and finite")
+    return value
 
 
 def completion_adjusted_speed(distance_m: float, elapsed_s: float) -> float:
@@ -602,9 +624,7 @@ def aggregate_models(
     output_runs: list[dict[str, Any]],
     common_time_cap: float,
     cost_ledgers: dict[str, dict[str, Any]],
-    requested_cost_cap: float | None,
-    *,
-    complete: bool,
+    per_trial_cost_cap: float | None,
 ) -> tuple[list[dict[str, Any]], float]:
     grouped: dict[str, list[dict[str, Any]]] = {}
     for run in output_runs:
@@ -617,18 +637,12 @@ def aggregate_models(
             f"expected equal trial counts across model families, found {family_sizes}"
         )
 
-    common_observed_cost = min(
-        sum(float(run["summary"]["final_agent_cost_usd"]) for run in runs)
-        for runs in grouped.values()
-    )
-    if requested_cost_cap is None:
-        requested_cost_cap = common_observed_cost
-    if complete and requested_cost_cap > common_observed_cost:
-        raise RuntimeError(
-            f"requested ${requested_cost_cap:.2f} cap exceeds common observed "
-            f"cost ${common_observed_cost:.2f}"
-        )
-    common_cost_cap = min(requested_cost_cap, common_observed_cost)
+    if per_trial_cost_cap is None:
+        per_trial_cost_cap = configured_per_trial_cost_cap_usd()
+    if finite_number(per_trial_cost_cap) is None or per_trial_cost_cap <= 0:
+        raise RuntimeError("per-trial cost cap must be positive and finite")
+    trials_per_family = next(iter(family_sizes.values()))
+    common_cost_cap = per_trial_cost_cap * trials_per_family
     output_models: list[dict[str, Any]] = []
     for family, runs in sorted(grouped.items()):
         family_origin_ms = min(
@@ -757,7 +771,6 @@ def build(
         str(row["run_id"]) for row in selected
     )
 
-    cost_caps: list[float] = []
     time_caps: list[float] = []
     prepared: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]] = []
     cost_ledgers: dict[str, dict[str, Any]] = {}
@@ -779,12 +792,16 @@ def build(
             )
         if wall_ms is None:
             raise RuntimeError(f"{meta['run_id']} lacks a cost/time summary")
-        cost_caps.append(float(final_cost))
         time_caps.append(wall_ms / 3_600_000.0)
         cost_ledgers[meta["run_id"]] = ledger
         prepared.append((meta, timeline, ledger))
 
-    common_cost_cap = min(cost_caps)
+    per_trial_cost_cap = (
+        configured_per_trial_cost_cap_usd() if cost_cap is None else cost_cap
+    )
+    if finite_number(per_trial_cost_cap) is None or per_trial_cost_cap <= 0:
+        raise RuntimeError("per-trial cost cap must be positive and finite")
+    common_cost_cap = per_trial_cost_cap
     common_time_cap = min(time_caps)
     output_runs: list[dict[str, Any]] = []
     for meta, timeline, cost_ledger in prepared:
@@ -905,7 +922,6 @@ def build(
         common_time_cap,
         cost_ledgers,
         cost_cap,
-        complete=complete,
     )
     publish_policy_replays(
         models=output_models,
@@ -932,6 +948,8 @@ def build(
             "excludes": ["verifier sandbox", "website", "observability infrastructure"],
             "modal_method": "allocation intervals integrated to each readout timestamp using the pinned published requested-resource tariff; provider billing is retained separately for audit",
             "common_auc_cap_usd": model_cost_cap,
+            "per_trial_cost_cap_usd": per_trial_cost_cap,
+            "trials_per_model": len(selected) // len(family_counts),
             "aggregation": "sum cumulative cost across the model's trials; take the best policy quality produced by any trial",
         },
         "time": {
@@ -965,7 +983,7 @@ def main() -> int:
         "--cost-cap",
         type=float,
         default=None,
-        help="optional AUC cost cap; defaults to the common observed model cost",
+        help="optional per-trial cost cap; defaults to the controller's configured cap",
     )
     parser.add_argument(
         "--output",

@@ -1717,9 +1717,16 @@ def refresh_performance_snapshot(payload: dict[str, Any]) -> None:
         run_ids = [
             arm["run_id"] for arm in payload.get("arms", []) if arm.get("run_id")
         ]
+    credit_snapshot = (payload.get("preflight") or {}).get(
+        "openrouter_credit_snapshot"
+    ) or {}
+    per_trial_cost_cap = credit_snapshot.get("per_trial_budget_usd")
+    if per_trial_cost_cap is None:
+        per_trial_cost_cap = configured_agent_budget_usd()
     performance_export.build(
         f"{payload['batch_id']}-",
         WEB / "data" / "performance" / "current.json",
+        cost_cap=float(per_trial_cost_cap),
         run_ids=run_ids,
     )
 

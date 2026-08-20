@@ -138,13 +138,20 @@ def test_performance_snapshot_uses_the_active_batch(
         lambda prefix, output, **kwargs: calls.append((prefix, output, kwargs)),
     )
 
-    batch_eval.refresh_performance_snapshot({"batch_id": "event-20260812-r4"})
+    batch_eval.refresh_performance_snapshot(
+        {
+            "batch_id": "event-20260812-r4",
+            "preflight": {
+                "openrouter_credit_snapshot": {"per_trial_budget_usd": 12.5}
+            },
+        }
+    )
 
     assert calls == [
         (
             "event-20260812-r4-",
             web / "data/performance/current.json",
-            {"run_ids": []},
+            {"cost_cap": 12.5, "run_ids": []},
         )
     ]
 
@@ -197,6 +204,7 @@ def test_single_family_replacement_uses_coexisting_comparison_snapshot(
             "replacement-",
             web / "data/performance/current.json",
             {
+                "cost_cap": 10.0,
                 "run_ids": [
                     "comparison-luna-1",
                     "comparison-sol-1",
