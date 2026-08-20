@@ -51,6 +51,13 @@ def test_launcher_provenance_guard_checks_source_not_generated_runs() -> None:
     )
 
 
+def test_resume_volume_guard_uses_untruncated_modal_json() -> None:
+    launcher = (ROOT / "event_runtime/control/launch.sh").read_text()
+    assert "modal volume list --json" in launcher
+    assert 'row.get("name") == target' in launcher
+    assert 'modal volume list 2>/dev/null | grep -qF "$VOLUME_NAME"' not in launcher
+
+
 def test_batch_matrix_is_exact_six_arm_max_effort_contract() -> None:
     rows = batch_eval.matrix("eval-20260808")
     assert len(rows) == 6

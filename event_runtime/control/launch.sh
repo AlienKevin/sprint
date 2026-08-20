@@ -1103,7 +1103,17 @@ else
   # Missing provider usage is fatal because it would corrupt cost comparison.
   # instead, so the operator sees the cause rather than a restart-budget
   # exhaustion several hours later.
-  if ! python3 -m modal volume list 2>/dev/null | grep -qF "$VOLUME_NAME"; then
+  if ! python3 -m modal volume list --json 2>/dev/null | python3 -c '
+import json
+import sys
+
+target = sys.argv[1]
+rows = json.load(sys.stdin)
+raise SystemExit(
+    0 if any(isinstance(row, dict) and row.get("name") == target for row in rows)
+    else 1
+)
+' "$VOLUME_NAME"; then
     echo "FATAL: resume requested but Volume '$VOLUME_NAME' does not exist." >&2
     echo "       Durable state for $RUN_ID is gone; this run cannot be resumed." >&2
     echo "       Relaunch as a NEW run id (fresh volume) instead of resuming." >&2
