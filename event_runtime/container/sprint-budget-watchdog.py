@@ -640,6 +640,20 @@ def gpu_allocated_seconds(
         kind = detail.get("event")
         lease = str(event.get("lease_id") or "")
         epoch = float(event.get("epoch_s") or 0)
+        if kind not in {
+            "gpu_allocated",
+            "gpu_reallocated",
+            "gpu_released",
+            "gpu_preempted",
+        }:
+            continue
+        # A stop can synthesize a release for a queued attempt that never
+        # acquired a sandbox.  Such an event has no immutable lease and
+        # therefore cannot open or close a billable allocation.  Ignoring it
+        # is conservative: any real allocation still requires its own leased
+        # boundary (or terminal attempt record) below.
+        if kind in {"gpu_released", "gpu_preempted"} and not lease:
+            continue
         if not lease or epoch <= 0:
             raise BudgetTelemetryError("GPU lifecycle event lacks lease or timestamp")
         if kind in {"gpu_allocated", "gpu_reallocated"}:

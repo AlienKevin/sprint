@@ -728,6 +728,31 @@ def test_gpu_worker_observes_durable_budget_marker(tmp_path: Path) -> None:
     assert worker.budget_stop_requested("unit", str(tmp_path))
 
 
+def test_gpu_cost_ignores_release_for_never_allocated_queued_attempt(
+    tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "run"
+    events = run_root / "telemetry/gpu_timeline/events"
+    events.mkdir(parents=True)
+    (events / "release.json").write_text(
+        json.dumps(
+            {
+                "event_id": "release",
+                "phase": "gpu_lifecycle",
+                "attempt": 0,
+                "lease_id": None,
+                "epoch_s": 1_000,
+                "detail": {"event": "gpu_released", "reason": "operator_stop"},
+            }
+        )
+        + "\n"
+    )
+
+    assert watchdog.gpu_allocated_seconds(
+        run_root, 1_100, standing=False, cpu_seconds=0
+    ) == 0
+
+
 def load_gpu_worker():
     worker_spec = importlib.util.spec_from_file_location(
         "sprint_gpu_worker_budget_snapshot",
