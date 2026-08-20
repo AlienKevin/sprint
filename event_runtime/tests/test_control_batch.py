@@ -1499,6 +1499,40 @@ def test_resumed_cpu_attempt_progress_prevents_false_verifier_stall(
     assert batch_eval.verifier_lane_stall_alerts(payload, now=now) == []
 
 
+def test_recovered_verifier_stall_moves_to_resolved_history() -> None:
+    payload = {
+        "arms": [
+            {"run_id": "recovered", "ledger": {"queued": 0, "running": 0}},
+            {"run_id": "still-stuck", "ledger": {"queued": 1, "running": 0}},
+        ],
+        "alerts": [
+            {
+                "run_id": "recovered",
+                "kind": "verifier_lane_stalled",
+                "source": "continuous/ledger.jsonl",
+            },
+            {
+                "run_id": "still-stuck",
+                "kind": "verifier_lane_stalled",
+                "source": "continuous/ledger.jsonl",
+            },
+        ],
+    }
+    active = [
+        {
+            "run_id": "still-stuck",
+            "kind": "verifier_lane_stalled",
+            "source": "continuous/ledger.jsonl",
+        }
+    ]
+
+    batch_eval.resolve_recovered_verifier_stalls(payload, active)
+
+    assert [alert["run_id"] for alert in payload["alerts"]] == ["still-stuck"]
+    assert payload["resolved_alerts"][0]["run_id"] == "recovered"
+    assert "progressed" in payload["resolved_alerts"][0]["resolution"]
+
+
 def test_dq_replay_is_queued_and_public_index_is_path_safe(tmp_path: Path) -> None:
     job = tmp_path / "job"
     trial = job / "task__trial"

@@ -1653,6 +1653,22 @@ def resolve_alerts(
     payload["alerts"] = active
 
 
+def resolve_recovered_verifier_stalls(
+    payload: dict[str, Any], active_stalls: list[dict[str, str]]
+) -> None:
+    """Archive verifier-stall alerts once that lane progresses or drains."""
+    stalled_run_ids = {alert.get("run_id") for alert in active_stalls}
+    for arm in payload.get("arms", []):
+        run_id = arm.get("run_id")
+        if isinstance(run_id, str) and run_id not in stalled_run_ids:
+            resolve_alerts(
+                payload,
+                run_id=run_id,
+                kind="verifier_lane_stalled",
+                resolution="verifier lane progressed or cleared its pending queue",
+            )
+
+
 def deployment_debounce_seconds(payload: dict[str, Any]) -> int:
     """Publish immediately after every lane has reached a terminal state."""
     return (
@@ -1865,7 +1881,9 @@ def monitor_cycle(batch_id: str, *, deploy: bool = True) -> dict[str, Any]:
                 arm["status"] = "stopping"
             cycle_alerts.extend(log_alerts(run_id))
 
-        cycle_alerts.extend(verifier_lane_stall_alerts(payload, now=now))
+        verifier_stalls = verifier_lane_stall_alerts(payload, now=now)
+        cycle_alerts.extend(verifier_stalls)
+        resolve_recovered_verifier_stalls(payload, verifier_stalls)
         cycle_alerts.extend(continuous_ledger_error_alerts(payload))
         for arm in payload["arms"]:
             if int(arm.get("ledger", {}).get("error", 0) or 0) == 0:
