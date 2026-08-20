@@ -308,6 +308,118 @@ def test_host_merged_cost_uses_previous_api_as_monotonic_floor_only(
     assert payload["budget_remaining_usd"] == 61.5
 
 
+def test_terminal_provider_summary_clears_stale_pending_request(
+    tmp_path: Path,
+) -> None:
+    telemetry = tmp_path / "telemetry"
+    telemetry.mkdir(parents=True)
+    (telemetry / "budget-watchdog.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "run_id": "run-1",
+                "status": "stop_requested",
+                "budget_usd": 100.0,
+                "stop_threshold_usd": 99.9,
+                "total_usd": 6.0,
+                "pending_request_count": 1,
+                "components": {
+                    "model_api": {
+                        "cost_usd": 6.0,
+                        "request_count": 2,
+                        "priced_request_count": 1,
+                        "pending_request_count": 1,
+                    }
+                },
+            }
+        )
+    )
+    (tmp_path / "STOP_REQUESTED.json").write_text("{}")
+    summary_path = tmp_path / "provider-api-usage/api-usage/summary.json"
+    summary_path.parent.mkdir(parents=True)
+    summary_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "run_id": "run-1",
+                "completed_request_count": 2,
+                "pending_request_count": 0,
+                "in_flight_request_count": 0,
+                "in_flight_request_ids": [],
+                "cost_recovery_required_count": 0,
+                "cost_recovery_required_request_ids": [],
+                "model_api_usd": 5.5,
+                "provider_billed_model_api_usd": 4.0,
+                "promotion_savings_usd": 1.5,
+                "model_api_cost_basis": "fixture_list_price",
+            }
+        )
+    )
+
+    payload = agent_cost.build_snapshot(timeline_fixture(), state_dir=tmp_path)
+
+    api = payload["components"]["model_api"]
+    assert payload["pending_request_count"] == 0
+    assert api["pending_request_count"] == 0
+    assert api["request_count"] == 2
+    assert api["priced_request_count"] == 2
+    assert api["cost_reconstruction_complete"] is True
+    assert api["cost_usd"] == 5.5
+    assert api["provider_billed_cost_usd"] == 4.0
+    assert payload["component_snapshot_sources"]["model_api"] == (
+        "terminal_provider_usage"
+    )
+    assert payload["total_usd"] == 43.5
+
+
+def test_live_snapshot_keeps_watchdog_pending_request(tmp_path: Path) -> None:
+    telemetry = tmp_path / "telemetry"
+    telemetry.mkdir(parents=True)
+    (telemetry / "budget-watchdog.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "run_id": "run-1",
+                "status": "within_budget",
+                "total_usd": 0.5,
+                "pending_request_count": 1,
+                "components": {
+                    "model_api": {
+                        "cost_usd": 0.5,
+                        "request_count": 2,
+                        "priced_request_count": 1,
+                        "pending_request_count": 1,
+                    }
+                },
+            }
+        )
+    )
+    summary_path = tmp_path / "provider-api-usage/api-usage/summary.json"
+    summary_path.parent.mkdir(parents=True)
+    summary_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "run_id": "run-1",
+                "completed_request_count": 2,
+                "pending_request_count": 0,
+                "in_flight_request_count": 0,
+                "in_flight_request_ids": [],
+                "cost_recovery_required_count": 0,
+                "cost_recovery_required_request_ids": [],
+                "model_api_usd": 0.5,
+                "provider_billed_model_api_usd": 0.4,
+                "promotion_savings_usd": 0.1,
+            }
+        )
+    )
+
+    payload = agent_cost.build_snapshot(timeline_fixture(), state_dir=tmp_path)
+
+    assert payload["pending_request_count"] == 1
+    assert payload["components"]["model_api"]["pending_request_count"] == 1
+
+
 def test_recoverable_agent_exit_ack_keeps_only_api_high_water_mark(
     tmp_path: Path,
 ) -> None:

@@ -21,6 +21,91 @@ SCHEMA_VERSION = 1
 AGENT_ROLES = ("cpu_agent", "training_gpu")
 
 
+def _terminal_provider_summary(
+    state_dir: Path | None, run_id: str
+) -> dict[str, Any] | None:
+    """Load a fully reconciled provider ledger after an explicit run stop."""
+    if state_dir is None or not any(
+        (state_dir / marker).exists()
+        for marker in ("STOP_REQUESTED.json", "STOP", "FINALIZED.json")
+    ):
+        return None
+    try:
+        summary = json.loads(
+            (
+                state_dir
+                / "provider-api-usage"
+                / "api-usage"
+                / "summary.json"
+            ).read_text()
+        )
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(summary, dict) or summary.get("schema_version") != 2:
+        return None
+    if summary.get("run_id") != run_id:
+        return None
+
+    numeric_fields = (
+        "model_api_usd",
+        "provider_billed_model_api_usd",
+        "promotion_savings_usd",
+        "completed_request_count",
+        "pending_request_count",
+        "in_flight_request_count",
+        "cost_recovery_required_count",
+    )
+    if any(
+        not isinstance(summary.get(field), (int, float))
+        or isinstance(summary.get(field), bool)
+        or float(summary[field]) < 0
+        for field in numeric_fields
+    ):
+        return None
+    if any(
+        int(summary[field]) != 0
+        for field in (
+            "pending_request_count",
+            "in_flight_request_count",
+            "cost_recovery_required_count",
+        )
+    ):
+        return None
+    if any(
+        summary.get(field) not in (None, [])
+        for field in (
+            "in_flight_request_ids",
+            "cost_recovery_required_request_ids",
+        )
+    ):
+        return None
+    return summary
+
+
+def _reconcile_terminal_api_component(
+    component: dict[str, Any], summary: dict[str, Any]
+) -> None:
+    """Replace stale live request metadata with the terminal provider ledger."""
+    request_count = int(summary["completed_request_count"])
+    component.update(
+        {
+            "request_count": request_count,
+            "priced_request_count": request_count,
+            "pending_request_count": 0,
+            "cost_reconstruction_complete": True,
+            "cost_usd": float(summary["model_api_usd"]),
+            "cost_source": summary.get("model_api_cost_basis")
+            or "terminal_provider_usage",
+            "provider_billed_cost_usd": float(
+                summary["provider_billed_model_api_usd"]
+            ),
+            "promotion_savings_usd": float(summary["promotion_savings_usd"]),
+            "provider_reported": True,
+            "provider_usage_reconciled": True,
+        }
+    )
+
+
 def _role_rate(
     contract: dict[str, Any], contract_key: str, rates: dict[str, Any]
 ) -> float:
@@ -215,6 +300,8 @@ def build_snapshot(
     timeline: dict[str, Any], *, state_dir: Path | None = None
 ) -> dict[str, Any]:
     """Return the sole agent-facing JSON cost document."""
+    run_id = str(timeline["run"]["run_id"])
+    terminal_provider = _terminal_provider_summary(state_dir, run_id)
     canonical: dict[str, Any] | None = None
     previous: dict[str, Any] | None = None
     if state_dir is not None:
@@ -300,7 +387,7 @@ def build_snapshot(
     snapshots = _pricing_snapshots(state_dir)
     snapshot = {
         "schema_version": SCHEMA_VERSION,
-        "run_id": timeline["run"]["run_id"],
+        "run_id": run_id,
         "model": timeline["run"].get("model"),
         "currency": "USD",
         "as_of": timeline["generated_at"],
@@ -389,6 +476,15 @@ def build_snapshot(
         ),
         "invoice_exact": False,
     }
+    if terminal_provider is not None:
+        api_component = snapshot["components"]["model_api"]
+        _reconcile_terminal_api_component(api_component, terminal_provider)
+        snapshot["pending_request_count"] = 0
+        snapshot["request_count"] = api_component["request_count"]
+        snapshot["total_usd"] = round(
+            float(api_component["cost_usd"]) + modal_cost_usd, 12
+        )
+        snapshot["status"] = "complete"
     if canonical is None:
         return snapshot
 
@@ -463,6 +559,10 @@ def build_snapshot(
         name: merged_component(name)
         for name in ("model_api", "cpu_agent", "training_sandboxes")
     }
+    if terminal_provider is not None:
+        _reconcile_terminal_api_component(
+            components["model_api"], terminal_provider
+        )
     totals = {
         "model_api_usd": components["model_api"]["cost_usd"],
         "cpu_agent_usd": components["cpu_agent"]["cost_usd"],
@@ -490,11 +590,15 @@ def build_snapshot(
             ],
             "request_count": components["model_api"]["request_count"],
             "pending_request_count": int(
-                (canonical_components.get("model_api") or {}).get(
-                    "pending_request_count"
+                components["model_api"].get("pending_request_count")
+                if terminal_provider is not None
+                else (
+                    (canonical_components.get("model_api") or {}).get(
+                        "pending_request_count"
+                    )
+                    or canonical.get("pending_request_count")
+                    or 0
                 )
-                or canonical.get("pending_request_count")
-                or 0
             ),
             # Reconciliation metadata belongs to the fresh host snapshot.
             # A stopped sandbox's last watchdog document necessarily predates
@@ -504,7 +608,11 @@ def build_snapshot(
             "modal_cost_source": snapshot["modal_cost_source"],
             "invoice_exact": snapshot["invoice_exact"],
             "component_snapshot_sources": {
-                "model_api": "max(openrouter_watchdog,host_provider_usage)",
+                "model_api": (
+                    "terminal_provider_usage"
+                    if terminal_provider is not None
+                    else "max(openrouter_watchdog,host_provider_usage)"
+                ),
                 "cpu_agent": "host_timeline",
                 "training_sandboxes": "host_timeline",
             },
