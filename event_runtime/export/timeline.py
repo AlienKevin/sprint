@@ -2210,6 +2210,7 @@ class Builder:
             "expected_billed_roles",
             "expected_role_categories",
             "provider_complete",
+            "provider_compute_complete",
             "status",
             "pending_reason",
             "missing_billed_roles",
@@ -2236,9 +2237,13 @@ class Builder:
             if key in provider_fields
         }
         provider_complete = modal_provider_raw.get("provider_complete") is True
+        provider_compute_complete = (
+            provider_complete
+            or modal_provider_raw.get("provider_compute_complete") is True
+        )
         selected_modal_cost = (
             modal_provider.get("provider_cost_precredits_usd")
-            if provider_complete
+            if provider_compute_complete
             else modal_estimate["estimated_cost_usd"]
         )
         estimated_agent_modal_cost = sum(
@@ -2254,7 +2259,7 @@ class Builder:
             )
             or 0
         )
-        if provider_complete:
+        if provider_compute_complete:
             provider_by_role = modal_provider.get("by_role_usd") or {}
             selected_agent_modal_cost = sum(
                 float(provider_by_role.get(role) or 0)
@@ -2397,7 +2402,7 @@ class Builder:
             "verifier_measurement_overhead_usd_cost": selected_verifier_cost,
             "usd_cost_kind": (
                 "provider_report_precredits"
-                if provider_complete
+                if provider_compute_complete
                 else "pinned_tariff_request_floor"
             ),
         }
@@ -2547,24 +2552,28 @@ class Builder:
             "final_modal_provider_cost_precredits_usd": modal_provider.get(
                 "provider_cost_precredits_usd"
             )
-            if provider_complete
+            if provider_compute_complete
             else None,
             "final_agent_total_cost_usd": (
                 float(usage_summary["calculated_api_usage_usd"])
-                + float(estimated_agent_modal_cost)
+                + float(selected_agent_modal_cost)
                 if usage_summary["calculated_api_usage_usd"] is not None
-                and estimated_agent_modal_cost is not None
+                and selected_agent_modal_cost is not None
                 else None
             ),
             "final_verifier_measurement_overhead_usd": selected_verifier_cost,
             "final_total_cost_usd": (
                 float(usage_summary["calculated_api_usage_usd"])
-                + float(estimated_agent_modal_cost)
+                + float(selected_agent_modal_cost)
                 if usage_summary["calculated_api_usage_usd"] is not None
-                and estimated_agent_modal_cost is not None
+                and selected_agent_modal_cost is not None
                 else None
             ),
-            "final_total_cost_kind": "api_published_list_price_plus_agent_modal_pinned_tariff",
+            "final_total_cost_kind": (
+                "api_published_list_price_plus_agent_modal_provider_report_precredits"
+                if provider_compute_complete
+                else "api_published_list_price_plus_agent_modal_pinned_tariff"
+            ),
             "wall_duration_ms": end - origin
             if origin is not None and end is not None
             else None,

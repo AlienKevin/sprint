@@ -292,6 +292,35 @@ def apply_provider_reported_costs(
     requests: list[dict[str, Any]], records: list[dict[str, Any]]
 ) -> None:
     """Bind every Codex usage event to exactly one OpenRouter charge."""
+    def bind(request: dict[str, Any], record: dict[str, Any]) -> None:
+        provider_cost = float(record["provider_reported_cost_usd"])
+        cost = float(record.get("undiscounted_cost_usd", provider_cost))
+        usage = record.get("usage")
+        details = (usage.get("cost_details") or {}) if isinstance(usage, dict) else {}
+        request.update(
+            {
+                "pricing_snapshot_id": None,
+                "calculated_cost_usd": cost,
+                "provider_reported_cost_usd": provider_cost,
+                "promotion_savings_usd": cost - provider_cost,
+                "promotion_discount_fraction": record.get(
+                    "promotion_discount_fraction"
+                ),
+                "promotion_snapshot": record.get("promotion_snapshot"),
+                "cost_components_usd": {
+                    str(name): float(value)
+                    for name, value in details.items()
+                    if isinstance(value, (int, float)) and not isinstance(value, bool)
+                },
+                "cost_reconstruction_status": "complete",
+                "cost_basis": "openrouter_list_price_before_endpoint_discount",
+                "provider_cost_basis": "openrouter_reported_per_request",
+                "openrouter_generation_id": record.get("generation_id"),
+                "openrouter_ledger_request_id": record.get("ledger_request_id"),
+                "openrouter_response_model": record.get("response_model"),
+            }
+        )
+
     remaining = list(records)
     for request in requests:
         attempt = int(request.get("cpu_attempt") or 0)
@@ -327,37 +356,44 @@ def apply_provider_reported_costs(
                 f"attempt={attempt} usage={signature}"
             )
         record = remaining.pop(match_index)
-        provider_cost = float(record["provider_reported_cost_usd"])
-        cost = float(record.get("undiscounted_cost_usd", provider_cost))
-        usage = record.get("usage")
-        details = (usage.get("cost_details") or {}) if isinstance(usage, dict) else {}
-        request.update(
-            {
-                "pricing_snapshot_id": None,
-                "calculated_cost_usd": cost,
-                "provider_reported_cost_usd": provider_cost,
-                "promotion_savings_usd": cost - provider_cost,
-                "promotion_discount_fraction": record.get(
-                    "promotion_discount_fraction"
-                ),
-                "promotion_snapshot": record.get("promotion_snapshot"),
-                "cost_components_usd": {
-                    str(name): float(value)
-                    for name, value in details.items()
-                    if isinstance(value, (int, float)) and not isinstance(value, bool)
-                },
-                "cost_reconstruction_status": "complete",
-                "cost_basis": "openrouter_list_price_before_endpoint_discount",
-                "provider_cost_basis": "openrouter_reported_per_request",
-                "openrouter_generation_id": record.get("generation_id"),
-                "openrouter_ledger_request_id": record.get("ledger_request_id"),
-                "openrouter_response_model": record.get("response_model"),
-            }
-        )
-    if remaining:
-        raise SystemExit(
-            f"{len(remaining)} billed OpenRouter requests have no matching Codex usage"
-        )
+        bind(request, record)
+
+    # A request may finish and be billed immediately before the Codex turn is
+    # interrupted, leaving no terminal token_count in the local session log.
+    # The provider ledger is authoritative for both its cost and usage, so keep
+    # such calls as explicit provider-only audit rows instead of dropping spend
+    # or failing the archived run rebuild.
+    for record in remaining:
+        usage = record.get("usage") or {}
+        input_details = usage.get("input_tokens_details") or {}
+        output_details = usage.get("output_tokens_details") or {}
+        input_tokens = int(usage.get("input_tokens") or 0)
+        cached_tokens = int(input_details.get("cached_tokens") or 0)
+        cache_write_tokens = int(input_details.get("cache_write_tokens") or 0)
+        output_tokens = int(usage.get("output_tokens") or 0)
+        reasoning_tokens = int(output_details.get("reasoning_tokens") or 0)
+        total_tokens = int(usage.get("total_tokens") or 0)
+        ledger_id = str(record.get("ledger_request_id") or "unknown")
+        request = {
+            "api_call_id": f"openrouter_only_{ledger_id}",
+            "run_api_call_id": f"openrouter_only:{ledger_id}",
+            "cpu_attempt": int(record.get("cpu_attempt") or 0),
+            "usage_reported_at": record.get("completed_at")
+            or record.get("requested_at"),
+            "model": record.get("response_model") or record.get("requested_model"),
+            "input_tokens": input_tokens,
+            "cached_input_tokens": cached_tokens,
+            "cache_write_input_tokens": cache_write_tokens,
+            "ordinary_uncached_input_tokens": max(
+                0, input_tokens - cached_tokens - cache_write_tokens
+            ),
+            "output_tokens": output_tokens,
+            "reasoning_output_tokens": reasoning_tokens,
+            "total_tokens": total_tokens,
+            "provider_only_usage": True,
+        }
+        bind(request, record)
+        requests.append(request)
 
 
 def reconstruct_group(

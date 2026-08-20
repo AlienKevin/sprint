@@ -542,6 +542,7 @@ def test_collection_waits_for_volume_storage_snapshot(tmp_path: Path) -> None:
         },
     )
     assert payload["provider_complete"] is False
+    assert payload["provider_compute_complete"] is True
     assert payload["pending_reason"] == "provider_volume_storage_snapshot_unavailable"
 
 

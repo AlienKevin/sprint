@@ -237,6 +237,54 @@ class TestCodexApiCallGrouping:
         assert user_step.llm_call_count is None
         assert agent_step.llm_call_count == 1
 
+    def test_repeated_terminal_token_count_does_not_fabricate_request(
+        self, temp_dir
+    ):
+        agent = Codex(logs_dir=temp_dir, model_name="openai/o3")
+        token_count = self._token_count_event(100, 20, 120)
+        events = [
+            {"type": "session_meta", "payload": {"id": "session-repeat"}},
+            {
+                "type": "response_item",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "Working."}],
+                },
+            },
+            token_count,
+            {
+                "type": "response_item",
+                "timestamp": "2026-01-01T00:00:01Z",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "Done."}],
+                },
+            },
+            token_count,
+            {
+                "type": "event_msg",
+                "payload": {"type": "turn_aborted", "reason": "interrupted"},
+            },
+        ]
+        session_dir = self._write_session(temp_dir, events)
+
+        trajectory = agent._convert_events_to_trajectory(session_dir)
+
+        assert trajectory is not None
+        usage = trajectory.final_metrics.extra["usage_audit"]
+        assert usage["request_count"] == 1
+        assert usage["reported_total_usage"]["total_tokens"] == 120
+        assert usage["summed_request_usage"]["total_tokens"] == 120
+        assert usage["reconciliation_mismatches"] == {}
+        agent_steps = [step for step in trajectory.steps if step.source == "agent"]
+        assert len(agent_steps) == 1
+        assert agent_steps[0].llm_call_count == 1
+        assert agent_steps[0].metrics.prompt_tokens == 100
+        assert agent_steps[0].metrics.completion_tokens == 20
+
     def test_terra_preserves_per_request_cost_inputs_and_pricing(self, temp_dir):
         agent = Codex(logs_dir=temp_dir, model_name="openai/gpt-5.6-terra")
         first_usage = {

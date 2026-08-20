@@ -593,6 +593,10 @@ def collect_provider_billing(
         base["missing_role_categories"] = missing_categories
         _atomic_json(output_path, base)
         return base
+    # The billing report now has every expected compute role and resource
+    # category.  Keep that reconciliation usable even when the run Volume was
+    # already removed and its non-invoiced endpoint snapshot cannot be read.
+    base["provider_compute_complete"] = True
     base["volume_storage"] = volume_scanner(
         run, duration_seconds=(stopped_at - start).total_seconds()
     )

@@ -135,6 +135,48 @@ def test_snapshot_prefers_complete_modal_provider_report() -> None:
     assert payload["modal_cost_source"] == "modal_provider_report_precredits"
 
 
+def test_snapshot_uses_complete_provider_compute_when_volume_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    timeline = timeline_fixture()
+    timeline["resource_usage_summary"]["modal_provider_billing"] = {
+        "provider_complete": False,
+        "provider_compute_complete": True,
+        "pending_reason": "provider_volume_storage_snapshot_unavailable",
+        "by_role_usd": {
+            "cpu_agent": 12.25,
+            "training_gpu": 27.5,
+            "verifier_gpu": 3.0,
+        },
+        "by_role_category_usd": {
+            "cpu_agent": {"CPU": 4.25, "Memory": 8.0},
+            "training_gpu": {"CPU": 2.5, "Memory": 5.0, "A10G": 20.0},
+        },
+    }
+
+    telemetry = tmp_path / "telemetry"
+    telemetry.mkdir()
+    (telemetry / "budget-watchdog.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "run_id": "run-1",
+                "status": "within_budget",
+                "total_usd": 1.0,
+                "modal_cost_source": "conservative_live_billing_interval_x_pinned_modal_tariff",
+                "components": {},
+            }
+        )
+    )
+
+    payload = agent_cost.build_snapshot(timeline, state_dir=tmp_path)
+
+    assert payload["components"]["cpu_agent"]["cost_usd"] == 12.25
+    assert payload["components"]["training_sandboxes"]["cost_usd"] == 27.5
+    assert payload["total_usd"] == 40.25
+    assert payload["modal_cost_source"] == "modal_provider_report_precredits"
+
+
 def test_host_conservatively_merges_watchdog_and_host_allocation_ledgers(
     tmp_path: Path,
 ) -> None:

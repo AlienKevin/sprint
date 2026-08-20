@@ -290,6 +290,41 @@ def test_openrouter_usage_mismatch_fails_closed() -> None:
         apply_provider_reported_costs([request], [record])
 
 
+def test_provider_only_billed_request_is_retained_after_interruption() -> None:
+    requests: list[dict[str, object]] = []
+    record = {
+        "cpu_attempt": 3,
+        "ledger_request_id": "ledger-provider-only",
+        "generation_id": "gen-provider-only",
+        "requested_model": "gpt-5.6-luna",
+        "response_model": "openai/gpt-5.6-luna-20260709",
+        "completed_at": "2026-08-19T23:00:00Z",
+        "provider_reported_cost_usd": 0.123,
+        "undiscounted_cost_usd": 0.246,
+        "usage": {
+            "input_tokens": 100,
+            "input_tokens_details": {
+                "cached_tokens": 80,
+                "cache_write_tokens": 5,
+            },
+            "output_tokens": 20,
+            "output_tokens_details": {"reasoning_tokens": 7},
+            "total_tokens": 120,
+            "cost_details": {"upstream_inference_cost": 0.123},
+        },
+    }
+
+    apply_provider_reported_costs(requests, [record])
+
+    assert len(requests) == 1
+    request = requests[0]
+    assert request["provider_only_usage"] is True
+    assert request["cpu_attempt"] == 3
+    assert request["ordinary_uncached_input_tokens"] == 15
+    assert request["calculated_cost_usd"] == 0.246
+    assert request["provider_reported_cost_usd"] == 0.123
+
+
 def test_dominating_harbor_final_supersedes_shifted_durable_ordinals(
     tmp_path: Path,
 ) -> None:

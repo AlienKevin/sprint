@@ -278,7 +278,10 @@ def build_snapshot(
     cpu = role_payload("cpu_agent")
     training = role_payload("training_gpu")
     modal_provider = resources.get("modal_provider_billing") or {}
-    provider_reconciled = modal_provider.get("provider_complete") is True
+    provider_reconciled = (
+        modal_provider.get("provider_complete") is True
+        or modal_provider.get("provider_compute_complete") is True
+    )
     if provider_reconciled:
         provider_by_role = modal_provider.get("by_role_usd") or {}
         provider_by_role_category = modal_provider.get("by_role_category_usd") or {}
@@ -500,6 +503,13 @@ def build_snapshot(
                 or canonical.get("pending_request_count")
                 or 0
             ),
+            # Reconciliation metadata belongs to the fresh host snapshot.
+            # A stopped sandbox's last watchdog document necessarily predates
+            # the delayed provider billing report and must not relabel exact
+            # Modal compute charges as tariff estimates.
+            "cost_basis": snapshot["cost_basis"],
+            "modal_cost_source": snapshot["modal_cost_source"],
+            "invoice_exact": snapshot["invoice_exact"],
             "component_snapshot_sources": {
                 "model_api": "max(openrouter_watchdog,host_provider_usage)",
                 "cpu_agent": (

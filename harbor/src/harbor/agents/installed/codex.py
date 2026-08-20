@@ -677,6 +677,8 @@ class Codex(BaseInstalledAgent):
         api_call_metrics: dict[str, dict[str, Any]] = {}
         usage_records: list[dict[str, Any]] = []
         saw_model_output_in_api_call = False
+        last_total_usage_signature: tuple[int, ...] | None = None
+        last_completed_api_call_id: str | None = None
         tool_order_counter = 0
         current_model = default_model_name
         current_service_tier = self._resolved_flags.get("service_tier")
@@ -691,11 +693,51 @@ class Codex(BaseInstalledAgent):
         ) -> None:
             nonlocal api_call_index, current_api_call_id, saw_model_output_in_api_call
             nonlocal tool_order_counter
+            nonlocal last_total_usage_signature, last_completed_api_call_id
 
             if not saw_model_output_in_api_call:
                 return
 
             info = token_count_payload.get("info")
+            total_usage = (
+                info.get("total_token_usage") if isinstance(info, dict) else None
+            )
+            total_signature = None
+            if isinstance(total_usage, dict):
+                values = tuple(
+                    total_usage.get(field)
+                    for field in (
+                        "input_tokens",
+                        "cached_input_tokens",
+                        "cache_write_input_tokens",
+                        "output_tokens",
+                        "reasoning_output_tokens",
+                        "total_tokens",
+                    )
+                )
+                if all(
+                    isinstance(value, int)
+                    and not isinstance(value, bool)
+                    and value >= 0
+                    for value in values
+                ):
+                    total_signature = values
+            if (
+                total_signature is not None
+                and total_signature == last_total_usage_signature
+                and last_completed_api_call_id is not None
+            ):
+                # Codex can replay the terminal token_count when a turn is
+                # interrupted after its response was already recorded. Late
+                # response items still belong to the preceding paid call; do
+                # not fabricate a second request or require a second provider
+                # billing record with the same usage.
+                for normalized in normalized_events:
+                    if normalized.get("api_call_id") == current_api_call_id:
+                        normalized["api_call_id"] = last_completed_api_call_id
+                saw_model_output_in_api_call = False
+                tool_order_counter = 0
+                return
             last_usage = (
                 info.get("last_token_usage") if isinstance(info, dict) else None
             )
@@ -723,6 +765,8 @@ class Codex(BaseInstalledAgent):
             if metrics:
                 api_call_metrics[current_api_call_id] = metrics
 
+            last_total_usage_signature = total_signature
+            last_completed_api_call_id = current_api_call_id
             api_call_index += 1
             current_api_call_id = f"api_call_{api_call_index}"
             saw_model_output_in_api_call = False
