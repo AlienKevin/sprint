@@ -1632,15 +1632,18 @@ def public_tracking_batch(payload: dict[str, Any]) -> dict[str, Any]:
     return current
 
 
-def write_public_batch(payload: dict[str, Any]) -> Path:
-    """Publish both the immutable batch record and the active-batch pointer."""
+def write_public_batch(
+    payload: dict[str, Any], *, update_current: bool = True
+) -> Path:
+    """Publish the batch record and, for its owning monitor, the active pointer."""
     public = public_batch(payload)
     public_path = WEB / "data" / "batches" / f"{payload['batch_id']}.json"
     atomic_public_json(public_path, public)
-    atomic_public_json(
-        WEB / "data" / "batches" / "current.json",
-        public_tracking_batch(payload),
-    )
+    if update_current:
+        atomic_public_json(
+            WEB / "data" / "batches" / "current.json",
+            public_tracking_batch(payload),
+        )
     return public_path
 
 
@@ -1920,7 +1923,7 @@ def monitor_cycle(batch_id: str, *, deploy: bool = True) -> dict[str, Any]:
                 payload.setdefault("alerts", []).append(alert)
                 known.add(key)
         payload["updated_at"] = utc_now()
-        write_public_batch(payload)
+        write_public_batch(payload, update_current=deploy)
 
         performance_ready = True
         if deploy:
@@ -2018,7 +2021,7 @@ def monitor_cycle(batch_id: str, *, deploy: bool = True) -> dict[str, Any]:
         all_finalized = finalized == len(payload["arms"])
         payload["status"] = "complete" if all_finalized else "running"
         payload["updated_at"] = utc_now()
-        write_public_batch(payload)
+        write_public_batch(payload, update_current=deploy)
         if (
             deploy
             and all_finalized
@@ -2045,7 +2048,7 @@ def monitor_cycle(batch_id: str, *, deploy: bool = True) -> dict[str, Any]:
         if all_finalized and not deployed_current:
             payload["status"] = "finalizing_site"
             payload["updated_at"] = utc_now()
-            write_public_batch(payload)
+            write_public_batch(payload, update_current=deploy)
         known = {
             (item.get("run_id"), item.get("kind"), item.get("source"))
             for item in payload.get("alerts", [])

@@ -1184,6 +1184,29 @@ def test_write_public_batch_tracks_explicitly_coexisting_runs(
     ]
 
 
+def test_write_public_batch_can_leave_active_pointer_to_tracking_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(batch_eval, "WEB", tmp_path / "web")
+    current = tmp_path / "web/data/batches/current.json"
+    current.parent.mkdir(parents=True)
+    current.write_text('{"batch_id":"replacement"}\n')
+    source = {
+        "batch_id": "source",
+        "updated_at": "2026-08-21T00:00:00Z",
+        "status": "running",
+        "reasoning_effort": "max",
+        "codex_version": "0.147.0",
+        "run_hours": None,
+        "arms": [],
+    }
+
+    historical = batch_eval.write_public_batch(source, update_current=False)
+
+    assert json.loads(historical.read_text())["batch_id"] == "source"
+    assert json.loads(current.read_text())["batch_id"] == "replacement"
+
+
 def test_tracking_batch_ignores_delegated_site_alerts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
