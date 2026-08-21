@@ -1927,13 +1927,34 @@ class Builder:
         # can continue briefly after the worker's own terminal timestamp. The
         # post-create lifecycle above is the right interval for GPU telemetry,
         # but it is an unsafe lower bound for a live budget. Pair the host's
-        # pre-create dispatch boundary with the terminal release instead and
-        # fall back to the telemetry interval only for legacy records.
+        # immediate pre-create boundary with the terminal release. Archive
+        # pinning/restoration happens before that boundary and is host-side
+        # preparation, so it must never be billed as sandbox time.
         training_billing_intervals = self._paired_intervals(
+            self.events,
+            start_kinds={"gpu_sandbox_create_enter"},
+            end_kinds={"gpu_preempted", "gpu_released"},
+            key_fields=("gpu_job_id", "gpu_attempt"),
+        )
+        billing_keys = {
+            (interval.get("gpu_job_id"), interval.get("gpu_attempt"))
+            for interval in training_billing_intervals
+        }
+        # Legacy controllers have no immediate pre-create boundary. Preserve
+        # their conservative pre-create interval rather than silently
+        # undercounting historical or in-flight runs created before this
+        # event existed.
+        legacy_billing_intervals = self._paired_intervals(
             self.events,
             start_kinds={"gpu_worker_starting_enter"},
             end_kinds={"gpu_preempted", "gpu_released"},
             key_fields=("gpu_job_id", "gpu_attempt"),
+        )
+        training_billing_intervals.extend(
+            dict(interval)
+            for interval in legacy_billing_intervals
+            if (interval.get("gpu_job_id"), interval.get("gpu_attempt"))
+            not in billing_keys
         )
         billing_keys = {
             (interval.get("gpu_job_id"), interval.get("gpu_attempt"))

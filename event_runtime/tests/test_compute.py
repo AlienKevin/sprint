@@ -2513,7 +2513,7 @@ class RetryAndFencingTests(unittest.TestCase):
                 ),
                 mock.patch.object(gpu_worker, "load_heartbeat", return_value=None),
                 mock.patch.object(gpu_worker, "_close_attempt_timeline"),
-                mock.patch.object(gpu_worker, "_timeline_event"),
+                mock.patch.object(gpu_worker, "_timeline_event") as timeline_event,
                 mock.patch.object(
                     gpu_worker, "_terminate_sandbox", return_value=None
                 ) as terminate,
@@ -2524,6 +2524,15 @@ class RetryAndFencingTests(unittest.TestCase):
         self.assertEqual(jobs["queued"]["sandbox_id"], "sb-new")
         self.assertEqual(result["actions"][0]["action"], "stop_after_spawn")
         terminate.assert_called_once()
+        self.assertTrue(
+            any(
+                call.kwargs.get("phase") == "gpu_sandbox_create"
+                and call.kwargs.get("action") == "enter"
+                and call.kwargs.get("lifecycle_boundary")
+                == "before_sandbox_create"
+                for call in timeline_event.call_args_list
+            )
+        )
 
     def test_retry_keeps_logical_job_and_fences_lease(self) -> None:
         job = {

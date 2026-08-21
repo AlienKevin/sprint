@@ -659,7 +659,9 @@ def test_durable_gpu_lifecycle_copy_is_deduplicated_by_event_id(
     assert payload["resource_usage_summary"]["training_gpu"]["allocation_count"] == 2
 
 
-def test_training_cost_uses_pre_create_billing_upper_bound(tmp_path: Path) -> None:
+def test_training_cost_excludes_archive_pin_before_sandbox_create(
+    tmp_path: Path,
+) -> None:
     state = fixture_run(tmp_path)
     lifecycle_path = state / "telemetry" / "gpu_timeline.jsonl"
     lifecycle = [json.loads(line) for line in lifecycle_path.read_text().splitlines()]
@@ -685,6 +687,26 @@ def test_training_cost_uses_pre_create_billing_upper_bound(tmp_path: Path) -> No
                 "lease_id": "lease-2",
                 "detail": {"source": "dispatch"},
             },
+            {
+                "event_id": "sandbox-create-1",
+                "epoch_s": 1786104004,
+                "phase": "gpu_sandbox_create",
+                "action": "enter",
+                "job_id": "job-1",
+                "attempt": 1,
+                "lease_id": "lease-1",
+                "detail": {"source": "dispatch"},
+            },
+            {
+                "event_id": "sandbox-create-2",
+                "epoch_s": 1786104021,
+                "phase": "gpu_sandbox_create",
+                "action": "enter",
+                "job_id": "job-1",
+                "attempt": 2,
+                "lease_id": "lease-2",
+                "detail": {"source": "dispatch"},
+            },
         ]
     )
     write_jsonl(lifecycle_path, lifecycle)
@@ -693,10 +715,50 @@ def test_training_cost_uses_pre_create_billing_upper_bound(tmp_path: Path) -> No
     training = payload["resource_usage_summary"]["training_gpu"]
 
     assert training["allocated_ms"] == 33_000
-    assert training["billing_upper_bound_allocated_ms"] == 37_000
+    # 35 seconds starts immediately before Sandbox.create. The earlier
+    # gpu_worker_starting events include two seconds of host archive pinning
+    # and must not inflate the live Modal estimate.
+    assert training["billing_upper_bound_allocated_ms"] == 35_000
     assert payload["resource_usage_summary"]["modal_estimate"]["by_role"][
         "training_gpu"
-    ]["allocated_ms"] == 37_000
+    ]["allocated_ms"] == 35_000
+
+
+def test_training_cost_legacy_falls_back_to_worker_starting(
+    tmp_path: Path,
+) -> None:
+    state = fixture_run(tmp_path)
+    lifecycle_path = state / "telemetry" / "gpu_timeline.jsonl"
+    lifecycle = [json.loads(line) for line in lifecycle_path.read_text().splitlines()]
+    lifecycle.extend(
+        [
+            {
+                "event_id": "legacy-billing-start-1",
+                "epoch_s": 1786104002,
+                "phase": "gpu_worker_starting",
+                "action": "enter",
+                "job_id": "job-1",
+                "attempt": 1,
+                "lease_id": "lease-1",
+            },
+            {
+                "event_id": "legacy-billing-start-2",
+                "epoch_s": 1786104021,
+                "phase": "gpu_worker_starting",
+                "action": "enter",
+                "job_id": "job-1",
+                "attempt": 2,
+                "lease_id": "lease-2",
+            },
+        ]
+    )
+    write_jsonl(lifecycle_path, lifecycle)
+
+    payload = unified_timeline.build_timeline(state)
+
+    assert payload["resource_usage_summary"]["training_gpu"][
+        "billing_upper_bound_allocated_ms"
+    ] == 37_000
 
 
 def test_stop_ack_closes_supervised_cpu_allocation(

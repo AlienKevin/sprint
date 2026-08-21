@@ -2480,6 +2480,20 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
                 claimed = pin_work_archive(run, claimed)
                 persist_job(run, claimed)
                 restore_pinned_work_archive(run, claimed)
+                # Archive pinning/restoration is host-side preparation and
+                # cannot incur Modal sandbox spend.  Record a separate
+                # billing upper-bound immediately before Sandbox.create so
+                # the live ledger includes provider allocation during the
+                # create call without charging the potentially long archive
+                # transfer that precedes it.
+                _timeline_event(
+                    run,
+                    claimed,
+                    phase="gpu_sandbox_create",
+                    action="enter",
+                    source="dispatch",
+                    lifecycle_boundary="before_sandbox_create",
+                )
                 lease = Lease(
                     job_id=str(claimed["job_id"]),
                     attempt=int(claimed["attempt"]),
