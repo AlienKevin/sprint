@@ -389,6 +389,10 @@ def cmd_submit(args: argparse.Namespace) -> int:
         "gpu_type": "A10G",
         "job_kind": args.job_kind,
         "output_paths": validate_output_paths(getattr(args, "output", None)),
+        # GPU sandboxes cannot publish directly into the long-lived CPU
+        # sandbox's point-in-time Modal Volume mount.  The host dispatcher
+        # drains immutable archive requests over the sandbox control channel.
+        "submission_bridge_enabled": True,
     }
     # Queue entry (claimed by host dispatcher) + status mirror for the agent.
     atomic_write_json(root / "queue" / f"{job_id}.json", job)

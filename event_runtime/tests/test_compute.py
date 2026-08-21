@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
+import base64
 import hashlib
 import io
 import json
@@ -78,6 +79,7 @@ class ClaimSelectionTests(unittest.TestCase):
             gpu_claim.select_claim_action(job, claim_id="c1", stale_sec=900),
             "skip",
         )
+
 
     def test_retry_wait_claimable_when_due(self) -> None:
         job = {"job_id": "a", "status": "retry_wait", "retry_not_before_epoch_s": 10}
@@ -1370,6 +1372,112 @@ class ClaimSelectionTests(unittest.TestCase):
             self.assertIn("app/train/train.py", names)
             self.assertIn("app/train/staged.py", names)
             self.assertIn("app/course/rules.py", names)
+
+
+class SubmissionBridgeTests(unittest.TestCase):
+    def request(self, *, attempt: int = 1) -> dict:
+        content = b"immutable-policy"
+        digest = hashlib.sha256(content).hexdigest()
+        return {
+            "receipt": {
+                "schema_version": 2,
+                "bridge": "host_owned_gpu_submission_v1",
+                "submission_id": "123456-abcd",
+                "queue_name": "123456-abcd.pt",
+                "run_id": "run-1",
+                "gpu_job_id": "job-1",
+                "gpu_attempt": attempt,
+                "gpu_lease_id": "lease-1",
+                "policy_sha256": digest,
+                "policy_size_bytes": len(content),
+                "note": "candidate",
+            },
+            "policy_sha256": digest,
+            "policy_size_bytes": len(content),
+            "policy_base64": base64.b64encode(content).decode(),
+        }
+
+    def run_and_job(self, root: Path) -> tuple[dict, dict]:
+        return (
+            {"run_id": "run-1", "state_dir": str(root)},
+            {
+                "run_id": "run-1",
+                "job_id": "job-1",
+                "attempt": 1,
+                "lease_id": "lease-1",
+                "sandbox_id": "sb-worker",
+                "submission_bridge_enabled": True,
+            },
+        )
+
+    def test_request_identity_and_bytes_are_validated(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            run, job = self.run_and_job(Path(raw))
+            receipt, content = gpu_worker.validate_worker_submission_request(
+                run, job, self.request()
+            )
+            self.assertEqual(receipt["submission_id"], "123456-abcd")
+            self.assertEqual(content, b"immutable-policy")
+            with self.assertRaisesRegex(ValueError, "gpu_attempt identity mismatch"):
+                gpu_worker.validate_worker_submission_request(
+                    run, job, self.request(attempt=2)
+                )
+
+    def test_drain_forwards_once_and_persists_host_record(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            run, job = self.run_and_job(Path(raw))
+            request = self.request()
+            with (
+                mock.patch.object(
+                    gpu_worker,
+                    "read_worker_submission_outbox",
+                    return_value=[request],
+                ),
+                mock.patch.object(
+                    gpu_worker,
+                    "submit_worker_policy_to_cpu_agent",
+                    return_value={"returncode": 0, "stdout": "staged", "stderr": ""},
+                ) as submit,
+                mock.patch.object(
+                    gpu_worker, "acknowledge_worker_submission"
+                ) as acknowledge,
+            ):
+                updated, detail = gpu_worker.drain_worker_submission_outbox(run, job)
+                self.assertEqual(detail["forwarded"], 1)
+                self.assertNotIn("submission_bridge_error", updated)
+                record = json.loads(
+                    (Path(raw) / "submission-bridge/123456-abcd.json").read_text()
+                )
+                self.assertEqual(record["state"], "forwarded")
+                submit.assert_called_once()
+                acknowledge.assert_called_once()
+
+                gpu_worker.drain_worker_submission_outbox(run, job)
+                submit.assert_called_once()
+                self.assertEqual(acknowledge.call_count, 2)
+
+    def test_drain_recovers_request_after_gpu_sandbox_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            run, job = self.run_and_job(Path(raw))
+            with (
+                mock.patch.object(
+                    gpu_worker, "read_worker_submission_outbox", return_value=[]
+                ),
+                mock.patch.object(
+                    gpu_worker,
+                    "read_durable_submission_outbox",
+                    return_value=[self.request()],
+                ),
+                mock.patch.object(
+                    gpu_worker,
+                    "submit_worker_policy_to_cpu_agent",
+                    return_value={"returncode": 0, "stdout": "staged", "stderr": ""},
+                ) as submit,
+                mock.patch.object(gpu_worker, "acknowledge_worker_submission"),
+            ):
+                _updated, detail = gpu_worker.drain_worker_submission_outbox(run, job)
+            self.assertEqual(detail["forwarded"], 1)
+            submit.assert_called_once()
 
 
 class HostJobRegistryTests(unittest.TestCase):

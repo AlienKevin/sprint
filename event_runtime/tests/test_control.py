@@ -988,6 +988,53 @@ class DurableOpsTests(unittest.TestCase):
                 )
                 self.assertFalse(conditions["stop_ack"])
 
+    def test_finalization_rejects_forwarded_gpu_submission_missing_from_ledger(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            job = state / "jobs" / "bridge-run"
+            trial = job / "task__abc"
+            continuous = trial / "artifacts" / "continuous"
+            continuous.mkdir(parents=True)
+            ledger = continuous / "ledger.jsonl"
+            ledger.write_text("")
+            (job / "result.json").write_text('{"finished_at":"now"}\n')
+            (trial / "result.json").write_text(
+                '{"finished_at":"now","continuous_verification":{"submissions":[]}}\n'
+            )
+            bridge = state / "submission-bridge"
+            bridge.mkdir()
+            (bridge / "123456-abcd.json").write_text(
+                json.dumps(
+                    {
+                        "submission_id": "123456-abcd",
+                        "queue_name": "123456-abcd.pt",
+                        "state": "forwarded",
+                    }
+                )
+            )
+            run = {
+                "run_id": "bridge-run",
+                "state_dir": str(state),
+                "jobs_root": str(state / "jobs"),
+                "job_path": str(job),
+                "trial_path": str(trial),
+                "evaluation_result_policy": "all_blind_archival_submissions",
+            }
+            with (
+                mock.patch.object(sprintctl, "update_run_fields"),
+                mock.patch.object(sprintctl, "harbor_alive", return_value=False),
+                mock.patch.object(sprintctl, "worker_alive", return_value=False),
+            ):
+                _complete, conditions, details = sprintctl.final_conditions(state, run)
+                self.assertFalse(conditions["submission_bridge_drained"])
+                self.assertTrue(any("absent from Harbor ledger" in d for d in details))
+
+                ledger.write_text(json.dumps(row(1, "123456-abcd.pt", 0.0)) + "\n")
+                _complete, conditions, _details = sprintctl.final_conditions(state, run)
+                self.assertTrue(conditions["submission_bridge_drained"])
+
     def test_stale_finalized_file_is_rechecked(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             state_dir = Path(raw)

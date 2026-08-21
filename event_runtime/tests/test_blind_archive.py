@@ -70,6 +70,63 @@ def test_submit_returns_async_receipt_without_designating_final(
     assert queued[0].read_bytes() == policy.read_bytes()
 
 
+def test_gpu_archive_routes_to_host_bridge_instead_of_durable_queue(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    monkeypatch.setenv("SPRINT_GPU_JOB_ID", "job-1")
+    monkeypatch.setenv("SPRINT_GPU_ATTEMPT", "2")
+    monkeypatch.setenv("SPRINT_GPU_LEASE_ID", "lease-2")
+    monkeypatch.setenv("SPRINT_RUN_ID", "run-1")
+    monkeypatch.setenv(
+        "SPRINT_GPU_DURABLE_SUBMISSION_BRIDGE_ROOT", str(tmp_path / "durable-bridge")
+    )
+    submit = load_script("archive.py")
+    configure_paths(submit, tmp_path)
+    monkeypatch.setattr(
+        submit.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0, stdout="interface ok\n", stderr=""
+        ),
+    )
+    policy = tmp_path / "candidate.pt"
+    policy.write_bytes(b"gpu-policy")
+    monkeypatch.setattr(sys, "argv", ["event archive", str(policy)])
+
+    assert submit.main() == 0
+    assert "queued for host submission bridge" in capsys.readouterr().out
+    receipt_path = next(Path(submit.RECEIPTS).glob("*.json"))
+    receipt = json.loads(receipt_path.read_text())
+    assert receipt["bridge"] == "host_owned_gpu_submission_v1"
+    assert receipt["run_id"] == "run-1"
+    assert receipt["gpu_job_id"] == "job-1"
+    assert receipt["gpu_attempt"] == 2
+    assert receipt["gpu_lease_id"] == "lease-2"
+    assert list((tmp_path / "durable-bridge/outbox").glob("*.pt"))
+
+
+def test_host_archive_request_id_is_idempotent(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    submit = load_script("archive.py")
+    configure_paths(submit, tmp_path)
+    monkeypatch.setattr(
+        submit.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    monkeypatch.setenv("SPRINT_HOST_ARCHIVE_REQUEST_ID", "123456-abcd")
+    policy = tmp_path / "candidate.pt"
+    policy.write_bytes(b"same-policy")
+    monkeypatch.setattr(sys, "argv", ["event archive", str(policy)])
+
+    assert submit.main() == 0
+    assert submit.main() == 0
+    assert "idempotent replay" in capsys.readouterr().out
+    assert len(list(Path(submit.RECEIPTS).glob("*.json"))) == 1
+    assert len(list(Path(submit.QUEUE).glob("*.pt"))) == 1
+
+
 def test_removed_final_flag_is_rejected(tmp_path: Path, monkeypatch) -> None:
     submit = load_script("archive.py")
     configure_paths(submit, tmp_path)

@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import io
 import json
 import os
 import sys
@@ -77,8 +79,19 @@ def enqueue_smoke_job(run: dict[str, Any], container_id: str) -> str:
     run_id = str(run["run_id"])
     jobs_root = f"/durable/runs/{run_id}/gpu-jobs"
     # Keep the probe body in a non-f string so `{...}` dict literals stay literal.
+    import torch
+
+    class CanaryPolicy(torch.nn.Module):
+        def forward(self, observation):
+            return observation.new_zeros((observation.size(0), 37))
+
+    buffer = io.BytesIO()
+    torch.jit.save(
+        torch.jit.trace(CanaryPolicy().eval(), torch.zeros(1, 122)), buffer
+    )
+    policy_base64 = base64.b64encode(buffer.getvalue()).decode("ascii")
     probe = r"""
-import json, os, time, pathlib
+import json, os, time, pathlib, subprocess
 import torch
 out = {
   "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -87,6 +100,15 @@ out = {
   "device_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
 }
 assert out["cuda_available"], out
+archive = subprocess.run(
+    ["event", "archive", "/app/submission_bridge_canary.pt", "--note", "submission-bridge-canary"],
+    capture_output=True, text=True,
+)
+out["archive_returncode"] = archive.returncode
+out["archive_stdout"] = archive.stdout
+out["archive_stderr"] = archive.stderr
+assert archive.returncode == 0, out
+assert "queued for host submission bridge" in archive.stdout, out
 # Hold the GPU ~45s so durable telemetry + host poller can sample gpu_active.
 t0 = time.time()
 while time.time() - t0 < 45:
@@ -107,6 +129,10 @@ print(json.dumps(out, sort_keys=True), flush=True)
         f"export SPRINT_GPU_JOBS_ROOT={jobs_root!r}\n"
         'printf "%s\\n" "$SPRINT_RUN_ID" > /run/sprint-run-id\n'
         'printf "%s\\n" "$SPRINT_GPU_JOBS_ROOT" > /run/sprint-gpu-jobs-root\n'
+        "python3 - <<'PY'\n"
+        "import base64, pathlib\n"
+        f"pathlib.Path('/app/submission_bridge_canary.pt').write_bytes(base64.b64decode({policy_base64!r}))\n"
+        "PY\n"
         "cat > /app/smoke_gpu_probe.py <<'PY'\n" + probe.strip() + "\nPY\n"
         "event gpu --timeout 1200 --note smoke-cuda-probe -- "
         "python3 -u /app/smoke_gpu_probe.py\n"
@@ -138,6 +164,41 @@ print(json.dumps(out, sort_keys=True), flush=True)
     if not job_id:
         raise RuntimeError(f"no job id in enqueue output: {out[-2000:]}")
     return job_id
+
+
+def submission_bridge_acknowledged(
+    state_dir: Path, run: dict[str, Any]
+) -> tuple[bool, dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    bridge_root = state_dir / "submission-bridge"
+    if bridge_root.is_dir():
+        for path in sorted(bridge_root.glob("*.json")):
+            try:
+                record = json.loads(path.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if record.get("gpu_job_id") and record.get("submission_id"):
+                records.append(record)
+    job, trial = sprintctl.discover_job_and_trial(state_dir, run)
+    ledger_names: set[str] = set()
+    if trial is not None:
+        ledger = sprintctl.read_ledger(
+            trial / "artifacts" / "continuous" / "ledger.jsonl"
+        )
+        ledger_names = {str(row.get("name") or "") for row in ledger.rows}
+    acknowledged = [
+        record
+        for record in records
+        if record.get("state") == "forwarded"
+        and str(record.get("queue_name") or "") in ledger_names
+    ]
+    return bool(acknowledged), {
+        "records": records,
+        "ledger_names": sorted(ledger_names),
+        "acknowledged": acknowledged,
+        "job": str(job) if job else None,
+        "trial": str(trial) if trial else None,
+    }
 
 
 def wait_job_uses_gpu(
@@ -339,6 +400,37 @@ def main() -> int:
             }
         )
         job_id = None
+        verdict = "FAIL"
+
+    # (b2) the GPU-side archive must cross the host bridge and appear in the
+    # live Harbor ledger.  This is the production topology that a local shared
+    # filesystem test cannot exercise.
+    bridge_ok = False
+    bridge_evidence: dict[str, Any] = {"error": "no GPU job"}
+    if job_id:
+        try:
+            def bridge_pred():
+                gpu_worker.dispatch_once(run_id)
+                return submission_bridge_acknowledged(state_dir, run)
+
+            bridge_evidence = wait_for(
+                bridge_pred,
+                timeout=900,
+                label="GPU submission bridge -> Harbor acknowledgment",
+                sleep=10.0,
+            )
+            bridge_ok = True
+        except Exception as exc:  # noqa: BLE001
+            bridge_evidence = {"error": f"{type(exc).__name__}: {exc}"}
+    checklist.append(
+        {
+            "n": "2b",
+            "name": "GPU archive crosses host bridge into Harbor ledger",
+            "result": "PASS" if bridge_ok else "FAIL",
+            "evidence": json.dumps(bridge_evidence, sort_keys=True)[:500],
+        }
+    )
+    if not bridge_ok:
         verdict = "FAIL"
 
     # (c) CPU-agent telemetry + durable/host GPU telemetry while job runs

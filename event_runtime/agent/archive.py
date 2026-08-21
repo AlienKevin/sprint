@@ -19,18 +19,34 @@ import shutil
 import subprocess
 import sys
 import uuid
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
+IN_GPU_WORKER = bool(os.environ.get("SPRINT_GPU_JOB_ID"))
+GPU_BRIDGE_ROOT = os.environ.get(
+    "SPRINT_GPU_SUBMISSION_BRIDGE_ROOT", "/run/sprint-submission-bridge"
+)
+GPU_DURABLE_BRIDGE_ROOT = os.environ.get(
+    "SPRINT_GPU_DURABLE_SUBMISSION_BRIDGE_ROOT",
+    (
+        f"/durable/runs/{os.environ.get('SPRINT_RUN_ID')}/submission-bridge"
+        if os.environ.get("SPRINT_RUN_ID")
+        else ""
+    ),
+)
 _DEFAULT_ROOT = (
-    "/durable/submissions" if Path("/durable").is_dir() else "/app/submissions"
+    GPU_BRIDGE_ROOT
+    if IN_GPU_WORKER
+    else ("/durable/submissions" if Path("/durable").is_dir() else "/app/submissions")
 )
 SUBMISSIONS_ROOT = os.environ.get("SPRINT_SUBMISSIONS_ROOT", _DEFAULT_ROOT)
-QUEUE = os.path.join(SUBMISSIONS_ROOT, "queue")
+QUEUE = os.path.join(SUBMISSIONS_ROOT, "outbox" if IN_GPU_WORKER else "queue")
 NOTES = os.path.join(SUBMISSIONS_ROOT, "notes")
 RECEIPTS = os.path.join(SUBMISSIONS_ROOT, "receipts")
 ACKNOWLEDGMENTS = os.path.join(SUBMISSIONS_ROOT, "acknowledgments")
 LOCK = os.path.join(SUBMISSIONS_ROOT, "submit.lock")
+REQUEST_ID_RE = re.compile(r"^[0-9]{6}-[0-9a-f]{4}$")
 MINIMUM_INTERVAL_SECONDS = float(
     os.environ.get("SPRINT_SUBMISSION_MIN_INTERVAL_SEC", "300")
 )
@@ -139,6 +155,22 @@ def main() -> int:
     try:
         with open(policy, "rb") as handle:
             source_sha256 = hashlib.file_digest(handle, "sha256").hexdigest()
+        requested_id = str(os.environ.get("SPRINT_HOST_ARCHIVE_REQUEST_ID") or "")
+        if requested_id and not REQUEST_ID_RE.fullmatch(requested_id):
+            print("invalid host archive request id", file=sys.stderr)
+            return 2
+        if requested_id:
+            prior = read_json(os.path.join(RECEIPTS, f"{requested_id}.json"))
+            if prior:
+                if prior.get("policy_sha256") != source_sha256:
+                    print(
+                        f"not staged: request id {requested_id} already names "
+                        "different policy bytes",
+                        file=sys.stderr,
+                    )
+                    return 2
+                print(f"staged locally {requested_id}  (idempotent replay)")
+                return 0
         if not args.force:
             refusal = admission_backpressure(source_sha256)
             if refusal:
@@ -147,7 +179,7 @@ def main() -> int:
                 )
                 return 2
         submitted_at = datetime.now(timezone.utc)
-        job_id = f"{submitted_at:%H%M%S}-{uuid.uuid4().hex[:4]}"
+        job_id = requested_id or f"{submitted_at:%H%M%S}-{uuid.uuid4().hex[:4]}"
 
         # Copy under a hidden name and rename into place. Copying rather than
         # referencing freezes the exact bytes while training continues.
@@ -165,7 +197,7 @@ def main() -> int:
                 handle.write(note + "\n")
 
         receipt = {
-            "schema_version": 1,
+            "schema_version": 2 if IN_GPU_WORKER else 1,
             "submission_id": job_id,
             "submitted_at": submitted_at.isoformat(),
             "policy_sha256": policy_sha256,
@@ -174,16 +206,52 @@ def main() -> int:
             "state": "staged",
             "note": note,
         }
+        if IN_GPU_WORKER:
+            receipt.update(
+                {
+                    "bridge": "host_owned_gpu_submission_v1",
+                    "run_id": os.environ.get("SPRINT_RUN_ID"),
+                    "gpu_job_id": os.environ.get("SPRINT_GPU_JOB_ID"),
+                    "gpu_attempt": int(os.environ.get("SPRINT_GPU_ATTEMPT") or 0),
+                    "gpu_lease_id": os.environ.get("SPRINT_GPU_LEASE_ID"),
+                }
+            )
         atomic_json(os.path.join(RECEIPTS, f"{job_id}.json"), receipt)
+        if IN_GPU_WORKER and GPU_DURABLE_BRIDGE_ROOT:
+            durable_queue = os.path.join(GPU_DURABLE_BRIDGE_ROOT, "outbox")
+            durable_receipts = os.path.join(GPU_DURABLE_BRIDGE_ROOT, "receipts")
+            durable_notes = os.path.join(GPU_DURABLE_BRIDGE_ROOT, "notes")
+            for directory in (durable_queue, durable_receipts, durable_notes):
+                os.makedirs(directory, exist_ok=True)
+            durable_staged = os.path.join(durable_queue, f".{job_id}.pt")
+            shutil.copy2(queued, durable_staged)
+            os.replace(durable_staged, os.path.join(durable_queue, f"{job_id}.pt"))
+            atomic_json(
+                os.path.join(durable_receipts, f"{job_id}.json"), receipt
+            )
+            if note:
+                durable_note = os.path.join(durable_notes, f"{job_id}.txt")
+                with open(durable_note, "w", encoding="utf-8") as handle:
+                    handle.write(note + "\n")
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         os.close(lock_fd)
 
-    print(f"staged locally {job_id}" + (f"  ({note})" if note else ""))
-    print(
-        "This is not accepted until Harbor acknowledges the immutable bytes; "
-        "run 'event history' to inspect admission state."
-    )
+    if IN_GPU_WORKER:
+        print(
+            f"queued for host submission bridge {job_id}"
+            + (f"  ({note})" if note else "")
+        )
+        print(
+            "The trusted host will transfer these immutable bytes into Harbor; "
+            "run 'event history' to inspect bridge and admission state."
+        )
+    else:
+        print(f"staged locally {job_id}" + (f"  ({note})" if note else ""))
+        print(
+            "This is not accepted until Harbor acknowledges the immutable bytes; "
+            "run 'event history' to inspect admission state."
+        )
     return 0
 
 

@@ -8,7 +8,9 @@ import sys
 from pathlib import Path
 
 _DEFAULT_ROOT = (
-    "/durable/submissions" if Path("/durable").is_dir() else "/app/submissions"
+    os.environ.get("SPRINT_GPU_SUBMISSION_BRIDGE_ROOT", "/run/sprint-submission-bridge")
+    if os.environ.get("SPRINT_GPU_JOB_ID")
+    else ("/durable/submissions" if Path("/durable").is_dir() else "/app/submissions")
 )
 SUBMISSIONS_ROOT = os.environ.get("SPRINT_SUBMISSIONS_ROOT", _DEFAULT_ROOT)
 RECEIPTS = os.path.join(SUBMISSIONS_ROOT, "receipts")
@@ -48,6 +50,8 @@ def main() -> int:
         state = str(ack.get("state") or "staged")
         if state == "accepted":
             detail = "accepted by Harbor; official result hidden"
+        elif state == "forwarded":
+            detail = "forwarded by trusted host; awaiting Harbor acknowledgment"
         elif state == "rejected":
             reason = str(ack.get("reason") or "admission rejected")
             retry = ack.get("retry_after_sec")

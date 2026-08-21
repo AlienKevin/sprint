@@ -67,6 +67,11 @@ AGENT_GPU_MIRROR_ROOT = "/run/sprint-gpu-mirror"
 AGENT_GPU_MIRROR_LOG_BYTES = 768 * 1024
 AGENT_GPU_MIRROR_ARTIFACT_BYTES = 32 * 1024 * 1024
 AGENT_GPU_MIRROR_ARG_BYTES = 64 * 1024
+GPU_SUBMISSION_BRIDGE_ROOT = "/run/sprint-submission-bridge"
+GPU_SUBMISSION_BRIDGE_MAX_REQUESTS = 8
+GPU_SUBMISSION_BRIDGE_MAX_POLICY_BYTES = 32 * 1024 * 1024
+GPU_SUBMISSION_BRIDGE_MAX_BATCH_BYTES = 64 * 1024 * 1024
+GPU_SUBMISSION_ID_RE = re.compile(r"^[0-9]{6}-[0-9a-f]{4}$")
 LIVE_PROVIDER_LOG_INTERVAL_SEC = 30
 LIVE_PROVIDER_LOG_TAIL_LINES = 2000
 AGENT_GPU_CLI_PATH = "/opt/event_runtime/agent/gpu.py"
@@ -76,6 +81,450 @@ MAX_WORK_ARCHIVE_BYTES = 256 * 1024 * 1024
 WORK_ARCHIVE_TRANSFER_ATTEMPTS = 5
 GPU_BUDGET_MIRROR_PATH = "/run/sprint-budget-watchdog.json"
 MAX_GPU_BUDGET_MIRROR_BYTES = 1024 * 1024
+
+
+def submission_bridge_state_dir(run: dict[str, Any]) -> Path:
+    path = Path(str(run["state_dir"])) / "submission-bridge"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _cpu_agent_sandbox(run: dict[str, Any]):
+    """Resolve Harbor's live CPU sandbox from its task-container identity."""
+    container_id = str(run.get("agent_container_id") or "")
+    if not container_id.startswith("ta-"):
+        raise RuntimeError("CPU agent container is unavailable")
+    identity = sprintctl.exec_container(
+        run,
+        container_id,
+        'printf "%s" "$MODAL_SANDBOX_ID"',
+        check=False,
+        timeout=20,
+    )
+    sandbox_id = (identity.stdout or "").strip()
+    if identity.returncode != 0 or not sandbox_id.startswith("sb-"):
+        raise RuntimeError(
+            (identity.stderr or identity.stdout or "missing CPU sandbox ID")[-1000:]
+        )
+    return modal.Sandbox.from_id(sandbox_id)
+
+
+def read_worker_submission_outbox(
+    run: dict[str, Any], job: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Read bounded immutable archive requests from a live GPU sandbox.
+
+    This deliberately uses the Modal sandbox control channel, not the shared
+    Volume: concurrent Volume mounts are snapshots and cannot provide a live
+    producer/consumer queue.
+    """
+    sandbox_id = str(job.get("sandbox_id") or "")
+    if not sandbox_id.startswith("sb-"):
+        return []
+    script = r'''
+import base64, gzip, hashlib, json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+limit = int(sys.argv[2])
+max_policy = int(sys.argv[3])
+max_batch = int(sys.argv[4])
+rows = []
+total = 0
+for receipt_path in sorted((root / "receipts").glob("*.json")):
+    if len(rows) >= limit:
+        break
+    try:
+        receipt = json.loads(receipt_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        continue
+    submission_id = receipt_path.stem
+    policy_path = root / "outbox" / f"{submission_id}.pt"
+    try:
+        size = policy_path.stat().st_size
+    except OSError:
+        continue
+    if size <= 0 or size > max_policy or total + size > max_batch:
+        continue
+    data = policy_path.read_bytes()
+    total += len(data)
+    rows.append({
+        "receipt": receipt,
+        "policy_sha256": hashlib.sha256(data).hexdigest(),
+        "policy_size_bytes": len(data),
+        "policy_base64": base64.b64encode(data).decode("ascii"),
+    })
+sys.stdout.buffer.write(gzip.compress(json.dumps(rows, separators=(",", ":")).encode()))
+'''.strip()
+    sandbox = modal.Sandbox.from_id(sandbox_id)
+    process = sandbox.exec(
+        "python3",
+        "-c",
+        script,
+        GPU_SUBMISSION_BRIDGE_ROOT,
+        str(GPU_SUBMISSION_BRIDGE_MAX_REQUESTS),
+        str(GPU_SUBMISSION_BRIDGE_MAX_POLICY_BYTES),
+        str(GPU_SUBMISSION_BRIDGE_MAX_BATCH_BYTES),
+        text=False,
+        timeout=45,
+    )
+    return_code = process.wait()
+    raw = process.stdout.read()
+    stderr = process.stderr.read()
+    if return_code != 0:
+        detail = stderr or raw or b"GPU submission outbox read failed"
+        raise RuntimeError(detail.decode(errors="replace")[-1000:])
+    if not raw:
+        return []
+    payload = json.loads(gzip.decompress(raw))
+    if not isinstance(payload, list):
+        raise RuntimeError("GPU submission outbox returned a non-list payload")
+    return payload
+
+
+def read_durable_submission_outbox(
+    run: dict[str, Any], job: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Recover GPU archive requests after the producing sandbox has exited."""
+    prefix = f"runs/{run['run_id']}/submission-bridge"
+    result = sprintctl.run_command(
+        sprintctl.modal_command(
+            "volume",
+            "ls",
+            str(run["volume_name"]),
+            f"{prefix}/receipts",
+            "--json",
+        ),
+        run=run,
+        check=False,
+        timeout=60,
+    )
+    if result.returncode != 0:
+        return []
+    try:
+        entries = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError:
+        return []
+    records: list[dict[str, Any]] = []
+    state_root = submission_bridge_state_dir(run)
+    for entry in entries if isinstance(entries, list) else []:
+        remote_receipt = str(entry.get("filename") or "")
+        name = Path(remote_receipt).name
+        if not name.endswith(".json"):
+            continue
+        submission_id = name[:-5]
+        if not GPU_SUBMISSION_ID_RE.fullmatch(submission_id):
+            continue
+        try:
+            existing = json.loads(
+                (state_root / f"{submission_id}.json").read_text()
+            )
+        except (OSError, json.JSONDecodeError):
+            existing = {}
+        if existing.get("state") == "forwarded":
+            continue
+        receipt_text = sprintctl.volume_get_text(run, remote_receipt)
+        if not receipt_text:
+            continue
+        try:
+            receipt = json.loads(receipt_text)
+        except json.JSONDecodeError:
+            continue
+        remote_policy = f"{prefix}/outbox/{submission_id}.pt"
+        with tempfile.TemporaryDirectory() as raw:
+            destination = Path(raw) / f"{submission_id}.pt"
+            downloaded = sprintctl.run_command(
+                sprintctl.modal_command(
+                    "volume",
+                    "get",
+                    "--force",
+                    str(run["volume_name"]),
+                    remote_policy,
+                    str(destination),
+                ),
+                run=run,
+                check=False,
+                timeout=120,
+            )
+            if downloaded.returncode != 0 or not destination.is_file():
+                continue
+            size = destination.stat().st_size
+            if not (0 < size <= GPU_SUBMISSION_BRIDGE_MAX_POLICY_BYTES):
+                continue
+            content = destination.read_bytes()
+        records.append(
+            {
+                "receipt": receipt,
+                "policy_sha256": hashlib.sha256(content).hexdigest(),
+                "policy_size_bytes": len(content),
+                "policy_base64": base64.b64encode(content).decode("ascii"),
+            }
+        )
+        if len(records) >= GPU_SUBMISSION_BRIDGE_MAX_REQUESTS:
+            break
+    return records
+
+
+def validate_worker_submission_request(
+    run: dict[str, Any], job: dict[str, Any], raw: dict[str, Any]
+) -> tuple[dict[str, Any], bytes]:
+    receipt = raw.get("receipt")
+    if not isinstance(receipt, dict):
+        raise ValueError("submission bridge receipt is missing")
+    submission_id = str(receipt.get("submission_id") or "")
+    if not GPU_SUBMISSION_ID_RE.fullmatch(submission_id):
+        raise ValueError("submission bridge request id is invalid")
+    expected = {
+        "bridge": "host_owned_gpu_submission_v1",
+        "run_id": str(run["run_id"]),
+        "gpu_job_id": str(job["job_id"]),
+        "gpu_attempt": int(job.get("attempt") or 0),
+        "gpu_lease_id": str(job.get("lease_id") or ""),
+    }
+    for key, value in expected.items():
+        observed = receipt.get(key)
+        if key == "gpu_attempt":
+            observed = int(observed or 0)
+        else:
+            observed = str(observed or "")
+        if observed != value:
+            raise ValueError(f"submission bridge {key} identity mismatch")
+    try:
+        content = base64.b64decode(str(raw["policy_base64"]), validate=True)
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError("submission bridge policy encoding is invalid") from exc
+    if not (0 < len(content) <= GPU_SUBMISSION_BRIDGE_MAX_POLICY_BYTES):
+        raise ValueError("submission bridge policy size is invalid")
+    digest = hashlib.sha256(content).hexdigest()
+    if (
+        digest != str(raw.get("policy_sha256") or "")
+        or digest != str(receipt.get("policy_sha256") or "")
+        or len(content) != int(raw.get("policy_size_bytes") or 0)
+        or len(content) != int(receipt.get("policy_size_bytes") or 0)
+    ):
+        raise ValueError("submission bridge policy integrity mismatch")
+    return receipt, content
+
+
+def submit_worker_policy_to_cpu_agent(
+    run: dict[str, Any], receipt: dict[str, Any], content: bytes
+) -> dict[str, Any]:
+    """Transfer exact bytes to the CPU sandbox and invoke its archive CLI."""
+    envelope = gzip.compress(
+        json.dumps(
+            {
+                "submission_id": receipt["submission_id"],
+                "note": str(receipt.get("note") or ""),
+                "policy_base64": base64.b64encode(content).decode("ascii"),
+            },
+            separators=(",", ":"),
+        ).encode()
+    )
+    script = r'''
+import base64, gzip, json, os, pathlib, subprocess, sys
+payload = json.loads(gzip.decompress(sys.stdin.buffer.read(int(sys.argv[1]))))
+root = pathlib.Path("/run/sprint-submission-bridge/incoming")
+root.mkdir(parents=True, exist_ok=True)
+submission_id = payload["submission_id"]
+target = root / f"{submission_id}.pt"
+temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+temporary.write_bytes(base64.b64decode(payload["policy_base64"]))
+os.chmod(temporary, 0o400)
+os.replace(temporary, target)
+env = os.environ.copy()
+env["SPRINT_HOST_ARCHIVE_REQUEST_ID"] = submission_id
+command = ["/usr/local/bin/event", "archive", str(target)]
+if payload.get("note"):
+    command += ["--note", payload["note"]]
+try:
+    result = subprocess.run(command, capture_output=True, text=True, env=env)
+    print(json.dumps({"returncode": result.returncode, "stdout": result.stdout,
+                      "stderr": result.stderr}, separators=(",", ":")))
+finally:
+    target.unlink(missing_ok=True)
+'''.strip()
+    sandbox = _cpu_agent_sandbox(run)
+    process = sandbox.exec(
+        "python3", "-c", script, str(len(envelope)), text=False, timeout=90
+    )
+    process.stdin.write(envelope)
+    process.stdin.drain()
+    return_code = process.wait()
+    stdout = process.stdout.read()
+    stderr = process.stderr.read()
+    if return_code != 0:
+        detail = stderr or stdout or b"CPU archive bridge failed"
+        raise RuntimeError(detail.decode(errors="replace")[-1000:])
+    result = json.loads(stdout)
+    if not isinstance(result, dict):
+        raise RuntimeError("CPU archive bridge returned malformed output")
+    return result
+
+
+def acknowledge_worker_submission(
+    job: dict[str, Any], submission_id: str, payload: dict[str, Any]
+) -> None:
+    sandbox_id = str(job.get("sandbox_id") or "")
+    if not sandbox_id.startswith("sb-"):
+        return
+    encoded = base64.b64encode(
+        (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode()
+    ).decode("ascii")
+    script = r'''
+import base64, os, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+submission_id = sys.argv[2]
+target = root / "acknowledgments" / f"{submission_id}.pt.json"
+target.parent.mkdir(parents=True, exist_ok=True)
+temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+temporary.write_bytes(base64.b64decode(sys.argv[3]))
+os.replace(temporary, target)
+(root / "outbox" / f"{submission_id}.pt").unlink(missing_ok=True)
+'''.strip()
+    process = modal.Sandbox.from_id(sandbox_id).exec(
+        "python3",
+        "-c",
+        script,
+        GPU_SUBMISSION_BRIDGE_ROOT,
+        submission_id,
+        encoded,
+        timeout=30,
+    )
+    if process.wait() != 0:
+        detail = process.stderr.read() or process.stdout.read()
+        raise RuntimeError(str(detail)[-1000:])
+
+
+def drain_worker_submission_outbox(
+    run: dict[str, Any], job: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Idempotently forward every GPU archive request through the CPU agent."""
+    if not job.get("submission_bridge_enabled"):
+        return job, {"submission_bridge": "disabled"}
+    payload = dict(job)
+    counts = {"observed": 0, "forwarded": 0, "retry_wait": 0, "error": 0}
+    try:
+        requests = read_worker_submission_outbox(run, job)
+    except modal.exception.NotFoundError:
+        requests = []
+    except Exception as exc:  # noqa: BLE001
+        payload["submission_bridge_error"] = f"{type(exc).__name__}: {exc}"
+        requests = []
+    durable_requests: list[dict[str, Any]] = []
+    if not requests:
+        try:
+            durable_requests = read_durable_submission_outbox(run, job)
+        except Exception as exc:  # noqa: BLE001
+            payload["submission_bridge_error"] = f"{type(exc).__name__}: {exc}"
+    by_id: dict[str, dict[str, Any]] = {}
+    for request in [*durable_requests, *requests]:
+        receipt = request.get("receipt")
+        if isinstance(receipt, dict) and receipt.get("submission_id"):
+            by_id[str(receipt["submission_id"])] = request
+    requests = list(by_id.values())
+
+    root = submission_bridge_state_dir(run)
+    for raw in requests:
+        counts["observed"] += 1
+        try:
+            receipt, content = validate_worker_submission_request(run, job, raw)
+            submission_id = str(receipt["submission_id"])
+        except Exception as exc:  # noqa: BLE001
+            counts["error"] += 1
+            payload["submission_bridge_error"] = f"{type(exc).__name__}: {exc}"
+            continue
+        record_path = root / f"{submission_id}.json"
+        try:
+            record = json.loads(record_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            record = {
+                "schema_version": 1,
+                "run_id": run["run_id"],
+                "submission_id": submission_id,
+                "queue_name": f"{submission_id}.pt",
+                "gpu_job_id": job["job_id"],
+                "gpu_attempt": job.get("attempt"),
+                "policy_sha256": receipt["policy_sha256"],
+                "policy_size_bytes": receipt["policy_size_bytes"],
+                "observed_at": utc_now(),
+                "state": "observed",
+            }
+            sprintctl.atomic_write_json(record_path, record, mode=0o600)
+        if record.get("policy_sha256") != receipt.get("policy_sha256"):
+            counts["error"] += 1
+            record.update(
+                {"state": "error", "error": "request id policy hash changed"}
+            )
+            sprintctl.atomic_write_json(record_path, record, mode=0o600)
+            continue
+        if record.get("state") == "forwarded":
+            counts["forwarded"] += 1
+            try:
+                acknowledge_worker_submission(
+                    job,
+                    submission_id,
+                    {
+                        "schema_version": 1,
+                        "submission_id": submission_id,
+                        "state": "forwarded",
+                        "forwarded_at": record.get("forwarded_at"),
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            continue
+        try:
+            result = submit_worker_policy_to_cpu_agent(run, receipt, content)
+        except Exception as exc:  # noqa: BLE001
+            counts["retry_wait"] += 1
+            record.update(
+                {
+                    "state": "retry_wait",
+                    "last_attempt_at": utc_now(),
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+            sprintctl.atomic_write_json(record_path, record, mode=0o600)
+            continue
+        archive_returncode = int(result.get("returncode") or 0)
+        record.update(
+            {
+                "last_attempt_at": utc_now(),
+                "archive_returncode": archive_returncode,
+                "archive_stdout": str(result.get("stdout") or "")[-2000:],
+                "archive_stderr": str(result.get("stderr") or "")[-2000:],
+            }
+        )
+        if archive_returncode != 0:
+            counts["retry_wait"] += 1
+            record["state"] = "retry_wait"
+            sprintctl.atomic_write_json(record_path, record, mode=0o600)
+            continue
+        counts["forwarded"] += 1
+        record.update({"state": "forwarded", "forwarded_at": utc_now()})
+        record.pop("error", None)
+        sprintctl.atomic_write_json(record_path, record, mode=0o600)
+        try:
+            acknowledge_worker_submission(
+                job,
+                submission_id,
+                {
+                    "schema_version": 1,
+                    "submission_id": submission_id,
+                    "state": "forwarded",
+                    "forwarded_at": record["forwarded_at"],
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            record["worker_ack_error"] = f"{type(exc).__name__}: {exc}"
+            sprintctl.atomic_write_json(record_path, record, mode=0o600)
+    if counts["error"] or counts["retry_wait"]:
+        payload["submission_bridge_error"] = (
+            f"{counts['error']} invalid, {counts['retry_wait']} awaiting retry"
+        )
+    else:
+        payload.pop("submission_bridge_error", None)
+    payload["submission_bridge_last_checked_at"] = utc_now()
+    payload["submission_bridge_counts"] = counts
+    return payload, {"submission_bridge": "drained", **counts}
 
 
 def mirror_agent_job(
@@ -1864,6 +2313,10 @@ def reconcile_job(
 
     attempt_record = load_attempt_record(run, job)
     heartbeat = load_heartbeat(run, job)
+    before_submission_bridge = job
+    job, submission_bridge_detail = drain_worker_submission_outbox(run, job)
+    if job != before_submission_bridge:
+        persist_job(run, job)
     owned_record = bool(
         attempt_record
         and int(attempt_record.get("attempt") or 0) == int(job.get("attempt") or 0)
@@ -1906,6 +2359,7 @@ def reconcile_job(
         return terminal, {
             "decision": "terminal",
             "status": terminal["status"],
+            **submission_bridge_detail,
             **log_detail,
         }
 
@@ -1923,6 +2377,7 @@ def reconcile_job(
             "decision": "retry",
             "status": retried["status"],
             "reason": retry_reason,
+            **submission_bridge_detail,
         }
 
     if owned_record and str(attempt_record.get("status") or "") == "running":
@@ -1955,6 +2410,7 @@ def reconcile_job(
         "exit_code": exit_code,
         "probe_error": probe_error,
         "heartbeat_epoch_s": gpu_claim.heartbeat_epoch(heartbeat),
+        **submission_bridge_detail,
         **live_policy_detail,
     }
     if decision == "observe":
@@ -2229,6 +2685,10 @@ def _stop_all_locked(
             job = reconcile_terminal_attempt_before_stop(run, job)
         if not job or str(job.get("status") or "") in gpu_claim.TERMINAL:
             continue
+        # Drain archive intent before fencing the worker.  Unlike training,
+        # forwarding immutable policy bytes does not consume agent budget and
+        # must not be lost at the budget boundary.
+        job, _bridge_detail = drain_worker_submission_outbox(run, job)
         heartbeat = load_heartbeat(run, job)
         payload = dict(job)
         payload["fence_epoch"] = int(payload.get("fence_epoch") or 0) + 1

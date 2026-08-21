@@ -1765,6 +1765,7 @@ def final_conditions(
         "trial_found": trial is not None,
         "ledger_parseable": False,
         "ledger_terminal": False,
+        "submission_bridge_drained": False,
         "attempt_archives": False,
         "artifact_manifest": False,
         "finished_at": False,
@@ -1793,6 +1794,51 @@ def final_conditions(
     conditions["ledger_parseable"] = not ledger.errors
     conditions["ledger_terminal"] = all(row_terminal(row) for row in ledger.rows)
     details.extend(ledger.errors)
+
+    bridge_root = state_dir / "submission-bridge"
+    bridge_records: list[dict[str, Any]] = []
+    bridge_errors: list[str] = []
+    if bridge_root.is_dir():
+        for path in sorted(bridge_root.glob("*.json")):
+            try:
+                record = json.loads(path.read_text())
+            except (OSError, json.JSONDecodeError) as exc:
+                bridge_errors.append(
+                    f"invalid submission bridge record {path.name}: {exc}"
+                )
+                continue
+            if not isinstance(record, dict):
+                bridge_errors.append(
+                    f"invalid submission bridge record {path.name}: not an object"
+                )
+                continue
+            bridge_records.append(record)
+    ledger_names = {str(row.get("name") or "") for row in ledger.rows}
+    missing_bridge_names = [
+        str(record.get("queue_name") or "")
+        for record in bridge_records
+        if record.get("state") == "forwarded"
+        and str(record.get("queue_name") or "") not in ledger_names
+    ]
+    nonforwarded_bridge = [
+        str(record.get("submission_id") or "unknown")
+        for record in bridge_records
+        if record.get("state") != "forwarded"
+    ]
+    conditions["submission_bridge_drained"] = not (
+        bridge_errors or missing_bridge_names or nonforwarded_bridge
+    )
+    details.extend(bridge_errors)
+    if missing_bridge_names:
+        details.append(
+            "GPU submission(s) forwarded but absent from Harbor ledger: "
+            + ", ".join(missing_bridge_names)
+        )
+    if nonforwarded_bridge:
+        details.append(
+            "GPU submission bridge request(s) not forwarded: "
+            + ", ".join(nonforwarded_bridge)
+        )
 
     if run.get("primary_score_policy") == "frozen_final_artifact":
         conditions["final_policy_frozen"] = final_policy_frozen_ready(trial)
