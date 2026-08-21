@@ -678,8 +678,7 @@ def gpu_allocated_seconds(
 
 def write_stop(run_root: Path, runtime_dir: Path, payload: dict[str, Any]) -> None:
     marker = run_root / "BUDGET_STOP_REQUESTED.json"
-    if not marker.exists():
-        atomic_json(marker, payload)
+    atomic_json(marker, payload)
     runtime_dir.mkdir(parents=True, exist_ok=True)
     stop = runtime_dir / "sprint-stop"
     temporary = stop.with_name(f".{stop.name}.{os.getpid()}.tmp")

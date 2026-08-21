@@ -2007,7 +2007,7 @@ while True:
                 "stop-during-build", reason="operator_batch_stop"
             )
 
-    def test_monitor_imports_cloud_budget_stop_before_gpu_dispatch(self) -> None:
+    def test_monitor_never_trusts_agent_writable_cloud_budget_stop(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             state_dir = Path(raw)
             run = {
@@ -2019,11 +2019,7 @@ while True:
             expected_status = {"run_id": "cloud-budget-stop"}
             with (
                 mock.patch.object(sprintctl, "load_run", return_value=(state_dir, run)),
-                mock.patch.object(
-                    sprintctl,
-                    "fetch_remote_json",
-                    return_value={"reason": "agent_cost_budget_exhausted"},
-                ),
+                mock.patch.object(sprintctl, "fetch_remote_json") as fetch_remote,
                 mock.patch.object(sprintctl, "request_stop") as request_stop,
                 mock.patch("event_runtime.compute.worker.dispatch_once") as dispatch,
                 mock.patch("event_runtime.telemetry.host.poll_once"),
@@ -2039,13 +2035,9 @@ while True:
                 )
 
             self.assertEqual(status, expected_status)
-            marker = json.loads((state_dir / "STOP_REQUESTED.json").read_text())
-            self.assertEqual(marker["reason"], "agent_cost_budget_exhausted")
-            request_stop.assert_called_once_with(
-                "cloud-budget-stop", reason="agent_cost_budget_exhausted"
-            )
-            # Dispatch is still called, but sees the local STOP_REQUESTED marker
-            # and therefore cannot claim or spawn new GPU work.
+            self.assertFalse((state_dir / "STOP_REQUESTED.json").exists())
+            request_stop.assert_not_called()
+            fetch_remote.assert_not_called()
             dispatch.assert_called_once_with("cloud-budget-stop")
 
     def test_agent_cost_budget_stops_at_complete_ten_dollars(self) -> None:

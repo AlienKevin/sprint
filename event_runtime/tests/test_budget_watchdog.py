@@ -733,6 +733,9 @@ def test_live_watchdog_stops_before_cap_using_shutdown_reserve(
     root = write_run(durable, "unit")
     monkeypatch.setenv("SPRINT_CPU_LAUNCH_ATTEMPT", "1")
     watchdog.ensure_cpu_start(root, 1, 1_000)
+    (root / "BUDGET_STOP_REQUESTED.json").write_text(
+        '{"reason":"agent_cost_budget_exhausted"}\n'
+    )
     elapsed = 9.95 / watchdog.CPU_USD_PER_SECOND
 
     payload = watchdog.check_once(
@@ -747,6 +750,9 @@ def test_live_watchdog_stops_before_cap_using_shutdown_reserve(
     assert payload["status"] == "stop_requested"
     marker = json.loads((root / "BUDGET_STOP_REQUESTED.json").read_text())
     assert marker["reason"] == "agent_cost_budget_exhausted"
+    assert marker["schema_version"] == 2
+    assert marker["status"] == "stop_requested"
+    assert marker["total_usd"] >= marker["stop_threshold_usd"]
     assert (runtime / "sprint-stop").read_text() == "agent_cost_budget_exhausted\n"
 
 
@@ -763,20 +769,6 @@ def test_invalid_complete_usage_record_is_fail_closed(tmp_path: Path) -> None:
             default_effort="high",
             pricing_module=pricing,
         )
-
-
-def test_gpu_worker_observes_durable_budget_marker(tmp_path: Path) -> None:
-    marker = tmp_path / "runs/unit/BUDGET_STOP_REQUESTED.json"
-    marker.parent.mkdir(parents=True)
-    marker.write_text("{}\n")
-    worker_spec = importlib.util.spec_from_file_location(
-        "sprint_gpu_worker_budget",
-        ROOT / "event_runtime/container/sprint-gpu-worker-run.py",
-    )
-    assert worker_spec and worker_spec.loader
-    worker = importlib.util.module_from_spec(worker_spec)
-    worker_spec.loader.exec_module(worker)
-    assert worker.budget_stop_requested("unit", str(tmp_path))
 
 
 def test_gpu_cost_ignores_release_for_never_allocated_queued_attempt(
@@ -816,10 +808,9 @@ def load_gpu_worker():
 
 
 def write_budget_snapshot(
-    root: Path, *, checked_at: float, total: float = 1.0, threshold: float = 9.9
+    path: Path, *, checked_at: float, total: float = 1.0, threshold: float = 9.9
 ) -> None:
-    path = root / "runs/unit/budget/watchdog.json"
-    path.parent.mkdir(parents=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
             {
@@ -837,41 +828,53 @@ def write_budget_snapshot(
 
 def test_gpu_worker_accepts_fresh_budget_snapshot(tmp_path: Path) -> None:
     worker = load_gpu_worker()
-    write_budget_snapshot(tmp_path, checked_at=1_000)
+    runtime_snapshot = tmp_path / "runtime-budget.json"
+    write_budget_snapshot(runtime_snapshot, checked_at=1_000)
 
-    assert not worker.refresh_budget_stop("unit", str(tmp_path), now=1_010)
+    assert worker.refresh_budget_stop(
+        "unit", str(tmp_path), now=1_010, runtime_snapshot=runtime_snapshot
+    ) is None
     assert not (tmp_path / "runs/unit/BUDGET_STOP_REQUESTED.json").exists()
 
 
-def test_gpu_worker_accepts_snapshot_within_modal_volume_propagation_allowance(
+def test_gpu_worker_ignores_agent_writable_durable_stop_and_snapshot(
     tmp_path: Path,
 ) -> None:
     worker = load_gpu_worker()
-    write_budget_snapshot(tmp_path, checked_at=1_000)
+    runtime_snapshot = tmp_path / "runtime-budget.json"
+    write_budget_snapshot(runtime_snapshot, checked_at=1_000)
+    durable_snapshot = tmp_path / "runs/unit/budget/watchdog.json"
+    write_budget_snapshot(durable_snapshot, checked_at=9_999, total=9.9)
+    marker = tmp_path / "runs/unit/BUDGET_STOP_REQUESTED.json"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "run_id": "unit",
+                "reason": "agent_cost_budget_exhausted",
+                "status": "stop_requested",
+                "stop_threshold_usd": 9.9,
+                "total_usd": 9.9,
+            }
+        )
+    )
 
-    assert not worker.refresh_budget_stop("unit", str(tmp_path), now=1_090)
-    assert not (tmp_path / "runs/unit/BUDGET_STOP_REQUESTED.json").exists()
+    assert worker.refresh_budget_stop(
+        "unit", str(tmp_path), now=1_010, runtime_snapshot=runtime_snapshot
+    ) is None
+    # Within-budget verification does not need to mutate the audit artifact.
+    assert json.loads(marker.read_text())["total_usd"] == pytest.approx(9.9)
 
 
 def test_gpu_worker_prefers_fresh_host_mirror_over_stale_volume_snapshot(
     tmp_path: Path,
 ) -> None:
     worker = load_gpu_worker()
-    write_budget_snapshot(tmp_path, checked_at=1_000)
+    durable_snapshot = tmp_path / "runs/unit/budget/watchdog.json"
+    write_budget_snapshot(durable_snapshot, checked_at=9_999, total=9.9)
     runtime_snapshot = tmp_path / "runtime-budget.json"
-    runtime_snapshot.write_text(
-        json.dumps(
-            {
-                "schema_version": 2,
-                "run_id": "unit",
-                "checked_at_epoch_s": 1_190,
-                "total_usd": 1.5,
-                "stop_threshold_usd": 9.9,
-                "status": "within_budget",
-            }
-        )
-        + "\n"
-    )
+    write_budget_snapshot(runtime_snapshot, checked_at=1_190, total=1.5)
 
     assert not worker.refresh_budget_stop(
         "unit",
@@ -884,9 +887,12 @@ def test_gpu_worker_prefers_fresh_host_mirror_over_stale_volume_snapshot(
 
 def test_gpu_worker_fails_closed_on_stale_budget_snapshot(tmp_path: Path) -> None:
     worker = load_gpu_worker()
-    write_budget_snapshot(tmp_path, checked_at=1_000)
+    runtime_snapshot = tmp_path / "runtime-budget.json"
+    write_budget_snapshot(runtime_snapshot, checked_at=1_000)
 
-    assert worker.refresh_budget_stop("unit", str(tmp_path), now=1_121)
+    assert worker.refresh_budget_stop(
+        "unit", str(tmp_path), now=1_121, runtime_snapshot=runtime_snapshot
+    ) == "budget_telemetry_unavailable"
     marker = json.loads(
         (tmp_path / "runs/unit/BUDGET_STOP_REQUESTED.json").read_text()
     )
@@ -894,24 +900,14 @@ def test_gpu_worker_fails_closed_on_stale_budget_snapshot(tmp_path: Path) -> Non
     assert "stale" in marker["error"]
 
 
-def test_gpu_worker_preserves_fail_closed_budget_stop_reason(tmp_path: Path) -> None:
-    worker = load_gpu_worker()
-    marker = tmp_path / "runs/unit/BUDGET_STOP_REQUESTED.json"
-    marker.parent.mkdir(parents=True)
-    marker.write_text(
-        json.dumps({"reason": "budget_telemetry_unavailable"}) + "\n"
-    )
-
-    assert worker.budget_stop_reason("unit", str(tmp_path)) == (
-        "budget_telemetry_unavailable"
-    )
-
-
 def test_gpu_worker_propagates_fresh_budget_stop(tmp_path: Path) -> None:
     worker = load_gpu_worker()
-    write_budget_snapshot(tmp_path, checked_at=1_000, total=9.9)
+    runtime_snapshot = tmp_path / "runtime-budget.json"
+    write_budget_snapshot(runtime_snapshot, checked_at=1_000, total=9.9)
 
-    assert worker.refresh_budget_stop("unit", str(tmp_path), now=1_010)
+    assert worker.refresh_budget_stop(
+        "unit", str(tmp_path), now=1_010, runtime_snapshot=runtime_snapshot
+    ) == "agent_cost_budget_exhausted"
     marker = json.loads(
         (tmp_path / "runs/unit/BUDGET_STOP_REQUESTED.json").read_text()
     )

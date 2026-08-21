@@ -7,6 +7,7 @@ import importlib.util
 import hashlib
 import io
 import json
+import os
 import subprocess
 import sys
 import tarfile
@@ -2857,6 +2858,56 @@ class CheckpointContinuationTests(unittest.TestCase):
 
 
 class AgentGpuCliTests(unittest.TestCase):
+    def test_running_job_cancel_writes_scoped_request(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw) / "gpu-jobs"
+            (root / "status").mkdir(parents=True)
+            (root / "status" / "job-1.json").write_text(
+                json.dumps(
+                    {
+                        "job_id": "job-1",
+                        "status": "running",
+                        "sandbox_id": "sb-1",
+                    }
+                )
+            )
+            with (
+                mock.patch.object(train_cli, "jobs_root", return_value=root),
+                mock.patch.object(train_cli, "flush_durable"),
+                mock.patch.dict(os.environ, {"SPRINT_RUN_ID": "run-1"}),
+                mock.patch("sys.stdout", io.StringIO()),
+            ):
+                self.assertEqual(
+                    train_cli.cmd_cancel(type("Args", (), {"job_id": "job-1"})()),
+                    0,
+                )
+
+            request = json.loads((root / "cancel" / "job-1.json").read_text())
+            self.assertEqual(request["run_id"], "run-1")
+            self.assertEqual(request["job_id"], "job-1")
+            self.assertEqual(request["reason"], "agent_cancelled")
+
+    def test_worker_recognizes_scoped_running_job_cancel(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            marker = (
+                Path(raw)
+                / "runs/run-1/gpu-jobs/cancel/job-1.json"
+            )
+            marker.parent.mkdir(parents=True)
+            marker.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "run_id": "run-1",
+                        "job_id": "job-1",
+                        "reason": "agent_cancelled",
+                    }
+                )
+            )
+            self.assertTrue(
+                worker_run.job_cancel_requested("run-1", "job-1", raw)
+            )
+
     def test_output_paths_are_scoped_and_have_unique_names(self) -> None:
         self.assertEqual(
             train_cli.validate_output_paths(["/app/results/policy.pt"]),

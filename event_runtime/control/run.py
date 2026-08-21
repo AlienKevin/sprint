@@ -1312,29 +1312,10 @@ def monitor_once(
 ) -> dict[str, Any]:
     state_dir, run = load_run(run_id)
     Path("/data/.keepalive").touch()
-    # The in-sandbox watchdog writes this marker directly to the shared Modal
-    # Volume. Import it before GPU dispatch so controller recovery cannot start
-    # fresh work after a cloud-side budget stop.
+    # Only the host's independently reconstructed ledger can create a trusted
+    # STOP_REQUESTED marker. The agent can write its shared Modal Volume, so a
+    # cloud-side BUDGET_STOP_REQUESTED file is audit data rather than authority.
     stop_marker = state_dir / "STOP_REQUESTED.json"
-    if not stop_marker.is_file() and (run.get("budget_enforcement") or {}).get(
-        "in_sandbox_watchdog"
-    ):
-        try:
-            cloud_stop = fetch_remote_json(
-                state_dir,
-                run,
-                "BUDGET_STOP_REQUESTED.json",
-                "BUDGET_STOP_REQUESTED.remote.json",
-            )
-            if cloud_stop:
-                persist_stop_request(
-                    run_id,
-                    reason=str(
-                        cloud_stop.get("reason") or "agent_cost_budget_exhausted"
-                    ),
-                )
-        except Exception as exc:  # noqa: BLE001
-            record_controller_error(run_id, exc)
     # A stop may be requested while Modal is still resolving the image and no
     # runtime sandbox exists. Keep reapplying the durable request until the
     # actual agent acknowledges it; never mistake an image-build container for

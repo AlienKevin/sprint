@@ -206,6 +206,9 @@ def test_generic_openrouter_budget_gate_blocks_a_second_paid_request(
         )
     )
     runtime = tmp_path / "runtime"
+    (run_root / "BUDGET_STOP_REQUESTED.json").write_text(
+        '{"reason":"agent_cost_budget_exhausted"}\n'
+    )
     server = proxy.LedgerProxyServer(
         ("127.0.0.1", 0),
         upstream="https://openrouter.ai/api/v1",
@@ -224,7 +227,9 @@ def test_generic_openrouter_budget_gate_blocks_a_second_paid_request(
 
     assert (runtime / "sprint-stop").read_text() == "agent_cost_budget_exhausted\n"
     marker = json.loads((run_root / "BUDGET_STOP_REQUESTED.json").read_text())
+    assert marker["schema_version"] == 2
     assert marker["status"] == "stop_requested"
+    assert marker["total_usd"] == pytest.approx(10.05)
 
 
 def test_live_proxy_observes_watchdog_recovered_pending_cost(tmp_path: Path) -> None:

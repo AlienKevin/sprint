@@ -638,25 +638,26 @@ def stop_child(proc: subprocess.Popen) -> None:
             pass
 
 
-def budget_stop_requested(run_id: str, durable_dir: str = "/durable") -> bool:
-    return (
-        Path(durable_dir) / "runs" / run_id / "BUDGET_STOP_REQUESTED.json"
-    ).is_file()
-
-
-def budget_stop_reason(run_id: str, durable_dir: str = "/durable") -> str:
+def job_cancel_requested(
+    run_id: str, job_id: str, durable_dir: str = "/durable"
+) -> bool:
     marker = (
-        Path(durable_dir) / "runs" / run_id / "BUDGET_STOP_REQUESTED.json"
+        Path(durable_dir)
+        / "runs"
+        / run_id
+        / "gpu-jobs"
+        / "cancel"
+        / f"{job_id}.json"
     )
     try:
         payload = json.loads(marker.read_text())
     except (OSError, json.JSONDecodeError):
-        return "budget_telemetry_unavailable"
-    reason = payload.get("reason")
+        return False
     return (
-        reason
-        if reason in {"agent_cost_budget_exhausted", "budget_telemetry_unavailable"}
-        else "budget_telemetry_unavailable"
+        payload.get("schema_version") == 1
+        and payload.get("run_id") == run_id
+        and payload.get("job_id") == job_id
+        and payload.get("reason") == "agent_cancelled"
     )
 
 
@@ -667,45 +668,23 @@ def refresh_budget_stop(
     now: float | None = None,
     max_snapshot_age_seconds: float = MAX_BUDGET_SNAPSHOT_AGE_SECONDS,
     runtime_snapshot: Path = RUNTIME_BUDGET_SNAPSHOT,
-) -> bool:
-    """Observe the CPU watchdog's constant-size durable budget snapshot.
+) -> str | None:
+    """Independently verify the trusted host budget snapshot.
 
-    Re-running the full watchdog from a newly mounted GPU sandbox requires
-    reading every per-request OpenRouter ledger shard. That cold-volume scan
-    grows with the experiment and can exceed the worker's supervision
-    deadline. The CPU sandbox already reconstructs the authoritative ledger
-    every five seconds, so GPU workers consume that snapshot and fail closed
-    if it is missing, malformed, inconsistent, or stale.
+    The agent can write the shared durable volume, including the stop marker
+    and the CPU watchdog copy, so neither is a trusted kill signal. The host
+    injects its canonical merged ledger into this sandbox's private ``/run``
+    filesystem. GPU work fails closed when that snapshot is absent, malformed,
+    inconsistent, or stale. The durable marker remains only an audit artifact.
+
+    Return the proven stop reason, or ``None`` while the run is within budget.
     """
     run_root = Path(durable_dir) / "runs" / run_id
     marker = run_root / "BUDGET_STOP_REQUESTED.json"
-    if marker.is_file():
-        return True
 
     checked_at = time.time() if now is None else float(now)
     try:
-        candidates: list[dict] = []
-        errors: list[str] = []
-        for path in (runtime_snapshot, run_root / "budget" / "watchdog.json"):
-            try:
-                candidate = json.loads(path.read_text())
-                if candidate.get("schema_version") != 2:
-                    raise ValueError("budget watchdog schema mismatch")
-                if candidate.get("run_id") != run_id:
-                    raise ValueError("budget watchdog identity mismatch")
-                candidates.append(candidate)
-            except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
-                errors.append(f"{path}: {type(exc).__name__}: {exc}")
-        if not candidates:
-            raise ValueError("; ".join(errors) or "budget watchdog snapshot missing")
-        # The host injects the same canonical snapshot into /run because Modal
-        # Volume mounts do not automatically observe commits from another
-        # sandbox.  Keep the durable candidate as a safe startup fallback and
-        # prefer whichever valid source is newest.
-        snapshot = max(
-            candidates,
-            key=lambda item: float(item.get("checked_at_epoch_s") or 0.0),
-        )
+        snapshot = json.loads(runtime_snapshot.read_text())
         if snapshot.get("schema_version") != 2:
             raise ValueError("budget watchdog schema mismatch")
         if snapshot.get("run_id") != run_id:
@@ -727,7 +706,7 @@ def refresh_budget_stop(
             raise ValueError("budget watchdog totals are invalid")
         status = snapshot.get("status")
         if status == "within_budget" and total < threshold:
-            return False
+            return None
         if status != "stop_requested" or total < threshold:
             raise ValueError("budget watchdog status is inconsistent")
         payload = {**snapshot, "reason": "agent_cost_budget_exhausted"}
@@ -743,9 +722,8 @@ def refresh_budget_stop(
             "error": f"{type(exc).__name__}: {exc}",
             "checked_at_epoch_s": checked_at,
         }
-    if not marker.exists():
-        write_status(marker, payload)
-    return True
+    write_status(marker, payload)
+    return str(payload["reason"])
 
 
 def supervise_child(
@@ -882,8 +860,7 @@ def main() -> int:
         ),
     )
 
-    if refresh_budget_stop(run_id):
-        termination_reason = budget_stop_reason(run_id)
+    if termination_reason := refresh_budget_stop(run_id):
         attempt_record.update(
             {
                 "status": "terminated",
@@ -895,6 +872,19 @@ def main() -> int:
         )
         write_status(attempt_path, attempt_record)
         print("budget stop already requested; skipping GPU work", flush=True)
+        return 0
+    if job_cancel_requested(run_id, job_id):
+        attempt_record.update(
+            {
+                "status": "terminated",
+                "termination_reason": "agent_cancelled",
+                "exit_code": 0,
+                "finished_at": utc_now(),
+                "finished_at_epoch_s": time.time(),
+            }
+        )
+        write_status(attempt_path, attempt_record)
+        print("agent cancellation already requested; skipping GPU work", flush=True)
         return 0
 
     print(
@@ -1053,6 +1043,7 @@ def main() -> int:
     progress_watchdog_fired = False
     budget_watchdog_fired = False
     budget_termination_reason: str | None = None
+    agent_cancel_fired = False
     progress_watchdog = TrainingProgressWatchdog()
     last_watchdog_phase: str | None = None
     try:
@@ -1083,6 +1074,7 @@ def main() -> int:
             nonlocal progress, checkpoint, error
             nonlocal activity_watchdog_fired, progress_watchdog_fired
             nonlocal budget_watchdog_fired, budget_termination_reason
+            nonlocal agent_cancel_fired
             nonlocal last_watchdog_phase
             progress, checkpoint = progress_snapshot(
                 progress_file,
@@ -1127,10 +1119,18 @@ def main() -> int:
                 )
                 write_status(attempt_path, attempt_record)
                 raise SystemExit(75)
-            if not budget_watchdog_fired and refresh_budget_stop(run_id):
-                budget_watchdog_fired = True
-                budget_termination_reason = budget_stop_reason(run_id)
-                error = budget_termination_reason.replace("_", " ")
+            if not budget_watchdog_fired:
+                refreshed_stop_reason = refresh_budget_stop(run_id)
+                if refreshed_stop_reason:
+                    budget_watchdog_fired = True
+                    budget_termination_reason = refreshed_stop_reason
+                    error = budget_termination_reason.replace("_", " ")
+                    print(f"{error}; stopping GPU child", flush=True)
+                    stop_child(proc)
+                    return
+            if not agent_cancel_fired and job_cancel_requested(run_id, job_id):
+                agent_cancel_fired = True
+                error = "agent cancelled GPU job"
                 print(f"{error}; stopping GPU child", flush=True)
                 stop_child(proc)
                 return
@@ -1198,6 +1198,10 @@ def main() -> int:
         attempt_record["termination_reason"] = (
             budget_termination_reason or "budget_telemetry_unavailable"
         )
+    if agent_cancel_fired:
+        final_status = "terminated"
+        exit_code = 0
+        attempt_record["termination_reason"] = "agent_cancelled"
     progress, checkpoint = progress_snapshot(progress_file, checkpoint_dir)
     output_artifacts, missing_outputs = collect_output_artifacts(
         job,

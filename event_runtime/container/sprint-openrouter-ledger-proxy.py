@@ -808,8 +808,7 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
 
     def write_stop(self, payload: dict[str, Any]) -> None:
         marker = self.run_root / "BUDGET_STOP_REQUESTED.json"
-        if not marker.exists():
-            atomic_json(marker, payload)
+        atomic_json(marker, payload)
         stop = self.runtime_dir / "sprint-stop"
         stop.parent.mkdir(parents=True, exist_ok=True)
         temporary = stop.with_name(f".{stop.name}.{os.getpid()}.tmp")

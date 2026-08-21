@@ -623,12 +623,24 @@ def cmd_cancel(args: argparse.Namespace) -> int:
         raise SystemExit("no gpu jobs yet")
     payload = read_status(root, job_id)
     status = str(payload.get("status") or "")
+    if status in {"dispatched", "running"}:
+        request = {
+            "schema_version": 1,
+            "run_id": run_id_from_env(root),
+            "job_id": job_id,
+            "reason": "agent_cancelled",
+            "requested_at": utc_now(),
+            "requested_at_epoch_s": time.time(),
+        }
+        atomic_write_json(root / "cancel" / f"{job_id}.json", request)
+        flush_durable(root)
+        print(json.dumps(request, indent=2, sort_keys=True))
+        return 0
     if status not in {"pending", "retry_wait", "claiming"} or payload.get(
         "sandbox_id"
     ):
         raise SystemExit(
-            f"job {job_id} is {status or 'unknown'}; only undispatched jobs can "
-            "be cancelled from the agent sandbox"
+            f"job {job_id} is {status or 'unknown'} and cannot be cancelled"
         )
     cancelled = {
         **payload,
@@ -781,7 +793,7 @@ def main() -> int:
     get.add_argument("job_id", nargs="?")
     get.add_argument("destination", nargs="?")
 
-    cancel = sub.add_parser("cancel", help="cancel an undispatched queued job")
+    cancel = sub.add_parser("cancel", help="cancel a queued or running job")
     cancel.add_argument("job_id", nargs="?")
 
     checkpoint = sub.add_parser(
