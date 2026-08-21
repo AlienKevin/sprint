@@ -400,12 +400,17 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "class:'submission-target'" in app
     assert "el.getScreenCTM()" in app
     assert "nearest.distance<=22**2" in app
-    assert "app.js?v=20260820-1" in page
-    assert "const APP_VERSION = '20260820-1'" in app
+    assert "app.js?v=20260821-1" in page
+    assert '"version":"20260821-1"' in (ROOT / "web/version.json").read_text()
+    assert "let observedVersion = null" in app
     assert "state.timelineUpdatedAt=tIndex.updated_at||null" in app
     assert "Date.parse(snapshotUpdatedAt(batch)||'')" in app
     assert "refreshVersion" in app
+    assert "if(observedVersion===null){observedVersion=deployed.version;return}" in app
     assert "setInterval(refresh,30000)" in app
+    assert "setInterval(updateExperimentClocks,1000)" in app
+    assert "setInterval(renderExperimentTracker,1000)" not in app
+    assert "data-experiment-elapsed" in app
     assert "visibilitychange" in app
     assert "window.addEventListener('focus'" in app
     assert "window.addEventListener('pageshow'" in app

@@ -1714,6 +1714,7 @@ def test_homepage_uses_compact_timeline_index_summaries() -> None:
     assert "usage_summary" in source
     assert "/data/batches/current.json" in source
     assert "renderExperimentTracker" in source
+    assert "updateExperimentClocks" in source
     assert "cache read" in source
     assert "${row.submitted} submitted</b>" in source
     assert "Total cost" in source
