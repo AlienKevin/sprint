@@ -14,6 +14,10 @@ lane, avoid geometric self-collision, and balance quality against the API and
 compute cost required to discover it. No training method, reward, terrain, or
 architecture is prescribed.
 
+All agents start at rest from the versioned `forward-ready-start-v1` pose, with
+the torso leaned 40 degrees toward the finish, the right foot leading by 0.46
+m, and both feet planted behind the line.
+
 ## Verification Explanation
 
 Agents can run the published verifier on their own GPU allocation; official
