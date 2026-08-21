@@ -1573,14 +1573,22 @@ def public_tracking_batch(payload: dict[str, Any]) -> dict[str, Any]:
         for arm in batch.get("arms", []):
             run_id = arm.get("run_id")
             if isinstance(run_id, str) and run_id:
+                invalidated_reason = raw_arms.get(run_id, {}).get(
+                    "invalidated_reason"
+                )
                 stop_reason = (
                     (raw_arms.get(run_id, {}).get("stop_ack") or {}).get("reason")
                 )
-                if stop_reason == "budget_telemetry_unavailable":
+                exclusion_reason = invalidated_reason or (
+                    stop_reason
+                    if stop_reason == "budget_telemetry_unavailable"
+                    else None
+                )
+                if exclusion_reason:
                     excluded_arms.append(
                         {
                             "run_id": run_id,
-                            "reason": stop_reason,
+                            "reason": exclusion_reason,
                             "source_batch_id": batch.get("batch_id"),
                         }
                     )

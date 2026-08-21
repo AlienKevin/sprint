@@ -1231,8 +1231,19 @@ def test_tracking_batch_ignores_delegated_site_alerts(
     ]
 
 
-def test_tracking_batch_excludes_budget_telemetry_failure_replaced_lane(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("invalidated_reason", "stop_ack", "expected_reason"),
+    [
+        (None, {"reason": "budget_telemetry_unavailable"}, "budget_telemetry_unavailable"),
+        ("untrusted_agent_stop_marker", None, "untrusted_agent_stop_marker"),
+    ],
+)
+def test_tracking_batch_excludes_invalid_replaced_lane(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    invalidated_reason: str | None,
+    stop_ack: dict | None,
+    expected_reason: str,
 ) -> None:
     monkeypatch.setattr(batch_eval, "BATCH_ROOT", tmp_path / "batches")
     (tmp_path / "batches").mkdir()
@@ -1247,7 +1258,8 @@ def test_tracking_batch_excludes_budget_telemetry_failure_replaced_lane(
             {
                 "run_id": "base-luna-1",
                 "family": "luna",
-                "stop_ack": {"reason": "budget_telemetry_unavailable"},
+                "invalidated_reason": invalidated_reason,
+                "stop_ack": stop_ack,
             },
             {"run_id": "base-sol-1", "family": "sol"},
         ],
@@ -1269,7 +1281,7 @@ def test_tracking_batch_excludes_budget_telemetry_failure_replaced_lane(
     assert current["excluded_arms"] == [
         {
             "run_id": "base-luna-1",
-            "reason": "budget_telemetry_unavailable",
+            "reason": expected_reason,
             "source_batch_id": "base",
         }
     ]
