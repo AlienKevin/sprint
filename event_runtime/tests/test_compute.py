@@ -1479,6 +1479,36 @@ class SubmissionBridgeTests(unittest.TestCase):
             self.assertEqual(detail["forwarded"], 1)
             submit.assert_called_once()
 
+    def test_drain_fails_closed_when_cpu_archive_omits_returncode(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            run, job = self.run_and_job(Path(raw))
+            with (
+                mock.patch.object(
+                    gpu_worker,
+                    "read_worker_submission_outbox",
+                    return_value=[self.request()],
+                ),
+                mock.patch.object(
+                    gpu_worker,
+                    "submit_worker_policy_to_cpu_agent",
+                    return_value={"stdout": "ambiguous response", "stderr": ""},
+                ),
+                mock.patch.object(
+                    gpu_worker, "acknowledge_worker_submission"
+                ) as acknowledge,
+            ):
+                updated, detail = gpu_worker.drain_worker_submission_outbox(run, job)
+
+            self.assertEqual(detail["forwarded"], 0)
+            self.assertEqual(detail["retry_wait"], 1)
+            self.assertIn("awaiting retry", updated["submission_bridge_error"])
+            record = json.loads(
+                (Path(raw) / "submission-bridge/123456-abcd.json").read_text()
+            )
+            self.assertEqual(record["state"], "retry_wait")
+            self.assertIn("integer returncode", record["error"])
+            acknowledge.assert_not_called()
+
 
 class HostJobRegistryTests(unittest.TestCase):
     def test_persist_records_job_outside_agent_volume_first(self) -> None:

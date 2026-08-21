@@ -484,7 +484,31 @@ def drain_worker_submission_outbox(
             )
             sprintctl.atomic_write_json(record_path, record, mode=0o600)
             continue
-        archive_returncode = int(result.get("returncode") or 0)
+        raw_returncode = (
+            result.get("returncode") if isinstance(result, dict) else None
+        )
+        if isinstance(raw_returncode, bool) or not isinstance(raw_returncode, int):
+            counts["retry_wait"] += 1
+            record.update(
+                {
+                    "state": "retry_wait",
+                    "last_attempt_at": utc_now(),
+                    "error": "CPU archive response omitted an integer returncode",
+                    "archive_stdout": (
+                        str(result.get("stdout") or "")[-2000:]
+                        if isinstance(result, dict)
+                        else ""
+                    ),
+                    "archive_stderr": (
+                        str(result.get("stderr") or "")[-2000:]
+                        if isinstance(result, dict)
+                        else ""
+                    ),
+                }
+            )
+            sprintctl.atomic_write_json(record_path, record, mode=0o600)
+            continue
+        archive_returncode = raw_returncode
         record.update(
             {
                 "last_attempt_at": utc_now(),
