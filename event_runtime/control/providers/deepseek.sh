@@ -14,13 +14,29 @@ set -euo pipefail
 ROOT="${EVENT_REPOSITORY_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)}"
 export MODAL_PROFILE="${MODAL_PROFILE:-kevinli020508}"
 
-MODEL="${MODEL:-deepseek/deepseek-v4-flash}"
+MODEL="${MODEL:-deepseek/deepseek-v4-flash-0731}"
 ENDPOINT="${ENDPOINT:-https://openrouter.ai/api/v1}"
-OPENROUTER_PRESET="${OPENROUTER_PRESET:-@preset/sprint-deepseek-v4-flash-0731-official}"
+if [[ "${MODEL#*/}" == deepseek-v4-flash* ]]; then
+  if [[ -n "${SPRINT_OPENROUTER_PROVIDER_ENDPOINT:-}" \
+        && "$SPRINT_OPENROUTER_PROVIDER_ENDPOINT" != "baidu/fp8" ]]; then
+    echo "DeepSeek V4 Flash provider is locked to baidu/fp8" >&2
+    exit 2
+  fi
+  if [[ -n "${SPRINT_OPENROUTER_QUANTIZATION:-}" \
+        && "$SPRINT_OPENROUTER_QUANTIZATION" != "fp8" ]]; then
+    echo "DeepSeek V4 Flash quantization is locked to fp8" >&2
+    exit 2
+  fi
+  export SPRINT_OPENROUTER_PROVIDER_ENDPOINT=baidu/fp8
+  export SPRINT_OPENROUTER_QUANTIZATION=fp8
+  export SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW=1048576
+  OPENROUTER_MODEL="$MODEL"
+fi
 if [[ -n "${SPRINT_OPENROUTER_PROVIDER_ENDPOINT:-}" ]]; then
   OPENROUTER_MODEL="${OPENROUTER_MODEL:-$MODEL}"
 else
-  OPENROUTER_MODEL="${OPENROUTER_MODEL:-$OPENROUTER_PRESET}"
+  echo "DeepSeek routes must pin one OpenRouter provider endpoint" >&2
+  exit 2
 fi
 REASONING_EFFORT="${REASONING_EFFORT:-max}"  # API-max for DeepSeek Flash
 # Same immutable harness pin as every competitor.
@@ -36,28 +52,6 @@ fi
 export OPENAI_API_KEY="$OPENROUTER_API_KEY"
 export SPRINT_CODEX_DEEPSEEK_BASE_URL="$ENDPOINT"
 export SPRINT_CODEX_DEEPSEEK_MODEL="$OPENROUTER_MODEL"
-if [[ "$MODEL" == "deepseek/deepseek-v4-flash" \
-      && -z "${SPRINT_OPENROUTER_PROVIDER_ENDPOINT:-}" \
-      && -z "${SPRINT_DEEPSEEK_PRICING_SNAPSHOT:-}" ]]; then
-  SPRINT_DEEPSEEK_PRICING_SNAPSHOT=$(PYTHONPATH="$ROOT" python3 - \
-    "$OPENROUTER_API_KEY" <<'PY'
-import json
-import sys
-
-from event_runtime.control.deepseek_pricing import fetch_openrouter_snapshot
-
-print(
-    json.dumps(
-        fetch_openrouter_snapshot(sys.argv[1]),
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-)
-PY
-  )
-  export SPRINT_DEEPSEEK_PRICING_SNAPSHOT
-fi
-
 echo "launcher: providers/deepseek.sh"
 echo "run_id:   $RUN_ID"
 echo "agent:    codex"
@@ -66,7 +60,7 @@ echo "model:    $MODEL"
 echo "effort:   $REASONING_EFFORT"
 echo "endpoint: $ENDPOINT"
 echo "wire:     $OPENROUTER_MODEL"
-echo "provider: ${SPRINT_OPENROUTER_PROVIDER_ENDPOINT:-OpenRouter controlled preset} (no fallback)"
+echo "provider: $SPRINT_OPENROUTER_PROVIDER_ENDPOINT (only; no fallback)"
 echo "quant:    ${SPRINT_OPENROUTER_QUANTIZATION:-provider default}"
 echo "wire_api: responses (via [model_providers.deepseek]; not openai_base_url alone)"
 echo "catalog:  DeepSeek models.json (${SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW:-1048576} context, auto_compact_token_limit=null)"

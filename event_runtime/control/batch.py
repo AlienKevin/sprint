@@ -33,7 +33,6 @@ sys.path.insert(0, str(ROOT))
 from event_runtime.export import frontier as frontier_update  # noqa: E402
 from event_runtime.export import performance as performance_export  # noqa: E402
 from event_runtime.control import run as sprintctl  # noqa: E402
-from event_runtime.control import deepseek_pricing  # noqa: E402
 
 
 UV = Path(os.environ.get("UV", "/home/ubuntu/.local/bin/uv"))
@@ -67,6 +66,16 @@ OPENAI_FAMILY_SPECS: dict[str, dict[str, str]] = {
     },
 }
 DEEPSEEK_ROUTED_FAMILY_SPECS: dict[str, dict[str, str]] = {
+    # `deepseek` is the public/default family name. Keep `flash-baidu` as an
+    # explicit alias so historical comparison batches remain reproducible.
+    "deepseek": {
+        "model": "deepseek/deepseek-v4-flash-0731",
+        "resolved_model": "Baidu | deepseek/deepseek-v4-flash-20260731",
+        "provider": "Baidu",
+        "provider_endpoint": "baidu/fp8",
+        "quantization": "fp8",
+        "context_window": "1048576",
+    },
     "flash-baidu": {
         "model": "deepseek/deepseek-v4-flash-0731",
         "resolved_model": "Baidu | deepseek/deepseek-v4-flash-20260731",
@@ -361,11 +370,6 @@ def matrix(
         raise ValueError("trials per model must be between 1 and 50")
     arms: list[dict[str, Any]] = []
     specs = {
-        "deepseek": {
-            "model": "deepseek/deepseek-v4-flash",
-            "wrapper": "deepseek.sh",
-            "resolved_model_version": "DeepSeek-V4-Flash-0731",
-        },
         **{
             family: {
                 "model": spec["model"],
@@ -772,7 +776,6 @@ def preflight(
     checks: dict[str, Any] = {}
     provider_probes: dict[str, Any] = {}
     provider_errors: dict[str, str] = {}
-    deepseek_pricing_snapshot: dict[str, Any] | None = None
     openrouter_credit_snapshot: dict[str, Any] | None = None
     sprint_resource_report: dict[str, Any] | None = None
     keys = load_env(env_file)
@@ -1018,65 +1021,6 @@ def preflight(
             key = f"deepseek_{family.replace('-', '_')}"
             checks[f"{key}_visible"] = not check_providers
             checks[f"{key}_inference"] = not check_providers
-    if (
-        "deepseek" in families
-        and check_providers
-        and checks["secret_openrouter_api_key"]
-    ):
-        try:
-            deepseek_pricing_snapshot = deepseek_pricing.fetch_openrouter_snapshot(
-                keys["OPENROUTER_API_KEY"]
-            )
-            checks["deepseek_openrouter_endpoint_contract"] = True
-        except Exception as exc:  # noqa: BLE001
-            checks["deepseek_openrouter_endpoint_contract"] = False
-            provider_errors["deepseek_pricing"] = f"{type(exc).__name__}: {exc}"
-        models = provider_models(
-            "https://openrouter.ai/api/v1/models", keys["OPENROUTER_API_KEY"]
-        )
-        checks["deepseek_v4_flash_visible"] = (
-            "deepseek/deepseek-v4-flash-0731" in models
-        )
-        try:
-            provider_probes["deepseek_v4_flash"] = provider_inference_probe(
-                "https://openrouter.ai/api/v1/responses",
-                keys["OPENROUTER_API_KEY"],
-                {
-                    "model": ("@preset/sprint-deepseek-v4-flash-0731-official"),
-                    "input": "Return OK.",
-                    "reasoning": {"effort": REASONING_EFFORT},
-                    "max_output_tokens": 16,
-                    "store": False,
-                },
-                generation_audit_url="https://openrouter.ai/api/v1/generation",
-            )
-            deepseek_probe = provider_probes["deepseek_v4_flash"]
-            expected_preset_id = (
-                deepseek_pricing_snapshot.get("preset_id")
-                if isinstance(deepseek_pricing_snapshot, dict)
-                else None
-            )
-            checks["deepseek_v4_flash_inference"] = (
-                deepseek_probe.get("provider") == "DeepSeek"
-                and deepseek_probe.get("preset_id") == expected_preset_id
-                and deepseek_probe.get("resolved_model")
-                == (
-                    deepseek_pricing_snapshot.get("resolved_model")
-                    if isinstance(deepseek_pricing_snapshot, dict)
-                    else None
-                )
-            )
-            if not checks["deepseek_v4_flash_inference"]:
-                provider_errors["deepseek_v4_flash"] = (
-                    "controlled preset response did not identify DeepSeek"
-                )
-        except RuntimeError as exc:
-            checks["deepseek_v4_flash_inference"] = False
-            provider_errors["deepseek_v4_flash"] = str(exc)
-    elif "deepseek" in families:
-        checks["deepseek_openrouter_endpoint_contract"] = not check_providers
-        checks["deepseek_v4_flash_visible"] = not check_providers
-        checks["deepseek_v4_flash_inference"] = not check_providers
     checks["unique_runs"] = len({arm["run_id"] for arm in planned}) == len(planned)
     checks["fresh_run_ids"] = not any(
         (SCRIPT_DIR / arm["run_id"]).exists() for arm in planned
@@ -1104,7 +1048,6 @@ def preflight(
         "provider_probes": provider_probes,
         "provider_errors": provider_errors,
         "openrouter_credit_snapshot": openrouter_credit_snapshot,
-        "deepseek_pricing_snapshot": deepseek_pricing_snapshot,
         "sprint_modal_resource_audit": sprint_resource_report,
         "training_gpu_fleet_probe": fleet_probe,
         "ready": ready,
@@ -1243,13 +1186,6 @@ def launch(
             "UV": str(UV),
         }
     )
-    pricing_snapshot = report.get("deepseek_pricing_snapshot")
-    if "deepseek" in families:
-        if not isinstance(pricing_snapshot, dict):
-            raise RuntimeError("preflight did not produce a DeepSeek pricing snapshot")
-        base_env["SPRINT_DEEPSEEK_PRICING_SNAPSHOT"] = json.dumps(
-            pricing_snapshot, separators=(",", ":"), sort_keys=True
-        )
     launched: list[dict[str, Any]] = []
     try:
         for arm in payload["arms"]:

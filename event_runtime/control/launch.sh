@@ -37,7 +37,7 @@ PROMPT_TEMPLATE_OVERRIDE=""
 DRY_RUN=0
 START_MONITOR=1
 SUPERVISED_LAUNCH=0
-DEEPSEEK_OPENROUTER_PRESET=${DEEPSEEK_OPENROUTER_PRESET:-@preset/sprint-deepseek-v4-flash-0731-official}
+DEEPSEEK_OPENROUTER_MODEL=${DEEPSEEK_OPENROUTER_MODEL:-deepseek/deepseek-v4-flash-0731}
 OPENAI_OPENROUTER_PRESET=${SPRINT_OPENROUTER_PRESET:-}
 
 usage() {
@@ -166,7 +166,7 @@ case "$MODEL_API_HOST" in
     exit 2
     ;;
 esac
-if [[ "${MODEL#*/}" == "deepseek-v4-flash" && "$MODEL_API_HOST" != "openrouter.ai" ]]; then
+if [[ "${MODEL#*/}" == deepseek-v4-flash* && "$MODEL_API_HOST" != "openrouter.ai" ]]; then
   echo "DeepSeek V4 Flash is locked to the audited OpenRouter endpoint" >&2
   exit 2
 fi
@@ -308,6 +308,47 @@ temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 os.chmod(temporary, 0o600)
 os.replace(temporary, target)
 PY
+fi
+
+# Every new V4 Flash evaluation uses one sealed Baidu Qianfan FP8 endpoint.
+# The proxy replaces caller routing on every request, disables fallback, and
+# independently captures that endpoint's request-time promotion for billing.
+if (( ! RESUMING )) \
+  && [[ "$AGENT_KIND" == "codex" ]] \
+  && [[ "$MODEL_API_HOST" == "openrouter.ai" ]] \
+  && [[ "${MODEL#*/}" == deepseek-v4-flash* ]]; then
+  if [[ -n "${SPRINT_OPENROUTER_PROVIDER_ENDPOINT:-}" \
+        && "$SPRINT_OPENROUTER_PROVIDER_ENDPOINT" != "baidu/fp8" ]]; then
+    echo "DeepSeek V4 Flash provider is locked to baidu/fp8" >&2
+    exit 2
+  fi
+  if [[ -n "${SPRINT_OPENROUTER_QUANTIZATION:-}" \
+        && "$SPRINT_OPENROUTER_QUANTIZATION" != "fp8" ]]; then
+    echo "DeepSeek V4 Flash quantization is locked to fp8" >&2
+    exit 2
+  fi
+  if [[ -n "${SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW:-}" \
+        && "$SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW" != "1048576" ]]; then
+    echo "DeepSeek V4 Flash context window is locked to 1048576" >&2
+    exit 2
+  fi
+  MODEL=deepseek/deepseek-v4-flash-0731
+  export SPRINT_OPENROUTER_PROVIDER_ENDPOINT=baidu/fp8
+  export SPRINT_OPENROUTER_QUANTIZATION=fp8
+  export SPRINT_CODEX_DEEPSEEK_MODEL="$MODEL"
+  export SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW=1048576
+elif (( RESUMING )) \
+  && [[ "$AGENT_KIND" == "codex" ]] \
+  && [[ "$MODEL_API_HOST" == "openrouter.ai" ]] \
+  && [[ "${MODEL#*/}" == "deepseek-v4-flash-0731" ]]; then
+  [[ "${SPRINT_OPENROUTER_PROVIDER_ENDPOINT:-}" == "baidu/fp8" ]] || {
+    echo "resuming DeepSeek V4 Flash 0731 requires its recorded baidu/fp8 route" >&2
+    exit 2
+  }
+  [[ "${SPRINT_OPENROUTER_QUANTIZATION:-}" == "fp8" ]] || {
+    echo "resuming DeepSeek V4 Flash 0731 requires its recorded fp8 quantization" >&2
+    exit 2
+  }
 fi
 
 TASK_SOURCE="$SOURCE_ROOT/events/g1-100-metres"
@@ -537,6 +578,7 @@ print_config() {
   "$AGENT_COST_SHUTDOWN_RESERVE_USD" "$MINIMUM_SAFE_SHUTDOWN_RESERVE_USD" \
   "$DEEPSEEK_PRICING_SNAPSHOT_JSON" <<'PY'
 import json
+import os
 import sys
 
 (run_id, app, training_app, verifier_app, volume, state, jobs, agent_kind, model, endpoint, effort,
@@ -544,6 +586,19 @@ import sys
  volumes, keepalive, agent_cost_budget, shutdown_reserve, minimum_reserve,
  pricing_snapshot_json) = sys.argv[1:]
 pricing_snapshot = json.loads(pricing_snapshot_json) if pricing_snapshot_json else None
+provider_endpoint = os.environ.get("SPRINT_OPENROUTER_PROVIDER_ENDPOINT")
+quantization = os.environ.get("SPRINT_OPENROUTER_QUANTIZATION")
+openrouter_route = (
+    {
+        "only": [provider_endpoint],
+        "order": [provider_endpoint],
+        "allow_fallbacks": False,
+        "require_parameters": True,
+        "quantizations": [quantization] if quantization else [],
+    }
+    if model_api_host == "openrouter.ai" and provider_endpoint
+    else None
+)
 payload = {
     "run_id": run_id,
     "app_name": app,
@@ -561,6 +616,7 @@ payload = {
     "automatic_stop_reason": "agent_cost_budget_exhausted",
     "agent_cost_budget_usd": float(agent_cost_budget),
     "api_pricing_snapshot": pricing_snapshot,
+    "openrouter_route": openrouter_route,
     "budget_enforcement": {
         "controller_watchdog": True,
         "in_sandbox_watchdog": True,
@@ -717,7 +773,7 @@ if [[ -n "$ENDPOINT" ]]; then
 fi
 # DeepSeek Codex provider+catalog (not Harbor openai_base_url alone).
 # Luna / default OpenAI endpoints leave this unset.
-if [[ "${MODEL#*/}" == "deepseek-v4-flash" ]]; then
+if [[ "${MODEL#*/}" == deepseek-v4-flash* ]]; then
   printf 'SPRINT_CODEX_PROVIDER=deepseek\n' >>"$ENV_FILE"
 fi
 if (( ! RESUMING )); then
@@ -764,6 +820,19 @@ import sys
  pricing_snapshot_json) = sys.argv[1:]
 standing_gpu = standing_gpu_flag == "1"
 pricing_snapshot = json.loads(pricing_snapshot_json) if pricing_snapshot_json else None
+provider_endpoint = os.environ.get("SPRINT_OPENROUTER_PROVIDER_ENDPOINT")
+quantization = os.environ.get("SPRINT_OPENROUTER_QUANTIZATION")
+openrouter_route = (
+    {
+        "only": [provider_endpoint],
+        "order": [provider_endpoint],
+        "allow_fallbacks": False,
+        "require_parameters": True,
+        "quantizations": [quantization] if quantization else [],
+    }
+    if model_api_host == "openrouter.ai" and provider_endpoint
+    else None
+)
 target = pathlib.Path(path)
 root_path = pathlib.Path(root)
 task_source_root = pathlib.Path(source_root) / "events/g1-100-metres"
@@ -804,6 +873,7 @@ base = {
     "automatic_stop_reason": "agent_cost_budget_exhausted",
     "agent_cost_budget_usd": float(agent_cost_budget),
     "api_pricing_snapshot": pricing_snapshot,
+    "openrouter_route": openrouter_route,
     "budget_enforcement": {
         "controller_watchdog": True,
         "in_sandbox_watchdog": True,
@@ -948,6 +1018,8 @@ if resuming == "1":
         "agent_cost_budget_usd": float(agent_cost_budget),
         "budget_enforcement": base["budget_enforcement"],
     }
+    if "openrouter_route" in payload:
+        expected["openrouter_route"] = base["openrouter_route"]
     mismatches = {
         key: (payload.get(key), value)
         for key, value in expected.items()
@@ -1001,6 +1073,7 @@ if resuming == "1":
         "agent_allowed_host": model_api_host,
         "gpu_worker_network_policy": "no-network",
         "verifier_network_policy": "no-network",
+        "openrouter_route": base["openrouter_route"],
         "modal_billing_required": True,
         "cgroup_telemetry_required": True,
         "gpu_pipeline_telemetry_required": True,
@@ -1081,7 +1154,7 @@ else
     AGENT_HARBOR_ARGS+=(
       --ae "SPRINT_CODEX_PROVIDER=deepseek"
       --ae "SPRINT_CODEX_DEEPSEEK_BASE_URL=$ENDPOINT"
-      --ae "SPRINT_CODEX_DEEPSEEK_MODEL=${SPRINT_CODEX_DEEPSEEK_MODEL:-$DEEPSEEK_OPENROUTER_PRESET}"
+      --ae "SPRINT_CODEX_DEEPSEEK_MODEL=${SPRINT_CODEX_DEEPSEEK_MODEL:-$DEEPSEEK_OPENROUTER_MODEL}"
       --ae "SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW=${SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW:-1048576}"
     )
     if [[ -n "$DEEPSEEK_PRICING_SNAPSHOT_JSON" ]]; then

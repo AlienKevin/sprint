@@ -65,11 +65,18 @@ def test_batch_matrix_is_exact_six_arm_max_effort_contract() -> None:
     assert {row["family"] for row in rows} == {"deepseek", "luna"}
     assert {row["reasoning_effort"] for row in rows} == {"max"}
     assert {row["codex_version"] for row in rows} == {"0.147.0"}
-    assert sum(row["model"] == "deepseek/deepseek-v4-flash" for row in rows) == 3
+    assert sum(
+        row["model"] == "deepseek/deepseek-v4-flash-0731" for row in rows
+    ) == 3
     assert sum(row["model"] == "openai/gpt-5.6-luna" for row in rows) == 3
     assert {
         row["resolved_model_version"] for row in rows if row["family"] == "deepseek"
-    } == {"DeepSeek-V4-Flash-0731"}
+    } == {"Baidu | deepseek/deepseek-v4-flash-20260731"}
+    assert {
+        (row["provider_endpoint"], row["quantization"])
+        for row in rows
+        if row["family"] == "deepseek"
+    } == {("baidu/fp8", "fp8")}
     assert batch_eval.LIVE_SITE_DEPLOY_SECONDS == 20 * 60
 
 
@@ -256,7 +263,12 @@ def test_batch_matrix_can_launch_three_deepseek_trials_only() -> None:
     assert len(rows) == 3
     assert {row["family"] for row in rows} == {"deepseek"}
     assert [row["trial"] for row in rows] == [1, 2, 3]
-    assert {row["model"] for row in rows} == {"deepseek/deepseek-v4-flash"}
+    assert {row["model"] for row in rows} == {
+        "deepseek/deepseek-v4-flash-0731"
+    }
+    assert {row["provider"] for row in rows} == {"Baidu"}
+    assert {row["provider_endpoint"] for row in rows} == {"baidu/fp8"}
+    assert {row["quantization"] for row in rows} == {"fp8"}
 
 
 def test_batch_matrix_can_launch_three_luna_and_three_sol_trials() -> None:

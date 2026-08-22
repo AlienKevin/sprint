@@ -14,7 +14,7 @@ set -euo pipefail
 CODEX_HOME_DIR=${CODEX_HOME:-/tmp/codex-home}
 MODELS_SRC=${SPRINT_CODEX_DEEPSEEK_MODELS_JSON:-/opt/sprint-codex-deepseek-models.json}
 BASE_URL=${SPRINT_CODEX_DEEPSEEK_BASE_URL:-https://openrouter.ai/api/v1}
-MODEL_SLUG=${SPRINT_CODEX_DEEPSEEK_MODEL:-@preset/sprint-deepseek-v4-flash-0731-official}
+MODEL_SLUG=${SPRINT_CODEX_DEEPSEEK_MODEL:-deepseek/deepseek-v4-flash-0731}
 CONTEXT_WINDOW=${SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW:-1048576}
 
 if [[ ! -f "$MODELS_SRC" ]]; then

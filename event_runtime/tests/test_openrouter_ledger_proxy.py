@@ -120,6 +120,36 @@ def test_endpoint_promotion_is_reversed_without_changing_cache_skus() -> None:
     assert proxy.undiscounted_cost_usd(0.25, parsed) == pytest.approx(0.5)
 
 
+def test_baidu_promotion_cannot_extend_the_budget() -> None:
+    parsed = proxy.sys.modules[
+        "sprint_openrouter_pricing"
+    ].parse_endpoint_discount_snapshot(
+        {
+            "data": {
+                "endpoints": [
+                    {
+                        "provider_name": "Baidu",
+                        "tag": "baidu/fp8",
+                        "quantization": "fp8",
+                        "pricing": {
+                            "prompt": "0.0000000658",
+                            "input_cache_read": "0.00000001316",
+                            "completion": "0.0000001316",
+                            "discount": 0.53,
+                        },
+                    }
+                ]
+            }
+        },
+        model="deepseek/deepseek-v4-flash-0731",
+        provider_tag="baidu/fp8",
+    )
+
+    assert parsed["discount_fraction"] == 0.53
+    assert parsed["gross_up_multiplier"] == pytest.approx(1 / 0.47)
+    assert proxy.undiscounted_cost_usd(4.70, parsed) == pytest.approx(10.0)
+
+
 def test_unpinned_route_with_different_discounts_fails_closed() -> None:
     parser = proxy.sys.modules[
         "sprint_openrouter_pricing"
