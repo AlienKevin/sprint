@@ -1450,6 +1450,9 @@ def launch(
             payload.get("openrouter_credentials", []),
             journal_path=credential_journal_path(batch_id),
         )
+        payload["credential_status"] = (
+            "cleanup_error" if payload["credential_cleanup_errors"] else "revoked"
+        )
         atomic_json(batch_path(batch_id), payload)
         raise
     payload["status"] = "running"
@@ -1470,6 +1473,9 @@ def launch(
             management_client,
             payload.get("openrouter_credentials", []),
             journal_path=credential_journal_path(batch_id),
+        )
+        payload["credential_status"] = (
+            "cleanup_error" if payload["credential_cleanup_errors"] else "revoked"
         )
         atomic_json(batch_path(batch_id), payload)
         raise

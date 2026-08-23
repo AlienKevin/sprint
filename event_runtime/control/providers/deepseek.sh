@@ -130,8 +130,10 @@ if [[ -n "${SPRINT_OPENROUTER_PROVIDER_ENDPOINT:-}" ]]; then
     --launch-env SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW
     --launch-env SPRINT_CODEX_DEEPSEEK_MODEL
     --launch-env SPRINT_OPENROUTER_PROVIDER_ENDPOINT
-    --launch-env SPRINT_OPENROUTER_QUANTIZATION
   )
+  if [[ -n "${SPRINT_OPENROUTER_QUANTIZATION:-}" ]]; then
+    SUPERVISOR_ARGS+=(--launch-env SPRINT_OPENROUTER_QUANTIZATION)
+  fi
 fi
 python3 "${SUPERVISOR_ARGS[@]}"
 echo "supervisor unit=sprint-lane-${RUN_ID}.service log=/data/sprint-launch-${RUN_ID}.log"
