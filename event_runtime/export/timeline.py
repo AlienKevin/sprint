@@ -208,7 +208,7 @@ class Builder:
         self._trace_record_hashes: set[str] = set()
         self._metric_keys: set[str] = set()
         self._artifact_ids: set[str] = set()
-        self._gpu_registry_bounds: dict[tuple[str, int], dict[str, int]] = {}
+        self._gpu_registry_bounds: dict[tuple[str, int], dict[str, Any]] = {}
         self.final_verifier_rewards: dict[str, Any] = {}
         self.final_verifier_finished_at: str | None = None
 
@@ -700,6 +700,21 @@ class Builder:
                     bounds = self._gpu_registry_bounds.setdefault(
                         (job_id, attempt), {}
                     )
+                    # ``started_at`` is written by the worker, while
+                    # ``dispatched_at`` and ``terminated_at`` are host-owned.
+                    # A sandbox can therefore be billable yet be terminated
+                    # before the worker (and its telemetry sampler) starts.
+                    worker_started_at = parse_epoch_ms(
+                        record.get("started_at_epoch_s")
+                        or record.get("started_at")
+                    )
+                    if worker_started_at is not None:
+                        bounds["worker_started"] = True
+                    elif (
+                        terminal_values
+                        and str(record.get("status") or "") == "terminated"
+                    ):
+                        bounds.setdefault("worker_started", False)
                     if dispatched_at is not None:
                         bounds["start_epoch_ms"] = max(
                             dispatched_at, bounds.get("start_epoch_ms", dispatched_at)
@@ -823,6 +838,11 @@ class Builder:
                 self.counts["gpu_registry_end_bounds_applied"] += 1
             if start != raw_start or end != raw_end:
                 item["lifecycle_bounds_source"] = "host_job_registry"
+            if bounds.get("worker_started") is False:
+                item["telemetry_expected"] = False
+                item["telemetry_not_expected_reason"] = (
+                    "sandbox_terminated_before_worker_start"
+                )
             result.append(item)
         return result
 
@@ -1347,6 +1367,12 @@ class Builder:
                     else None
                 )
                 exists = bool(artifact_path and artifact_path.is_file())
+                ingestion_failed = bool(
+                    not exists
+                    and not row.get("artifact_sha256")
+                    and row.get("error")
+                    and row.get("retryable_infrastructure_error") is True
+                )
                 digest = (
                     sha256_file(artifact_path) if exists and artifact_path else None
                 )
@@ -1371,6 +1397,7 @@ class Builder:
                         if exists and artifact_path
                         else None,
                         "captured": exists,
+                        "ingestion_failed": ingestion_failed,
                         "submitted_at": row.get("submitted_at"),
                         "finished_at": row.get("finished_at"),
                         "artifact_sha256_recorded": row.get("artifact_sha256"),
@@ -1395,7 +1422,9 @@ class Builder:
                         artifact["primary_final"] = primary_final
                     self.artifacts.append(artifact)
                     self.counts["submission_artifacts"] += 1
-                    if not exists:
+                    if ingestion_failed:
+                        self.counts["failed_submission_ingestions"] += 1
+                    elif not exists:
                         self.counts["missing_submission_artifacts"] += 1
                 common = {
                     "cpu_attempt": attempt,
@@ -1444,7 +1473,12 @@ class Builder:
                     (start_key, start_kind),
                     ("finished_at", "evaluation_finished"),
                 ):
+                    if kind == "artifact_submitted" and ingestion_failed:
+                        kind = "artifact_ingestion_failed"
                     data = dict(common)
+                    if kind == "artifact_ingestion_failed":
+                        data["error"] = row.get("error")
+                        data["retryable_infrastructure_error"] = True
                     if kind == "evaluation_finished":
                         data["rewards"] = (
                             row.get("rewards")
@@ -2205,6 +2239,18 @@ class Builder:
                 * 1000
             ),
         )
+        for interval, item in zip(training_intervals, training_coverage):
+            if interval.get("telemetry_expected") is False:
+                item.update(
+                    {
+                        "covered": True,
+                        "telemetry_expected": False,
+                        "coverage_status": "not_applicable",
+                        "coverage_reason": interval.get(
+                            "telemetry_not_expected_reason"
+                        ),
+                    }
+                )
         verifier_coverage = self._metric_coverage(
             verifier_intervals,
             verifier_samples,
@@ -2222,6 +2268,19 @@ class Builder:
             match_fields=("gpu_job_id", "gpu_attempt"),
             allow_empty_within_gap=True,
         )
+        for field_coverage in training_pipeline_coverage.values():
+            for interval, item in zip(training_intervals, field_coverage):
+                if interval.get("telemetry_expected") is False:
+                    item.update(
+                        {
+                            "covered": True,
+                            "telemetry_expected": False,
+                            "coverage_status": "not_applicable",
+                            "coverage_reason": interval.get(
+                                "telemetry_not_expected_reason"
+                            ),
+                        }
+                    )
         verifier_pipeline_coverage = self._pipeline_metric_coverage(
             verifier_intervals,
             verifier_samples,
@@ -2253,6 +2312,10 @@ class Builder:
             if interval.get("end_epoch_ms") is not None
         }
         self.counts["training_gpu_intervals"] = len(training_intervals)
+        self.counts["training_gpu_preworker_terminated_intervals"] = sum(
+            interval.get("telemetry_expected") is False
+            for interval in training_intervals
+        )
         self.counts["cpu_intervals"] = len(cpu_intervals)
         self.counts["cpu_intervals_covered"] = sum(
             bool(item["covered"]) for item in cpu_coverage

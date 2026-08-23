@@ -19,6 +19,8 @@ EXPECTED_INTERRUPT="$AGENT_STATE_DIR/expected-interrupt"
 DURABLE_DIR=${SPRINT_DURABLE_DIR:-/durable}
 RUN_ID=${SPRINT_RUN_ID:-}
 STOP_ACK_TIMEOUT_SECONDS=${SPRINT_STOP_ACK_TIMEOUT_SECONDS:-600}
+OPENROUTER_PROXY_DRAIN_TIMEOUT_SECONDS=${SPRINT_OPENROUTER_PROXY_DRAIN_TIMEOUT_SECONDS:-900}
+OPENROUTER_PROXY_RECOVERY_TIMEOUT_SECONDS=${SPRINT_OPENROUTER_PROXY_RECOVERY_TIMEOUT_SECONDS:-300}
 CODEX_EXECUTABLE=${SPRINT_CODEX_EXECUTABLE:-}
 OPENROUTER_PROXY_BIN=${SPRINT_OPENROUTER_PROXY_BIN:-/opt/sprint-openrouter-ledger-proxy.py}
 OPENROUTER_PROXY_BASE_URL=${SPRINT_OPENROUTER_PROXY_BASE_URL:-http://127.0.0.1:18080/api/v1}
@@ -32,14 +34,76 @@ if [[ ! "$STOP_ACK_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
   echo "SPRINT_STOP_ACK_TIMEOUT_SECONDS must be a positive integer" >&2
   exit 2
 fi
+for timeout_name in OPENROUTER_PROXY_DRAIN_TIMEOUT_SECONDS OPENROUTER_PROXY_RECOVERY_TIMEOUT_SECONDS; do
+  if [[ ! "${!timeout_name}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "$timeout_name must be a positive integer" >&2
+    exit 2
+  fi
+done
 
 umask 077
 mkdir -p "$AGENT_STATE_DIR" "$AGENT_LOG_DIR" "$CODEX_HOME_DIR"
 rm -f "$EXPECTED_INTERRUPT"
 
 proxy_pid=""
+proxy_drain_on_exit=1
+fail_closed_openrouter_recovery() {
+  python3 - "$DURABLE_DIR" "$RUN_ID" "$RUNTIME_DIR" <<'PY'
+import datetime as dt
+import json
+import os
+from pathlib import Path
+import sys
+
+durable_dir, run_id, runtime_dir = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
+payload = {
+    "schema_version": 2,
+    "run_id": run_id,
+    "reason": "budget_telemetry_unavailable",
+    "status": "fail_closed",
+    "detail": "OpenRouter request charge did not reconcile before proxy shutdown",
+    "requested_at": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+}
+marker = durable_dir / "runs" / run_id / "BUDGET_STOP_REQUESTED.json"
+items = []
+if not marker.exists():
+    items.append((marker, json.dumps(payload, indent=2, sort_keys=True) + "\n"))
+items.append((runtime_dir / "sprint-stop", "budget_telemetry_unavailable\n"))
+for path, content in items:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(content)
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
+PY
+}
+
 stop_openrouter_proxy() {
   [[ -n "$proxy_pid" ]] || return 0
+  if ((proxy_drain_on_exit)); then
+    local deadline=$((SECONDS + OPENROUTER_PROXY_DRAIN_TIMEOUT_SECONDS))
+    local status=1
+    while kill -0 "$proxy_pid" 2>/dev/null && ((SECONDS < deadline)); do
+      python3 - "$OPENROUTER_PROXY_BASE_URL" <<'PY' >/dev/null 2>&1
+import json
+import sys
+import urllib.request
+from urllib.parse import urlsplit
+
+base = urlsplit(sys.argv[1])
+url = f"{base.scheme}://{base.netloc}/ledger-status"
+with urllib.request.urlopen(url, timeout=7) as response:
+    payload = json.load(response)
+raise SystemExit(0 if payload.get("pending_request_count") == 0 else 2)
+PY
+      status=$?
+      ((status == 0)) && break
+      sleep 0.25
+    done
+    if ((status != 0)) && kill -0 "$proxy_pid" 2>/dev/null; then
+      fail_closed_openrouter_recovery
+    fi
+  fi
   kill "$proxy_pid" 2>/dev/null || true
   wait "$proxy_pid" 2>/dev/null || true
   rm -f "$AGENT_STATE_DIR/openrouter-proxy.pid"
@@ -94,7 +158,8 @@ start_openrouter_proxy() {
   local ready=0
   # A legacy run may need one bounded ledger migration before the proxy can
   # serve health checks. New rollup-backed restarts are constant-time.
-  for _ in $(seq 1 600); do
+  local recovery_deadline=$((SECONDS + OPENROUTER_PROXY_RECOVERY_TIMEOUT_SECONDS))
+  while ((SECONDS < recovery_deadline)); do
     if ! kill -0 "$proxy_pid" 2>/dev/null; then
       break
     fi
@@ -105,16 +170,18 @@ from urllib.parse import urlsplit
 
 base = urlsplit(sys.argv[1])
 url = f"{base.scheme}://{base.netloc}/healthz"
-with urllib.request.urlopen(url, timeout=1) as response:
+with urllib.request.urlopen(url, timeout=7) as response:
     raise SystemExit(0 if response.status == 200 else 1)
 PY
     then
       ready=1
       break
     fi
-    sleep 0.1
+    sleep 1
   done
   if ((ready == 0)); then
+    proxy_drain_on_exit=0
+    fail_closed_openrouter_recovery
     echo "OpenRouter ledger proxy failed to become ready" >&2
     exit 1
   fi

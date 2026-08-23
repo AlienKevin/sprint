@@ -337,6 +337,12 @@ def site_tree_hash(web: Path) -> str:
                     for part in relative.parts
                 ):
                     continue
+                # Atomic publishers stage dot-prefixed ``*.tmp`` files in the
+                # live tree before ``os.replace``.  Those files are neither
+                # public artifacts nor a stable part of a deployable snapshot;
+                # hashing them races their expected disappearance.
+                if path.name.startswith(".") and path.name.endswith(".tmp"):
+                    continue
                 digest.update(relative.as_posix().encode())
                 digest.update(b"\0")
                 digest.update(sha256_file(path).encode())

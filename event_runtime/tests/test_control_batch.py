@@ -703,6 +703,45 @@ def test_child_key_usage_audit_defers_while_proxy_request_is_in_flight(
     assert audit["reconciliation_deferred"] == "trusted_proxy_request_in_flight"
 
 
+def test_child_key_usage_audit_resolves_prior_health_alert(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "arms": [
+            {
+                "run_id": "eval-luna-1",
+                "status": "running",
+                "openrouter_credential": {"key_hash": "hash-1"},
+            }
+        ],
+        "alerts": [
+            {
+                "run_id": "eval-luna-1",
+                "kind": "openrouter_key_usage_audit",
+                "source": "OpenRouterManagementError",
+            }
+        ],
+    }
+
+    class Client:
+        def key_usage(self, _key_hash: str) -> dict[str, float]:
+            return {"usage": 0.25}
+
+    monkeypatch.setattr(
+        batch_eval,
+        "_local_provider_billed_cost",
+        lambda _run_id: (0.25, 0, "2026-08-23T00:00:00Z"),
+    )
+
+    assert batch_eval.audit_openrouter_child_usage(
+        payload,
+        Client(),
+        now=dt.datetime(2026, 8, 23, 1, tzinfo=dt.timezone.utc),
+    ) == []
+    assert payload["alerts"] == []
+    assert payload["resolved_alerts"][0]["kind"] == "openrouter_key_usage_audit"
+
+
 def test_child_key_usage_audit_stops_persistent_proxy_bypass(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

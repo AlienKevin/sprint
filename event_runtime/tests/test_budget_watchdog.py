@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -515,6 +516,10 @@ def test_openrouter_watchdog_fails_closed_on_unrecoverable_charge_without_key(
             }
         )
     )
+    process = runtime / "sprint-agent/codex-process"
+    process.parent.mkdir(parents=True)
+    process.write_text(f"{os.getpid()} {os.getpid()} 1\n")
+    (process.parent / "openrouter-proxy.pid").write_text(f"{os.getpid()}\n")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     with pytest.raises(
@@ -528,6 +533,67 @@ def test_openrouter_watchdog_fails_closed_on_unrecoverable_charge_without_key(
             codex_home=tmp_path / "codex",
             pricing_path=PRICING,
             now=1_000,
+        )
+
+
+def test_openrouter_watchdog_allows_only_bounded_pre_agent_proxy_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    durable = tmp_path / "durable"
+    runtime = tmp_path / "run"
+    root = write_run(
+        durable,
+        "unit",
+        api_cost_source="openrouter_reported_per_request",
+    )
+    request_id = "a" * 32
+    record = root / f"api-usage/requests/{request_id}.json"
+    record.parent.mkdir(parents=True)
+    record.write_text(
+        json.dumps(
+            {
+                "ledger_request_id": request_id,
+                "run_id": "unit",
+                "state": "cost_recovery_required",
+                "generation_id": "gen-recover",
+                "provider_reported_cost_usd": None,
+            }
+        )
+    )
+    proxy_pid = runtime / "sprint-agent/openrouter-proxy.pid"
+    proxy_pid.parent.mkdir(parents=True)
+    proxy_pid.write_text(f"{os.getpid()}\n")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("SPRINT_CPU_LAUNCH_ATTEMPT", "1")
+    watchdog.ensure_cpu_start(root, 1, 1_000)
+
+    payload = watchdog.check_once(
+        run_id="unit",
+        durable_dir=durable,
+        runtime_dir=runtime,
+        codex_home=tmp_path / "codex",
+        pricing_path=PRICING,
+        now=1_001,
+    )
+
+    assert payload["status"] == "within_budget"
+    assert payload["pending_request_count"] == 1
+    assert payload["components"]["model_api"]["telemetry_state"] == (
+        "awaiting_proxy_recovery"
+    )
+    assert not (root / "BUDGET_STOP_REQUESTED.json").exists()
+
+    with pytest.raises(
+        watchdog.BudgetTelemetryError,
+        match="requires controller credentials",
+    ):
+        watchdog.check_once(
+            run_id="unit",
+            durable_dir=durable,
+            runtime_dir=runtime,
+            codex_home=tmp_path / "codex",
+            pricing_path=PRICING,
+            now=1_301,
         )
 
 

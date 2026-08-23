@@ -689,6 +689,173 @@ def test_generic_openrouter_budget_gate_fails_closed_on_unknown_prior_charge(
     assert snapshot["reason"] == "budget_telemetry_unavailable"
 
 
+def test_proxy_health_blocks_startup_while_prior_charge_is_unknown(
+    tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "runs/run-1"
+    state = run_root / "state"
+    state.mkdir(parents=True)
+    (state / "run.json").write_text(
+        json.dumps({"run_id": "run-1", "agent_cost_budget_usd": 10.0})
+    )
+    record = run_root / f"api-usage/requests/{PENDING_REQUEST}.json"
+    record.parent.mkdir(parents=True)
+    record.write_text(
+        json.dumps(
+            {
+                "ledger_request_id": PENDING_REQUEST,
+                "run_id": "run-1",
+                "state": "cost_recovery_required",
+                "generation_id": None,
+                "provider_reported_cost_usd": None,
+            }
+        )
+    )
+    server = proxy.LedgerProxyServer(
+        ("127.0.0.1", 0),
+        upstream="https://openrouter.ai/api/v1",
+        ledger_root=run_root / "api-usage",
+        run_id="run-1",
+        cpu_attempt=2,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = http.client.HTTPConnection(
+            "127.0.0.1", server.server_port, timeout=5
+        )
+        client.request("GET", "/healthz")
+        response = client.getresponse()
+        assert response.status == 503
+        health = json.loads(response.read())
+        client.close()
+        assert health == {
+            "status": "reconciling",
+            "ready": False,
+            "pending_request_count": 1,
+            "in_flight_request_count": 0,
+            "cost_recovery_required_count": 1,
+        }
+
+        client = http.client.HTTPConnection(
+            "127.0.0.1", server.server_port, timeout=5
+        )
+        client.request("GET", "/ledger-status")
+        response = client.getresponse()
+        assert response.status == 200
+        assert json.loads(response.read())["pending_request_count"] == 1
+        client.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_proxy_restart_recovers_exact_generation_before_becoming_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_root = tmp_path / "runs/run-1"
+    state = run_root / "state"
+    state.mkdir(parents=True)
+    model = "deepseek/deepseek-v4-flash-vision-exp"
+    (state / "run.json").write_text(
+        json.dumps(
+            {
+                "run_id": "run-1",
+                "model": model,
+                "agent_cost_budget_usd": 10.0,
+            }
+        )
+    )
+    pricing = {
+        "uncached_input": 0.44 / 1_000_000,
+        "cached_input": 0.014 / 1_000_000,
+        "output": 1.32 / 1_000_000,
+    }
+    record = run_root / f"api-usage/requests/{PENDING_REQUEST}.json"
+    record.parent.mkdir(parents=True)
+    record.write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "ledger_request_id": PENDING_REQUEST,
+                "run_id": "run-1",
+                "state": "cost_recovery_required",
+                "generation_id": "gen-recover-me",
+                "provider_reported_cost_usd": None,
+                "promotion_snapshot": {
+                    "model": model,
+                    "provider_tag": "deepseek",
+                    "discount_fraction": 0.0,
+                    "deepseek_peak_pricing_usd_per_token": pricing,
+                    "cost_basis": "openrouter_list_price_with_deepseek_peak_floor",
+                },
+            }
+        )
+    )
+    (record.parent.parent / "summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "run_id": "run-1",
+                "model_api_usd": 1.0,
+                "provider_billed_model_api_usd": 0.75,
+                "completed_request_count": 4,
+                "pending_request_count": 1,
+                "in_flight_request_count": 0,
+                "cost_recovery_required_count": 1,
+                "in_flight_request_ids": [],
+                "cost_recovery_required_request_ids": [PENDING_REQUEST],
+            }
+        )
+    )
+    monkeypatch.setattr(
+        proxy,
+        "recover_openrouter_generation",
+        lambda generation_id, authorization: {
+            "id": generation_id,
+            "total_cost": 0.10,
+            "native_tokens_prompt": 1_000_000,
+            "native_tokens_cached": 0,
+            "native_tokens_completion": 1_000_000,
+            "authorization_seen": authorization,
+        },
+    )
+
+    server = proxy.LedgerProxyServer(
+        ("127.0.0.1", 0),
+        upstream="https://openrouter.ai/api/v1",
+        ledger_root=run_root / "api-usage",
+        run_id="run-1",
+        cpu_attempt=2,
+        upstream_api_key="sealed-child-key-123456",
+    )
+    try:
+        assert server.reconciliation_status()["ready"] is True
+        assert server.api_cost_usd == pytest.approx(2.76)
+        assert server.provider_billed_api_cost_usd == pytest.approx(0.85)
+        assert server.completed_request_count == 5
+        recovered = json.loads(record.read_text())
+        assert recovered["state"] == "recovered_complete"
+        assert recovered["benchmark_cost_usd"] == pytest.approx(1.76)
+        assert recovered["provider_reported_cost_usd"] == pytest.approx(0.10)
+        assert recovered["recovered_after_proxy_restart"] is True
+    finally:
+        server.server_close()
+
+
+def test_codex_wrapper_drains_proxy_and_persists_unrecoverable_stop() -> None:
+    source = (
+        ROOT / "event_runtime/container/sprint-codex-exec-wrapper.sh"
+    ).read_text()
+
+    assert 'url = f"{base.scheme}://{base.netloc}/ledger-status"' in source
+    assert "OPENROUTER_PROXY_DRAIN_TIMEOUT_SECONDS" in source
+    assert "OPENROUTER_PROXY_RECOVERY_TIMEOUT_SECONDS" in source
+    assert "fail_closed_openrouter_recovery" in source
+    assert '"reason": "budget_telemetry_unavailable"' in source
+
+
 def test_proxy_maintains_constant_size_exact_cost_summary(tmp_path: Path) -> None:
     run_root = tmp_path / "runs/run-1"
     state = run_root / "state"

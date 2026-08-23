@@ -17,6 +17,9 @@ import ssl
 import sys
 import threading
 from typing import Any
+import urllib.error
+import urllib.parse
+import urllib.request
 from urllib.parse import urlsplit
 
 
@@ -73,6 +76,28 @@ def atomic_json(path: Path, payload: dict[str, Any]) -> None:
         os.fsync(handle.fileno())
     os.chmod(temporary, 0o600)
     os.replace(temporary, path)
+
+
+def recover_openrouter_generation(
+    generation_id: str, authorization: str | None
+) -> dict[str, Any] | None:
+    """Fetch one exact generation audit with the sealed per-trial key."""
+    if not generation_id or not authorization:
+        return None
+    url = "https://openrouter.ai/api/v1/generation?" + urllib.parse.urlencode(
+        {"id": generation_id}
+    )
+    request = urllib.request.Request(
+        url,
+        headers={"Authorization": authorization, "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            payload = json.load(response)
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
+        return None
+    data = payload.get("data") if isinstance(payload, dict) else None
+    return data if isinstance(data, dict) else None
 
 
 def usage_from_event(event: object) -> tuple[dict[str, Any] | None, dict[str, Any]]:
@@ -180,9 +205,15 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
         return self.server  # type: ignore[return-value]
 
     def do_GET(self) -> None:  # noqa: N802
-        if self.path == "/healthz":
-            body = b'{"status":"ok"}\n'
-            self.send_response(HTTPStatus.OK)
+        if self.path in {"/healthz", "/ledger-status"}:
+            status = self.ledger_server.reconciliation_status()
+            ready = bool(status["ready"])
+            body = (json.dumps(status, sort_keys=True) + "\n").encode()
+            self.send_response(
+                HTTPStatus.OK
+                if ready or self.path == "/ledger-status"
+                else HTTPStatus.SERVICE_UNAVAILABLE
+            )
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -824,6 +855,60 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
             if record.get("run_id") != self.run_id:
                 raise ValueError("recovery ledger identity mismatch")
             cost = record.get("provider_reported_cost_usd")
+            recovered: dict[str, Any] | None = None
+            if not isinstance(cost, (int, float)) or isinstance(cost, bool):
+                generation_id = record.get("generation_id")
+                if isinstance(generation_id, str) and generation_id:
+                    recovered = recover_openrouter_generation(
+                        generation_id, self.upstream_authorization
+                    )
+                    candidate = recovered.get("total_cost") if recovered else None
+                    if (
+                        isinstance(candidate, (int, float))
+                        and not isinstance(candidate, bool)
+                        and math.isfinite(float(candidate))
+                        and float(candidate) >= 0
+                    ):
+                        provider_cost = float(candidate)
+                        try:
+                            list_cost = undiscounted_cost_usd(
+                                provider_cost, record.get("promotion_snapshot")
+                            )
+                            benchmark_cost = benchmark_cost_usd(
+                                provider_cost,
+                                record.get("promotion_snapshot"),
+                                recovered,
+                            )
+                        except OpenRouterPricingError as exc:
+                            raise ValueError(
+                                "recovered request has incomplete pricing metadata"
+                            ) from exc
+                        record.update(
+                            {
+                                "state": "recovered_complete",
+                                "completed_at": utc_now(),
+                                "provider_reported_cost_usd": provider_cost,
+                                "undiscounted_cost_usd": list_cost,
+                                "benchmark_cost_usd": benchmark_cost,
+                                "promotion_adjustment_usd": list_cost
+                                - provider_cost,
+                                "deepseek_peak_adjustment_usd": benchmark_cost
+                                - list_cost,
+                                "benchmark_adjustment_usd": benchmark_cost
+                                - provider_cost,
+                                "promotion_discount_fraction": (
+                                    record.get("promotion_snapshot") or {}
+                                ).get("discount_fraction"),
+                                "cost_basis": (
+                                    record.get("promotion_snapshot") or {}
+                                ).get("cost_basis", BENCHMARK_COST_BASIS),
+                                "provider_cost_basis": PROVIDER_COST_BASIS,
+                                "generation_audit": recovered,
+                                "recovered_after_proxy_restart": True,
+                            }
+                        )
+                        atomic_json(path, record)
+                        cost = provider_cost
             if (
                 isinstance(cost, (int, float))
                 and not isinstance(cost, bool)
@@ -845,6 +930,39 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
                 self.provider_billed_api_cost_usd += provider_cost
             elif record.get("state") != "cost_recovery_required":
                 raise ValueError("invalid recovery ledger state")
+
+    def reconciliation_status(self) -> dict[str, Any]:
+        """Reconcile named interrupted generations and expose drain readiness."""
+        with self.billing_lock:
+            before = (
+                self.api_cost_usd,
+                self.provider_billed_api_cost_usd,
+                self.completed_request_count,
+                frozenset(self.in_flight_request_ids),
+                frozenset(self.cost_recovery_required_request_ids),
+            )
+            self._reconcile_pending_requests(include_in_flight=False)
+            after = (
+                self.api_cost_usd,
+                self.provider_billed_api_cost_usd,
+                self.completed_request_count,
+                frozenset(self.in_flight_request_ids),
+                frozenset(self.cost_recovery_required_request_ids),
+            )
+            if after != before:
+                self.write_summary()
+            pending = len(self.in_flight_request_ids) + len(
+                self.cost_recovery_required_request_ids
+            )
+            return {
+                "status": "ok" if pending == 0 else "reconciling",
+                "ready": pending == 0,
+                "pending_request_count": pending,
+                "in_flight_request_count": len(self.in_flight_request_ids),
+                "cost_recovery_required_count": len(
+                    self.cost_recovery_required_request_ids
+                ),
+            }
 
     def write_summary(self) -> None:
         pending = len(self.in_flight_request_ids) + len(

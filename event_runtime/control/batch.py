@@ -600,6 +600,12 @@ def audit_openrouter_child_usage(
             resolve_alerts(
                 payload,
                 run_id=arm["run_id"],
+                kind="openrouter_key_usage_audit",
+                resolution="trusted child-key and proxy usage audit is healthy",
+            )
+            resolve_alerts(
+                payload,
+                run_id=arm["run_id"],
                 kind="openrouter_proxy_bypass",
                 resolution="child-key usage reconciled with trusted proxy ledger",
             )

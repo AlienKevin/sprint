@@ -44,6 +44,8 @@ STOP_REASON = "agent_cost_budget_exhausted"
 HOST_COST_MIRROR_RELATIVE_PATH = Path("sprint-gpu-mirror/cost.json")
 HOST_COST_MIRROR_MAX_AGE_SECONDS = 60.0
 HOST_COST_MIRROR_MAX_CLOCK_SKEW_SECONDS = 60.0
+OPENROUTER_PROXY_STARTUP_GRACE_SECONDS = 30.0
+OPENROUTER_PROXY_RECOVERY_GRACE_SECONDS = 300.0
 
 
 class BudgetTelemetryError(RuntimeError):
@@ -149,7 +151,11 @@ def _recover_record_cost(
 
 
 def openrouter_api_cost(
-    run_root: Path, *, run_id: str, api_key: str | None
+    run_root: Path,
+    *,
+    run_id: str,
+    api_key: str | None,
+    allow_unrecovered: bool = False,
 ) -> tuple[float, float, int, int]:
     """Sum undiscounted and charged OpenRouter costs, recovering streams by ID."""
     requests_dir = run_root / "api-usage" / "requests"
@@ -208,7 +214,7 @@ def openrouter_api_cost(
             ):
                 raise BudgetTelemetryError("invalid OpenRouter ledger summary")
             if recovery_required == 0 or not api_key:
-                if recovery_required and not api_key:
+                if recovery_required and not api_key and not allow_unrecovered:
                     raise BudgetTelemetryError(
                         "OpenRouter charge recovery requires controller credentials"
                     )
@@ -321,7 +327,11 @@ def openrouter_api_cost(
             continue
         generation_id = record.get("generation_id")
         state = record.get("state")
-        if state == "cost_recovery_required" and not api_key:
+        if (
+            state == "cost_recovery_required"
+            and not api_key
+            and not allow_unrecovered
+        ):
             raise BudgetTelemetryError(
                 "OpenRouter charge recovery requires controller credentials"
             )
@@ -404,6 +414,41 @@ def require_live_openrouter_proxy(runtime_dir: Path) -> None:
         raise BudgetTelemetryError(
             "Codex is running without its OpenRouter cost ledger proxy"
         ) from exc
+
+
+def _recorded_process_alive(path: Path) -> bool:
+    try:
+        pid = int(path.read_text().split()[0])
+        os.kill(pid, 0)
+    except (OSError, ValueError, IndexError):
+        return False
+    return True
+
+
+def allow_proxy_recovery_without_controller_key(
+    runtime_dir: Path, *, attempt_started_at: float, now: float
+) -> bool:
+    """Permit only a bounded, pre-agent proxy reconciliation window.
+
+    The proxy retains the sealed per-trial key while Codex never receives it.
+    On a resumed CPU attempt, the proxy may need a few seconds to turn an
+    interrupted generation ID into an exact OpenRouter charge. During that
+    window no model request can start because proxy health remains non-ready.
+    The watchdog may therefore account the known lower bound without declaring
+    telemetry failure. Once Codex is live, the proxy dies, or the bounded
+    window expires, uncertainty fails closed as usual.
+    """
+    if _recorded_process_alive(runtime_dir / "sprint-agent/codex-process"):
+        return False
+    elapsed = now - attempt_started_at
+    if not math.isfinite(elapsed) or elapsed < 0:
+        return False
+    proxy_alive = _recorded_process_alive(
+        runtime_dir / "sprint-agent/openrouter-proxy.pid"
+    )
+    if proxy_alive:
+        return elapsed <= OPENROUTER_PROXY_RECOVERY_GRACE_SECONDS
+    return elapsed <= OPENROUTER_PROXY_STARTUP_GRACE_SECONDS
 
 
 def load_pricing_module(path: Path):
@@ -820,7 +865,7 @@ def check_once(
         or run.get("cpu_launch_attempt")
         or 1
     )
-    ensure_cpu_start(run_root, attempt, ref)
+    attempt_started_at = ensure_cpu_start(run_root, attempt, ref)
     cpu_seconds = cpu_allocated_seconds(run_root, attempt, ref)
     gpu_seconds = gpu_allocated_seconds(
         run_root,
@@ -839,8 +884,21 @@ def check_once(
         # can recover its exact OpenRouter generation charge.
         raw_api_key = os.environ.get("OPENAI_API_KEY", "")
         api_key = raw_api_key if len(raw_api_key) >= 16 else None
+        awaiting_proxy_recovery = (
+            api_key is None
+            and allow_proxy_recovery_without_controller_key(
+                runtime_dir,
+                attempt_started_at=attempt_started_at,
+                now=ref,
+            )
+        )
         api_usd, provider_billed_api_usd, requests, pending_requests = (
-            openrouter_api_cost(run_root, run_id=run_id, api_key=api_key)
+            openrouter_api_cost(
+                run_root,
+                run_id=run_id,
+                api_key=api_key,
+                allow_unrecovered=awaiting_proxy_recovery,
+            )
         )
     else:
         pricing = load_pricing_module(pricing_path)
@@ -859,6 +917,7 @@ def check_once(
             )
         pending_requests = 0
         provider_billed_api_usd = None
+        awaiting_proxy_recovery = False
     cpu_usd = cpu_seconds * CPU_USD_PER_SECOND
     training_usd = gpu_seconds * TRAINING_USD_PER_SECOND
     host_mirror = load_host_cost_mirror(
@@ -935,6 +994,11 @@ def check_once(
                 ),
                 "provider_reported": enforcement.get("api_cost_source")
                 == "openrouter_reported_per_request",
+                **(
+                    {"telemetry_state": "awaiting_proxy_recovery"}
+                    if awaiting_proxy_recovery and pending_requests > 0
+                    else {}
+                ),
             },
             "cpu_agent": {
                 "cost_usd": cpu_usd,

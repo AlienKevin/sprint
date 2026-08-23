@@ -2419,6 +2419,15 @@ while True:
             self.assertEqual(digest, frontier_update.site_tree_hash(web))
             self.assertGreaterEqual(calls, 2)
 
+    def test_site_hash_ignores_atomic_writer_staging_files(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            web = Path(raw)
+            (web / "index.html").write_text("stable")
+            baseline = frontier_update.site_tree_hash(web)
+            (web / ".current.json.123.tmp").write_text("partial")
+
+            self.assertEqual(frontier_update.site_tree_hash(web), baseline)
+
     def test_public_artifact_hashes_retries_live_replacement_race(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             web = Path(raw)

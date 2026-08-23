@@ -857,6 +857,38 @@ def test_missing_submitted_artifact_blocks_readiness(tmp_path: Path) -> None:
     assert payload["coverage"]["counts"]["missing_submission_artifacts"] == 1
 
 
+def test_failed_submission_ingestion_is_preserved_without_claiming_policy_bytes(
+    tmp_path: Path,
+) -> None:
+    state = fixture_run(tmp_path, missing_artifact=True)
+    ledger = next(state.rglob("continuous/ledger.jsonl"))
+    rows = [json.loads(line) for line in ledger.read_text().splitlines()]
+    rows[1].update(
+        {
+            "artifact_sha256": None,
+            "error": "NotFoundError: sandbox unavailable",
+            "error_type": "NotFoundError",
+            "retryable_infrastructure_error": True,
+        }
+    )
+    write_jsonl(ledger, rows)
+
+    payload = unified_timeline.build_timeline(state)
+
+    assert payload["coverage"]["requirements"][
+        "all_submitted_artifacts_captured"
+    ] is True
+    assert payload["coverage"]["counts"]["failed_submission_ingestions"] == 1
+    failed = [
+        event
+        for event in payload["events"]
+        if event["kind"] == "artifact_ingestion_failed"
+    ]
+    assert len(failed) == 1
+    artifact = next(item for item in payload["artifacts"] if item["ingestion_failed"])
+    assert artifact["captured"] is False
+
+
 def test_request_costs_are_joined_to_performance_on_the_same_clock(
     tmp_path: Path,
 ) -> None:
@@ -1365,6 +1397,8 @@ def test_host_registry_clamps_legacy_pre_spawn_training_interval(
             "raw_start_epoch_ms": 1786104000000,
             "raw_end_epoch_ms": 1786104101000,
             "lifecycle_bounds_source": "host_job_registry",
+            "telemetry_expected": False,
+            "telemetry_not_expected_reason": "sandbox_terminated_before_worker_start",
             "sample_count": 0,
             "max_gap_ms": 12000,
             "covered": True,
@@ -1373,12 +1407,96 @@ def test_host_registry_clamps_legacy_pre_spawn_training_interval(
             "trailing_gap_ms": None,
             "terminal_tail_grace_ms": 180000,
             "terminal_tail_grace_used": False,
+            "coverage_status": "not_applicable",
+            "coverage_reason": "sandbox_terminated_before_worker_start",
         }
     ]
     counts = payload["coverage"]["counts"]
     assert counts["gpu_registry_start_bounds_applied"] == 1
     assert counts["gpu_registry_end_bounds_applied"] == 1
     assert payload["coverage"]["requirements"]["training_gpu_metrics"] is True
+
+
+def test_preworker_terminated_allocation_does_not_require_impossible_gpu_samples(
+    tmp_path: Path,
+) -> None:
+    state = fixture_run(tmp_path)
+    run_path = state / "run.json"
+    run = json.loads(run_path.read_text())
+    run["gpu_pipeline_telemetry_required"] = True
+    run_path.write_text(json.dumps(run))
+    lifecycle_path = state / "telemetry" / "gpu_timeline.jsonl"
+    write_jsonl(
+        lifecycle_path,
+        [
+            {
+                "event_id": "preworker-start",
+                "epoch_s": 1786104000,
+                "phase": "gpu_lifecycle",
+                "action": "instant",
+                "job_id": "preworker-stop",
+                "attempt": 1,
+                "detail": {"event": "gpu_allocated"},
+            },
+            {
+                "event_id": "preworker-end",
+                "epoch_s": 1786104200,
+                "phase": "gpu_lifecycle",
+                "action": "instant",
+                "job_id": "preworker-stop",
+                "attempt": 1,
+                "detail": {"event": "gpu_released"},
+            },
+        ],
+    )
+    registry = state / "gpu-job-registry" / "preworker-stop.json"
+    registry.parent.mkdir(parents=True)
+    registry.write_text(
+        json.dumps(
+            {
+                "job_id": "preworker-stop",
+                "attempt": 1,
+                "status": "terminated",
+                "dispatched_at_epoch_s": 1786104005,
+                "terminated_at_epoch_s": 1786104195,
+                "termination_reason": "operator_stop",
+            }
+        )
+    )
+
+    payload = unified_timeline.build_timeline(state)
+
+    coverage = payload["coverage"]["gpu_metric_coverage"]["training"]
+    assert coverage == [
+        {
+            "start_epoch_ms": 1786104005000,
+            "end_epoch_ms": 1786104195000,
+            "gpu_job_id": "preworker-stop",
+            "gpu_attempt": 1,
+            "raw_start_epoch_ms": 1786104000000,
+            "raw_end_epoch_ms": 1786104200000,
+            "lifecycle_bounds_source": "host_job_registry",
+            "telemetry_expected": False,
+            "telemetry_not_expected_reason": "sandbox_terminated_before_worker_start",
+            "sample_count": 0,
+            "max_gap_ms": 190000,
+            "covered": True,
+            "leading_gap_ms": None,
+            "internal_max_gap_ms": None,
+            "trailing_gap_ms": None,
+            "terminal_tail_grace_ms": 180000,
+            "terminal_tail_grace_used": False,
+            "coverage_status": "not_applicable",
+            "coverage_reason": "sandbox_terminated_before_worker_start",
+        }
+    ]
+    assert payload["coverage"]["requirements"]["training_gpu_metrics"] is True
+    assert payload["coverage"]["requirements"][
+        "training_gpu_pipeline_metrics"
+    ] is True
+    assert payload["coverage"]["counts"][
+        "training_gpu_preworker_terminated_intervals"
+    ] == 1
 
 
 def test_host_registry_drops_allocation_published_after_terminal_attempt(
