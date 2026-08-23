@@ -2528,6 +2528,72 @@ class NetworkIsolationTests(unittest.TestCase):
 
 
 class RetryAndFencingTests(unittest.TestCase):
+    def test_exited_provider_closes_billing_before_terminal_volume_commit(
+        self,
+    ) -> None:
+        job = {
+            "job_id": "logical",
+            "status": "running",
+            "attempt": 1,
+            "lease_id": "lease",
+            "sandbox_id": "sb",
+            "claimed_at_epoch_s": 100,
+        }
+        attempt = {
+            "attempt": 1,
+            "lease_id": "lease",
+            "status": "running",
+            "started_at_epoch_s": 110,
+        }
+        heartbeat = {
+            "attempt": 1,
+            "lease_id": "lease",
+            "updated_at_epoch_s": 195,
+        }
+        persisted: list[dict] = []
+        with (
+            mock.patch.object(gpu_worker, "load_attempt_record", return_value=attempt),
+            mock.patch.object(gpu_worker, "load_heartbeat", return_value=heartbeat),
+            mock.patch.object(
+                gpu_worker,
+                "drain_worker_submission_outbox",
+                side_effect=lambda _run, payload: (payload, {}),
+            ),
+            mock.patch.object(
+                gpu_worker,
+                "refresh_live_policy_mirror",
+                side_effect=lambda _run, payload, _heartbeat: (payload, {}),
+            ),
+            mock.patch.object(
+                gpu_worker,
+                "refresh_live_provider_logs",
+                side_effect=lambda _run, payload, now: (payload, {}),
+            ),
+            mock.patch.object(
+                gpu_worker,
+                "persist_job",
+                side_effect=lambda _run, payload: (
+                    persisted.append(dict(payload)) or payload
+                ),
+            ),
+            mock.patch.object(gpu_worker, "_timeline_event") as timeline_event,
+        ):
+            out, detail = gpu_worker.reconcile_job(
+                {"run_id": "unit"},
+                job,
+                now=200,
+                probe_fn=lambda _job: ("exited", 0, None),
+            )
+
+        self.assertEqual(detail["decision"], "grace")
+        self.assertEqual(out["provider_exit_observed_epoch_s"], 200)
+        self.assertEqual(out["provider_exit_code"], 0)
+        self.assertEqual(persisted[-1]["provider_exit_observed_epoch_s"], 200)
+        self.assertEqual(
+            timeline_event.call_args.kwargs["event"],
+            "gpu_provider_exit_observed",
+        )
+
     def test_live_claim_owner_keeps_startup_grace(self) -> None:
         identity = gpu_claim.process_identity()
         self.assertIsNotNone(identity)

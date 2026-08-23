@@ -2416,6 +2416,29 @@ def reconcile_job(
         live_policy_detail = {"live_policy_mirror": "worker_not_running"}
 
     probe_state, exit_code, probe_error = probe_fn(job)
+    if probe_state == "exited" and not job.get("provider_exit_observed_epoch_s"):
+        # Modal's provider poll is authoritative that this sandbox is no
+        # longer billable even when the worker's terminal Volume commit is
+        # still propagating. Persist a host-owned upper billing boundary now;
+        # artifact/retry semantics continue to wait for the exact attempt
+        # record below. Without this boundary the live ledger bills the worker
+        # through the full Volume visibility grace, then drops by minutes when
+        # the earlier exact terminal timestamp finally arrives.
+        observed = dict(job)
+        observed["provider_exit_observed_epoch_s"] = ref
+        observed["provider_exit_code"] = exit_code
+        persist_job(run, observed)
+        _timeline_event(
+            run,
+            observed,
+            phase="gpu_lifecycle",
+            action="instant",
+            epoch_s=int(ref),
+            event="gpu_provider_exit_observed",
+            exit_code=exit_code,
+            lifecycle_boundary="provider_poll_exited",
+        )
+        job = observed
     decision = gpu_claim.assess_worker_liveness(
         job,
         heartbeat,

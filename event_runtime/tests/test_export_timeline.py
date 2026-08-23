@@ -724,6 +724,54 @@ def test_training_cost_excludes_archive_pin_before_sandbox_create(
     ]["allocated_ms"] == 35_000
 
 
+def test_training_billing_uses_provider_exit_observation_during_volume_lag(
+    tmp_path: Path,
+) -> None:
+    state = fixture_run(tmp_path)
+    lifecycle_path = state / "telemetry" / "gpu_timeline.jsonl"
+    lifecycle = [json.loads(line) for line in lifecycle_path.read_text().splitlines()]
+    lifecycle.extend(
+        [
+            {
+                "event_id": "sandbox-create-1",
+                "epoch_s": 1786104004,
+                "phase": "gpu_sandbox_create",
+                "action": "enter",
+                "job_id": "job-1",
+                "attempt": 1,
+                "lease_id": "lease-1",
+            },
+            {
+                "event_id": "provider-exit-1",
+                "epoch_s": 1786104023,
+                "phase": "gpu_lifecycle",
+                "action": "instant",
+                "job_id": "job-1",
+                "attempt": 1,
+                "lease_id": "lease-1",
+                "detail": {"event": "gpu_provider_exit_observed"},
+            },
+        ]
+    )
+    write_jsonl(lifecycle_path, lifecycle)
+
+    payload = unified_timeline.build_timeline(state)
+    training = payload["resource_usage_summary"]["training_gpu"]
+    attempt_one = next(
+        interval
+        for interval in training["billing_upper_bound_intervals"]
+        if interval.get("gpu_attempt") == 1
+    )
+
+    # The worker's exact terminal record is 12:00:20, while Modal was observed
+    # exited at 12:00:23. Billing uses the later provider observation so an
+    # in-flight estimate can reconcile by at most the poll interval, not the
+    # full terminal Volume visibility grace.
+    assert attempt_one["start_epoch_ms"] == 1786104004000
+    assert attempt_one["end_epoch_ms"] == 1786104023000
+    assert training["intervals"][0]["end_epoch_ms"] == 1786104020000
+
+
 def test_training_cost_legacy_falls_back_to_worker_starting(
     tmp_path: Path,
 ) -> None:
@@ -1218,6 +1266,50 @@ def test_host_registry_closes_missing_training_terminal_event(tmp_path: Path) ->
     assert recovered[0]["lifecycle_recovery_source"] == "host_job_registry"
     assert payload["coverage"]["requirements"]["training_gpu_lifecycle"] is True
     assert payload["coverage"]["requirements"]["training_gpu_metrics"] is True
+
+
+def test_host_registry_recovers_provider_exit_billing_boundary(tmp_path: Path) -> None:
+    state = fixture_run(tmp_path)
+    lifecycle_path = state / "telemetry" / "gpu_timeline.jsonl"
+    lifecycle = [json.loads(line) for line in lifecycle_path.read_text().splitlines()]
+    lifecycle.append(
+        {
+            "event_id": "sandbox-create-1",
+            "epoch_s": 1786104004,
+            "phase": "gpu_sandbox_create",
+            "action": "enter",
+            "job_id": "job-1",
+            "attempt": 1,
+            "lease_id": "lease-1",
+        }
+    )
+    write_jsonl(lifecycle_path, lifecycle)
+    registry = state / "gpu-job-registry" / "job-1.json"
+    registry.parent.mkdir(parents=True)
+    registry.write_text(
+        json.dumps(
+            {
+                "job_id": "job-1",
+                "attempt": 1,
+                "status": "running",
+                "lease_id": "lease-1",
+                "provider_exit_observed_epoch_s": 1786104023,
+                "provider_exit_code": 0,
+            }
+        )
+    )
+
+    payload = unified_timeline.build_timeline(state)
+    attempt_one = next(
+        interval
+        for interval in payload["resource_usage_summary"]["training_gpu"][
+            "billing_upper_bound_intervals"
+        ]
+        if interval.get("gpu_attempt") == 1
+    )
+
+    assert attempt_one["end_epoch_ms"] == 1786104023000
+    assert payload["coverage"]["counts"]["gpu_registry_provider_exit_events"] == 1
 
 
 def test_host_registry_clamps_legacy_pre_spawn_training_interval(

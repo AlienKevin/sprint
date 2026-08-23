@@ -709,6 +709,29 @@ class Builder:
                         bounds["end_epoch_ms"] = min(
                             terminal_at, bounds.get("end_epoch_ms", terminal_at)
                         )
+                    provider_exit_at = parse_epoch_ms(
+                        record.get("provider_exit_observed_epoch_s")
+                    )
+                    if provider_exit_at is not None:
+                        self.add_event(
+                            epoch_ms=provider_exit_at,
+                            category="infrastructure",
+                            kind="gpu_provider_exit_observed",
+                            source=self.relative(path),
+                            identity=(
+                                f"registry-provider-exit:{job_id}:{attempt}:"
+                                f"{provider_exit_at}"
+                            ),
+                            data={
+                                "gpu_job_id": job_id,
+                                "gpu_attempt": attempt,
+                                "lease_id": record.get("lease_id"),
+                                "exit_code": record.get("provider_exit_code"),
+                                "lifecycle_recovered": True,
+                                "lifecycle_recovery_source": "host_job_registry",
+                            },
+                        )
+                        self.counts["gpu_registry_provider_exit_events"] += 1
                 finished_at = record.get("finished_at") or record.get("terminated_at")
                 if not finished_at and terminal_values:
                     finished_at = iso_from_ms(min(terminal_values))
@@ -2075,6 +2098,29 @@ class Builder:
             end_kinds={"gpu_preempted", "gpu_released"},
             key_fields=("gpu_job_id", "gpu_attempt"),
         )
+        # A worker terminal record can lag Modal's authoritative exited state
+        # while its final Volume commit propagates. Close the conservative
+        # billing interval at the later provider observation when available;
+        # exact training telemetry continues to use the worker timestamp.
+        provider_exit_epochs: dict[tuple[Any, Any], int] = {}
+        for event in self.events:
+            if event["kind"] != "gpu_provider_exit_observed":
+                continue
+            key = (event.get("gpu_job_id"), event.get("gpu_attempt"))
+            provider_exit_epochs[key] = max(
+                int(event["epoch_ms"]), provider_exit_epochs.get(key, 0)
+            )
+        for interval in training_billing_intervals:
+            key = (interval.get("gpu_job_id"), interval.get("gpu_attempt"))
+            observed_end = provider_exit_epochs.get(key)
+            if observed_end is None:
+                continue
+            terminal_end = interval.get("end_epoch_ms")
+            interval["end_epoch_ms"] = (
+                observed_end
+                if terminal_end is None
+                else max(int(terminal_end), observed_end)
+            )
         billing_keys = {
             (interval.get("gpu_job_id"), interval.get("gpu_attempt"))
             for interval in training_billing_intervals
