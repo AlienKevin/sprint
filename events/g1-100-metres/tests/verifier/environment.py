@@ -16,7 +16,7 @@ What changes is everything that exists to *train*:
 term                         training                    evaluation
 ===========================  ==========================  ===========================
 command                      resampled every 10 s        one fixed speed per env
-start pose                   ±0.5 m, yaw ±180°           fixed ready pose behind line
+start pose                   ±0.5 m, yaw ±180°           origin, facing +x
 start velocity               ±0.5 m/s, ±0.5 rad/s        at rest
 observation noise            on                          off
 external force / pushes      on (already off for G1)     off
@@ -158,7 +158,7 @@ class G1100MetresEnvCfg(G1FlatEnvCfg):
         # 100 m at the slowest speed worth measuring, plus the standing phase
         self.episode_length_s = 240.0
 
-        # --- start from rest, behind the line, facing the finish -------------
+        # --- start from rest, on the line, facing the finish -----------------
         # Every trial starts from the same position.  Repeats exist to average
         # over the simulator's own variance, not over a perturbation invented
         # to make them differ.

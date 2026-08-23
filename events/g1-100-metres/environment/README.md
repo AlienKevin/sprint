@@ -13,12 +13,6 @@ fields, action scale, 50 Hz control, and the optional state-reset ABI. Import
 its named constants instead of copying offsets. Export with `torch.jit.save`;
 `event check POLICY.pt` validates the portable CPU contract.
 
-Every rollout starts from the versioned `forward-ready-start-v1` pose: at rest,
-torso leaned 40 degrees toward the finish, right foot leading by 0.46 m, both
-feet planted, and the full robot behind the starting line. The pose is also the
-zero-action joint reference. Training helpers, the local verifier, and official
-scoring use the same byte-identical definition.
-
 ## Target metric
 
 **Optimize Effective Speed; higher is better.**

@@ -239,17 +239,13 @@ def test_published_verifier_is_an_exact_reviewed_source_mirror() -> None:
             assert hashlib.sha256(exposed.read_bytes()).hexdigest() == expected
 
 
-def test_training_and_both_verifiers_share_one_exact_ready_start() -> None:
+def test_training_and_both_verifiers_share_one_exact_standing_start() -> None:
     trusted = TASK / "tests/verifier/standing_start.py"
     training = TASK / "environment/standing_start.py"
     assert trusted.read_bytes() == training.read_bytes()
 
     source = trusted.read_text()
-    assert 'CANONICAL_START_NAME = "forward-ready-start-v1"' in source
-    assert "FORWARD_LEAN_DEGREES = 40.0" in source
-    assert "ROOT_PITCH_DEGREES = 40.0" in source
-    assert 'LEAD_LEG = "right"' in source
-    assert "ROOT_POSITION_M = (-0.55, 0.0, 0.696634)" in source
+    assert 'CANONICAL_START_NAME = "standard-standing-start-v1"' in source
     assert "ROOT_LINEAR_VELOCITY_M_S = (0.0, 0.0, 0.0)" in source
     assert "ROOT_ANGULAR_VELOCITY_RAD_S = (0.0, 0.0, 0.0)" in source
     assert 'JOINT_VELOCITIES_RAD_S = {".*": 0.0}' in source
@@ -302,7 +298,7 @@ def test_official_loader_preserves_optional_policy_reset() -> None:
     assert "infer.reset = reset" in source
 
 
-def test_canonical_ready_start_sets_every_initial_state_field() -> None:
+def test_canonical_standing_start_sets_every_initial_state_field() -> None:
     source = TASK / "tests/verifier/standing_start.py"
     module_spec = importlib.util.spec_from_file_location("standing_start", source)
     assert module_spec is not None and module_spec.loader is not None
