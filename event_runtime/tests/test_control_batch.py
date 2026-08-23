@@ -1467,22 +1467,35 @@ def test_batch_stop_persists_all_intents_before_slow_dispatch(
     )
     persisted: list[str] = []
     dispatched: list[str] = []
+    events: list[str] = []
 
     def persist(run_id: str, *, reason: str):
         assert reason == "operator_batch_stop"
         persisted.append(run_id)
+        events.append(f"persist:{run_id}")
         return tmp_path, {}, {}
 
     def dispatch(run_id: str, *, reason: str):
         assert persisted == ["run-1", "run-2", "run-3"]
+        assert "lock:entered" in events
         dispatched.append(run_id)
         if run_id == "run-1":
             raise RuntimeError("provider unavailable")
         return {"status": "requested"}
 
+    @contextlib.contextmanager
+    def recording_lock(path: Path, *, blocking: bool = True):
+        assert path == batch_eval.batch_path(batch_id).with_suffix(".lock")
+        assert blocking is True
+        assert persisted == ["run-1", "run-2", "run-3"]
+        events.append("lock:entered")
+        yield True
+        events.append("lock:exited")
+
     with (
         mock.patch.object(batch_eval.sprintctl, "persist_stop_request", persist),
         mock.patch.object(batch_eval.sprintctl, "request_stop", dispatch),
+        mock.patch.object(batch_eval.frontier_update, "file_lock", recording_lock),
     ):
         result = batch_eval.stop_batch(batch_id)
 
@@ -1496,6 +1509,7 @@ def test_batch_stop_persists_all_intents_before_slow_dispatch(
         "stopping",
         "stopping",
     ]
+    assert events[-1] == "lock:exited"
 
 
 def test_verifier_lane_stall_alert_is_scoped_to_one_trial(

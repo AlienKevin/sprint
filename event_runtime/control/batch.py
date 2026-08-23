@@ -2304,44 +2304,60 @@ def monitor_cycle(
 
 
 def stop_batch(batch_id: str, *, env_file: Path | None = None) -> dict[str, Any]:
-    payload = read_batch(batch_id)
-    targets: list[dict[str, Any]] = []
     # Persist every lane's stop intent first. Modal lease fencing can wait on a
     # dispatch lock, so a controller interruption must not leave later arms
     # running merely because the first arm was slow to stop.
-    for arm in payload["arms"]:
+    snapshot = read_batch(batch_id)
+    for arm in snapshot["arms"]:
         if (
             arm.get("status") != "finalized"
             and (SCRIPT_DIR / arm["run_id"] / "run.json").is_file()
         ):
             sprintctl.persist_stop_request(arm["run_id"], reason="operator_batch_stop")
-            arm["stop_requested_at"] = arm.get("stop_requested_at") or utc_now()
-            arm["status"] = "stopping"
-            targets.append(arm)
-    payload["updated_at"] = utc_now()
-    atomic_json(batch_path(batch_id), payload)
 
-    if payload.get("credential_status") == "active":
-        credential_env = env_file or Path(payload.get("env_file", ROOT / ".env"))
-        try:
-            revoke_batch_credentials(payload, credential_env)
-        except (KeyError, OSError, OpenRouterManagementError, ValueError) as exc:
-            payload["credential_status"] = "cleanup_error"
-            payload["credential_cleanup_errors"] = [f"{type(exc).__name__}: {exc}"]
-        atomic_json(batch_path(batch_id), payload)
-
-    for arm in targets:
-        try:
-            result = sprintctl.request_stop(arm["run_id"], reason="operator_batch_stop")
-            arm["stop_dispatch_status"] = result.get("status")
-            arm.pop("stop_dispatch_error", None)
-        except Exception as exc:  # noqa: BLE001
-            # The per-run monitor will retry from STOP_REQUESTED. Continue so
-            # one provider/API failure cannot block the remaining arms.
-            arm["stop_dispatch_error"] = f"{type(exc).__name__}: {exc}"
+    path = batch_path(batch_id)
+    # The monitor holds this same lock for its complete read/modify/write cycle.
+    # Re-read only after acquiring it: otherwise a monitor snapshot that began
+    # before this stop could later restore launched arms or active credentials.
+    with frontier_update.file_lock(path.with_suffix(".lock")):
+        payload = read_batch(batch_id)
+        targets: list[dict[str, Any]] = []
+        for arm in payload["arms"]:
+            if (
+                arm.get("status") != "finalized"
+                and (SCRIPT_DIR / arm["run_id"] / "run.json").is_file()
+            ):
+                arm["stop_requested_at"] = arm.get("stop_requested_at") or utc_now()
+                arm["status"] = "stopping"
+                targets.append(arm)
         payload["updated_at"] = utc_now()
-        atomic_json(batch_path(batch_id), payload)
-    return payload
+        atomic_json(path, payload)
+
+        if payload.get("credential_status") == "active":
+            credential_env = env_file or Path(payload.get("env_file", ROOT / ".env"))
+            try:
+                revoke_batch_credentials(payload, credential_env)
+            except (KeyError, OSError, OpenRouterManagementError, ValueError) as exc:
+                payload["credential_status"] = "cleanup_error"
+                payload["credential_cleanup_errors"] = [
+                    f"{type(exc).__name__}: {exc}"
+                ]
+            atomic_json(path, payload)
+
+        for arm in targets:
+            try:
+                result = sprintctl.request_stop(
+                    arm["run_id"], reason="operator_batch_stop"
+                )
+                arm["stop_dispatch_status"] = result.get("status")
+                arm.pop("stop_dispatch_error", None)
+            except Exception as exc:  # noqa: BLE001
+                # The per-run monitor will retry from STOP_REQUESTED. Continue so
+                # one provider/API failure cannot block the remaining arms.
+                arm["stop_dispatch_error"] = f"{type(exc).__name__}: {exc}"
+            payload["updated_at"] = utc_now()
+            atomic_json(path, payload)
+        return payload
 
 
 def parser() -> argparse.ArgumentParser:
