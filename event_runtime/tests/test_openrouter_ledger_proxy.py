@@ -70,6 +70,70 @@ def test_generic_proxy_seals_provider_endpoint_and_quantization() -> None:
     assert "parallel_tool_calls" not in payload
 
 
+@pytest.mark.parametrize(
+    "tool",
+    [
+        {
+            "type": "function",
+            "name": "create_goal",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "objective": {"type": "string"},
+                    "token_budget": {"type": "integer"},
+                },
+                "required": ["objective", "token_budget"],
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "create_goal",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "objective": {"type": "string"},
+                        "token_budget": {"type": "integer"},
+                    },
+                    "required": ["objective"],
+                },
+            },
+        },
+    ],
+)
+def test_proxy_removes_model_controlled_goal_token_budget(tool: dict) -> None:
+    _body, payload = proxy.pin_provider_route(
+        json.dumps(
+            {
+                "model": "example/model",
+                "input": "/goal keep working",
+                "tools": [
+                    tool,
+                    {
+                        "type": "function",
+                        "name": "unrelated",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"token_budget": {"type": "integer"}},
+                        },
+                    },
+                ],
+            }
+        ).encode(),
+        provider_endpoint="example",
+        quantization=None,
+    )
+
+    goal = payload["tools"][0]
+    schema = goal.get("parameters") or goal["function"]["parameters"]
+    assert "token_budget" not in schema["properties"]
+    assert "token_budget" not in schema.get("required", [])
+    assert (
+        payload["tools"][1]["parameters"]["properties"]["token_budget"]
+        == {"type": "integer"}
+    )
+
+
 def test_chat_completions_contract_is_sealed_and_usage_is_forced() -> None:
     body, payload = proxy.pin_provider_route(
         json.dumps(

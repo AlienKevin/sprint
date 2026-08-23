@@ -78,6 +78,43 @@ def usage_from_event(event: object) -> tuple[dict[str, Any] | None, dict[str, An
     return (usage if isinstance(usage, dict) else None), response
 
 
+def seal_goal_tool_schema(payload: dict[str, Any]) -> None:
+    """Remove model-controlled token budgets from Codex's goal tool.
+
+    ``/goal`` asks the model to create the persistent goal through a local
+    Codex tool.  The optional ``token_budget`` argument is an operator control,
+    not part of the benchmark task budget.  Exposing it lets a model
+    accidentally terminate its own run after a handful of tokens.  Keep the
+    goal objective model-authored while making the unbudgeted form the only
+    callable schema presented to every routed model.
+    """
+
+    tools = payload.get("tools")
+    if not isinstance(tools, list):
+        return
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        function = tool.get("function")
+        containers = [tool]
+        if isinstance(function, dict):
+            containers.append(function)
+        for container in containers:
+            if container.get("name") != "create_goal":
+                continue
+            parameters = container.get("parameters")
+            if not isinstance(parameters, dict):
+                continue
+            properties = parameters.get("properties")
+            if isinstance(properties, dict):
+                properties.pop("token_budget", None)
+            required = parameters.get("required")
+            if isinstance(required, list):
+                parameters["required"] = [
+                    name for name in required if name != "token_budget"
+                ]
+
+
 def pin_provider_route(
     body: bytes,
     *,
@@ -118,6 +155,7 @@ def pin_provider_route(
     # keeps this compatibility rule generic across routed models.
     if payload.get("parallel_tool_calls") is False:
         payload.pop("parallel_tool_calls")
+    seal_goal_tool_schema(payload)
     return json.dumps(payload, separators=(",", ":")).encode(), payload
 
 
