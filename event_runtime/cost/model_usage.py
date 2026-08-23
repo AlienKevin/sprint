@@ -233,7 +233,9 @@ def provider_usage_records(state_dir: Path, run_id: str) -> list[dict[str, Any]]
         if not isinstance(record, dict) or record.get("run_id") != run_id:
             raise SystemExit(f"provider usage identity mismatch: {path}")
         cost = record.get("provider_reported_cost_usd")
-        benchmark_cost = record.get("undiscounted_cost_usd")
+        benchmark_cost = record.get("benchmark_cost_usd")
+        if benchmark_cost is None:
+            benchmark_cost = record.get("undiscounted_cost_usd")
         if benchmark_cost is None and record.get("schema_version") in {None, 1}:
             benchmark_cost = cost
         if (
@@ -294,7 +296,12 @@ def apply_provider_reported_costs(
     """Bind every Codex usage event to exactly one OpenRouter charge."""
     def bind(request: dict[str, Any], record: dict[str, Any]) -> None:
         provider_cost = float(record["provider_reported_cost_usd"])
-        cost = float(record.get("undiscounted_cost_usd", provider_cost))
+        cost = float(
+            record.get(
+                "benchmark_cost_usd",
+                record.get("undiscounted_cost_usd", provider_cost),
+            )
+        )
         usage = record.get("usage")
         details = (usage.get("cost_details") or {}) if isinstance(usage, dict) else {}
         request.update(
@@ -302,7 +309,17 @@ def apply_provider_reported_costs(
                 "pricing_snapshot_id": None,
                 "calculated_cost_usd": cost,
                 "provider_reported_cost_usd": provider_cost,
+                "endpoint_list_cost_usd": float(
+                    record.get("undiscounted_cost_usd", provider_cost)
+                ),
                 "promotion_savings_usd": cost - provider_cost,
+                "promotion_adjustment_usd": float(
+                    record.get("promotion_adjustment_usd", 0.0)
+                ),
+                "deepseek_peak_adjustment_usd": float(
+                    record.get("deepseek_peak_adjustment_usd", 0.0)
+                ),
+                "benchmark_adjustment_usd": cost - provider_cost,
                 "promotion_discount_fraction": record.get(
                     "promotion_discount_fraction"
                 ),
@@ -313,7 +330,9 @@ def apply_provider_reported_costs(
                     if isinstance(value, (int, float)) and not isinstance(value, bool)
                 },
                 "cost_reconstruction_status": "complete",
-                "cost_basis": "openrouter_list_price_before_endpoint_discount",
+                "cost_basis": record.get(
+                    "cost_basis", "openrouter_list_price_before_endpoint_discount"
+                ),
                 "provider_cost_basis": "openrouter_reported_per_request",
                 "openrouter_generation_id": record.get("generation_id"),
                 "openrouter_ledger_request_id": record.get("ledger_request_id"),
@@ -792,7 +811,10 @@ def main() -> int:
             else None
         ),
         "calculated_api_usage_cost_basis": (
-            "openrouter_list_price_before_endpoint_discount"
+            (run.get("budget_enforcement") or {}).get(
+                "api_budget_cost_basis",
+                "openrouter_list_price_before_endpoint_discount",
+            )
             if provider_cost_source
             else next(
                 iter(
@@ -817,7 +839,11 @@ def main() -> int:
             sum(
                 float(
                     record.get(
-                        "undiscounted_cost_usd", record["provider_reported_cost_usd"]
+                        "benchmark_cost_usd",
+                        record.get(
+                            "undiscounted_cost_usd",
+                            record["provider_reported_cost_usd"],
+                        ),
                     )
                 )
                 - float(record["provider_reported_cost_usd"])

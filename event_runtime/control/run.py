@@ -74,7 +74,7 @@ def load_run(run_id: str) -> tuple[Path, dict[str, Any]]:
     if state.get("run_id") != run_id:
         raise ValueError(f"{path} does not match requested run ID")
     kind = state.get("agent_kind")
-    if kind not in {"claude-code", "codex"}:
+    if kind not in {"claude-code", "codex", "deepseek-harness"}:
         raise ValueError(f"{path} has unsupported agent_kind: {kind!r}")
     return state_dir, state
 
@@ -82,7 +82,7 @@ def load_run(run_id: str) -> tuple[Path, dict[str, Any]]:
 def agent_kind(run: dict[str, Any]) -> str:
     """Return the required agent kind from the current run schema."""
     kind = run.get("agent_kind")
-    if kind not in {"claude-code", "codex"}:
+    if kind not in {"claude-code", "codex", "deepseek-harness"}:
         raise ValueError(f"run has unsupported agent_kind: {kind!r}")
     return str(kind)
 
@@ -1368,8 +1368,9 @@ def monitor_once(
                 )
                 if upload:
                     sync_durable_trace(state_dir, run)
-                if run.get("usage_audit_required"):
+                if run.get("provider_usage_ledger_required"):
                     sync_durable_api_usage(state_dir, run)
+                if run.get("usage_audit_required"):
                     reconstruct_codex_usage(state_dir, run)
                 timeline = build_unified_timeline(state_dir, run, upload=upload)
                 refresh_agent_cost_snapshot(run_id, state_dir, run, timeline)
@@ -1602,14 +1603,20 @@ def run_usage_audit_ready(
     elif abs(float(calculated) - request_cost) > 1e-12:
         details.append("run usage audit request costs do not sum to total")
     expected_short_model = expected_model.split("/", 1)[-1]
-    openrouter_list_price = (run.get("budget_enforcement") or {}).get(
+    expected_openrouter_cost_basis = (run.get("budget_enforcement") or {}).get(
         "api_budget_cost_basis"
-    ) == "openrouter_list_price_before_endpoint_discount"
-    if openrouter_list_price and audit.get("calculated_api_usage_cost_basis") != (
-        "openrouter_list_price_before_endpoint_discount"
+    )
+    openrouter_list_price = expected_openrouter_cost_basis in {
+        "openrouter_list_price_before_endpoint_discount",
+        "openrouter_list_price_with_deepseek_peak_floor",
+    }
+    if (
+        openrouter_list_price
+        and audit.get("calculated_api_usage_cost_basis")
+        != expected_openrouter_cost_basis
     ):
         details.append(
-            "run usage audit does not use undiscounted OpenRouter list price"
+            "run usage audit does not use the configured OpenRouter benchmark cost"
         )
     provider_billing_reconciled = bool(
         openrouter_list_price
@@ -1645,7 +1652,7 @@ def run_usage_audit_ready(
                     and float(benchmark_cost) >= float(provider_cost)
                 ):
                     details.append(
-                        f"run usage request {index} has invalid undiscounted cost"
+                        f"run usage request {index} has invalid benchmark cost"
                     )
                 if not isinstance(request.get("promotion_snapshot"), dict):
                     details.append(
@@ -2021,12 +2028,16 @@ def finalize(
     )
     if terminal_stop_acknowledged(state_dir):
         sync_durable_telemetry(state_dir, run, force=True)
+    provider_usage_required = bool(run.get("provider_usage_ledger_required"))
+    if provider_usage_required:
+        sync_durable_api_usage(state_dir, run, force=True)
     if run.get("usage_audit_required"):
         sync_durable_trace(state_dir, run, force=True)
-        sync_durable_api_usage(state_dir, run, force=True)
         reconstruct_codex_usage(state_dir, run)
-        if run.get("unified_timeline_required"):
-            build_unified_timeline(state_dir, run, upload=upload)
+    if (
+        provider_usage_required or run.get("usage_audit_required")
+    ) and run.get("unified_timeline_required"):
+        build_unified_timeline(state_dir, run, upload=upload)
     if run.get("modal_billing_required"):
         # Do not declare a provider report complete while accepted verifier
         # work can still extend the run-owned allocation window. All other

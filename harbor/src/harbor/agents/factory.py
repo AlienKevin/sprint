@@ -32,6 +32,9 @@ class AgentFactory:
         AgentName.AIDER: "harbor.agents.installed.aider:Aider",
         AgentName.CLINE_CLI: "harbor.agents.installed.cline:ClineCli",
         AgentName.CODEX: "harbor.agents.installed.codex:Codex",
+        AgentName.DEEPSEEK_HARNESS: (
+            "harbor.agents.installed.deepseek_harness:DeepSeekHarness"
+        ),
         AgentName.CURSOR_CLI: "harbor.agents.installed.cursor_cli:CursorCli",
         AgentName.GEMINI_CLI: "harbor.agents.installed.gemini_cli:GeminiCli",
         AgentName.ANTIGRAVITY_CLI: (

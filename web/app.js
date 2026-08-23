@@ -2,7 +2,7 @@
   let observedVersion = null;
   const $ = selector => document.querySelector(selector);
   const MODEL = {
-    deepseek: {label:'DeepSeek V4 Flash 0731', color:'#4D6BFF', cls:'deepseek'},
+    deepseek: {label:'DeepSeek V4 Flash Vision Exp', color:'#4D6BFF', cls:'deepseek'},
     'flash-baidu': {label:'DeepSeek V4 Flash 0731 · Baidu', color:'#4D6BFF', cls:'flash-baidu'},
     'pro-alibaba': {label:'DeepSeek V4 Pro 0813 · Alibaba', color:'#ff9f43', cls:'pro-alibaba'},
     luna: {label:'GPT‑5.6 Luna', color:'#66D693', cls:'luna'},

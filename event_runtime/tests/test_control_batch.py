@@ -66,17 +66,20 @@ def test_batch_matrix_is_exact_six_arm_max_effort_contract() -> None:
     assert {row["reasoning_effort"] for row in rows} == {"max"}
     assert {row["codex_version"] for row in rows} == {"0.147.0"}
     assert sum(
-        row["model"] == "deepseek/deepseek-v4-flash-0731" for row in rows
+        row["model"] == "deepseek/deepseek-v4-flash-vision-exp" for row in rows
     ) == 3
     assert sum(row["model"] == "openai/gpt-5.6-luna" for row in rows) == 3
     assert {
         row["resolved_model_version"] for row in rows if row["family"] == "deepseek"
-    } == {"Baidu | deepseek/deepseek-v4-flash-20260731"}
+    } == {"DeepSeek | deepseek/deepseek-v4-flash-vision-exp"}
     assert {
         (row["provider_endpoint"], row["quantization"])
         for row in rows
         if row["family"] == "deepseek"
-    } == {("baidu/fp8", "fp8")}
+    } == {("deepseek", "unknown")}
+    assert {
+        Path(row["wrapper"]).name for row in rows if row["family"] == "deepseek"
+    } == {"deepseek_harness.sh"}
     assert batch_eval.LIVE_SITE_DEPLOY_SECONDS == 20 * 60
 
 
@@ -264,11 +267,14 @@ def test_batch_matrix_can_launch_three_deepseek_trials_only() -> None:
     assert {row["family"] for row in rows} == {"deepseek"}
     assert [row["trial"] for row in rows] == [1, 2, 3]
     assert {row["model"] for row in rows} == {
-        "deepseek/deepseek-v4-flash-0731"
+        "deepseek/deepseek-v4-flash-vision-exp"
     }
-    assert {row["provider"] for row in rows} == {"Baidu"}
-    assert {row["provider_endpoint"] for row in rows} == {"baidu/fp8"}
-    assert {row["quantization"] for row in rows} == {"fp8"}
+    assert {row["provider"] for row in rows} == {"DeepSeek"}
+    assert {row["provider_endpoint"] for row in rows} == {"deepseek"}
+    assert {row["quantization"] for row in rows} == {"unknown"}
+    assert {Path(row["wrapper"]).name for row in rows} == {
+        "deepseek_harness.sh"
+    }
 
 
 def test_batch_matrix_can_launch_three_luna_and_three_sol_trials() -> None:
@@ -2134,7 +2140,8 @@ def test_provider_auth_alert_does_not_match_decimal_score(
 
 def test_website_javascript_parses_and_has_no_legacy_opus_copy() -> None:
     source = (ROOT / "web/app.js").read_text()
-    assert "DeepSeek V4 Flash 0731" in source
+    assert "DeepSeek V4 Flash Vision Exp" in source
+    assert "DeepSeek V4 Flash 0731 · Baidu" in source
     assert "GPT‑5.6 Luna" in source
     assert "GPT‑5.6 Sol" in source
     assert "value.includes('gpt-5.6-sol')?'sol'" in source

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
+import http.client
 import json
 from pathlib import Path
+import threading
 
 import pytest
 
@@ -66,6 +68,67 @@ def test_generic_proxy_seals_provider_endpoint_and_quantization() -> None:
         "quantizations": ["fp8"],
     }
     assert "parallel_tool_calls" not in payload
+
+
+def test_chat_completions_contract_is_sealed_and_usage_is_forced() -> None:
+    body, payload = proxy.pin_provider_route(
+        json.dumps(
+            {
+                "model": "caller/model",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": False,
+                "temperature": 0,
+                "top_p": 0.1,
+                "max_tokens": 5,
+                "reasoning_effort": "low",
+                "stream_options": {"include_usage": False},
+            }
+        ).encode(),
+        provider_endpoint="deepseek",
+        quantization=None,
+        request_contract={
+            "model": "deepseek/deepseek-v4-flash-vision-exp",
+            "stream": True,
+            "temperature": 1.0,
+            "top_p": 0.95,
+            "max_tokens": 384_000,
+            "reasoning_effort": "max",
+        },
+    )
+
+    assert json.loads(body) == payload
+    assert payload["model"] == "deepseek/deepseek-v4-flash-vision-exp"
+    assert payload["provider"]["only"] == ["deepseek"]
+    assert payload["provider"]["allow_fallbacks"] is False
+    assert payload["stream"] is True
+    assert payload["stream_options"]["include_usage"] is True
+    assert payload["temperature"] == 1.0
+    assert payload["top_p"] == 0.95
+    assert payload["max_tokens"] == 384_000
+    assert payload["reasoning_effort"] == "max"
+
+
+def test_chat_completion_usage_event_exposes_exact_usage_cost() -> None:
+    usage, response = proxy.usage_from_event(
+        {
+            "id": "gen-chat-1",
+            "model": "deepseek/deepseek-v4-flash-vision-exp",
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 1_000,
+                "prompt_tokens_details": {"cached_tokens": 800},
+                "completion_tokens": 100,
+                "completion_tokens_details": {"reasoning_tokens": 75},
+                "total_tokens": 1_100,
+                "cost": 0.0001156,
+            },
+        }
+    )
+
+    assert usage is not None
+    assert usage["cost"] == 0.0001156
+    assert usage["prompt_tokens_details"]["cached_tokens"] == 800
+    assert response["id"] == "gen-chat-1"
 
 
 def test_generic_proxy_preserves_requested_parallel_tool_calls() -> None:
@@ -148,6 +211,123 @@ def test_baidu_promotion_cannot_extend_the_budget() -> None:
     assert parsed["discount_fraction"] == 0.53
     assert parsed["gross_up_multiplier"] == pytest.approx(1 / 0.47)
     assert proxy.undiscounted_cost_usd(4.70, parsed) == pytest.approx(10.0)
+    assert proxy.benchmark_cost_usd(
+        4.70,
+        parsed,
+        {
+            "input_tokens": 1,
+            "input_tokens_details": {"cached_tokens": 0},
+            "output_tokens": 1,
+        },
+    ) == pytest.approx(10.0)
+
+
+def test_deepseek_off_peak_charge_is_normalized_to_official_peak_rates() -> None:
+    parsed = proxy.sys.modules[
+        "sprint_openrouter_pricing"
+    ].parse_endpoint_discount_snapshot(
+        {
+            "data": {
+                "endpoints": [
+                    {
+                        "provider_name": "DeepSeek",
+                        "tag": "deepseek",
+                        "pricing": {
+                            "prompt": "0.00000022",
+                            "input_cache_read": "0.000000007",
+                            "completion": "0.00000066",
+                            "discount": 0,
+                        },
+                    }
+                ]
+            }
+        },
+        model="deepseek/deepseek-v4-flash-0731",
+        provider_tag="deepseek",
+    )
+    usage = {
+        "input_tokens": 1_000,
+        "input_tokens_details": {"cached_tokens": 800},
+        "output_tokens": 100,
+    }
+
+    # 200 cache misses at $0.44/M + 800 hits at $0.014/M +
+    # 100 output at $1.32/M.
+    peak_cost = 0.0002312
+    assert parsed["cost_basis"] == proxy.BENCHMARK_COST_BASIS
+    assert proxy.benchmark_cost_usd(peak_cost / 2, parsed, usage) == pytest.approx(
+        peak_cost
+    )
+
+
+def test_deepseek_peak_floor_applies_to_any_pinned_openrouter_provider() -> None:
+    parsed = proxy.sys.modules[
+        "sprint_openrouter_pricing"
+    ].parse_endpoint_discount_snapshot(
+        {
+            "data": {
+                "endpoints": [
+                    {
+                        "provider_name": "Baidu",
+                        "tag": "baidu/fp8",
+                        "pricing": {"discount": 0.5},
+                    }
+                ]
+            }
+        },
+        model="deepseek/deepseek-v4-flash-0731",
+        provider_tag="baidu/fp8",
+    )
+    usage = {
+        "input_tokens": 1_000,
+        "input_tokens_details": {"cached_tokens": 800},
+        "output_tokens": 100,
+    }
+
+    assert proxy.benchmark_cost_usd(0.00005, parsed, usage) == pytest.approx(
+        0.0002312
+    )
+
+
+def test_non_deepseek_route_keeps_undiscounted_openrouter_cost() -> None:
+    parsed = proxy.sys.modules[
+        "sprint_openrouter_pricing"
+    ].parse_endpoint_discount_snapshot(
+        {
+            "data": {
+                "endpoints": [
+                    {
+                        "provider_name": "OpenAI",
+                        "tag": "openai",
+                        "pricing": {"discount": 0.5},
+                    }
+                ]
+            }
+        },
+        model="openai/gpt-5.6-luna",
+        provider_tag="openai",
+    )
+
+    assert proxy.benchmark_cost_usd(0.25, parsed, {}) == pytest.approx(0.5)
+
+
+def test_deepseek_peak_normalization_fails_closed_without_token_usage() -> None:
+    parsed = proxy.sys.modules[
+        "sprint_openrouter_pricing"
+    ].parse_endpoint_discount_snapshot(
+        {
+            "data": {
+                "endpoints": [
+                    {"provider_name": "DeepSeek", "tag": "deepseek", "pricing": {}}
+                ]
+            }
+        },
+        model="deepseek/deepseek-v4-flash-0731",
+        provider_tag="deepseek",
+    )
+
+    with pytest.raises(proxy.OpenRouterPricingError, match="requires token usage"):
+        proxy.benchmark_cost_usd(0.1, parsed, None)
 
 
 def test_unpinned_route_with_different_discounts_fails_closed() -> None:
@@ -196,6 +376,23 @@ def test_proxy_refuses_any_non_openrouter_upstream(
             ledger_root=tmp_path,
             run_id="run-1",
             cpu_attempt=1,
+        )
+
+
+def test_proxy_rejects_unknown_request_contract_fields(tmp_path: Path) -> None:
+    (tmp_path / "state").mkdir()
+    (tmp_path / "state/run.json").write_text(
+        json.dumps({"run_id": "run-1", "model": "vendor/model"})
+    )
+    with pytest.raises(ValueError, match="invalid request contract fields"):
+        proxy.LedgerProxyServer(
+            ("127.0.0.1", 0),
+            upstream="https://openrouter.ai/api/v1",
+            ledger_root=tmp_path / "api-usage",
+            run_id="run-1",
+            cpu_attempt=1,
+            provider_endpoint="provider",
+            request_contract={"unsealed": True},
         )
 
 
@@ -395,6 +592,186 @@ def test_proxy_maintains_constant_size_exact_cost_summary(tmp_path: Path) -> Non
             server.complete_request(REQUEST_2, float("nan"))
     finally:
         server.server_close()
+
+
+def test_streaming_chat_completions_is_sealed_metered_and_peak_normalized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_root = tmp_path / "runs/run-1"
+    state = run_root / "state"
+    state.mkdir(parents=True)
+    (state / "run.json").write_text(
+        json.dumps(
+            {
+                "run_id": "run-1",
+                "model": "deepseek/deepseek-v4-flash-vision-exp",
+                "agent_cost_budget_usd": 0.0002,
+            }
+        )
+    )
+    promotion = proxy.sys.modules[
+        "sprint_openrouter_pricing"
+    ].parse_endpoint_discount_snapshot(
+        {
+            "data": {
+                "endpoints": [
+                    {
+                        "provider_name": "DeepSeek",
+                        "tag": "deepseek",
+                        "pricing": {"discount": 0},
+                    }
+                ]
+            }
+        },
+        model="deepseek/deepseek-v4-flash-vision-exp",
+        provider_tag="deepseek",
+    )
+    monkeypatch.setattr(proxy, "capture_endpoint_discount_snapshot", lambda **_: promotion)
+
+    class FakeResponse:
+        status = 200
+        reason = "OK"
+
+        def __init__(self) -> None:
+            event = {
+                "id": "gen-chat",
+                "model": "deepseek/deepseek-v4-flash-vision-exp",
+                "choices": [{"delta": {}, "finish_reason": "stop"}],
+                "usage": {
+                    "prompt_tokens": 1_000,
+                    "prompt_tokens_details": {"cached_tokens": 800},
+                    "completion_tokens": 100,
+                    "total_tokens": 1_100,
+                    "cost": 0.0001156,
+                },
+            }
+            self.chunks = [
+                f"data: {json.dumps(event)}\n\ndata: [DONE]\n\n".encode(),
+                b"",
+            ]
+
+        def getheader(self, name: str) -> str | None:
+            return {
+                "Content-Type": "text/event-stream",
+                "X-Generation-Id": "gen-chat",
+            }.get(name)
+
+        def getheaders(self) -> list[tuple[str, str]]:
+            return [("Content-Type", "text/event-stream")]
+
+        def read(self, _size: int) -> bytes:
+            return self.chunks.pop(0)
+
+    class FakeConnection:
+        sent_body: dict[str, object] | None = None
+
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def request(
+            self,
+            _method: str,
+            _path: str,
+            *,
+            body: bytes,
+            headers: dict[str, str],
+        ) -> None:
+            FakeConnection.sent_body = json.loads(body)
+            assert headers["X-OpenRouter-Metadata"] == "enabled"
+
+        def getresponse(self) -> FakeResponse:
+            return FakeResponse()
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(proxy.http.client, "HTTPSConnection", FakeConnection)
+    contract = {
+        "model": "deepseek/deepseek-v4-flash-vision-exp",
+        "stream": True,
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "max_tokens": 384_000,
+        "reasoning_effort": "max",
+    }
+    server = proxy.LedgerProxyServer(
+        ("127.0.0.1", 0),
+        upstream="https://openrouter.ai/api/v1",
+        ledger_root=run_root / "api-usage",
+        run_id="run-1",
+        cpu_attempt=1,
+        runtime_dir=tmp_path / "runtime",
+        provider_endpoint="deepseek",
+        request_contract=contract,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        client.request(
+            "POST",
+            "/api/v1/chat/completions",
+            body=json.dumps(
+                {
+                    "model": "caller/model",
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "stream": False,
+                }
+            ).encode(),
+            headers={
+                "Authorization": "Bearer test-key",
+                "Content-Type": "application/json",
+            },
+        )
+        response = client.getresponse()
+        assert response.status == 200
+        assert b"gen-chat" in response.read()
+        client.close()
+
+        client = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        client.request(
+            "POST",
+            "/api/v1/chat/completions",
+            body=b'{"messages":[]}',
+            headers={"Content-Type": "application/json"},
+        )
+        response = client.getresponse()
+        assert response.status == 402
+        assert b"budget exhausted" in response.read()
+        client.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    sent = FakeConnection.sent_body
+    assert sent is not None
+    assert sent["model"] == contract["model"]
+    assert sent["provider"] == {
+        "only": ["deepseek"],
+        "order": ["deepseek"],
+        "allow_fallbacks": False,
+        "require_parameters": True,
+    }
+    assert sent["stream_options"] == {"include_usage": True}
+    assert sent["temperature"] == 1.0
+    assert sent["top_p"] == 0.95
+    assert sent["max_tokens"] == 384_000
+    summary = json.loads((run_root / "api-usage/summary.json").read_text())
+    assert summary["provider_billed_model_api_usd"] == pytest.approx(0.0001156)
+    assert summary["model_api_usd"] == pytest.approx(0.0002312)
+    records = list((run_root / "api-usage/requests").glob("*.json"))
+    assert len(records) == 1
+    record = json.loads(records[0].read_text())
+    assert record["api_path"] == "/api/v1/chat/completions"
+    assert record["state"] == "complete"
+    assert record["usage"]["prompt_tokens_details"]["cached_tokens"] == 800
+    marker = json.loads((run_root / "BUDGET_STOP_REQUESTED.json").read_text())
+    assert marker["status"] == "stop_requested"
+    assert marker["total_usd"] == pytest.approx(0.0002312)
+    assert (tmp_path / "runtime/sprint-stop").read_text().strip() == (
+        "agent_cost_budget_exhausted"
+    )
 
 
 def test_proxy_restart_trusts_completed_rollup_without_scanning_history(

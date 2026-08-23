@@ -1,0 +1,90 @@
+# DeepSeek Harness v0.1.1-rc.2 benchmark composition.
+#
+# This mirrors the release's examples/jsonrpc-agent/minimal.cordis.yml.  The
+# provider row additionally seals the published Vision Exp model limits and
+# official benchmark reasoning defaults.  The local OpenRouter ledger proxy
+# independently overwrites the wire parameters before forwarding each request.
+
+- id: sdk-jsonrpc-server
+  name: '@deepseek-ai/dsh-sdk-jsonrpc-server'
+  config:
+    maxTokensAsSuccess: false
+
+- id: llm-deepseek
+  name: '@deepseek-ai/dsh-llm-deepseek'
+  config:
+    apiKeyEnv: DEEPSEEK_API_KEY
+    streamIdleTimeoutMs: 172800000
+    thinking: enabled
+    reasoningEffort: max
+    maxTokens: 384000
+    models:
+      - id: deepseek/deepseek-v4-flash-vision-exp
+        name: DeepSeek-V4-Flash-Vision-Exp
+        contextWindow: 1048576
+        maxTokens: 384000
+        inputModalities: [text, image]
+        imagePixelBudget: 640000
+        imageMaxBytes: 1048576
+
+- id: sandbox
+  name: '@deepseek-ai/dsh-sandbox-local'
+
+- id: sandbox-policy
+  name: '@deepseek-ai/dsh-sandbox-policy'
+  config:
+    mode: danger-full-access
+    workspaceRoot: !!js process.env.DSH_CWD ?? process.cwd()
+
+- id: subprocess
+  name: '@deepseek-ai/dsh-subprocess-local'
+
+- id: pty
+  name: '@deepseek-ai/dsh-terminal'
+
+- id: terminal-bash
+  name: '@deepseek-ai/dsh-terminal-bash'
+  config:
+    timeoutMs: 300000
+
+- id: fs-local
+  name: '@deepseek-ai/dsh-fs-local'
+  config:
+    cwd: !!js process.env.DSH_CWD ?? process.cwd()
+
+- id: agent-spine
+  name: '@deepseek-ai/dsh-agent-spine-demo'
+  config:
+    includeHarnessIdentity: false
+    includeRuntimeContext: false
+    persona: You are a helpful software engineer assistant.
+    workspaceContext: false
+    skills:
+      enabled: false
+    toolBash: false
+    toolJobs: false
+
+- id: persistent-bash
+  name: '@deepseek-ai/dsh-tool-bash-persistent'
+  config:
+    timeoutMs: 300000
+    description: |-
+      Run commands in a bash shell
+      * When invoking this tool, the contents of the "command" parameter does NOT need to be XML-escaped.
+      * You don't have access to the internet via this tool.
+      * You do have access to a mirror of common linux and python packages via apt and pip.
+      * State is persistent across command calls and discussions with the user.
+      * To inspect a particular line range of a file, e.g. lines 10-25, try 'sed -n 10,25p /path/to/the/file'.
+      * Please avoid commands that may produce a very large amount of output.
+      * Please run long lived commands in the background, e.g. 'sleep 10 &' or start a server in the background.
+
+- id: str-replace-editor
+  name: '@deepseek-ai/dsh-tool-str-replace-editor'
+  config:
+    maxOutputChars: 16000
+
+- id: sessions
+  name: '@deepseek-ai/dsh-session-persistence-jsonl'
+  config:
+    root: !!js process.env.DSH_SESSION_ROOT ?? './.sessions'
+    compression: none

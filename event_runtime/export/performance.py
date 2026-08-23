@@ -595,6 +595,8 @@ def model_family(model: str | None) -> str:
     value = (model or "").lower()
     if "deepseek-v4-pro" in value:
         return "pro-alibaba"
+    if "deepseek-v4-flash-vision-exp" in value:
+        return "deepseek"
     if "deepseek-v4-flash" in value:
         return "flash-baidu"
     if "deepseek" in value:

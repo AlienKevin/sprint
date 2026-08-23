@@ -459,7 +459,7 @@ def test_live_watchdog_uses_openrouter_undiscounted_cost_for_budget(
         "promotion_savings_usd": 0.75,
         "request_count": 1,
         "pending_request_count": 0,
-        "cost_source": "openrouter_list_price_before_endpoint_discount",
+        "cost_source": "openrouter_list_price_with_deepseek_peak_floor",
         "provider_reported": True,
     }
     assert payload["total_usd"] == pytest.approx(1.5)
@@ -634,6 +634,58 @@ def test_interrupted_discounted_stream_recovers_undiscounted_budget_cost(
     recovered = json.loads(path.read_text())
     assert recovered["undiscounted_cost_usd"] == 0.8
     assert recovered["promotion_discount_fraction"] == 0.5
+
+
+def test_interrupted_deepseek_stream_recovers_peak_normalized_budget_cost(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "run"
+    path = root / "api-usage/requests/request.json"
+    path.parent.mkdir(parents=True)
+    peak_rates = {
+        "uncached_input": 0.44 / 1_000_000,
+        "cached_input": 0.014 / 1_000_000,
+        "output": 1.32 / 1_000_000,
+    }
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "run_id": "unit",
+                "cpu_attempt": 1,
+                "state": "cost_recovery_required",
+                "generation_id": "gen-deepseek",
+                "provider_reported_cost_usd": None,
+                "promotion_snapshot": {
+                    "discount_fraction": 0,
+                    "deepseek_peak_pricing_usd_per_token": peak_rates,
+                    "cost_basis": "openrouter_list_price_with_deepseek_peak_floor",
+                },
+            }
+        )
+    )
+    monkeypatch.setattr(
+        watchdog,
+        "recover_openrouter_generation",
+        lambda generation_id, api_key: {
+            "id": generation_id,
+            "total_cost": 0.0001156,
+            "native_tokens_prompt": 1_000,
+            "native_tokens_cached": 800,
+            "native_tokens_completion": 100,
+        },
+    )
+
+    cost, provider_cost, complete, pending = watchdog.openrouter_api_cost(
+        root, run_id="unit", api_key="test-key"
+    )
+
+    assert (cost, provider_cost, complete, pending) == pytest.approx(
+        (0.0002312, 0.0001156, 1, 0)
+    )
+    recovered = json.loads(path.read_text())
+    assert recovered["benchmark_cost_usd"] == pytest.approx(0.0002312)
+    assert recovered["undiscounted_cost_usd"] == pytest.approx(0.0001156)
 
 
 def test_openrouter_recovery_reads_only_named_pending_request(

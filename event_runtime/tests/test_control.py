@@ -1329,7 +1329,7 @@ class DurableOpsTests(unittest.TestCase):
         self.assertEqual(config["reasoning_effort"], "high")
         self.assertTrue(config["usage_audit_required"])
 
-    def test_deepseek_dry_run_pins_baidu_and_undiscounted_cost_policy(self) -> None:
+    def test_deepseek_dry_run_pins_baidu_and_peak_normalized_cost_policy(self) -> None:
         run_id = f"dry-{uuid.uuid4().hex[:12]}"
         env = os.environ.copy()
         env["OPENAI_API_KEY"] = "fake-deepseek-key-that-must-never-print-123456789"
@@ -1368,7 +1368,7 @@ class DurableOpsTests(unittest.TestCase):
         )
         self.assertEqual(
             config["budget_enforcement"]["api_budget_cost_basis"],
-            "openrouter_list_price_before_endpoint_discount",
+            "openrouter_list_price_with_deepseek_peak_floor",
         )
         self.assertTrue(config["usage_audit_required"])
 
@@ -1401,6 +1401,62 @@ class DurableOpsTests(unittest.TestCase):
 
         self.assertEqual(completed.returncode, 2)
         self.assertIn("locked to baidu/fp8", completed.stderr)
+
+    def test_deepseek_harness_dry_run_seals_official_vision_contract(self) -> None:
+        run_id = f"dry-{uuid.uuid4().hex[:12]}"
+        env = os.environ.copy()
+        key = "fake-openrouter-key-that-must-never-print-123456789"
+        env["OPENROUTER_API_KEY"] = key
+        completed = subprocess.run(
+            [
+                "bash",
+                str(ROOT / "event_runtime/control/launch.sh"),
+                "--dry-run",
+                "--run-id",
+                run_id,
+                "--agent-kind",
+                "deepseek-harness",
+                "--model",
+                "deepseek/deepseek-v4-flash-vision-exp",
+                "--reasoning-effort",
+                "max",
+            ],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+
+        self.assertNotIn(key, completed.stdout + completed.stderr)
+        config = json.loads(completed.stdout)
+        self.assertEqual(config["agent_kind"], "deepseek-harness")
+        self.assertEqual(config["agent_allowed_host"], "openrouter.ai")
+        self.assertEqual(config["deepseek_harness_version"], "0.1.1-rc.2")
+        self.assertEqual(config["deepseek_harness_sdk_version"], "0.1.1rc1")
+        self.assertTrue(config["provider_usage_ledger_required"])
+        self.assertFalse(config["usage_audit_required"])
+        self.assertEqual(
+            config["openrouter_route"],
+            {
+                "only": ["deepseek"],
+                "order": ["deepseek"],
+                "allow_fallbacks": False,
+                "require_parameters": True,
+                "quantizations": [],
+            },
+        )
+        self.assertEqual(
+            config["openrouter_request_contract"],
+            {
+                "model": "deepseek/deepseek-v4-flash-vision-exp",
+                "stream": True,
+                "temperature": 1.0,
+                "top_p": 0.95,
+                "max_tokens": 384_000,
+                "reasoning_effort": "max",
+            },
+        )
 
     def test_stop_watcher_signals_only_dummy_claude_and_acks(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

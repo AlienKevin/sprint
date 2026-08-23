@@ -67,6 +67,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends restic \
 ARG NODE_VERSION=22.22.0
 ARG CODEX_VERSION=0.147.0
 ARG CLAUDE_CODE_VERSION=2.1.220
+ARG DEEPSEEK_HARNESS_VERSION=0.1.1-rc.2
 RUN set -eu; \
     archive="node-v${NODE_VERSION}-linux-x64.tar.gz"; \
     curl -fsSLO "https://nodejs.org/dist/v${NODE_VERSION}/${archive}"; \
@@ -76,7 +77,26 @@ RUN set -eu; \
     rm -f "$archive" SHASUMS256.txt; \
     npm install -g \
       "@openai/codex@${CODEX_VERSION}" \
-      "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"; \
+      "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+      "@deepseek-ai/dsh-sdk-jsonrpc-demo@${DEEPSEEK_HARNESS_VERSION}" \
+      "@deepseek-ai/dsh-sdk-jsonrpc-server@${DEEPSEEK_HARNESS_VERSION}" \
+      "@deepseek-ai/dsh-agent-spine-demo@${DEEPSEEK_HARNESS_VERSION}" \
+      "@deepseek-ai/dsh-llm-deepseek@${DEEPSEEK_HARNESS_VERSION}" \
+      "@deepseek-ai/dsh-sandbox-local@${DEEPSEEK_HARNESS_VERSION}" \
+      "@deepseek-ai/dsh-sandbox-policy@${DEEPSEEK_HARNESS_VERSION}" \
+      "@deepseek-ai/dsh-subprocess-local@${DEEPSEEK_HARNESS_VERSION}" \
+      "@deepseek-ai/dsh-terminal@${DEEPSEEK_HARNESS_VERSION}" \
+      "@deepseek-ai/dsh-terminal-bash@${DEEPSEEK_HARNESS_VERSION}" \
+      "@deepseek-ai/dsh-fs-local@${DEEPSEEK_HARNESS_VERSION}" \
+      "@deepseek-ai/dsh-tool-bash-persistent@${DEEPSEEK_HARNESS_VERSION}" \
+      "@deepseek-ai/dsh-tool-str-replace-editor@${DEEPSEEK_HARNESS_VERSION}" \
+      "@deepseek-ai/dsh-session-persistence-jsonl@${DEEPSEEK_HARNESS_VERSION}" \
+      "@deepseek-ai/dsh-invariants@${DEEPSEEK_HARNESS_VERSION}" \
+      "@deepseek-ai/cordis@4.0.1"; \
+    pip3 install --no-cache-dir "pydantic>=2.12,<3"; \
+    pip3 install --no-cache-dir --no-deps "deepseek-harness-sdk==0.1.1rc1"; \
     test "$(codex --version | sed 's/^codex-cli //')" = "$CODEX_VERSION"; \
-    claude --version | grep -F "$CLAUDE_CODE_VERSION"
+    claude --version | grep -F "$CLAUDE_CODE_VERSION"; \
+    node -e 'const v=require("/usr/local/lib/node_modules/@deepseek-ai/dsh-sdk-jsonrpc-demo/package.json").version; if (v !== process.argv[1]) throw new Error(`unexpected DeepSeek Harness version ${v}`)' "$DEEPSEEK_HARNESS_VERSION"; \
+    python3 -c "import deepseek_harness"
 WORKDIR /app

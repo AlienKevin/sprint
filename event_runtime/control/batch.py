@@ -66,15 +66,18 @@ OPENAI_FAMILY_SPECS: dict[str, dict[str, str]] = {
     },
 }
 DEEPSEEK_ROUTED_FAMILY_SPECS: dict[str, dict[str, str]] = {
-    # `deepseek` is the public/default family name. Keep `flash-baidu` as an
-    # explicit alias so historical comparison batches remain reproducible.
+    # `deepseek` is the current public/default family. Keep `flash-baidu` as
+    # an explicit legacy family so historical comparison batches remain
+    # reproducible after moving the default to Vision Exp + DeepSeek Harness.
     "deepseek": {
-        "model": "deepseek/deepseek-v4-flash-0731",
-        "resolved_model": "Baidu | deepseek/deepseek-v4-flash-20260731",
-        "provider": "Baidu",
-        "provider_endpoint": "baidu/fp8",
-        "quantization": "fp8",
+        "model": "deepseek/deepseek-v4-flash-vision-exp",
+        "resolved_model": "DeepSeek | deepseek/deepseek-v4-flash-vision-exp",
+        "provider": "DeepSeek",
+        "provider_endpoint": "deepseek",
+        "quantization": "unknown",
         "context_window": "1048576",
+        "wrapper": "deepseek_harness.sh",
+        "wire_api": "chat_completions",
     },
     "flash-baidu": {
         "model": "deepseek/deepseek-v4-flash-0731",
@@ -83,6 +86,8 @@ DEEPSEEK_ROUTED_FAMILY_SPECS: dict[str, dict[str, str]] = {
         "provider_endpoint": "baidu/fp8",
         "quantization": "fp8",
         "context_window": "1048576",
+        "wrapper": "deepseek.sh",
+        "wire_api": "responses",
     },
     "pro-alibaba": {
         "model": "deepseek/deepseek-v4-pro-0813",
@@ -91,6 +96,8 @@ DEEPSEEK_ROUTED_FAMILY_SPECS: dict[str, dict[str, str]] = {
         "provider_endpoint": "alibaba",
         "quantization": "unknown",
         "context_window": "1000000",
+        "wrapper": "deepseek.sh",
+        "wire_api": "responses",
     },
 }
 REASONING_EFFORT = "max"
@@ -382,7 +389,7 @@ def matrix(
         **{
             family: {
                 **spec,
-                "wrapper": "deepseek.sh",
+                "wrapper": spec["wrapper"],
                 "resolved_model_version": spec["resolved_model"],
             }
             for family, spec in DEEPSEEK_ROUTED_FAMILY_SPECS.items()
@@ -967,41 +974,69 @@ def preflight(
             }
             if spec["quantization"] != "unknown":
                 provider["quantizations"] = [spec["quantization"]]
-            try:
-                provider_probes[key] = provider_inference_probe(
-                    "https://openrouter.ai/api/v1/responses",
-                    keys["OPENROUTER_API_KEY"],
-                    {
-                        "model": spec["model"],
-                        "input": "Return OK.",
-                        "provider": provider,
-                        "reasoning": {"effort": REASONING_EFFORT},
-                        "max_output_tokens": 16,
-                        # Exercise the same Responses features Codex adds to a
-                        # real agent turn. A text.verbosity field is
-                        # intentionally absent because routed DeepSeek
-                        # endpoints do not advertise or accept it when strict
-                        # parameter routing is enabled.
-                        "tools": [
-                            {
-                                "type": "function",
+            if spec["wire_api"] == "chat_completions":
+                inference_url = "https://openrouter.ai/api/v1/chat/completions"
+                inference_payload: dict[str, Any] = {
+                    "model": spec["model"],
+                    "messages": [{"role": "user", "content": "Return OK."}],
+                    "provider": provider,
+                    "reasoning_effort": REASONING_EFFORT,
+                    "temperature": 1.0,
+                    "top_p": 0.95,
+                    "max_tokens": 16,
+                    "stream": False,
+                    "tools": [
+                        {
+                            "type": "function",
+                            "function": {
                                 "name": "sprint_preflight_noop",
                                 "description": "Preflight-only no-op tool.",
                                 "parameters": {
                                     "type": "object",
-                                    "properties": {
-                                        "ack": {"type": "string"},
-                                    },
+                                    "properties": {"ack": {"type": "string"}},
                                     "required": ["ack"],
                                     "additionalProperties": False,
                                 },
-                            }
-                        ],
-                        "tool_choice": "auto",
-                        "include": ["reasoning.encrypted_content"],
-                        "prompt_cache_key": "sprint-provider-preflight",
-                        "store": False,
-                    },
+                            },
+                        }
+                    ],
+                    "tool_choice": "auto",
+                }
+            else:
+                inference_url = "https://openrouter.ai/api/v1/responses"
+                inference_payload = {
+                    "model": spec["model"],
+                    "input": "Return OK.",
+                    "provider": provider,
+                    "reasoning": {"effort": REASONING_EFFORT},
+                    "max_output_tokens": 16,
+                    # Exercise the same Responses features Codex adds to a
+                    # real agent turn. A text.verbosity field is
+                    # intentionally absent because routed DeepSeek endpoints
+                    # do not advertise or accept it under strict routing.
+                    "tools": [
+                        {
+                            "type": "function",
+                            "name": "sprint_preflight_noop",
+                            "description": "Preflight-only no-op tool.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"ack": {"type": "string"}},
+                                "required": ["ack"],
+                                "additionalProperties": False,
+                            },
+                        }
+                    ],
+                    "tool_choice": "auto",
+                    "include": ["reasoning.encrypted_content"],
+                    "prompt_cache_key": "sprint-provider-preflight",
+                    "store": False,
+                }
+            try:
+                provider_probes[key] = provider_inference_probe(
+                    inference_url,
+                    keys["OPENROUTER_API_KEY"],
+                    inference_payload,
                     generation_audit_url="https://openrouter.ai/api/v1/generation",
                 )
                 probe = provider_probes[key]
@@ -1201,10 +1236,12 @@ def launch(
                 env["SPRINT_OPENROUTER_PROVIDER_ENDPOINT"] = arm[
                     "provider_endpoint"
                 ]
-                env["SPRINT_OPENROUTER_QUANTIZATION"] = arm["quantization"]
-                env["SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW"] = arm[
-                    "context_window"
-                ]
+                if arm.get("quantization") != "unknown":
+                    env["SPRINT_OPENROUTER_QUANTIZATION"] = arm["quantization"]
+                if arm["wrapper"].endswith("deepseek.sh"):
+                    env["SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW"] = arm[
+                        "context_window"
+                    ]
             output = run_checked([arm["wrapper"]], env=env)
             arm["status"] = "launched"
             arm["launch_output_sha256"] = hashlib.sha256(output.encode()).hexdigest()

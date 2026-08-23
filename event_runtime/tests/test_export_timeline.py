@@ -907,6 +907,128 @@ def test_attested_zero_request_failure_has_complete_zero_cost_timeline(
     assert payload["usage_summary"]["calculated_api_usage_usd"] == 0.0
 
 
+def test_openrouter_chat_ledger_is_generic_usage_source(tmp_path: Path) -> None:
+    state = fixture_run(tmp_path)
+    run_path = state / "run.json"
+    run = json.loads(run_path.read_text())
+    run.update(
+        {
+            "agent_kind": "deepseek-harness",
+            "model": "deepseek/deepseek-v4-flash-vision-exp",
+            "reasoning_effort": "max",
+            "provider_usage_ledger_required": True,
+            "usage_audit_required": False,
+        }
+    )
+    run_path.write_text(json.dumps(run))
+    ledger = state / "provider-api-usage" / "api-usage"
+    (ledger / "requests").mkdir(parents=True)
+    (ledger / "summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "run_id": "timeline-fixture",
+                "model_api_usd": 0.025,
+                "provider_billed_model_api_usd": 0.02,
+                "completed_request_count": 1,
+                "pending_request_count": 0,
+                "in_flight_request_count": 0,
+                "cost_recovery_required_count": 0,
+            }
+        )
+    )
+    (ledger / "requests" / "abc.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "ledger_request_id": "a" * 32,
+                "run_id": "timeline-fixture",
+                "cpu_attempt": 1,
+                "requested_at": "2026-08-07T12:00:16Z",
+                "completed_at": "2026-08-07T12:00:18Z",
+                "requested_model": "deepseek/deepseek-v4-flash-vision-exp",
+                "response_model": "deepseek/deepseek-v4-flash-vision-exp",
+                "state": "complete",
+                "provider_reported_cost_usd": 0.02,
+                "benchmark_cost_usd": 0.025,
+                "cost_basis": "openrouter_list_price_with_deepseek_peak_floor",
+                "provider_cost_basis": "openrouter_reported_per_request",
+                "promotion_discount_fraction": 0.2,
+                "usage": {
+                    "prompt_tokens": 1_000,
+                    "prompt_tokens_details": {"cached_tokens": 800},
+                    "completion_tokens": 100,
+                    "completion_tokens_details": {"reasoning_tokens": 60},
+                    "total_tokens": 1_100,
+                },
+            }
+        )
+    )
+
+    payload = unified_timeline.build_timeline(state)
+
+    assert payload["coverage"]["requirements"]["model_usage_and_cost"] is True
+    assert payload["usage_summary"]["request_count"] == 1
+    assert payload["usage_summary"]["input_tokens"] == 1_000
+    assert payload["usage_summary"]["ordinary_uncached_input_tokens"] == 200
+    assert payload["usage_summary"]["cached_input_tokens"] == 800
+    assert payload["usage_summary"]["output_tokens"] == 100
+    assert payload["usage_summary"]["reasoning_output_tokens"] == 60
+    assert payload["usage_summary"]["total_tokens"] == 1_100
+    assert payload["usage_summary"]["calculated_api_usage_usd"] == 0.025
+    assert payload["usage_summary"]["provider_billed_api_usage_usd"] == 0.02
+    request = next(
+        event for event in payload["events"] if event["kind"] == "model_request_usage"
+    )
+    assert request["elapsed_ms"] == 18_000
+
+
+def test_openrouter_chat_ledger_rejects_non_numeric_tokens(tmp_path: Path) -> None:
+    state = fixture_run(tmp_path)
+    run_path = state / "run.json"
+    run = json.loads(run_path.read_text())
+    run.update(
+        {
+            "agent_kind": "deepseek-harness",
+            "provider_usage_ledger_required": True,
+            "usage_audit_required": False,
+        }
+    )
+    run_path.write_text(json.dumps(run))
+    ledger = state / "provider-api-usage" / "api-usage"
+    (ledger / "requests").mkdir(parents=True)
+    (ledger / "summary.json").write_text(
+        json.dumps(
+            {
+                "run_id": "timeline-fixture",
+                "pending_request_count": 0,
+                "cost_recovery_required_count": 0,
+            }
+        )
+    )
+    (ledger / "requests" / "bad.json").write_text(
+        json.dumps(
+            {
+                "ledger_request_id": "b" * 32,
+                "run_id": "timeline-fixture",
+                "state": "complete",
+                "provider_reported_cost_usd": 0.02,
+                "benchmark_cost_usd": 0.025,
+                "usage": {
+                    "prompt_tokens": "not-a-number",
+                    "completion_tokens": 10,
+                },
+            }
+        )
+    )
+
+    payload = unified_timeline.build_timeline(state)
+
+    assert payload["coverage"]["requirements"]["model_usage_and_cost"] is False
+    assert payload["coverage"]["counts"]["malformed_provider_usage_records"] == 1
+    assert payload["usage_summary"]["request_count"] == 0
+
+
 def test_all_submission_result_set_has_no_privileged_primary(
     tmp_path: Path,
 ) -> None:

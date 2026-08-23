@@ -4,7 +4,8 @@
 The controller also reconstructs the authoritative cost ledger.  This smaller
 ledger deliberately runs in the CPU sandbox so a controller outage cannot
 remove the circuit breaker. OpenRouter runs consume the proxy's request-time
-undiscounted list-price equivalent; other supported routes use the pinned pricing module.
+benchmark cost (undiscounted endpoint list price with an official DeepSeek
+peak-price floor); other supported routes use the pinned pricing module.
 Modal uses the pinned tariff. One durable stop marker is visible to every
 sandbox.
 """
@@ -28,9 +29,11 @@ import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sprint_openrouter_pricing import (  # noqa: E402
+    BENCHMARK_COST_BASIS,
     PROVIDER_COST_BASIS,
     UNDISCOUNTED_COST_BASIS,
     OpenRouterPricingError,
+    benchmark_cost_usd,
     undiscounted_cost_usd,
 )
 
@@ -97,7 +100,9 @@ def _record_costs(record: dict[str, Any]) -> tuple[float, float] | None:
     ):
         return None
     charged_value = float(charged)
-    benchmark = record.get("undiscounted_cost_usd")
+    benchmark = record.get("benchmark_cost_usd")
+    if benchmark is None:
+        benchmark = record.get("undiscounted_cost_usd")
     if benchmark is None and record.get("schema_version") in {None, 1}:
         benchmark = charged_value
     if not (
@@ -106,26 +111,39 @@ def _record_costs(record: dict[str, Any]) -> tuple[float, float] | None:
         and math.isfinite(float(benchmark))
         and float(benchmark) >= charged_value
     ):
-        raise BudgetTelemetryError("invalid OpenRouter undiscounted request cost")
+        raise BudgetTelemetryError("invalid OpenRouter benchmark request cost")
     return float(benchmark), charged_value
 
 
-def _recover_record_cost(record: dict[str, Any], charged: float) -> tuple[float, float]:
+def _recover_record_cost(
+    record: dict[str, Any], charged: float, usage: object = None
+) -> tuple[float, float]:
     try:
-        benchmark = undiscounted_cost_usd(charged, record.get("promotion_snapshot"))
+        list_cost = undiscounted_cost_usd(
+            charged, record.get("promotion_snapshot")
+        )
+        benchmark = benchmark_cost_usd(
+            charged, record.get("promotion_snapshot"), usage
+        )
     except OpenRouterPricingError as exc:
         if record.get("schema_version") in {None, 1}:
-            benchmark = charged
+            list_cost = benchmark = charged
         else:
             raise BudgetTelemetryError(
                 "OpenRouter recovery has no request-time promotion snapshot"
             ) from exc
     record["provider_reported_cost_usd"] = charged
-    record["undiscounted_cost_usd"] = benchmark
+    record["undiscounted_cost_usd"] = list_cost
+    record["benchmark_cost_usd"] = benchmark
+    record["promotion_adjustment_usd"] = list_cost - charged
+    record["deepseek_peak_adjustment_usd"] = benchmark - list_cost
+    record["benchmark_adjustment_usd"] = benchmark - charged
     record["promotion_discount_fraction"] = (
         record.get("promotion_snapshot") or {}
     ).get("discount_fraction")
-    record["cost_basis"] = UNDISCOUNTED_COST_BASIS
+    record["cost_basis"] = (record.get("promotion_snapshot") or {}).get(
+        "cost_basis", UNDISCOUNTED_COST_BASIS
+    )
     record["provider_cost_basis"] = PROVIDER_COST_BASIS
     return benchmark, charged
 
@@ -234,7 +252,7 @@ def openrouter_api_cost(
                             remaining_recovery_ids.add(request_id)
                             continue
                         recovered_cost, recovered_provider_cost = _recover_record_cost(
-                            record, float(candidate)
+                            record, float(candidate), recovered
                         )
                         record.update(
                             {
@@ -261,7 +279,7 @@ def openrouter_api_cost(
                         "model_api_usd": total,
                         "provider_billed_model_api_usd": provider_total,
                         "promotion_savings_usd": total - provider_total,
-                        "model_api_cost_basis": UNDISCOUNTED_COST_BASIS,
+                        "model_api_cost_basis": BENCHMARK_COST_BASIS,
                         "provider_billed_cost_basis": PROVIDER_COST_BASIS,
                         "completed_request_count": completed,
                         "pending_request_count": pending,
@@ -320,7 +338,7 @@ def openrouter_api_cost(
             and float(recovered_cost) >= 0
         ):
             benchmark_cost, provider_cost = _recover_record_cost(
-                record, float(recovered_cost)
+                record, float(recovered_cost), recovered
             )
             record.update(
                 {
@@ -361,7 +379,7 @@ def openrouter_api_cost(
             "model_api_usd": total,
             "provider_billed_model_api_usd": provider_total,
             "promotion_savings_usd": total - provider_total,
-            "model_api_cost_basis": UNDISCOUNTED_COST_BASIS,
+            "model_api_cost_basis": BENCHMARK_COST_BASIS,
             "provider_billed_cost_basis": PROVIDER_COST_BASIS,
             "completed_request_count": completed,
             "pending_request_count": pending,
@@ -910,7 +928,7 @@ def check_once(
                 "request_count": requests,
                 "pending_request_count": pending_requests,
                 "cost_source": (
-                    UNDISCOUNTED_COST_BASIS
+                    BENCHMARK_COST_BASIS
                     if enforcement.get("api_cost_source")
                     == "openrouter_reported_per_request"
                     else enforcement.get("api_cost_source", "token_rate_reconstruction")
@@ -952,16 +970,16 @@ def check_once(
         ),
         "status": "stop_requested" if total >= threshold else "within_budget",
         "cost_basis": (
-            "openrouter_list_price_before_endpoint_discount_plus_pinned_modal_requested_resource_tariff"
+            "openrouter_benchmark_cost_plus_pinned_modal_requested_resource_tariff"
             if enforcement.get("api_cost_source") == "openrouter_reported_per_request"
             else "published_api_list_price_plus_pinned_modal_requested_resource_tariff"
         ),
         "excluded_costs": ["openrouter_credit_purchase_fee"],
         "equation": {
-            "total": "C(t) = C_openrouter_undiscounted(t) + C_cpu_agent(t) + C_training(t)",
+            "total": "C(t) = C_openrouter_benchmark(t) + C_cpu_agent(t) + C_training(t)",
             "model_api": (
-                "sum OpenRouter usage.cost / (1 - request-time endpoint discount) "
-                "over completed requests"
+                "sum max(OpenRouter undiscounted endpoint cost, official DeepSeek "
+                "peak-rate token reconstruction when applicable) over completed requests"
             ),
             "modal_role": "allocated_seconds * pinned requested-resource rate",
         },

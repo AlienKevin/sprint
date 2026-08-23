@@ -229,6 +229,49 @@ def test_openrouter_cost_is_bound_to_the_matching_codex_usage() -> None:
     assert request["cost_components_usd"] == {"upstream_inference_cost": 0.123}
 
 
+def test_deepseek_peak_benchmark_cost_overrides_endpoint_list_cost() -> None:
+    request = {
+        "cpu_attempt": 2,
+        "input_tokens": 100,
+        "cached_input_tokens": 80,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 20,
+        "reasoning_output_tokens": 7,
+        "total_tokens": 120,
+    }
+    record = {
+        "cpu_attempt": 2,
+        "ledger_request_id": "ledger-peak",
+        "generation_id": "gen-peak",
+        "provider_reported_cost_usd": 0.1,
+        "undiscounted_cost_usd": 0.2,
+        "benchmark_cost_usd": 0.3,
+        "promotion_adjustment_usd": 0.1,
+        "deepseek_peak_adjustment_usd": 0.1,
+        "cost_basis": "openrouter_list_price_with_deepseek_peak_floor",
+        "usage": {
+            "input_tokens": 100,
+            "input_tokens_details": {"cached_tokens": 80},
+            "output_tokens": 20,
+            "output_tokens_details": {"reasoning_tokens": 7},
+            "total_tokens": 120,
+        },
+    }
+
+    apply_provider_reported_costs([request], [record])
+
+    assert request["calculated_cost_usd"] == 0.3
+    assert request["provider_reported_cost_usd"] == 0.1
+    assert request["endpoint_list_cost_usd"] == 0.2
+    assert request["promotion_adjustment_usd"] == 0.1
+    assert request["deepseek_peak_adjustment_usd"] == 0.1
+    assert request["benchmark_adjustment_usd"] == pytest.approx(0.2)
+    assert request["promotion_savings_usd"] == pytest.approx(0.2)
+    assert request["cost_basis"] == (
+        "openrouter_list_price_with_deepseek_peak_floor"
+    )
+
+
 def test_recovered_openrouter_cost_is_bound_in_serial_request_order(
     tmp_path: Path,
 ) -> None:

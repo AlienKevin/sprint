@@ -22,9 +22,10 @@ from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sprint_openrouter_pricing import (  # noqa: E402
+    BENCHMARK_COST_BASIS,
     PROVIDER_COST_BASIS,
-    UNDISCOUNTED_COST_BASIS,
     OpenRouterPricingError,
+    benchmark_cost_usd,
     capture_endpoint_discount_snapshot,
     undiscounted_cost_usd,
 )
@@ -67,6 +68,7 @@ def atomic_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def usage_from_event(event: object) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Extract usage from either Responses or Chat Completions payloads."""
     if not isinstance(event, dict):
         return None, {}
     response = event.get("response")
@@ -77,7 +79,11 @@ def usage_from_event(event: object) -> tuple[dict[str, Any] | None, dict[str, An
 
 
 def pin_provider_route(
-    body: bytes, *, provider_endpoint: str, quantization: str | None
+    body: bytes,
+    *,
+    provider_endpoint: str,
+    quantization: str | None,
+    request_contract: dict[str, Any] | None = None,
 ) -> tuple[bytes, dict[str, Any]]:
     """Replace any caller routing preference with the sealed eval route."""
     try:
@@ -95,6 +101,17 @@ def pin_provider_route(
     if quantization:
         provider["quantizations"] = [quantization]
     payload["provider"] = provider
+    if request_contract:
+        payload.update(request_contract)
+        if request_contract.get("stream") is True:
+            # Chat Completions emits usage only on its final stream event when
+            # include_usage is enabled.  The proxy owns this bit because a
+            # missing usage event would make a paid request unaccountable.
+            stream_options = payload.get("stream_options")
+            if not isinstance(stream_options, dict):
+                stream_options = {}
+            stream_options["include_usage"] = True
+            payload["stream_options"] = stream_options
     # Codex emits this field even when the catalog disables parallel tool
     # calls. Some strict OpenRouter endpoints reject the parameter itself,
     # despite its false value. Omitting false is behaviorally equivalent and
@@ -128,7 +145,11 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
         self._forward(record_usage=False)
 
     def do_POST(self) -> None:  # noqa: N802
-        self._forward(record_usage=self.path.split("?", 1)[0].endswith("/responses"))
+        path = self.path.split("?", 1)[0].rstrip("/")
+        record_usage = path.endswith("/responses") or path.endswith(
+            "/chat/completions"
+        )
+        self._forward(record_usage=record_usage)
 
     def _request_body(self) -> bytes:
         raw_length = self.headers.get("Content-Length")
@@ -188,6 +209,7 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                     body,
                     provider_endpoint=self.ledger_server.provider_endpoint,
                     quantization=self.ledger_server.quantization,
+                    request_contract=self.ledger_server.request_contract,
                 )
             except ValueError as exc:
                 self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
@@ -235,17 +257,20 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                 self.close_connection = True
                 return
             record = {
-                "schema_version": 2,
+                "schema_version": 3,
                 "ledger_request_id": request_id,
                 "run_id": self.ledger_server.run_id,
                 "cpu_attempt": self.ledger_server.cpu_attempt,
                 "requested_at": utc_now(),
                 "requested_model": requested_model,
                 "stream": stream,
+                "api_path": self.path.split("?", 1)[0],
+                "request_contract": self.ledger_server.request_contract or None,
                 "state": "in_flight",
                 "generation_id": None,
                 "provider_reported_cost_usd": None,
                 "undiscounted_cost_usd": None,
+                "benchmark_cost_usd": None,
                 "promotion_snapshot": promotion_snapshot,
             }
             self.ledger_server.begin_request(request_id)
@@ -343,6 +368,9 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                 )
                 if valid_cost:
                     list_cost = undiscounted_cost_usd(cost, promotion_snapshot)
+                    benchmark_cost = benchmark_cost_usd(
+                        cost, promotion_snapshot, terminal_usage
+                    )
                     record.update(
                         {
                             "state": "complete",
@@ -351,10 +379,16 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                             or terminal_response.get("id"),
                             "provider_reported_cost_usd": float(cost),
                             "undiscounted_cost_usd": list_cost,
+                            "benchmark_cost_usd": benchmark_cost,
+                            "promotion_adjustment_usd": list_cost - float(cost),
+                            "deepseek_peak_adjustment_usd": benchmark_cost
+                            - list_cost,
+                            "benchmark_adjustment_usd": benchmark_cost
+                            - float(cost),
                             "promotion_discount_fraction": promotion_snapshot[
                                 "discount_fraction"
                             ],
-                            "cost_basis": UNDISCOUNTED_COST_BASIS,
+                            "cost_basis": promotion_snapshot["cost_basis"],
                             "provider_cost_basis": PROVIDER_COST_BASIS,
                             "usage": terminal_usage,
                             "response_id": terminal_response.get("id"),
@@ -369,6 +403,10 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                             "completed_at": utc_now(),
                             "provider_reported_cost_usd": 0.0,
                             "undiscounted_cost_usd": 0.0,
+                            "benchmark_cost_usd": 0.0,
+                            "promotion_adjustment_usd": 0.0,
+                            "deepseek_peak_adjustment_usd": 0.0,
+                            "benchmark_adjustment_usd": 0.0,
                         }
                     )
                 else:
@@ -381,7 +419,7 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                 atomic_json(record_path, record)
                 if valid_cost:
                     self.ledger_server.complete_request(
-                        request_id, list_cost, float(cost)
+                        request_id, benchmark_cost, float(cost)
                     )
                 elif upstream.status >= 400 and not generation_id:
                     self.ledger_server.complete_request(request_id, 0.0, 0.0)
@@ -444,6 +482,7 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
         runtime_dir: Path = Path("/run"),
         provider_endpoint: str | None = None,
         quantization: str | None = None,
+        request_contract: dict[str, Any] | None = None,
     ) -> None:
         parsed = urlsplit(upstream)
         if parsed.scheme != "https" or parsed.hostname != "openrouter.ai":
@@ -461,12 +500,29 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
         }
         if quantization is not None and quantization not in allowed_quantizations:
             raise ValueError("invalid OpenRouter quantization")
+        if request_contract is not None:
+            allowed_contract_fields = {
+                "model",
+                "max_tokens",
+                "reasoning_effort",
+                "stream",
+                "temperature",
+                "top_p",
+            }
+            unknown = set(request_contract) - allowed_contract_fields
+            if unknown:
+                raise ValueError(
+                    "invalid request contract fields: " + ", ".join(sorted(unknown))
+                )
+            if not request_contract:
+                raise ValueError("request contract must not be empty")
         self.upstream_host = parsed.hostname
         self.upstream_port = parsed.port or 443
         self.run_id = run_id
         self.cpu_attempt = cpu_attempt
         self.provider_endpoint = provider_endpoint
         self.quantization = quantization
+        self.request_contract = request_contract
         self.run_root = ledger_root.parent
         run = json.loads((self.run_root / "state/run.json").read_text())
         if run.get("run_id") != run_id:
@@ -561,7 +617,10 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
                 provider_cost, bool
             ):
                 provider_value = float(provider_cost)
-                cost = record.get("undiscounted_cost_usd", provider_value)
+                cost = record.get(
+                    "benchmark_cost_usd",
+                    record.get("undiscounted_cost_usd", provider_value),
+                )
                 if not isinstance(cost, (int, float)) or isinstance(cost, bool):
                     raise ValueError("invalid undiscounted cost")
                 value = float(cost)
@@ -603,6 +662,7 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
                         "completed_at": utc_now(),
                         "provider_reported_cost_usd": 0.0,
                         "undiscounted_cost_usd": 0.0,
+                        "benchmark_cost_usd": 0.0,
                         "recovered_after_proxy_restart": True,
                     },
                 )
@@ -622,10 +682,15 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
                 self.in_flight_request_ids.remove(request_id)
                 self.completed_request_count += 1
                 provider_cost = float(cost)
-                list_cost = float(record.get("undiscounted_cost_usd", provider_cost))
-                if list_cost < provider_cost or not math.isfinite(list_cost):
-                    raise ValueError("invalid undiscounted cost")
-                self.api_cost_usd += list_cost
+                benchmark_cost = float(
+                    record.get(
+                        "benchmark_cost_usd",
+                        record.get("undiscounted_cost_usd", provider_cost),
+                    )
+                )
+                if benchmark_cost < provider_cost or not math.isfinite(benchmark_cost):
+                    raise ValueError("invalid benchmark cost")
+                self.api_cost_usd += benchmark_cost
                 self.provider_billed_api_cost_usd += provider_cost
                 continue
             record.update(
@@ -654,10 +719,15 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
                 self.cost_recovery_required_request_ids.remove(request_id)
                 self.completed_request_count += 1
                 provider_cost = float(cost)
-                list_cost = float(record.get("undiscounted_cost_usd", provider_cost))
-                if list_cost < provider_cost or not math.isfinite(list_cost):
-                    raise ValueError("invalid undiscounted cost")
-                self.api_cost_usd += list_cost
+                benchmark_cost = float(
+                    record.get(
+                        "benchmark_cost_usd",
+                        record.get("undiscounted_cost_usd", provider_cost),
+                    )
+                )
+                if benchmark_cost < provider_cost or not math.isfinite(benchmark_cost):
+                    raise ValueError("invalid benchmark cost")
+                self.api_cost_usd += benchmark_cost
                 self.provider_billed_api_cost_usd += provider_cost
             elif record.get("state") != "cost_recovery_required":
                 raise ValueError("invalid recovery ledger state")
@@ -677,7 +747,7 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
                 "promotion_savings_usd": (
                     self.api_cost_usd - self.provider_billed_api_cost_usd
                 ),
-                "model_api_cost_basis": UNDISCOUNTED_COST_BASIS,
+                "model_api_cost_basis": BENCHMARK_COST_BASIS,
                 "provider_billed_cost_basis": PROVIDER_COST_BASIS,
                 "completed_request_count": self.completed_request_count,
                 "pending_request_count": pending,
@@ -830,11 +900,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--runtime-dir", type=Path, default=Path("/run"))
     parser.add_argument("--provider-endpoint")
     parser.add_argument("--quantization")
+    parser.add_argument("--request-contract-json")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    request_contract = None
+    if args.request_contract_json:
+        try:
+            request_contract = json.loads(args.request_contract_json)
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"invalid --request-contract-json: {exc}") from exc
+        if not isinstance(request_contract, dict):
+            raise SystemExit("--request-contract-json must be a JSON object")
     server = LedgerProxyServer(
         (args.listen, args.port),
         upstream=args.upstream,
@@ -844,6 +923,7 @@ def main() -> int:
         runtime_dir=args.runtime_dir,
         provider_endpoint=args.provider_endpoint,
         quantization=args.quantization,
+        request_contract=request_contract,
     )
     server.serve_forever(poll_interval=0.25)
     return 0

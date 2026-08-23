@@ -78,6 +78,14 @@ def discover_sources(
         path = agent_log_dir / "claude-code.txt"
         if path.is_file() and not path.is_symlink():
             yield path, agent_log_dir
+        return
+    if agent_kind == "deepseek-harness":
+        # The SDK's authoritative session JSONL already lives on /durable.
+        # Mirror its real-time notification stream so the existing timeline
+        # exporter sees progress before the next restic snapshot.
+        path = agent_log_dir / "deepseek-harness-events.jsonl"
+        if path.is_file() and not path.is_symlink():
+            yield path, agent_log_dir
 
 
 def mirror_source(
@@ -160,7 +168,11 @@ def mirror_once(args: argparse.Namespace) -> list[dict[str, Any]]:
 def parser() -> argparse.ArgumentParser:
     out = argparse.ArgumentParser(description=__doc__)
     out.add_argument("--run-id", required=True)
-    out.add_argument("--agent-kind", choices=("codex", "claude-code"), required=True)
+    out.add_argument(
+        "--agent-kind",
+        choices=("codex", "claude-code", "deepseek-harness"),
+        required=True,
+    )
     out.add_argument("--cpu-attempt", type=int, default=1)
     out.add_argument("--codex-home", default="/tmp/codex-home")
     out.add_argument("--claude-home", default="/root/.claude")

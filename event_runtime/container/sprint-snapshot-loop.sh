@@ -27,7 +27,7 @@ usage() {
 Usage: sprint-snapshot-loop.sh --run-id ID --agent-kind KIND [options]
 
 Options:
-  --agent-kind KIND        claude-code or codex.
+  --agent-kind KIND        claude-code, codex, or deepseek-harness.
   --password-file PATH     Restic password file on the durable volume.
   --snapshot-seconds N     Periodic snapshot interval (default: 300).
   --poll-seconds N         Watch interval (default: 2).
@@ -65,8 +65,9 @@ if [[ ! "$RUN_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{2,80}$ ]]; then
   echo "invalid or missing --run-id" >&2
   exit 2
 fi
-if [[ "$AGENT_KIND" != "claude-code" && "$AGENT_KIND" != "codex" ]]; then
-  echo "--agent-kind must be claude-code or codex" >&2
+if [[ "$AGENT_KIND" != "claude-code" && "$AGENT_KIND" != "codex" \
+      && "$AGENT_KIND" != "deepseek-harness" ]]; then
+  echo "--agent-kind must be claude-code, codex, or deepseek-harness" >&2
   exit 2
 fi
 for value in "$SNAPSHOT_SECONDS" "$POLL_SECONDS" "$TERM_GRACE_SECONDS"; do
@@ -93,12 +94,15 @@ fi
 ATTEMPT_TAG=$(printf '%03d' "$CPU_ATTEMPT")
 if [[ "$AGENT_KIND" == "claude-code" ]]; then
   FIRST_SEEN="$STATE_DIR/first-claude-seen.attempt-$ATTEMPT_TAG"
+elif [[ "$AGENT_KIND" == "deepseek-harness" ]]; then
+  FIRST_SEEN="$STATE_DIR/first-deepseek-harness-seen.attempt-$ATTEMPT_TAG"
 else
   FIRST_SEEN="$STATE_DIR/first-codex-seen.attempt-$ATTEMPT_TAG"
 fi
 SNAPSHOT_LOCK="$STATE_DIR/snapshot.lock"
 AGENT_STATE_DIR="$RUNTIME_DIR/sprint-agent"
 CODEX_PROCESS_FILE="$AGENT_STATE_DIR/codex-process"
+HARNESS_PROCESS_FILE="$AGENT_STATE_DIR/agent-process"
 EXPECTED_INTERRUPT="$AGENT_STATE_DIR/expected-interrupt"
 PASSWORD_FILE=${PASSWORD_FILE:-"$RUN_ROOT/secrets/restic-password"}
 LAST_SNAPSHOT_ID=""
@@ -228,6 +232,35 @@ pid_is_codex() {
   [[ "${args[2]}" == "exec" ]]
 }
 
+pid_is_deepseek_harness() {
+  local pid=$1 row
+  [[ -r "/proc/$pid/cmdline" ]] || return 1
+  row=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
+  [[ "$row" == *sprint-deepseek-harness-runner.py* ]]
+}
+
+find_deepseek_harness_identity() {
+  local pid pgid recorded_start actual_start actual_pgid watcher_pgid
+  [[ -r "$HARNESS_PROCESS_FILE" ]] || return 1
+  read -r pid pgid recorded_start <"$HARNESS_PROCESS_FILE" || return 1
+  [[ "$pid" =~ ^[0-9]+$ && "$pgid" =~ ^[0-9]+$ && "$recorded_start" =~ ^[0-9]+$ ]] \
+    || return 1
+  ((pid > 1 && pgid > 1 && pid == pgid)) || return 1
+  watcher_pgid=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d '[:space:]')
+  [[ "$pgid" != "$watcher_pgid" ]] || return 1
+  if ! pid_running "$pid"; then
+    group_running "$pgid" || return 1
+    printf '%s %s\n' "$pid" "$pgid"
+    return 0
+  fi
+  actual_start=$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null || true)
+  [[ "$actual_start" == "$recorded_start" ]] || return 1
+  actual_pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+  [[ "$actual_pgid" == "$pgid" ]] || return 1
+  pid_is_deepseek_harness "$pid" || return 1
+  printf '%s %s\n' "$pid" "$pgid"
+}
+
 find_codex_identity() {
   local pid pgid recorded_start actual_start actual_pgid watcher_pgid
   [[ -r "$CODEX_PROCESS_FILE" ]] || return 1
@@ -255,8 +288,10 @@ find_agent_identity() {
   if [[ "$AGENT_KIND" == "claude-code" ]]; then
     pid=$(find_claude_pid || true)
     [[ -n "$pid" ]] && printf '%s\n' "$pid"
-  else
+  elif [[ "$AGENT_KIND" == "codex" ]]; then
     find_codex_identity
+  else
+    find_deepseek_harness_identity
   fi
 }
 
@@ -302,7 +337,7 @@ snapshot() {
       for path in "$CODEX_HOME_DIR"/state_*.sqlite*; do
         [[ -f "$path" && ! -L "$path" ]] && sources+=("$path")
       done
-    elif [[ -e "$ROOT_DIR" ]]; then
+    elif [[ "$AGENT_KIND" == "claude-code" && -e "$ROOT_DIR" ]]; then
       # Preserve the existing Claude Code recovery set. Codex uses an explicit
       # allowlist above so unrelated root credentials cannot enter its backup.
       sources+=("$ROOT_DIR")
@@ -504,20 +539,20 @@ signal_watch() {
       stop_reason=$(tr -d '\r\n' <"$STOP_FILE" 2>/dev/null || true)
       stop_reason=${stop_reason:-operator_stop}
       atomic_text "$STOP_SIGNALLED" "$stop_reason"$'\n'
-      if [[ "$AGENT_KIND" == "codex" ]]; then
+      if [[ "$AGENT_KIND" != "claude-code" ]]; then
         atomic_text "$EXPECTED_INTERRUPT" "$stop_reason"$'\n'
       fi
       log "stopping $AGENT_KIND only reason=$stop_reason pid=$pid${pgid:+ pgid=$pgid}"
       kill -INT "$pid" 2>/dev/null || true
       deadline=$(($(date +%s) + TERM_GRACE_SECONDS))
-      if [[ "$AGENT_KIND" == "codex" ]]; then
+      if [[ "$AGENT_KIND" != "claude-code" ]]; then
         while group_running "$pgid" && (($(date +%s) < deadline)); do
           sleep 1
         done
         if group_running "$pgid"; then
           watcher_pgid=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d '[:space:]')
           if [[ "$pgid" =~ ^[0-9]+$ && "$pgid" -gt 1 && "$pgid" != "$watcher_pgid" ]]; then
-            log "Codex group still running after grace period; sending SIGTERM pgid=$pgid"
+            log "$AGENT_KIND group still running after grace period; sending SIGTERM pgid=$pgid"
             kill -TERM -- "-$pgid" 2>/dev/null || true
           fi
         fi

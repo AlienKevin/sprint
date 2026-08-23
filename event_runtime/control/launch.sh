@@ -20,8 +20,13 @@ CODEX_VERSION=${CODEX_VERSION:-0.147.0}
 # The optional Claude Code adapter remains pinned for reproducibility even
 # though the active comparison uses Codex for both model families.
 CLAUDE_VERSION=${CLAUDE_VERSION:-2.1.220}
+DEEPSEEK_HARNESS_VERSION=${DEEPSEEK_HARNESS_VERSION:-0.1.1-rc.2}
+DEEPSEEK_HARNESS_SDK_VERSION=${DEEPSEEK_HARNESS_SDK_VERSION:-0.1.1rc1}
 BAKED_CODEX_VERSION=0.147.0
 BAKED_CLAUDE_VERSION=2.1.220
+BAKED_DEEPSEEK_HARNESS_VERSION=0.1.1-rc.2
+export DEEPSEEK_HARNESS_VERSION
+export DEEPSEEK_HARNESS_SDK_VERSION
 # Hold one dedicated A10G for the run's lifetime instead of spawning a worker
 # per training job. Gives each arm its own GPU at all times (fair comparison)
 # and survives Modal preempting it, at the cost of paying for an idle GPU
@@ -46,8 +51,8 @@ Usage: event_runtime/control/launch.sh [options]
 
 Options:
   --run-id ID                Explicit unique run ID.
-  --agent-kind KIND          claude-code or codex (default claude-code).
-  --model MODEL              Agent model; required for codex.
+  --agent-kind KIND          claude-code, codex, or deepseek-harness.
+  --model MODEL              Agent model; required except for claude-code.
   --endpoint HTTPS_URL       Optional Codex API endpoint (no credentials/query).
   --reasoning-effort VALUE   Agent reasoning effort.
   --codex-version VERSION    Pin @openai/codex npm version (codex only; default 0.147.0).
@@ -96,24 +101,36 @@ if [[ -n "$BATCH_ID" && ! "$BATCH_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{2,48}$ ]]; t
   echo "SPRINT_BATCH_ID must be 3-49 safe filename characters" >&2
   exit 2
 fi
-if [[ "$AGENT_KIND" != "claude-code" && "$AGENT_KIND" != "codex" ]]; then
-  echo "--agent-kind must be claude-code or codex" >&2
+if [[ "$AGENT_KIND" != "claude-code" && "$AGENT_KIND" != "codex" \
+      && "$AGENT_KIND" != "deepseek-harness" ]]; then
+  echo "--agent-kind must be claude-code, codex, or deepseek-harness" >&2
   exit 2
 fi
 if [[ -z "$MODEL" ]]; then
   if [[ "$AGENT_KIND" == "claude-code" ]]; then
     MODEL=claude-opus-5
   else
-    echo "--model is required for codex" >&2
+    echo "--model is required for $AGENT_KIND" >&2
     exit 2
   fi
 fi
 if [[ -z "$REASONING_EFFORT" ]]; then
-  if [[ "$AGENT_KIND" == "claude-code" ]]; then
+  if [[ "$AGENT_KIND" == "claude-code" || "$AGENT_KIND" == "deepseek-harness" ]]; then
     REASONING_EFFORT=max
   else
     REASONING_EFFORT=high
   fi
+fi
+if [[ "$AGENT_KIND" == "deepseek-harness" ]]; then
+  [[ "$MODEL" == "deepseek/deepseek-v4-flash-vision-exp" ]] || {
+    echo "DeepSeek Harness is sealed to deepseek/deepseek-v4-flash-vision-exp" >&2
+    exit 2
+  }
+  [[ "$REASONING_EFFORT" == "max" ]] || {
+    echo "DeepSeek Harness benchmark reasoning effort is sealed to max" >&2
+    exit 2
+  }
+  ENDPOINT=${ENDPOINT:-https://openrouter.ai/api/v1}
 fi
 if [[ "$MODEL" == -* || "$MODEL" =~ [[:space:][:cntrl:]] ]]; then
   echo "--model must be one non-option value" >&2
@@ -182,6 +199,10 @@ if [[ "$CLAUDE_VERSION" != "$BAKED_CLAUDE_VERSION" ]]; then
   echo "Claude Code $CLAUDE_VERSION is not baked into the offline image (expected $BAKED_CLAUDE_VERSION)" >&2
   exit 2
 fi
+if [[ "$DEEPSEEK_HARNESS_VERSION" != "$BAKED_DEEPSEEK_HARNESS_VERSION" ]]; then
+  echo "DeepSeek Harness $DEEPSEEK_HARNESS_VERSION is not baked into the offline image (expected $BAKED_DEEPSEEK_HARNESS_VERSION)" >&2
+  exit 2
+fi
 [[ -n "$UV" && -x "$UV" ]] || {
   echo "uv is required (set UV to its absolute executable path)" >&2
   exit 1
@@ -191,7 +212,7 @@ export SPRINT_SHARED_CACHE_DIR="$ROOT/runs/ops/feedback-verifier/result-cache"
 
 if [[ "$AGENT_KIND" == "claude-code" ]]; then
   if [[ -n "$ENDPOINT" ]]; then
-    echo "--endpoint is supported only for codex" >&2
+    echo "--endpoint is supported only for codex and deepseek-harness" >&2
     exit 2
   fi
   AGENT_SECRET_NAME=CLAUDE_CODE_OAUTH_TOKEN
@@ -200,11 +221,18 @@ if [[ "$AGENT_KIND" == "claude-code" ]]; then
     echo "CLAUDE_CODE_OAUTH_TOKEN is required; API-key fallback is disabled" >&2
     exit 1
   fi
-else
+elif [[ "$AGENT_KIND" == "codex" ]]; then
   AGENT_SECRET_NAME=OPENAI_API_KEY
   AGENT_SECRET=${OPENAI_API_KEY:-}
   if [[ -z "$AGENT_SECRET" ]]; then
     echo "OPENAI_API_KEY is required for codex" >&2
+    exit 1
+  fi
+else
+  AGENT_SECRET_NAME=OPENROUTER_API_KEY
+  AGENT_SECRET=${OPENROUTER_API_KEY:-}
+  if [[ -z "$AGENT_SECRET" ]]; then
+    echo "OPENROUTER_API_KEY is required for deepseek-harness" >&2
     exit 1
   fi
 fi
@@ -310,10 +338,26 @@ os.replace(temporary, target)
 PY
 fi
 
-# Every new V4 Flash evaluation uses one sealed Baidu Qianfan FP8 endpoint.
+# Vision Exp is currently available only from DeepSeek's official OpenRouter
+# endpoint.  Keep it separate from the legacy Flash/Baidu comparison below.
+if [[ "$AGENT_KIND" == "deepseek-harness" ]]; then
+  if [[ -n "${SPRINT_OPENROUTER_PROVIDER_ENDPOINT:-}" \
+        && "$SPRINT_OPENROUTER_PROVIDER_ENDPOINT" != "deepseek" ]]; then
+    echo "Vision Exp is locked to the official DeepSeek OpenRouter endpoint" >&2
+    exit 2
+  fi
+  if [[ -n "${SPRINT_OPENROUTER_QUANTIZATION:-}" ]]; then
+    echo "Vision Exp official endpoint does not expose a sealed quantization" >&2
+    exit 2
+  fi
+  MODEL=deepseek/deepseek-v4-flash-vision-exp
+  export SPRINT_OPENROUTER_PROVIDER_ENDPOINT=deepseek
+  unset SPRINT_OPENROUTER_QUANTIZATION
+
+# Every new legacy V4 Flash evaluation uses one sealed Baidu Qianfan FP8 endpoint.
 # The proxy replaces caller routing on every request, disables fallback, and
 # independently captures that endpoint's request-time promotion for billing.
-if (( ! RESUMING )) \
+elif (( ! RESUMING )) \
   && [[ "$AGENT_KIND" == "codex" ]] \
   && [[ "$MODEL_API_HOST" == "openrouter.ai" ]] \
   && [[ "${MODEL#*/}" == deepseek-v4-flash* ]]; then
@@ -599,6 +643,18 @@ openrouter_route = (
     if model_api_host == "openrouter.ai" and provider_endpoint
     else None
 )
+openrouter_request_contract = (
+    {
+        "model": "deepseek/deepseek-v4-flash-vision-exp",
+        "stream": True,
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "max_tokens": 384000,
+        "reasoning_effort": "max",
+    }
+    if agent_kind == "deepseek-harness"
+    else None
+)
 payload = {
     "run_id": run_id,
     "app_name": app,
@@ -612,11 +668,23 @@ payload = {
     "endpoint": endpoint or None,
     "reasoning_effort": effort,
     "codex_version": codex_version if agent_kind == "codex" else None,
+    "deepseek_harness_version": (
+        os.environ.get("DEEPSEEK_HARNESS_VERSION")
+        if agent_kind == "deepseek-harness"
+        else None
+    ),
+    "deepseek_harness_sdk_version": (
+        os.environ.get("DEEPSEEK_HARNESS_SDK_VERSION")
+        if agent_kind == "deepseek-harness"
+        else None
+    ),
     "automatic_stop": True,
     "automatic_stop_reason": "agent_cost_budget_exhausted",
     "agent_cost_budget_usd": float(agent_cost_budget),
     "api_pricing_snapshot": pricing_snapshot,
     "openrouter_route": openrouter_route,
+    "openrouter_request_contract": openrouter_request_contract,
+    "provider_usage_ledger_required": model_api_host == "openrouter.ai",
     "budget_enforcement": {
         "controller_watchdog": True,
         "in_sandbox_watchdog": True,
@@ -627,7 +695,7 @@ payload = {
             else "token_rate_reconstruction"
         ),
         "api_budget_cost_basis": (
-            "openrouter_list_price_before_endpoint_discount"
+            "openrouter_list_price_with_deepseek_peak_floor"
             if model_api_host == "openrouter.ai"
             else "published_standard_list_price"
         ),
@@ -647,7 +715,9 @@ payload = {
     "gpu_pipeline_telemetry_required": True,
     "agent_network_policy": "model-api-only",
     "agent_allowed_host": model_api_host,
-    "hosted_model_tools_policy": "disabled" if agent_kind == "codex" else None,
+    "hosted_model_tools_policy": (
+        "disabled" if agent_kind in {"codex", "deepseek-harness"} else None
+    ),
     "service_tier": (
         "default"
         if agent_kind == "codex"
@@ -768,12 +838,12 @@ python3 "$SOURCE_ROOT/event_runtime/control/render_task.py" \
   --destination "$TASK" \
   --budget "$AGENT_COST_BUDGET_USD"
 printf '%s=%s\n' "$AGENT_SECRET_NAME" "$AGENT_SECRET" >"$ENV_FILE"
-if [[ -n "$ENDPOINT" ]]; then
+if [[ -n "$ENDPOINT" && "$AGENT_KIND" == "codex" ]]; then
   printf 'OPENAI_BASE_URL=%s\n' "$ENDPOINT" >>"$ENV_FILE"
 fi
 # DeepSeek Codex provider+catalog (not Harbor openai_base_url alone).
 # Luna / default OpenAI endpoints leave this unset.
-if [[ "${MODEL#*/}" == deepseek-v4-flash* ]]; then
+if [[ "$AGENT_KIND" == "codex" && "${MODEL#*/}" == deepseek-v4-flash* ]]; then
   printf 'SPRINT_CODEX_PROVIDER=deepseek\n' >>"$ENV_FILE"
 fi
 if (( ! RESUMING )); then
@@ -788,6 +858,8 @@ python3 "$ROOT/event_runtime/control/credentials.py" "$ENV_FILE" "$AGENT_SECRET_
 
 if [[ "$AGENT_KIND" == "claude-code" ]]; then
   PROMPT_TEMPLATE="${PROMPT_TEMPLATE_OVERRIDE:-$SOURCE_ROOT/event_runtime/control/templates/claude.j2}"
+elif [[ "$AGENT_KIND" == "deepseek-harness" ]]; then
+  PROMPT_TEMPLATE="${PROMPT_TEMPLATE_OVERRIDE:-$SOURCE_ROOT/event_runtime/control/templates/deepseek-harness.j2}"
 else
   PROMPT_TEMPLATE="${PROMPT_TEMPLATE_OVERRIDE:-$SOURCE_ROOT/event_runtime/control/templates/codex.j2}"
 fi
@@ -833,6 +905,18 @@ openrouter_route = (
     if model_api_host == "openrouter.ai" and provider_endpoint
     else None
 )
+openrouter_request_contract = (
+    {
+        "model": "deepseek/deepseek-v4-flash-vision-exp",
+        "stream": True,
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "max_tokens": 384000,
+        "reasoning_effort": "max",
+    }
+    if agent_kind == "deepseek-harness"
+    else None
+)
 target = pathlib.Path(path)
 root_path = pathlib.Path(root)
 task_source_root = pathlib.Path(source_root) / "events/g1-100-metres"
@@ -869,11 +953,31 @@ base = {
         else model.split("/", 1)[-1]
     ),
     "codex_version": codex_version if agent_kind == "codex" else None,
+    "deepseek_harness_version": (
+        os.environ.get("DEEPSEEK_HARNESS_VERSION")
+        if agent_kind == "deepseek-harness"
+        else None
+    ),
+    "deepseek_harness_sdk_version": (
+        os.environ.get("DEEPSEEK_HARNESS_SDK_VERSION")
+        if agent_kind == "deepseek-harness"
+        else None
+    ),
+    "deepseek_harness_config_sha256": (
+        sha256_file(
+            root_path
+            / "event_runtime/container/deepseek-harness-minimal.cordis.yml"
+        )
+        if agent_kind == "deepseek-harness"
+        else None
+    ),
     "automatic_stop": True,
     "automatic_stop_reason": "agent_cost_budget_exhausted",
     "agent_cost_budget_usd": float(agent_cost_budget),
     "api_pricing_snapshot": pricing_snapshot,
     "openrouter_route": openrouter_route,
+    "openrouter_request_contract": openrouter_request_contract,
+    "provider_usage_ledger_required": model_api_host == "openrouter.ai",
     "budget_enforcement": {
         "controller_watchdog": True,
         "in_sandbox_watchdog": True,
@@ -884,7 +988,7 @@ base = {
             else "token_rate_reconstruction"
         ),
         "api_budget_cost_basis": (
-            "openrouter_list_price_before_endpoint_discount"
+            "openrouter_list_price_with_deepseek_peak_floor"
             if model_api_host == "openrouter.ai"
             else "published_standard_list_price"
         ),
@@ -972,7 +1076,9 @@ base = {
         model_api_host == "openrouter.ai"
         or model.split("/", 1)[-1] in {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
     ),
-    "hosted_model_tools_policy": "disabled" if agent_kind == "codex" else None,
+    "hosted_model_tools_policy": (
+        "disabled" if agent_kind in {"codex", "deepseek-harness"} else None
+    ),
     "service_tier": (
         "default"
         if agent_kind == "codex"
@@ -1014,9 +1120,26 @@ if resuming == "1":
         "endpoint": endpoint or None,
         "reasoning_effort": effort,
         "codex_version": codex_version if agent_kind == "codex" else None,
+        "deepseek_harness_version": (
+            os.environ.get("DEEPSEEK_HARNESS_VERSION")
+            if agent_kind == "deepseek-harness"
+            else None
+        ),
+        "deepseek_harness_sdk_version": (
+            os.environ.get("DEEPSEEK_HARNESS_SDK_VERSION")
+            if agent_kind == "deepseek-harness"
+            else None
+        ),
+        "deepseek_harness_config_sha256": base[
+            "deepseek_harness_config_sha256"
+        ],
         "harbor_commit": commit,
         "agent_cost_budget_usd": float(agent_cost_budget),
         "budget_enforcement": base["budget_enforcement"],
+        "openrouter_request_contract": base["openrouter_request_contract"],
+        "provider_usage_ledger_required": base[
+            "provider_usage_ledger_required"
+        ],
     }
     if "openrouter_route" in payload:
         expected["openrouter_route"] = base["openrouter_route"]
@@ -1122,7 +1245,7 @@ if [[ "$AGENT_KIND" == "claude-code" ]]; then
     --ae "SPRINT_RUNTIME_DIR=/run"
     "${SHARED_AGENT_ENV[@]}"
   )
-else
+elif [[ "$AGENT_KIND" == "codex" ]]; then
   AGENT_HARBOR_ARGS=(
     --ak "version=$CODEX_VERSION"
     # Hosted search has a separate per-call price and would also bypass the
@@ -1186,6 +1309,17 @@ else
     # another service tier, which cannot be reconstructed from token counts.
     AGENT_HARBOR_ARGS+=(--ak "service_tier=default")
   fi
+else
+  AGENT_HARBOR_ARGS=(
+    --ak "version=$DEEPSEEK_HARNESS_VERSION"
+    --ae "SPRINT_AGENT_KIND=deepseek-harness"
+    --ae "SPRINT_RUNTIME_DIR=/run"
+    --ae "SPRINT_AGENT_LOG_DIR=/logs/agent"
+    --ae "SPRINT_OPENROUTER_LEDGER_REQUIRED=1"
+    --ae "SPRINT_OPENROUTER_UPSTREAM_URL=https://openrouter.ai/api/v1"
+    --ae "SPRINT_OPENROUTER_PROVIDER_ENDPOINT=deepseek"
+    "${SHARED_AGENT_ENV[@]}"
+  )
 fi
 
 unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN \

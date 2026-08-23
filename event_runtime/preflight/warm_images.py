@@ -262,6 +262,12 @@ def main() -> int:
                 "python3 -c 'import torch; print(torch.__version__)' && "
                 "test \"$(codex --version)\" = 'codex-cli 0.147.0' && "
                 "test -x /opt/sprint-codex-exec-wrapper.sh && "
+                "test -x /opt/sprint-deepseek-harness-exec-wrapper.sh && "
+                "test -x /opt/sprint-deepseek-harness-runner.py && "
+                "node -e 'const v=require(\"/usr/local/lib/node_modules/@deepseek-ai/dsh-sdk-jsonrpc-demo/package.json\").version; "
+                "if (v !== process.argv[1]) throw new Error(`unexpected DeepSeek Harness version ${v}`)' 0.1.1-rc.2 && "
+                "python3 -c \"import importlib.metadata; assert importlib.metadata.version('deepseek-harness-sdk') == '0.1.1rc1'\" && "
+                "python3 /opt/event_runtime/container/sprint-deepseek-harness-probe.py && "
                 "test -x /opt/sprint-apply-deepseek-codex-config.sh && "
                 "test -x /opt/sprint-apply-openai-codex-config.sh && "
                 "test -x /opt/sprint-apply-luna-codex-config.sh && "
@@ -279,7 +285,10 @@ def main() -> int:
             ),
             cpu=2,
             memory=8192,
-            required_output_substrings=("AGENT_SHELL_ENTRYPOINTS_EXECUTABLE",),
+            required_output_substrings=(
+                "DEEPSEEK_HARNESS_PROTOCOL_OK",
+                "AGENT_SHELL_ENTRYPOINTS_EXECUTABLE",
+            ),
         )
         payload["training_gpu_probe"] = run_sandbox(
             app=app,

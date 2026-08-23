@@ -1136,6 +1136,145 @@ class Builder:
                     self.counts["incomplete_model_request_costs"] += 1
         self.counts["pricing_snapshots"] = len(snapshot_ids)
 
+    def add_provider_usage_ledger(self) -> None:
+        """Use OpenRouter's durable request ledger as generic usage telemetry.
+
+        Codex has a richer, independently reconstructed usage audit.  Agents
+        such as DeepSeek Harness do not emit Codex session records, so their
+        authoritative token source is the exact same per-request ledger used
+        by the budget circuit breaker.
+        """
+        if self.counts["model_requests"] or not self.run.get(
+            "provider_usage_ledger_required"
+        ):
+            return
+        root = self.state_dir / "provider-api-usage"
+        summaries = sorted(root.glob("**/summary.json")) if root.is_dir() else []
+        records = sorted(root.glob("**/requests/*.json")) if root.is_dir() else []
+        self.source_counts["provider_usage_summary_files"] = len(summaries)
+        self.source_counts["provider_usage_record_files"] = len(records)
+        for summary_path in summaries:
+            try:
+                summary = json.loads(summary_path.read_text())
+                valid = (
+                    summary.get("run_id") == self.run_id
+                    and int(summary.get("pending_request_count") or 0) == 0
+                    and int(summary.get("cost_recovery_required_count") or 0) == 0
+                )
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                valid = False
+            if valid:
+                self.counts["complete_provider_usage_summaries"] += 1
+            else:
+                self.counts["incomplete_provider_usage_summaries"] += 1
+
+        for path in records:
+            try:
+                record = json.loads(path.read_text())
+            except (OSError, json.JSONDecodeError):
+                self.counts["malformed_provider_usage_records"] += 1
+                continue
+            usage = record.get("usage")
+            request_id = record.get("ledger_request_id")
+            calculated_cost = record.get("benchmark_cost_usd")
+            provider_cost = record.get("provider_reported_cost_usd")
+            if (
+                record.get("run_id") != self.run_id
+                or record.get("state") not in {"complete", "recovered_complete"}
+                or not isinstance(usage, dict)
+                or not isinstance(request_id, str)
+                or not isinstance(calculated_cost, (int, float))
+                or isinstance(calculated_cost, bool)
+                or not isinstance(provider_cost, (int, float))
+                or isinstance(provider_cost, bool)
+            ):
+                self.counts["incomplete_model_request_costs"] += 1
+                continue
+
+            try:
+                if "prompt_tokens" in usage:
+                    input_tokens = int(usage.get("prompt_tokens") or 0)
+                    output_tokens = int(usage.get("completion_tokens") or 0)
+                    input_details = usage.get("prompt_tokens_details") or {}
+                    output_details = usage.get("completion_tokens_details") or {}
+                else:
+                    input_tokens = int(usage.get("input_tokens") or 0)
+                    output_tokens = int(usage.get("output_tokens") or 0)
+                    input_details = usage.get("input_tokens_details") or {}
+                    output_details = usage.get("output_tokens_details") or {}
+                if not isinstance(input_details, dict):
+                    input_details = {}
+                if not isinstance(output_details, dict):
+                    output_details = {}
+                cached_tokens = int(input_details.get("cached_tokens") or 0)
+                cache_write_tokens = int(
+                    input_details.get("cache_write_tokens") or 0
+                )
+                reasoning_tokens = int(
+                    output_details.get("reasoning_tokens") or 0
+                )
+                total_tokens = int(
+                    usage.get("total_tokens") or input_tokens + output_tokens
+                )
+            except (TypeError, ValueError, OverflowError):
+                self.counts["malformed_provider_usage_records"] += 1
+                continue
+            token_values = (
+                input_tokens,
+                output_tokens,
+                cached_tokens,
+                cache_write_tokens,
+                reasoning_tokens,
+                total_tokens,
+            )
+            if any(value < 0 for value in token_values) or (
+                cached_tokens + cache_write_tokens > input_tokens
+            ):
+                self.counts["malformed_provider_usage_records"] += 1
+                continue
+            data = {
+                "api_call_id": request_id,
+                "session_id": f"openrouter:{self.run_id}",
+                "cpu_attempt": record.get("cpu_attempt"),
+                "model": record.get("response_model")
+                or record.get("requested_model")
+                or self.run.get("model"),
+                "reasoning_effort": self.run.get("reasoning_effort"),
+                "input_tokens": input_tokens,
+                "ordinary_uncached_input_tokens": (
+                    input_tokens - cached_tokens - cache_write_tokens
+                ),
+                "cached_input_tokens": cached_tokens,
+                "cache_write_input_tokens": cache_write_tokens,
+                "output_tokens": output_tokens,
+                "reasoning_output_tokens": reasoning_tokens,
+                "total_tokens": total_tokens,
+                "pricing_snapshot_id": None,
+                "calculated_cost_usd": float(calculated_cost),
+                "provider_reported_cost_usd": float(provider_cost),
+                "promotion_savings_usd": float(calculated_cost)
+                - float(provider_cost),
+                "promotion_discount_fraction": record.get(
+                    "promotion_discount_fraction"
+                ),
+                "promotion_snapshot": record.get("promotion_snapshot"),
+                "provider_cost_basis": record.get("provider_cost_basis"),
+                "calculated_cost_basis": record.get("cost_basis")
+                or "openrouter_list_price_with_deepseek_peak_floor",
+                "cost_reconstruction_status": "complete",
+            }
+            self.add_event(
+                epoch_ms=parse_epoch_ms(
+                    record.get("completed_at") or record.get("requested_at")
+                ),
+                category="usage",
+                kind="model_request_usage",
+                source=self.relative(path),
+                identity=f"openrouter:{request_id}",
+                data=data,
+            )
+            self.counts["model_requests"] += 1
+
     def add_submissions(self, trials: list[pathlib.Path]) -> None:
         for trial in trials:
             attempt = cpu_attempt_for(trial, self.state_dir)
@@ -2146,7 +2285,15 @@ class Builder:
                 == self.source_counts["usage_audit_files"]
                 and self.counts["incomplete_model_request_costs"] == 0
                 if self.run.get("usage_audit_required")
-                else True
+                else (
+                    self.source_counts["provider_usage_summary_files"] > 0
+                    and self.counts["complete_provider_usage_summaries"]
+                    == self.source_counts["provider_usage_summary_files"]
+                    and self.counts["incomplete_model_request_costs"] == 0
+                    and self.counts["malformed_provider_usage_records"] == 0
+                    if self.run.get("provider_usage_ledger_required")
+                    else True
+                )
             ),
         }
         if self.run.get("gpu_pipeline_telemetry_required"):
@@ -2764,6 +2911,7 @@ def build_timeline(
     builder.add_gpu_lifecycle(trials)
     builder.add_traces(trials)
     builder.add_usage_audits(trials)
+    builder.add_provider_usage_ledger()
     builder.add_submissions(trials)
     builder.add_final_verification(trials)
     payload = builder.finalize()

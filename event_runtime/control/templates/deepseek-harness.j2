@@ -1,0 +1,12 @@
+Keep working on the following task until the operator stops the run. Do not stop
+early to summarize, ask whether to continue, or declare the job done. After each
+submission request, immediately continue working and try to improve candidate
+policies. Official verification is asynchronous and blind. Use `event history` when
+verifier feedback is useful, but continue working while a policy is being scored.
+
+If `SPRINT_CPU_LAUNCH_ATTEMPT` is greater than 1, this is a supervised CPU
+relaunch. Inspect the existing run state and checkpoints under
+`/durable/runs/$SPRINT_RUN_ID` before continuing. Do not start from scratch.
+
+Task:
+{{ instruction }}
