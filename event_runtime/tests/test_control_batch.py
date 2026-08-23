@@ -529,6 +529,180 @@ def test_env_loader_reads_only_required_model_keys(tmp_path: Path) -> None:
     }
 
 
+def test_local_provider_billed_cost_uses_durable_summary_when_live_field_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = "eval-luna-1"
+    state_dir = tmp_path / run_id
+    (state_dir / "telemetry").mkdir(parents=True)
+    (state_dir / "telemetry" / "agent-cost.json").write_text(
+        json.dumps(
+            {
+                "as_of": "2026-08-23T00:01:00Z",
+                "components": {"model_api": {"cost_usd": 1.25}},
+            }
+        )
+    )
+    summary_dir = state_dir / "provider-api-usage" / "api-usage"
+    summary_dir.mkdir(parents=True)
+    (summary_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "run_id": run_id,
+                "provider_billed_model_api_usd": 1.25,
+                "pending_request_count": 1,
+                "in_flight_request_count": 1,
+                "updated_at": "2026-08-23T00:01:01Z",
+            }
+        )
+    )
+    monkeypatch.setattr(batch_eval, "SCRIPT_DIR", tmp_path)
+
+    assert batch_eval._local_provider_billed_cost(run_id) == (
+        1.25,
+        1,
+        "2026-08-23T00:01:01Z",
+    )
+
+
+def test_local_provider_billed_cost_combines_newest_trusted_observations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = "eval-luna-1"
+    state_dir = tmp_path / run_id
+    (state_dir / "telemetry").mkdir(parents=True)
+    (state_dir / "telemetry" / "agent-cost.json").write_text(
+        json.dumps(
+            {
+                "as_of": "2026-08-23T00:01:02Z",
+                "components": {
+                    "model_api": {
+                        "provider_billed_cost_usd": 1.30,
+                        "pending_request_count": 0,
+                    }
+                },
+            }
+        )
+    )
+    summary_dir = state_dir / "provider-api-usage" / "api-usage"
+    summary_dir.mkdir(parents=True)
+    (summary_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "run_id": run_id,
+                "provider_billed_model_api_usd": 1.25,
+                "pending_request_count": 1,
+                "updated_at": "2026-08-23T00:01:01Z",
+            }
+        )
+    )
+    monkeypatch.setattr(batch_eval, "SCRIPT_DIR", tmp_path)
+
+    assert batch_eval._local_provider_billed_cost(run_id) == (
+        1.30,
+        1,
+        "2026-08-23T00:01:02Z",
+    )
+
+
+def test_child_key_usage_audit_does_not_call_missing_ledger_a_bypass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "arms": [
+            {
+                "run_id": "eval-luna-1",
+                "status": "running",
+                "openrouter_credential": {"key_hash": "hash-1"},
+            }
+        ],
+        "alerts": [],
+    }
+
+    class Client:
+        def key_usage(self, key_hash: str) -> dict[str, float]:
+            assert key_hash == "hash-1"
+            return {"usage": 0.25}
+
+    monkeypatch.setattr(
+        batch_eval,
+        "_local_provider_billed_cost",
+        lambda _run_id: (0.0, 0, None),
+    )
+    stopped: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        batch_eval.sprintctl,
+        "persist_stop_request",
+        lambda run_id, *, reason: stopped.append((run_id, reason)),
+    )
+
+    alerts = batch_eval.audit_openrouter_child_usage(
+        payload,
+        Client(),
+        now=dt.datetime(2026, 8, 23, tzinfo=dt.timezone.utc),
+    )
+
+    assert alerts == [
+        {
+            "run_id": "eval-luna-1",
+            "kind": "openrouter_key_usage_audit",
+            "source": "OpenRouterManagementError",
+            "count_in_tail": "1",
+        }
+    ]
+    assert stopped == []
+    assert "openrouter_usage_audit" not in payload["arms"][0]
+
+
+def test_child_key_usage_audit_defers_while_proxy_request_is_in_flight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "arms": [
+            {
+                "run_id": "eval-luna-1",
+                "status": "running",
+                "openrouter_credential": {"key_hash": "hash-1"},
+                "openrouter_usage_audit": {
+                    "mismatch_first_seen_at": "2026-08-22T23:00:00Z"
+                },
+            }
+        ],
+        "alerts": [],
+    }
+
+    class Client:
+        def key_usage(self, key_hash: str) -> dict[str, float]:
+            assert key_hash == "hash-1"
+            return {"usage": 0.25}
+
+    monkeypatch.setattr(
+        batch_eval,
+        "_local_provider_billed_cost",
+        lambda _run_id: (0.10, 1, "2026-08-23T00:00:00Z"),
+    )
+    stopped: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        batch_eval.sprintctl,
+        "persist_stop_request",
+        lambda run_id, *, reason: stopped.append((run_id, reason)),
+    )
+
+    alerts = batch_eval.audit_openrouter_child_usage(
+        payload,
+        Client(),
+        now=dt.datetime(2026, 8, 23, 1, tzinfo=dt.timezone.utc),
+    )
+
+    assert alerts == []
+    assert stopped == []
+    audit = payload["arms"][0]["openrouter_usage_audit"]
+    assert "mismatch_first_seen_at" not in audit
+    assert audit["reconciliation_deferred"] == "trusted_proxy_request_in_flight"
+
+
 def test_child_key_usage_audit_stops_persistent_proxy_bypass(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

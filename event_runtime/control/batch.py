@@ -491,7 +491,10 @@ def read_batch(batch_id: str) -> dict[str, Any]:
 
 
 def _local_provider_billed_cost(run_id: str) -> tuple[float, int, str | None]:
-    path = SCRIPT_DIR / run_id / "telemetry" / "agent-cost.json"
+    state_dir = SCRIPT_DIR / run_id
+    candidates: list[tuple[float, int, str]] = []
+
+    path = state_dir / "telemetry" / "agent-cost.json"
     try:
         payload = json.loads(path.read_text())
         model_api = payload["components"]["model_api"]
@@ -499,10 +502,49 @@ def _local_provider_billed_cost(run_id: str) -> tuple[float, int, str | None]:
         pending = int(model_api.get("pending_request_count", 0) or 0)
         as_of = payload.get("as_of")
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        pass
+    else:
+        if math.isfinite(cost) and cost >= 0 and pending >= 0 and as_of:
+            candidates.append((cost, pending, str(as_of)))
+
+    # The website exporter may atomically replace the live cost mirror with a
+    # timeline-derived snapshot that intentionally omits provider-billed
+    # metadata.  The proxy's durable summary is the authoritative independent
+    # record of completed OpenRouter charges, so it must remain a valid audit
+    # source across that replacement and during orderly shutdown.
+    summary_path = (
+        state_dir / "provider-api-usage" / "api-usage" / "summary.json"
+    )
+    try:
+        summary = json.loads(summary_path.read_text())
+        if summary.get("schema_version") != 2 or summary.get("run_id") != run_id:
+            raise ValueError("provider summary identity mismatch")
+        summary_cost = float(summary["provider_billed_model_api_usd"])
+        summary_pending = max(
+            int(summary.get("pending_request_count", 0) or 0),
+            int(summary.get("in_flight_request_count", 0) or 0),
+        )
+        summary_as_of = summary.get("updated_at")
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        pass
+    else:
+        if (
+            math.isfinite(summary_cost)
+            and summary_cost >= 0
+            and summary_pending >= 0
+            and summary_as_of
+        ):
+            candidates.append(
+                (summary_cost, summary_pending, str(summary_as_of))
+            )
+
+    if not candidates:
         return 0.0, 0, None
-    if not math.isfinite(cost) or cost < 0 or pending < 0:
-        return 0.0, 0, None
-    return cost, pending, str(as_of) if as_of else None
+    return (
+        max(item[0] for item in candidates),
+        max(item[1] for item in candidates),
+        max(item[2] for item in candidates),
+    )
 
 
 def audit_openrouter_child_usage(
@@ -524,6 +566,10 @@ def audit_openrouter_child_usage(
             local_usage, pending, local_as_of = _local_provider_billed_cost(
                 arm["run_id"]
             )
+            if local_as_of is None:
+                raise OpenRouterManagementError(
+                    "trusted proxy usage ledger was unavailable"
+                )
             if not math.isfinite(upstream_usage) or upstream_usage < 0:
                 raise OpenRouterManagementError("API key usage was invalid")
         except (OpenRouterManagementError, TypeError, ValueError) as exc:
@@ -550,6 +596,7 @@ def audit_openrouter_child_usage(
         )
         if delta <= OPENROUTER_USAGE_AUDIT_TOLERANCE_USD:
             audit.pop("mismatch_first_seen_at", None)
+            audit.pop("reconciliation_deferred", None)
             resolve_alerts(
                 payload,
                 run_id=arm["run_id"],
@@ -557,6 +604,19 @@ def audit_openrouter_child_usage(
                 resolution="child-key usage reconciled with trusted proxy ledger",
             )
             continue
+        # OpenRouter can publish the charge immediately before the trusted
+        # proxy commits its terminal usage record.  A proxy-tracked in-flight
+        # request is therefore evidence of incomplete reconciliation, not a
+        # bypass.  Do not let that normal window consume the bypass grace
+        # period; a request made outside the proxy cannot increment this
+        # trusted counter.
+        if pending > 0:
+            audit.pop("mismatch_first_seen_at", None)
+            audit["reconciliation_deferred"] = (
+                "trusted_proxy_request_in_flight"
+            )
+            continue
+        audit.pop("reconciliation_deferred", None)
         first = audit.setdefault("mismatch_first_seen_at", utc_now())
         try:
             mismatch_age = (now - parse_time(first)).total_seconds()
