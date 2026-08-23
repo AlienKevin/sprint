@@ -191,6 +191,30 @@ if ((want_deepseek)); then
     exit 1
   fi
 elif ((want_openai)); then
+  # Harbor selects the public model id on the command line.  The pinned Codex
+  # catalog deliberately stores the same contract under a private preset slug,
+  # so rewrite only the local CLI selector.  The trusted OpenRouter proxy still
+  # overwrites and verifies the actual upstream model independently.
+  if [[ -n "${SPRINT_CODEX_OPENAI_MODEL:-}" ]]; then
+    rewritten=()
+    replace_next_model=0
+    for argument in "$@"; do
+      if ((replace_next_model)); then
+        rewritten+=("$SPRINT_CODEX_OPENAI_MODEL")
+        replace_next_model=0
+        continue
+      fi
+      case "$argument" in
+        --model|-m)
+          rewritten+=("$argument")
+          replace_next_model=1
+          ;;
+        --model=*) rewritten+=("--model=$SPRINT_CODEX_OPENAI_MODEL") ;;
+        *) rewritten+=("$argument") ;;
+      esac
+    done
+    set -- "${rewritten[@]}"
+  fi
   apply=${SPRINT_APPLY_OPENAI_CODEX_CONFIG:-/opt/sprint-apply-openai-codex-config.sh}
   if [[ ! -x "$apply" && -f "$apply" ]]; then
     chmod +x "$apply" 2>/dev/null || true

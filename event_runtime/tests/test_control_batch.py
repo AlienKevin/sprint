@@ -375,6 +375,75 @@ def test_generic_openai_catalog_installer_supports_sol(tmp_path: Path) -> None:
     assert 'wire_api = "responses"' in config
 
 
+@pytest.mark.parametrize(
+    "model_args",
+    [
+        ["--model", "gpt-5.6-luna"],
+        ["-m", "gpt-5.6-luna"],
+        ["--model=gpt-5.6-luna"],
+    ],
+)
+def test_codex_wrapper_selects_pinned_openai_catalog_slug(
+    tmp_path: Path, model_args: list[str]
+) -> None:
+    runtime = tmp_path / "run"
+    logs = tmp_path / "logs"
+    codex_home = tmp_path / "codex-home"
+    durable = tmp_path / "durable"
+    for path in (runtime, logs, codex_home, durable):
+        path.mkdir(parents=True)
+
+    recorded_args = tmp_path / "args.txt"
+    native = tmp_path / "codex-native"
+    native.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf '%s\\n' \"$@\" > {recorded_args!s}\n"
+        "sleep 0.5\n"
+    )
+    native.chmod(0o755)
+    apply = tmp_path / "apply-openai.sh"
+    apply.write_text("#!/usr/bin/env bash\nexit 0\n")
+    apply.chmod(0o755)
+
+    env = {
+        **os.environ,
+        "CODEX_HOME": str(codex_home),
+        "SPRINT_RUNTIME_DIR": str(runtime),
+        "SPRINT_AGENT_LOG_DIR": str(logs),
+        "SPRINT_DURABLE_DIR": str(durable),
+        "SPRINT_MODEL": "openai/gpt-5.6-luna",
+        "SPRINT_CODEX_EXECUTABLE": str(native),
+        "SPRINT_CODEX_OPENAI_MODEL": "@preset/sprint-gpt-5-6-luna-openai-standard",
+        "SPRINT_APPLY_OPENAI_CODEX_CONFIG": str(apply),
+    }
+    result = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "event_runtime/container/sprint-codex-exec-wrapper.sh"),
+            "/unused/codex",
+            "exec",
+            "--json",
+            *model_args,
+            "--",
+            "test prompt",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    args = recorded_args.read_text().splitlines()
+    assert "gpt-5.6-luna" not in args
+    assert "--model=gpt-5.6-luna" not in args
+    if model_args[0].startswith("--model="):
+        assert "--model=@preset/sprint-gpt-5-6-luna-openai-standard" in args
+    else:
+        selector = args.index(model_args[0])
+        assert args[selector + 1] == "@preset/sprint-gpt-5-6-luna-openai-standard"
+
+
 def test_generic_deepseek_catalog_installer_supports_pro(tmp_path: Path) -> None:
     codex_home = tmp_path / "codex-home"
     env = {
