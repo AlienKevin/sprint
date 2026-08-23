@@ -703,6 +703,140 @@ def test_child_key_usage_audit_defers_while_proxy_request_is_in_flight(
     assert audit["reconciliation_deferred"] == "trusted_proxy_request_in_flight"
 
 
+def test_controller_recovers_generation_and_uploads_summary_last(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = "eval-luna-recovery"
+    ledger = tmp_path / run_id / "provider-api-usage" / "api-usage"
+    requests = ledger / "requests"
+    requests.mkdir(parents=True)
+    complete = {
+        "run_id": run_id,
+        "ledger_request_id": "a" * 32,
+        "state": "complete",
+        "provider_reported_cost_usd": 0.1,
+        "benchmark_cost_usd": 0.1,
+    }
+    pending = {
+        "schema_version": 3,
+        "run_id": run_id,
+        "cpu_attempt": 1,
+        "ledger_request_id": "b" * 32,
+        "generation_id": "gen-recover",
+        "state": "in_flight",
+        "promotion_snapshot": {
+            "discount_fraction": 0.0,
+            "deepseek_peak_pricing_usd_per_token": None,
+            "cost_basis": "openrouter_list_price_before_endpoint_discount",
+        },
+    }
+    (requests / f"{'a' * 32}.json").write_text(json.dumps(complete))
+    (requests / f"{'b' * 32}.json").write_text(json.dumps(pending))
+    (ledger / "summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "run_id": run_id,
+                "provider_billed_model_api_usd": 0.1,
+                "pending_request_count": 1,
+            }
+        )
+    )
+    arm = {
+        "run_id": run_id,
+        "model": "openai/gpt-5.6-luna",
+        "resolved_model_version": "openai/gpt-5.6-luna-20260709",
+        "provider": "OpenAI",
+    }
+
+    class Client:
+        def generation_usage(self, generation_id: str) -> dict[str, object]:
+            assert generation_id == "gen-recover"
+            return {
+                "total_cost": 0.03,
+                "native_tokens_prompt": 100,
+                "native_tokens_cached": 0,
+                "native_tokens_completion": 10,
+                "model": "openai/gpt-5.6-luna-20260709",
+                "provider": "OpenAI",
+            }
+
+    uploads: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(batch_eval, "SCRIPT_DIR", tmp_path)
+    monkeypatch.setattr(
+        batch_eval.sprintctl,
+        "load_run",
+        lambda _run_id: (tmp_path / run_id, {"volume_name": "volume"}),
+    )
+    monkeypatch.setattr(
+        batch_eval.sprintctl,
+        "volume_upload",
+        lambda _run, source, remote: uploads.append(
+            (remote, json.loads(source.read_text()))
+        ),
+    )
+
+    assert batch_eval.reconcile_openrouter_child_ledger(
+        arm, Client(), upstream_usage=0.13
+    )
+
+    recovered = json.loads((requests / f"{'b' * 32}.json").read_text())
+    summary = json.loads((ledger / "summary.json").read_text())
+    assert recovered["state"] == "recovered_complete"
+    assert recovered["usage"]["input_tokens"] == 100
+    assert summary["pending_request_count"] == 0
+    assert summary["provider_billed_model_api_usd"] == pytest.approx(0.13)
+    assert uploads[-1][0].endswith("/api-usage/summary.json")
+
+
+def test_controller_marks_generationless_zero_delta_unbilled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = "eval-deepseek-unbilled"
+    ledger = tmp_path / run_id / "provider-api-usage" / "api-usage"
+    requests = ledger / "requests"
+    requests.mkdir(parents=True)
+    request_id = "c" * 32
+    (requests / f"{request_id}.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "run_id": run_id,
+                "ledger_request_id": request_id,
+                "state": "cost_recovery_required",
+                "generation_id": None,
+            }
+        )
+    )
+    (ledger / "summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "run_id": run_id,
+                "provider_billed_model_api_usd": 0.0,
+                "pending_request_count": 1,
+            }
+        )
+    )
+    monkeypatch.setattr(batch_eval, "SCRIPT_DIR", tmp_path)
+    monkeypatch.setattr(
+        batch_eval.sprintctl,
+        "load_run",
+        lambda _run_id: (tmp_path / run_id, {"volume_name": "volume"}),
+    )
+    monkeypatch.setattr(
+        batch_eval.sprintctl, "volume_upload", lambda *_args, **_kwargs: None
+    )
+
+    assert batch_eval.reconcile_openrouter_child_ledger(
+        {"run_id": run_id}, object(), upstream_usage=0.0
+    )
+    record = json.loads((requests / f"{request_id}.json").read_text())
+    assert record["state"] == "rejected_not_billed"
+    assert record["provider_reported_cost_usd"] == 0.0
+    assert record["reconciled_from_child_key_total"] is True
+
+
 def test_child_key_usage_audit_resolves_prior_health_alert(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -1187,9 +1187,7 @@ class Builder:
         authoritative token source is the exact same per-request ledger used
         by the budget circuit breaker.
         """
-        if self.counts["model_requests"] or not self.run.get(
-            "provider_usage_ledger_required"
-        ):
+        if not self.run.get("provider_usage_ledger_required"):
             return
         root = self.state_dir / "provider-api-usage"
         summaries = sorted(root.glob("**/summary.json")) if root.is_dir() else []
@@ -1210,6 +1208,12 @@ class Builder:
                 self.counts["complete_provider_usage_summaries"] += 1
             else:
                 self.counts["incomplete_provider_usage_summaries"] += 1
+
+        # Codex supplies richer signed session telemetry. The provider summary
+        # remains an independent billing-settlement gate, but its request rows
+        # must not be added a second time when Codex rows already exist.
+        if self.counts["model_requests"]:
+            return
 
         for path in records:
             try:
@@ -2389,20 +2393,24 @@ class Builder:
             == 0,
             "submission_ledger": self.source_counts["ledger_files"] > 0,
             "model_usage_and_cost": (
-                self.source_counts["usage_audit_files"] > 0
-                and self.counts["complete_usage_audits"]
-                == self.source_counts["usage_audit_files"]
-                and self.counts["incomplete_model_request_costs"] == 0
-                if self.run.get("usage_audit_required")
-                else (
-                    self.source_counts["provider_usage_summary_files"] > 0
-                    and self.counts["complete_provider_usage_summaries"]
-                    == self.source_counts["provider_usage_summary_files"]
-                    and self.counts["incomplete_model_request_costs"] == 0
-                    and self.counts["malformed_provider_usage_records"] == 0
-                    if self.run.get("provider_usage_ledger_required")
-                    else True
+                (
+                    not self.run.get("usage_audit_required")
+                    or (
+                        self.source_counts["usage_audit_files"] > 0
+                        and self.counts["complete_usage_audits"]
+                        == self.source_counts["usage_audit_files"]
+                    )
                 )
+                and (
+                    not self.run.get("provider_usage_ledger_required")
+                    or (
+                        self.source_counts["provider_usage_summary_files"] > 0
+                        and self.counts["complete_provider_usage_summaries"]
+                        == self.source_counts["provider_usage_summary_files"]
+                    )
+                )
+                and self.counts["incomplete_model_request_costs"] == 0
+                and self.counts["malformed_provider_usage_records"] == 0
             ),
         }
         if self.run.get("gpu_pipeline_telemetry_required"):

@@ -40,6 +40,13 @@ from event_runtime.control.openrouter_credentials import (  # noqa: E402
     provision_trial_credentials,
     revoke_trial_credentials,
 )
+from event_runtime.container.sprint_openrouter_pricing import (  # noqa: E402
+    BENCHMARK_COST_BASIS,
+    PROVIDER_COST_BASIS,
+    OpenRouterPricingError,
+    benchmark_cost_usd,
+    undiscounted_cost_usd,
+)
 
 
 UV = Path(os.environ.get("UV", "/home/ubuntu/.local/bin/uv"))
@@ -547,6 +554,277 @@ def _local_provider_billed_cost(run_id: str) -> tuple[float, int, str | None]:
     )
 
 
+def _generation_usage_payload(generation: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a generation audit into the Responses usage contract."""
+    values: list[int] = []
+    for raw in (
+        generation.get("native_tokens_prompt"),
+        generation.get("native_tokens_cached", 0),
+        generation.get("native_tokens_completion"),
+    ):
+        try:
+            value = float(raw)
+        except (TypeError, ValueError) as exc:
+            raise OpenRouterManagementError(
+                "generation audit had invalid native token counts"
+            ) from exc
+        if not math.isfinite(value) or not value.is_integer():
+            raise OpenRouterManagementError(
+                "generation audit had invalid native token counts"
+            )
+        values.append(int(value))
+    input_tokens, cached_tokens, output_tokens = values
+    if min(input_tokens, cached_tokens, output_tokens) < 0 or cached_tokens > input_tokens:
+        raise OpenRouterManagementError(
+            "generation audit had inconsistent native token counts"
+        )
+    return {
+        "input_tokens": input_tokens,
+        "input_tokens_details": {
+            "cached_tokens": cached_tokens,
+            "cache_write_tokens": 0,
+        },
+        "output_tokens": output_tokens,
+        "output_tokens_details": {"reasoning_tokens": 0},
+        "total_tokens": input_tokens + output_tokens,
+        "cost": float(generation["total_cost"]),
+        "cost_details": {
+            "upstream_inference_cost": float(generation["total_cost"])
+        },
+    }
+
+
+def _rebuild_provider_summary(
+    run_id: str,
+    request_paths: list[Path],
+    replacements: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    benchmark_total = 0.0
+    provider_total = 0.0
+    completed = 0
+    in_flight: list[str] = []
+    recovery: list[str] = []
+    for path in request_paths:
+        record = replacements.get(path.stem)
+        if record is None:
+            record = json.loads(path.read_text())
+        if record.get("run_id") != run_id:
+            raise OpenRouterManagementError("provider ledger identity mismatch")
+        request_id = str(record.get("ledger_request_id") or path.stem)
+        provider_cost = record.get("provider_reported_cost_usd")
+        benchmark_cost = record.get(
+            "benchmark_cost_usd",
+            record.get("undiscounted_cost_usd", provider_cost),
+        )
+        if (
+            isinstance(provider_cost, (int, float))
+            and not isinstance(provider_cost, bool)
+            and isinstance(benchmark_cost, (int, float))
+            and not isinstance(benchmark_cost, bool)
+        ):
+            provider_value = float(provider_cost)
+            benchmark_value = float(benchmark_cost)
+            if (
+                not math.isfinite(provider_value)
+                or provider_value < 0
+                or not math.isfinite(benchmark_value)
+                or benchmark_value + 1e-12 < provider_value
+            ):
+                raise OpenRouterManagementError("provider ledger cost was invalid")
+            provider_total += provider_value
+            benchmark_total += benchmark_value
+            completed += 1
+        elif record.get("state") == "in_flight":
+            in_flight.append(request_id)
+        elif record.get("state") == "cost_recovery_required":
+            recovery.append(request_id)
+        else:
+            raise OpenRouterManagementError("provider ledger state was invalid")
+    pending = len(in_flight) + len(recovery)
+    return {
+        "schema_version": 2,
+        "run_id": run_id,
+        "updated_at": utc_now(),
+        "model_api_usd": benchmark_total,
+        "provider_billed_model_api_usd": provider_total,
+        "promotion_savings_usd": benchmark_total - provider_total,
+        "model_api_cost_basis": BENCHMARK_COST_BASIS,
+        "provider_billed_cost_basis": PROVIDER_COST_BASIS,
+        "completed_request_count": completed,
+        "pending_request_count": pending,
+        "in_flight_request_count": len(in_flight),
+        "cost_recovery_required_count": len(recovery),
+        "in_flight_request_ids": sorted(in_flight),
+        "cost_recovery_required_request_ids": sorted(recovery),
+    }
+
+
+def reconcile_openrouter_child_ledger(
+    arm: dict[str, Any],
+    client: OpenRouterManagementClient,
+    *,
+    upstream_usage: float,
+) -> bool:
+    """Settle interrupted requests using generation and child-key evidence.
+
+    The per-trial child key is unique, so its cumulative usage is an
+    independent upper-level checksum over every provider charge. Staged files
+    are uploaded record-first and summary-last; local mirrors change only
+    after both durable uploads succeed.
+    """
+    run_id = str(arm["run_id"])
+    state_dir = SCRIPT_DIR / run_id
+    ledger_dir = state_dir / "provider-api-usage" / "api-usage"
+    summary_path = ledger_dir / "summary.json"
+    requests_dir = ledger_dir / "requests"
+    try:
+        summary = json.loads(summary_path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise OpenRouterManagementError("provider ledger summary was unavailable") from exc
+    if summary.get("schema_version") != 2 or summary.get("run_id") != run_id:
+        raise OpenRouterManagementError("provider ledger summary identity mismatch")
+    request_paths = sorted(requests_dir.glob("*.json"))
+    pending_records: list[tuple[Path, dict[str, Any]]] = []
+    for path in request_paths:
+        try:
+            record = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise OpenRouterManagementError("provider ledger record was invalid") from exc
+        if record.get("state") in {"in_flight", "cost_recovery_required"}:
+            pending_records.append((path, record))
+    if not pending_records:
+        return False
+
+    local_provider = float(summary.get("provider_billed_model_api_usd") or 0.0)
+    # Named generations must be recovered before deciding whether any
+    # generation-less request was billed. The child-key delta after all named
+    # charges is the only sound evidence that those unnamed requests cost zero.
+    pending_records.sort(
+        key=lambda item: 0 if item[1].get("generation_id") else 1
+    )
+    replacements: dict[str, dict[str, Any]] = {}
+    recovered_provider_total = 0.0
+    for path, original in pending_records:
+        record = dict(original)
+        generation_id = record.get("generation_id")
+        if isinstance(generation_id, str) and generation_id:
+            generation = client.generation_usage(generation_id)
+            try:
+                provider_cost = float(generation["total_cost"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise OpenRouterManagementError(
+                    "generation audit lacked a valid total cost"
+                ) from exc
+            if not math.isfinite(provider_cost) or provider_cost < 0:
+                raise OpenRouterManagementError("generation audit cost was invalid")
+            response_model = generation.get("model")
+            expected_models = {
+                str(arm.get("model") or ""),
+                str(arm.get("resolved_model_version") or ""),
+            }
+            provider = generation.get("provider") or generation.get("provider_name")
+            if response_model not in expected_models:
+                raise OpenRouterManagementError("generation audit model mismatch")
+            if str(provider).casefold() != str(arm.get("provider") or "").casefold():
+                raise OpenRouterManagementError("generation audit provider mismatch")
+            usage = _generation_usage_payload(generation)
+            try:
+                list_cost = undiscounted_cost_usd(
+                    provider_cost, record.get("promotion_snapshot")
+                )
+                benchmark_cost = benchmark_cost_usd(
+                    provider_cost, record.get("promotion_snapshot"), generation
+                )
+            except OpenRouterPricingError as exc:
+                raise OpenRouterManagementError(
+                    "generation audit pricing reconstruction failed"
+                ) from exc
+            record.update(
+                {
+                    "state": "recovered_complete",
+                    "completed_at": utc_now(),
+                    "response_id": generation_id,
+                    "response_model": response_model,
+                    "response_status": "completed",
+                    "provider": provider,
+                    "route_identity_verified": True,
+                    "provider_reported_cost_usd": provider_cost,
+                    "undiscounted_cost_usd": list_cost,
+                    "benchmark_cost_usd": benchmark_cost,
+                    "promotion_adjustment_usd": list_cost - provider_cost,
+                    "deepseek_peak_adjustment_usd": benchmark_cost - list_cost,
+                    "benchmark_adjustment_usd": benchmark_cost - provider_cost,
+                    "promotion_discount_fraction": (
+                        record.get("promotion_snapshot") or {}
+                    ).get("discount_fraction"),
+                    "cost_basis": (
+                        record.get("promotion_snapshot") or {}
+                    ).get("cost_basis", BENCHMARK_COST_BASIS),
+                    "provider_cost_basis": PROVIDER_COST_BASIS,
+                    "usage": usage,
+                    "generation_audit": generation,
+                    "recovered_after_controller_shutdown": True,
+                }
+            )
+            recovered_provider_total += provider_cost
+        elif math.isclose(
+            upstream_usage,
+            local_provider + recovered_provider_total,
+            abs_tol=OPENROUTER_USAGE_AUDIT_TOLERANCE_USD,
+        ):
+            record.update(
+                {
+                    "state": "rejected_not_billed",
+                    "completed_at": utc_now(),
+                    "provider_reported_cost_usd": 0.0,
+                    "undiscounted_cost_usd": 0.0,
+                    "benchmark_cost_usd": 0.0,
+                    "promotion_adjustment_usd": 0.0,
+                    "deepseek_peak_adjustment_usd": 0.0,
+                    "benchmark_adjustment_usd": 0.0,
+                    "provider_cost_basis": PROVIDER_COST_BASIS,
+                    "reconciled_from_child_key_total": True,
+                    "recovered_after_controller_shutdown": True,
+                }
+            )
+        else:
+            raise OpenRouterManagementError(
+                "pending provider charge has no recoverable generation ID"
+            )
+        replacements[path.stem] = record
+
+    rebuilt = _rebuild_provider_summary(run_id, request_paths, replacements)
+    if rebuilt["pending_request_count"] != 0 or not math.isclose(
+        float(rebuilt["provider_billed_model_api_usd"]),
+        upstream_usage,
+        abs_tol=OPENROUTER_USAGE_AUDIT_TOLERANCE_USD,
+    ):
+        raise OpenRouterManagementError(
+            "recovered ledger did not reconcile to child-key usage"
+        )
+
+    _, run = sprintctl.load_run(run_id)
+    with tempfile.TemporaryDirectory(prefix=f".{run_id}-ledger-") as raw_temp:
+        temp = Path(raw_temp)
+        staged_records: list[tuple[Path, Path]] = []
+        for stem, record in replacements.items():
+            staged = temp / f"{stem}.json"
+            atomic_json(staged, record)
+            staged_records.append((requests_dir / f"{stem}.json", staged))
+            sprintctl.volume_upload(
+                run, staged, f"runs/{run_id}/api-usage/requests/{stem}.json"
+            )
+        staged_summary = temp / "summary.json"
+        atomic_json(staged_summary, rebuilt)
+        sprintctl.volume_upload(
+            run, staged_summary, f"runs/{run_id}/api-usage/summary.json"
+        )
+        for destination, staged in staged_records:
+            atomic_json(destination, json.loads(staged.read_text()))
+        atomic_json(summary_path, rebuilt)
+    return True
+
+
 def audit_openrouter_child_usage(
     payload: dict[str, Any],
     client: OpenRouterManagementClient,
@@ -572,6 +850,12 @@ def audit_openrouter_child_usage(
                 )
             if not math.isfinite(upstream_usage) or upstream_usage < 0:
                 raise OpenRouterManagementError("API key usage was invalid")
+            if pending > 0 and arm_terminal(arm) and reconcile_openrouter_child_ledger(
+                arm, client, upstream_usage=upstream_usage
+            ):
+                local_usage, pending, local_as_of = _local_provider_billed_cost(
+                    arm["run_id"]
+                )
         except (OpenRouterManagementError, TypeError, ValueError) as exc:
             alerts.append(
                 {
@@ -2270,12 +2554,32 @@ def monitor_cycle(
         for arm in payload["arms"]:
             run_id = arm["run_id"]
             finalized_path = SCRIPT_DIR / run_id / "FINALIZED.json"
-            if not finalized_path.is_file() and arm_terminal(arm):
+            finalized_current = False
+            if finalized_path.is_file():
+                try:
+                    finalized_marker = json.loads(finalized_path.read_text())
+                    _, finalized_run = sprintctl.load_run(run_id)
+                    finalized_current = bool(
+                        finalized_marker.get("complete") is True
+                        and finalized_marker.get("timeline_schema_version")
+                        == sprintctl.UNIFIED_TIMELINE_SCHEMA_VERSION
+                        and (
+                            not finalized_run.get("provider_usage_ledger_required")
+                            or finalized_marker.get("conditions", {}).get(
+                                "provider_usage_ledger_settled"
+                            )
+                            is True
+                        )
+                    )
+                except (OSError, ValueError, json.JSONDecodeError):
+                    finalized_current = False
+            if not finalized_current and arm_terminal(arm):
                 try:
                     complete, result = sprintctl.finalize(run_id)
                     arm["finalization_conditions"] = result.get("conditions", {})
                     if complete:
                         arm["status"] = "finalized"
+                        finalized_current = True
                 except Exception as exc:  # noqa: BLE001
                     cycle_alerts.append(
                         {
@@ -2285,7 +2589,7 @@ def monitor_cycle(
                             "count_in_tail": "1",
                         }
                     )
-            if finalized_path.is_file():
+            if finalized_current:
                 arm["status"] = "finalized"
                 arm["finalized_at"] = arm.get("finalized_at") or utc_now()
                 resolve_alerts(

@@ -225,6 +225,23 @@ def provider_usage_records(state_dir: Path, run_id: str) -> list[dict[str, Any]]
     """Load completed OpenRouter records from the synced durable ledger."""
     rows: list[dict[str, Any]] = []
     root = state_dir / "provider-api-usage"
+    summaries = sorted(root.glob("**/summary.json")) if root.is_dir() else []
+    for path in summaries:
+        try:
+            summary = json.loads(path.read_text())
+            settled = (
+                summary.get("schema_version") == 2
+                and summary.get("run_id") == run_id
+                and int(summary.get("pending_request_count") or 0) == 0
+                and int(summary.get("in_flight_request_count") or 0) == 0
+                and int(summary.get("cost_recovery_required_count") or 0) == 0
+                and not (summary.get("in_flight_request_ids") or [])
+                and not (summary.get("cost_recovery_required_request_ids") or [])
+            )
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise SystemExit(f"invalid provider usage summary: {path}") from exc
+        if not settled:
+            raise SystemExit(f"provider usage ledger is not settled: {path}")
     for path in sorted(root.glob("**/requests/*.json")) if root.is_dir() else ():
         try:
             record = json.loads(path.read_text())

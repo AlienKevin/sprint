@@ -244,6 +244,18 @@ class OpenRouterManagementClient:
             raise OpenRouterManagementError("API key usage response was incomplete")
         return data
 
+    def generation_usage(self, generation_id: str) -> dict[str, Any]:
+        """Return OpenRouter's authoritative audit for one billed generation."""
+        if not generation_id or len(generation_id) > 200:
+            raise ValueError("invalid OpenRouter generation ID")
+        query = urllib.parse.urlencode({"id": generation_id})
+        data = self.request("GET", f"/generation?{query}").get("data")
+        if not isinstance(data, dict):
+            raise OpenRouterManagementError(
+                "generation usage response was incomplete"
+            )
+        return data
+
     def verify_denied_inference(
         self,
         credential: ProvisionedTrialCredential,

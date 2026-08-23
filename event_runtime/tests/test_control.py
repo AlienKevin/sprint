@@ -1063,6 +1063,45 @@ class DurableOpsTests(unittest.TestCase):
             self.assertEqual(payload["timeline_schema_version"], 6)
             monitor.assert_called_once()
 
+    def test_provider_finalized_marker_without_settlement_gate_is_rechecked(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state_dir = Path(raw)
+            run = {
+                "run_id": "provider-final",
+                "agent_kind": "codex",
+                "provider_usage_ledger_required": True,
+            }
+            (state_dir / "FINALIZED.json").write_text(
+                json.dumps(
+                    {
+                        "complete": True,
+                        "timeline_schema_version": 6,
+                        "conditions": {},
+                    }
+                )
+            )
+            with (
+                mock.patch.object(sprintctl, "load_run", return_value=(state_dir, run)),
+                mock.patch.object(sprintctl, "monitor_once") as monitor,
+                mock.patch.object(sprintctl, "sync_durable_api_usage"),
+                mock.patch.object(
+                    sprintctl,
+                    "final_conditions",
+                    return_value=(
+                        False,
+                        {"provider_usage_ledger_settled": False},
+                        ["provider_usage_ledger_settled"],
+                    ),
+                ),
+            ):
+                complete, _payload = sprintctl.finalize(
+                    "provider-final", upload=False, include_remote=False
+                )
+            self.assertFalse(complete)
+            monitor.assert_called_once()
+
     def test_verifier_cannot_replace_a_known_agent_in_discovery(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             state_dir = Path(raw)

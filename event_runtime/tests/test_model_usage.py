@@ -309,6 +309,25 @@ def test_recovered_openrouter_cost_is_bound_in_serial_request_order(
     assert request["cost_components_usd"] == {}
 
 
+def test_pending_provider_summary_fails_reconstruction_closed(tmp_path: Path) -> None:
+    root = tmp_path / "provider-api-usage" / "api-usage"
+    root.mkdir(parents=True)
+    (root / "summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "run_id": "run-1",
+                "pending_request_count": 1,
+                "in_flight_request_count": 1,
+                "cost_recovery_required_count": 0,
+            }
+        )
+    )
+
+    with pytest.raises(SystemExit, match="ledger is not settled"):
+        provider_usage_records(tmp_path, "run-1")
+
+
 def test_openrouter_usage_mismatch_fails_closed() -> None:
     request = {
         "cpu_attempt": 1,

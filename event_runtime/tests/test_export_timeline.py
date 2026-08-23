@@ -1063,6 +1063,65 @@ def test_openrouter_chat_ledger_is_generic_usage_source(tmp_path: Path) -> None:
     assert request["elapsed_ms"] == 18_000
 
 
+def test_codex_usage_still_requires_settled_provider_summary(tmp_path: Path) -> None:
+    state = fixture_run(tmp_path)
+    run_path = state / "run.json"
+    run = json.loads(run_path.read_text())
+    run["provider_usage_ledger_required"] = True
+    run["usage_audit_required"] = True
+    run_path.write_text(json.dumps(run))
+    audit_path = next(state.glob("harbor-jobs/*/*/agent")) / "usage-audit.json"
+    audit_path.write_text(
+        json.dumps(
+            {
+                "session_id": "session-cost",
+                "request_count": 1,
+                "cost_reconstruction_complete": True,
+                "calculated_api_usage_usd": 0.25,
+                "calculated_api_usage_cost_basis": "test",
+                "pricing_snapshots": [{"id": "price-v1"}],
+                "requests": [
+                    {
+                        "api_call_id": "api-call",
+                        "usage_reported_at": "2026-08-07T12:00:18Z",
+                        "model": "test-model",
+                        "reasoning_effort": "high",
+                        "input_tokens": 100,
+                        "cached_input_tokens": 50,
+                        "output_tokens": 20,
+                        "total_tokens": 120,
+                        "pricing_snapshot_id": "price-v1",
+                        "calculated_cost_usd": 0.25,
+                        "cost_reconstruction_status": "complete",
+                    }
+                ],
+            }
+        )
+    )
+    ledger = state / "provider-api-usage" / "api-usage"
+    ledger.mkdir(parents=True)
+    (ledger / "summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "run_id": "timeline-fixture",
+                "pending_request_count": 1,
+                "in_flight_request_count": 1,
+                "cost_recovery_required_count": 0,
+            }
+        )
+    )
+
+    payload = unified_timeline.build_timeline(state)
+
+    assert payload["usage_summary"]["request_count"] > 0
+    assert payload["coverage"]["counts"][
+        "incomplete_provider_usage_summaries"
+    ] == 1
+    assert payload["coverage"]["requirements"]["model_usage_and_cost"] is False
+    assert payload["coverage"]["ready"] is False
+
+
 def test_openrouter_chat_ledger_rejects_non_numeric_tokens(tmp_path: Path) -> None:
     state = fixture_run(tmp_path)
     run_path = state / "run.json"

@@ -1696,6 +1696,51 @@ def run_usage_audit_ready(
     return not details, details
 
 
+def provider_usage_ledger_settled(
+    state_dir: Path, run: dict[str, Any]
+) -> tuple[bool, list[str]]:
+    """Require the provider's durable billing ledger to have no open request."""
+    if not run.get("provider_usage_ledger_required"):
+        return True, []
+    root = state_dir / "provider-api-usage"
+    summaries = sorted(root.glob("**/summary.json")) if root.is_dir() else []
+    if not summaries:
+        return False, ["provider usage summary is missing"]
+    details: list[str] = []
+    for path in summaries:
+        try:
+            summary = json.loads(path.read_text())
+            valid = (
+                summary.get("schema_version") == 2
+                and summary.get("run_id") == run.get("run_id")
+                and int(summary.get("pending_request_count") or 0) == 0
+                and int(summary.get("in_flight_request_count") or 0) == 0
+                and int(summary.get("cost_recovery_required_count") or 0) == 0
+                and not (summary.get("in_flight_request_ids") or [])
+                and not (summary.get("cost_recovery_required_request_ids") or [])
+                and isinstance(
+                    summary.get("provider_billed_model_api_usd"), (int, float)
+                )
+                and not isinstance(
+                    summary.get("provider_billed_model_api_usd"), bool
+                )
+                and math.isfinite(
+                    float(summary.get("provider_billed_model_api_usd"))
+                )
+                and float(summary.get("provider_billed_model_api_usd")) >= 0
+                and isinstance(summary.get("model_api_usd"), (int, float))
+                and not isinstance(summary.get("model_api_usd"), bool)
+                and math.isfinite(float(summary.get("model_api_usd")))
+                and float(summary.get("model_api_usd"))
+                >= float(summary.get("provider_billed_model_api_usd"))
+            )
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            valid = False
+        if not valid:
+            details.append(f"provider usage ledger is not settled: {path.name}")
+    return not details, details
+
+
 def final_policy_frozen_ready(trial: Path) -> bool:
     """Verify that Harbor collected a non-empty final policy after agent exit."""
     final_policy = trial / "artifacts" / "app" / "submission" / "policy.pt"
@@ -1994,6 +2039,12 @@ def final_conditions(
         conditions["usage_audit_complete"] = trial_audit_ready and run_audit_ready
         details.extend(trial_audit_details)
         details.extend(run_audit_details)
+    if run.get("provider_usage_ledger_required"):
+        provider_settled, provider_details = provider_usage_ledger_settled(
+            state_dir, run
+        )
+        conditions["provider_usage_ledger_settled"] = provider_settled
+        details.extend(provider_details)
     if run.get("modal_billing_required"):
         modal_ready, modal_details = modal_billing_ready(state_dir, run["run_id"])
         conditions["modal_billing_complete"] = modal_ready
@@ -2018,6 +2069,13 @@ def finalize(
             existing.get("complete") is True
             and existing.get("timeline_schema_version")
             == UNIFIED_TIMELINE_SCHEMA_VERSION
+            and (
+                not run.get("provider_usage_ledger_required")
+                or existing.get("conditions", {}).get(
+                    "provider_usage_ledger_settled"
+                )
+                is True
+            )
         ):
             return True, existing
     monitor_once(
