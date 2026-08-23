@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from event_runtime.container.sprint_resilience import CheckpointStore, CompletionJournal
 
 AGENT_MIRROR_ROOT = Path("/run/sprint-gpu-mirror")
+AGENT_CONTROL_ROOT = Path("/run/sprint-gpu-control")
 AGENT_WORKSPACE_ROOT = Path("/app")
 TERMINAL_STATUSES = frozenset({"succeeded", "failed", "terminated"})
 MAX_OUTPUT_ARTIFACTS = 8
@@ -630,12 +631,19 @@ def cmd_cancel(args: argparse.Namespace) -> int:
     if status in {"dispatched", "running"}:
         request = {
             "schema_version": 1,
+            "request_id": uuid.uuid4().hex,
             "run_id": run_id_from_env(root),
             "job_id": job_id,
             "reason": "agent_cancelled",
             "requested_at": utc_now(),
             "requested_at_epoch_s": time.time(),
         }
+        # /durable is an audit/fallback copy only. Modal Volume mounts are
+        # snapshots, so a running host controller may not observe this write
+        # until long after the agent expects cancellation. The /run request is
+        # read through Modal's live sandbox control channel and is therefore
+        # the authoritative low-latency delivery path.
+        atomic_write_json(AGENT_CONTROL_ROOT / "cancel" / f"{job_id}.json", request)
         atomic_write_json(root / "cancel" / f"{job_id}.json", request)
         flush_durable(root)
         print(json.dumps(request, indent=2, sort_keys=True))

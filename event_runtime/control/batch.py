@@ -2054,6 +2054,8 @@ def public_batch(payload: dict[str, Any]) -> dict[str, Any]:
         "batch_id": payload["batch_id"],
         "updated_at": payload.get("updated_at"),
         "status": payload.get("status"),
+        "invalid_trial_count": payload.get("invalid_trial_count", 0),
+        "replacement_required": bool(payload.get("replacement_required")),
         "reasoning_effort": payload["reasoning_effort"],
         "codex_version": payload["codex_version"],
         "run_hours": payload["run_hours"],
@@ -2076,6 +2078,10 @@ def public_batch(payload: dict[str, Any]) -> dict[str, Any]:
                     "snapshot_heartbeat_ok",
                     "frontier_worker_alive",
                     "harbor_alive",
+                    "benchmark_valid",
+                    "replacement_required",
+                    "invalidated_reason",
+                    "integrity",
                 )
             }
             for arm in payload["arms"]
@@ -2555,12 +2561,17 @@ def monitor_cycle(
             run_id = arm["run_id"]
             finalized_path = SCRIPT_DIR / run_id / "FINALIZED.json"
             finalized_current = False
+            finalized_marker: dict[str, Any] = {}
             if finalized_path.is_file():
                 try:
                     finalized_marker = json.loads(finalized_path.read_text())
                     _, finalized_run = sprintctl.load_run(run_id)
                     finalized_current = bool(
                         finalized_marker.get("complete") is True
+                        and finalized_marker.get("integrity", {}).get(
+                            "schema_version"
+                        )
+                        == 1
                         and finalized_marker.get("timeline_schema_version")
                         == sprintctl.UNIFIED_TIMELINE_SCHEMA_VERSION
                         and (
@@ -2579,6 +2590,7 @@ def monitor_cycle(
                     arm["finalization_conditions"] = result.get("conditions", {})
                     if complete:
                         arm["status"] = "finalized"
+                        finalized_marker = result
                         finalized_current = True
                 except Exception as exc:  # noqa: BLE001
                     cycle_alerts.append(
@@ -2590,7 +2602,32 @@ def monitor_cycle(
                         }
                     )
             if finalized_current:
-                arm["status"] = "finalized"
+                integrity = finalized_marker.get("integrity", {})
+                arm["integrity"] = integrity
+                arm["benchmark_valid"] = bool(
+                    integrity.get("benchmark_valid") is True
+                )
+                arm["replacement_required"] = bool(
+                    integrity.get("replacement_required") is True
+                )
+                arm["status"] = (
+                    "finalized"
+                    if arm["benchmark_valid"]
+                    else "invalid_infrastructure"
+                )
+                if not arm["benchmark_valid"]:
+                    arm["invalidated_reason"] = "invalid_infrastructure"
+                    cycle_alerts.append(
+                        {
+                            "run_id": run_id,
+                            "kind": "run_integrity_failed",
+                            "source": ",".join(
+                                str(reason.get("code") or "unknown")
+                                for reason in integrity.get("reasons", [])
+                            ),
+                            "count_in_tail": "1",
+                        }
+                    )
                 arm["finalized_at"] = arm.get("finalized_at") or utc_now()
                 resolve_alerts(
                     payload,
@@ -2611,7 +2648,20 @@ def monitor_cycle(
                 payload.setdefault("alerts", []).append(alert)
                 known.add(key)
         all_finalized = finalized == len(payload["arms"])
-        payload["status"] = "complete" if all_finalized else "running"
+        invalid_trials = sum(
+            1
+            for arm in payload["arms"]
+            if arm.get("status") == "invalid_infrastructure"
+        )
+        payload["invalid_trial_count"] = invalid_trials
+        payload["replacement_required"] = invalid_trials > 0
+        payload["status"] = (
+            "complete_with_invalid_trials"
+            if all_finalized and invalid_trials
+            else "complete"
+            if all_finalized
+            else "running"
+        )
         payload["updated_at"] = utc_now()
         write_public_batch(payload, update_current=deploy)
         if (

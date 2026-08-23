@@ -658,4 +658,5 @@ def test_complete_billing_is_uploaded_before_finalized_marker(
         billing_path,
         "runs/cost-run/telemetry/modal-cost.json",
     )
-    assert uploads[1][1] == "runs/cost-run/state/FINALIZED.json"
+    assert uploads[-1][1] == "runs/cost-run/state/FINALIZED.json"
+    assert any(remote == "runs/cost-run/state/INTEGRITY.json" for _, remote in uploads)

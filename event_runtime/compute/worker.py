@@ -64,6 +64,8 @@ DEAD_GRACE_SEC = int(
     os.environ.get("SPRINT_GPU_DEAD_GRACE_SEC", str(gpu_claim.DEFAULT_DEAD_GRACE_SEC))
 )
 AGENT_GPU_MIRROR_ROOT = "/run/sprint-gpu-mirror"
+AGENT_GPU_CONTROL_ROOT = "/run/sprint-gpu-control"
+AGENT_GPU_CONTROL_MAX_REQUESTS = 64
 AGENT_GPU_MIRROR_LOG_BYTES = 768 * 1024
 AGENT_GPU_MIRROR_ARTIFACT_BYTES = 32 * 1024 * 1024
 AGENT_GPU_MIRROR_ARG_BYTES = 64 * 1024
@@ -107,6 +109,200 @@ def _cpu_agent_sandbox(run: dict[str, Any]):
             (identity.stderr or identity.stdout or "missing CPU sandbox ID")[-1000:]
         )
     return modal.Sandbox.from_id(sandbox_id)
+
+
+def append_control_event(
+    run: dict[str, Any], event: str, *, request: dict[str, Any], **detail: Any
+) -> dict[str, Any]:
+    """Durably append one host-authoritative control-plane transition.
+
+    The sandbox-local request is only a delivery mechanism. This append-only
+    host record is fsynced before an action is issued, so a controller restart
+    can replay any request that does not have a later acknowledgement.
+    """
+    state_dir = Path(str(run["state_dir"]))
+    path = state_dir / "control-events.jsonl"
+    lock_path = state_dir / "control-events.lock"
+    with sprintctl.file_lock(lock_path):
+        state_path = state_dir / "control-state.json"
+        try:
+            sequence = int(json.loads(state_path.read_text())["last_sequence"])
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+            sequence = 0
+        if path.is_file():
+            try:
+                # Verify the snapshot against the final fsynced event without
+                # rescanning a multi-hour log. This closes the crash window
+                # between appending the event and replacing control-state.
+                with path.open("rb") as handle:
+                    handle.seek(0, os.SEEK_END)
+                    size = handle.tell()
+                    handle.seek(max(0, size - 8192))
+                    lines = handle.read().splitlines()
+                if lines:
+                    sequence = max(
+                        sequence,
+                        int(json.loads(lines[-1])["sequence"]),
+                    )
+            except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+                if sequence == 0:
+                    with path.open("rb") as handle:
+                        for sequence, _line in enumerate(handle, start=1):
+                            pass
+        row = {
+            "schema_version": 1,
+            "sequence": sequence + 1,
+            "event": event,
+            "recorded_at": utc_now(),
+            "recorded_at_epoch_s": time.time(),
+            "run_id": str(run["run_id"]),
+            "request_id": str(request.get("request_id") or ""),
+            "job_id": str(request.get("job_id") or ""),
+            **detail,
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(row, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        sprintctl.atomic_write_json(
+            state_path,
+            {
+                "schema_version": 1,
+                "last_sequence": row["sequence"],
+                "last_event": event,
+                "updated_at": row["recorded_at"],
+            },
+            mode=0o600,
+        )
+    return row
+
+
+def record_heartbeat_observation(
+    run: dict[str, Any], job: dict[str, Any], heartbeat: dict[str, Any] | None
+) -> None:
+    """Persist each newly observed worker heartbeat in the control log."""
+    if not heartbeat:
+        return
+    epoch = float(gpu_claim.heartbeat_epoch(heartbeat) or 0)
+    if epoch <= 0:
+        return
+    state_dir_raw = str(run.get("state_dir") or "")
+    if not state_dir_raw:
+        return
+    state_dir = Path(state_dir_raw)
+    marker = state_dir / "control-heartbeats" / f"{job['job_id']}.json"
+    previous: dict[str, Any] = {}
+    try:
+        previous = json.loads(marker.read_text())
+    except (OSError, json.JSONDecodeError):
+        pass
+    if float(previous.get("heartbeat_epoch_s") or 0) >= epoch:
+        return
+    append_control_event(
+        run,
+        "gpu_heartbeat_observed",
+        request={"job_id": str(job["job_id"])},
+        attempt=int(job.get("attempt") or 0),
+        lease_id=str(job.get("lease_id") or ""),
+        heartbeat_epoch_s=epoch,
+        progress=heartbeat.get("progress"),
+        checkpoint=heartbeat.get("checkpoint"),
+    )
+    sprintctl.atomic_write_json(
+        marker,
+        {
+            "schema_version": 1,
+            "job_id": str(job["job_id"]),
+            "heartbeat_epoch_s": epoch,
+            "observed_at": utc_now(),
+        },
+        mode=0o600,
+    )
+
+
+def read_live_agent_cancel_requests(run: dict[str, Any]) -> list[dict[str, Any]]:
+    """Read cancellation requests through the CPU sandbox control channel."""
+    script = r'''
+import json, pathlib, re, sys
+root = pathlib.Path(sys.argv[1]) / "cancel"
+limit = int(sys.argv[2])
+job_re = re.compile(r"^[A-Za-z0-9_-]+$")
+rows = []
+for path in sorted(root.glob("*.json")):
+    if len(rows) >= limit:
+        break
+    if not job_re.fullmatch(path.stem):
+        continue
+    try:
+        row = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        continue
+    if isinstance(row, dict):
+        rows.append(row)
+print(json.dumps(rows, separators=(",", ":")))
+'''.strip()
+    process = _cpu_agent_sandbox(run).exec(
+        "python3",
+        "-c",
+        script,
+        AGENT_GPU_CONTROL_ROOT,
+        str(AGENT_GPU_CONTROL_MAX_REQUESTS),
+        timeout=30,
+    )
+    return_code = process.wait()
+    raw = process.stdout.read()
+    stderr = process.stderr.read()
+    if return_code != 0:
+        detail = stderr or raw or "CPU cancellation outbox read failed"
+        raise RuntimeError(str(detail)[-1000:])
+    payload = json.loads(raw or "[]")
+    if not isinstance(payload, list):
+        raise RuntimeError("CPU cancellation outbox returned a non-list payload")
+    requests: list[dict[str, Any]] = []
+    for request in payload:
+        if not isinstance(request, dict):
+            continue
+        job_id = str(request.get("job_id") or "")
+        request_id = str(request.get("request_id") or "")
+        if (
+            str(request.get("run_id") or "") != str(run["run_id"])
+            or not re.fullmatch(r"[A-Za-z0-9_-]+", job_id)
+            or not re.fullmatch(r"[0-9a-f]{32}", request_id)
+            or request.get("reason") != "agent_cancelled"
+        ):
+            continue
+        requests.append(request)
+    return requests
+
+
+def read_durable_agent_cancel_requests(run: dict[str, Any]) -> list[dict[str, Any]]:
+    """Read the committed Volume copy used for controller-restart recovery."""
+    if not str(run.get("volume_name") or "").strip():
+        return []
+    prefix = f"{jobs_prefix(str(run['run_id']))}/cancel"
+    requests: list[dict[str, Any]] = []
+    for name in volume_ls_json_names(run, prefix)[:AGENT_GPU_CONTROL_MAX_REQUESTS]:
+        job_id = Path(name).stem
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", job_id):
+            continue
+        raw = sprintctl.volume_get_text(run, f"{prefix}/{job_id}.json")
+        if not raw:
+            continue
+        try:
+            request = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        request_id = str(request.get("request_id") or "")
+        if (
+            isinstance(request, dict)
+            and str(request.get("run_id") or "") == str(run["run_id"])
+            and request.get("job_id") == job_id
+            and re.fullmatch(r"[0-9a-f]{32}", request_id)
+            and request.get("reason") == "agent_cancelled"
+        ):
+            requests.append(request)
+    return requests
 
 
 def read_worker_submission_outbox(
@@ -1747,9 +1943,25 @@ class ModalSandboxProvider:
         try:
             import modal
 
-            modal.Sandbox.from_id(handle.attempt_id).terminate()
+            # wait=True makes the host acknowledgement authoritative: after
+            # this returns, Modal no longer bills/runs the sandbox. Repeated
+            # termination is intentionally idempotent for controller replay.
+            modal.Sandbox.from_id(handle.attempt_id).terminate(wait=True)
         except Exception as exc:  # noqa: BLE001
-            return f"{type(exc).__name__}: {exc}"
+            error = f"{type(exc).__name__}: {exc}"
+            normalized = error.lower()
+            if any(
+                marker in normalized
+                for marker in (
+                    "already shut down",
+                    "already terminated",
+                    "container is not running",
+                    "task has already finished",
+                    "sandbox not found",
+                )
+            ):
+                return None
+            return error
         return None
 
 
@@ -2030,6 +2242,39 @@ def persist_job(run: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]:
     job_id = str(job["job_id"])
     local_path = host_job_path(run, job_id)
     if local_path is not None:
+        previous = load_host_job(run, job_id) or {}
+        keys = (
+            "status",
+            "attempt",
+            "claim_id",
+            "lease_id",
+            "fence_epoch",
+            "sandbox_id",
+            "retry_reason",
+            "termination_reason",
+            "heartbeat_at_epoch_s",
+            "updated_at_epoch_s",
+            "finished_at_epoch_s",
+        )
+        before = {key: previous.get(key) for key in keys if key in previous}
+        after = {key: job.get(key) for key in keys if key in job}
+        if before != after:
+            command = job.get("command")
+            command_sha256 = (
+                hashlib.sha256(
+                    json.dumps(command, separators=(",", ":")).encode()
+                ).hexdigest()
+                if isinstance(command, list)
+                else None
+            )
+            append_control_event(
+                run,
+                "gpu_job_state_persisted",
+                request={"job_id": job_id},
+                previous=before,
+                current=after,
+                command_sha256=command_sha256,
+            )
         sprintctl.atomic_write_json(local_path, job, mode=0o600)
     put_json(run, f"{prefix}/status/{job_id}.json", job)
     put_json(run, f"{prefix}/queue/{job_id}.json", job)
@@ -2337,6 +2582,7 @@ def reconcile_job(
 
     attempt_record = load_attempt_record(run, job)
     heartbeat = load_heartbeat(run, job)
+    record_heartbeat_observation(run, job, heartbeat)
     before_submission_bridge = job
     job, submission_bridge_detail = drain_worker_submission_outbox(run, job)
     if job != before_submission_bridge:
@@ -2610,6 +2856,98 @@ def reconcile_agent_cancelled_jobs(run: dict[str, Any]) -> list[dict[str, Any]]:
     return reconciled
 
 
+def reconcile_live_agent_cancel_requests(run: dict[str, Any]) -> list[dict[str, Any]]:
+    """Persist, execute, and acknowledge live agent cancellation requests.
+
+    This is called while the dispatch lock is held. The durable host event is
+    written before fencing/termination, and the acknowledgement is written
+    only after synchronous provider termination succeeds (or the job is
+    already terminal). An unacknowledged request is safe to replay.
+    """
+    state_dir = Path(str(run["state_dir"]))
+    ack_dir = state_dir / "control-acks"
+    ack_dir.mkdir(parents=True, exist_ok=True)
+    reconciled: list[dict[str, Any]] = []
+    by_request_id = {
+        str(item["request_id"]): item
+        for item in read_durable_agent_cancel_requests(run)
+    }
+    try:
+        for item in read_live_agent_cancel_requests(run):
+            by_request_id[str(item["request_id"])] = item
+    except RuntimeError:
+        # A supervised CPU relaunch can temporarily remove the live channel.
+        # The committed copy is sufficient for restart-safe replay.
+        pass
+    for request in by_request_id.values():
+        request_id = str(request["request_id"])
+        job_id = str(request["job_id"])
+        ack_path = ack_dir / f"{request_id}.json"
+        if ack_path.is_file():
+            continue
+        append_control_event(run, "cancel_requested", request=request)
+        job = load_host_job(run, job_id)
+        if job is None:
+            outcome = "unknown_job"
+            payload: dict[str, Any] = {
+                "job_id": job_id,
+                "run_id": str(run["run_id"]),
+                "status": "unknown",
+            }
+        else:
+            payload = _terminate_job_locked(run, job_id, reason="agent_cancelled")
+            if payload.get("terminate_error"):
+                # Do not acknowledge. The next controller pass retries the
+                # still-persistent request after the provider recovers.
+                append_control_event(
+                    run,
+                    "cancel_delivery_failed",
+                    request=request,
+                    error=str(payload["terminate_error"]),
+                )
+                reconciled.append(
+                    {
+                        "job_id": job_id,
+                        "request_id": request_id,
+                        "decision": "cancel_retry_required",
+                        "error": payload["terminate_error"],
+                    }
+                )
+                continue
+            outcome = (
+                "already_terminal"
+                if str(job.get("status")) in gpu_claim.TERMINAL
+                else "terminated"
+            )
+        acknowledgement = {
+            "schema_version": 1,
+            "request_id": request_id,
+            "run_id": str(run["run_id"]),
+            "job_id": job_id,
+            "outcome": outcome,
+            "status": payload.get("status"),
+            "acknowledged_at": utc_now(),
+            "acknowledged_at_epoch_s": time.time(),
+        }
+        sprintctl.atomic_write_json(ack_path, acknowledgement, mode=0o600)
+        append_control_event(
+            run,
+            "cancel_acknowledged",
+            request=request,
+            outcome=outcome,
+            status=payload.get("status"),
+        )
+        reconciled.append(
+            {
+                "job_id": job_id,
+                "request_id": request_id,
+                "status": payload.get("status"),
+                "decision": f"agent_cancel_{outcome}",
+            }
+        )
+    return reconciled
+
+
 def list_job_ids(run: dict[str, Any]) -> list[str]:
     prefix = jobs_prefix(str(run["run_id"]))
     names = {f"{job_id}.json" for job_id in list_host_job_ids(run)}
@@ -2783,32 +3121,53 @@ def stop_all(
         return _stop_all_locked(run, reason=reason)
 
 
+def _terminate_job_locked(
+    run: dict[str, Any], job_id: str, *, reason: str
+) -> dict[str, Any]:
+    """Fence and synchronously terminate one job while dispatch lock is held."""
+    job = load_job(run, job_id) or {
+        "job_id": job_id,
+        "run_id": run["run_id"],
+    }
+    job = reconcile_terminal_attempt_before_stop(run, job)
+    if str(job.get("status") or "") in gpu_claim.TERMINAL:
+        return job
+    payload = dict(job)
+    payload["fence_epoch"] = int(payload.get("fence_epoch") or 0) + 1
+    payload["fenced_lease_id"] = payload.get("lease_id")
+    payload["status"] = "terminated"
+    payload["termination_reason"] = reason
+    payload["terminated_at"] = utc_now()
+    payload["terminated_at_epoch_s"] = time.time()
+    persist_job(run, payload)  # durable fence before provider-side termination
+    _close_attempt_timeline(
+        run,
+        job,
+        epoch_s=int(payload["terminated_at_epoch_s"]),
+        reason=reason,
+    )
+    _timeline_event(
+        run,
+        job,
+        phase="gpu_lifecycle",
+        action="instant",
+        event="gpu_released",
+        reason=reason,
+    )
+    error = _terminate_sandbox(job)
+    if error:
+        payload["terminate_error"] = error
+        persist_job(run, payload)
+    return payload
+
+
 def terminate_job(run: dict[str, Any], job_id: str) -> dict[str, Any]:
     """Fence and stop one GPU worker; the CPU harness is untouched."""
     state_dir = Path(str(run["state_dir"]))
     with gpu_claim.dispatch_lock(state_dir) as got_lock:
         if not got_lock:
             raise RuntimeError("dispatch lock busy while terminating GPU worker")
-        job = load_job(run, job_id) or {
-            "job_id": job_id,
-            "run_id": run["run_id"],
-        }
-        job = reconcile_terminal_attempt_before_stop(run, job)
-        if str(job.get("status") or "") in gpu_claim.TERMINAL:
-            return job
-        payload = dict(job)
-        payload["fence_epoch"] = int(payload.get("fence_epoch") or 0) + 1
-        payload["fenced_lease_id"] = payload.get("lease_id")
-        payload["status"] = "terminated"
-        payload["termination_reason"] = "manual_gpu_terminate"
-        payload["terminated_at"] = utc_now()
-        payload["terminated_at_epoch_s"] = time.time()
-        persist_job(run, payload)
-        error = _terminate_sandbox(job)
-        if error:
-            payload["terminate_error"] = error
-            persist_job(run, payload)
-        return payload
+        return _terminate_job_locked(run, job_id, reason="manual_gpu_terminate")
 
 
 def _candidate_job_ids(run: dict[str, Any], *, now: float | None = None) -> list[str]:
@@ -2895,6 +3254,18 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
             return result
 
         actions.extend(cleanup_orphaned_training_sandboxes(run))
+        try:
+            reconciled.extend(reconcile_live_agent_cancel_requests(run))
+        except (RuntimeError, ValueError, json.JSONDecodeError) as exc:
+            # CPU sandboxes may be between supervised attempts. The request is
+            # retained in the durable fallback and will be retried; GPU
+            # reconciliation must continue meanwhile.
+            actions.append(
+                {
+                    "action": "control_channel_retry",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
         reconciled.extend(reconcile_agent_cancelled_jobs(run))
         now = time.time()
         for job_id in list_job_ids(run):

@@ -30,6 +30,7 @@ CONFIG_PATH="$CODEX_HOME_DIR/config.toml"
 python3 - "$CONFIG_PATH" "$CODEX_HOME_DIR/models.json" "$BASE_URL" "$MODEL_SLUG" "$CONTEXT_WINDOW" <<'PY'
 import pathlib
 import json
+import os
 import re
 import sys
 
@@ -55,6 +56,22 @@ selected = flash_models[0]
 selected["slug"] = model_slug
 selected["context_window"] = context_window
 selected["max_context_window"] = context_window
+# Codex must compact before input + the explicit provider completion allowance
+# can exceed the endpoint's total context. Keep the benchmark's official
+# completion ceiling, but reserve it when calculating the local compaction
+# trigger. The extra margin covers tokenizer/accounting skew and tool framing.
+contract_raw = os.environ.get("SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON", "").strip()
+contract = json.loads(contract_raw) if contract_raw else {}
+if not isinstance(contract, dict):
+    raise SystemExit("OpenRouter request contract must be a JSON object")
+completion_reserve = int(
+    contract.get("max_output_tokens") or contract.get("max_tokens") or 384000
+)
+context_safety = int(os.environ.get("SPRINT_CODEX_CONTEXT_SAFETY_TOKENS", "32768"))
+auto_compact_limit = context_window - completion_reserve - context_safety
+if completion_reserve <= 0 or context_safety < 0 or auto_compact_limit < 1000:
+    raise SystemExit("DeepSeek completion reserve leaves no usable context window")
+selected["auto_compact_token_limit"] = auto_compact_limit
 if "pro" in model_slug.lower():
     selected["display_name"] = "DeepSeek-V4-Pro"
 catalog["models"] = [selected]

@@ -40,6 +40,7 @@ from event_runtime.export.frontier import (  # noqa: E402
 )
 from event_runtime.cost import agent as agent_cost  # noqa: E402
 from event_runtime.cost import modal as modal_cost  # noqa: E402
+from event_runtime.control import integrity as run_integrity  # noqa: E402
 from event_runtime.export.timeline import (  # noqa: E402
     SCHEMA_VERSION as UNIFIED_TIMELINE_SCHEMA_VERSION,
 )
@@ -2067,6 +2068,7 @@ def finalize(
         existing = json.loads(final_path.read_text())
         if (
             existing.get("complete") is True
+            and existing.get("integrity", {}).get("schema_version") == 1
             and existing.get("timeline_schema_version")
             == UNIFIED_TIMELINE_SCHEMA_VERSION
             and (
@@ -2134,6 +2136,22 @@ def finalize(
     if not complete:
         return False, payload
     payload["finalized_at"] = utc_now()
+    integrity = run_integrity.build_integrity_report(state_dir, run)
+    payload["integrity"] = integrity
+    payload["benchmark_valid"] = integrity["benchmark_valid"]
+    atomic_write_json(state_dir / "INTEGRITY.json", integrity, mode=0o444)
+    if integrity["replacement_required"]:
+        atomic_write_json(
+            state_dir / "REPLACEMENT_REQUIRED.json",
+            {
+                "schema_version": 1,
+                "run_id": run_id,
+                "reason": "invalid_infrastructure",
+                "integrity_reasons": integrity["reasons"],
+                "created_at": utc_now(),
+            },
+            mode=0o444,
+        )
     try:
         payload["archives"] = json.loads(
             (state_dir / "archive-manifest.json").read_text()
@@ -2142,6 +2160,11 @@ def finalize(
         payload["archives"] = {}
     atomic_write_json(final_path, payload, mode=0o444)
     if upload:
+        volume_upload(
+            run,
+            state_dir / "INTEGRITY.json",
+            f"runs/{run_id}/state/INTEGRITY.json",
+        )
         volume_upload(
             run,
             final_path,

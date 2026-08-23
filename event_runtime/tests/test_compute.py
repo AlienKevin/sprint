@@ -2345,6 +2345,140 @@ class GpuConcurrencyLimitTests(unittest.TestCase):
             )
         persist.assert_not_called()
 
+    def test_live_cancel_is_durably_recorded_then_acknowledged(self) -> None:
+        request = {
+            "schema_version": 1,
+            "request_id": "a" * 32,
+            "run_id": "unit",
+            "job_id": "running",
+            "reason": "agent_cancelled",
+        }
+        job = {
+            "job_id": "running",
+            "run_id": "unit",
+            "status": "running",
+            "sandbox_id": "sb-live",
+        }
+        with tempfile.TemporaryDirectory() as raw:
+            run = {"run_id": "unit", "state_dir": raw}
+            with (
+                mock.patch.object(
+                    gpu_worker,
+                    "read_durable_agent_cancel_requests",
+                    return_value=[],
+                ),
+                mock.patch.object(
+                    gpu_worker,
+                    "read_live_agent_cancel_requests",
+                    return_value=[request],
+                ),
+                mock.patch.object(gpu_worker, "load_host_job", return_value=job),
+                mock.patch.object(
+                    gpu_worker,
+                    "_terminate_job_locked",
+                    return_value={**job, "status": "terminated"},
+                ) as terminate,
+            ):
+                result = gpu_worker.reconcile_live_agent_cancel_requests(run)
+
+            self.assertEqual(result[0]["decision"], "agent_cancel_terminated")
+            terminate.assert_called_once_with(
+                run, "running", reason="agent_cancelled"
+            )
+            ack = json.loads(
+                (Path(raw) / "control-acks" / f"{'a' * 32}.json").read_text()
+            )
+            self.assertEqual(ack["outcome"], "terminated")
+            events = [
+                json.loads(line)
+                for line in (Path(raw) / "control-events.jsonl").read_text().splitlines()
+            ]
+            self.assertEqual(
+                [event["event"] for event in events],
+                ["cancel_requested", "cancel_acknowledged"],
+            )
+            self.assertEqual([event["sequence"] for event in events], [1, 2])
+
+    def test_durable_cancel_replays_when_cpu_control_channel_is_down(self) -> None:
+        request = {
+            "schema_version": 1,
+            "request_id": "b" * 32,
+            "run_id": "unit",
+            "job_id": "running",
+            "reason": "agent_cancelled",
+        }
+        job = {
+            "job_id": "running",
+            "run_id": "unit",
+            "status": "running",
+            "sandbox_id": "sb-live",
+        }
+        with tempfile.TemporaryDirectory() as raw:
+            run = {"run_id": "unit", "state_dir": raw}
+            with (
+                mock.patch.object(
+                    gpu_worker,
+                    "read_durable_agent_cancel_requests",
+                    return_value=[request],
+                ),
+                mock.patch.object(
+                    gpu_worker,
+                    "read_live_agent_cancel_requests",
+                    side_effect=RuntimeError("CPU sandbox restarting"),
+                ),
+                mock.patch.object(gpu_worker, "load_host_job", return_value=job),
+                mock.patch.object(
+                    gpu_worker,
+                    "_terminate_job_locked",
+                    return_value={**job, "status": "terminated"},
+                ) as terminate,
+            ):
+                result = gpu_worker.reconcile_live_agent_cancel_requests(run)
+
+            self.assertEqual(result[0]["decision"], "agent_cancel_terminated")
+            terminate.assert_called_once()
+            self.assertTrue(
+                (Path(raw) / "control-acks" / f"{'b' * 32}.json").is_file()
+            )
+
+    def test_unconfirmed_cancel_is_not_acknowledged(self) -> None:
+        request = {
+            "schema_version": 1,
+            "request_id": "c" * 32,
+            "run_id": "unit",
+            "job_id": "running",
+            "reason": "agent_cancelled",
+        }
+        job = {"job_id": "running", "run_id": "unit", "status": "running"}
+        with tempfile.TemporaryDirectory() as raw:
+            run = {"run_id": "unit", "state_dir": raw}
+            with (
+                mock.patch.object(
+                    gpu_worker,
+                    "read_durable_agent_cancel_requests",
+                    return_value=[request],
+                ),
+                mock.patch.object(
+                    gpu_worker, "read_live_agent_cancel_requests", return_value=[]
+                ),
+                mock.patch.object(gpu_worker, "load_host_job", return_value=job),
+                mock.patch.object(
+                    gpu_worker,
+                    "_terminate_job_locked",
+                    return_value={
+                        **job,
+                        "status": "terminated",
+                        "terminate_error": "TimeoutError: provider did not settle",
+                    },
+                ),
+            ):
+                result = gpu_worker.reconcile_live_agent_cancel_requests(run)
+
+            self.assertEqual(result[0]["decision"], "cancel_retry_required")
+            self.assertFalse(
+                (Path(raw) / "control-acks" / f"{'c' * 32}.json").exists()
+            )
+
     def test_retry_backoff_reserves_slot_ahead_of_new_job(self) -> None:
         jobs = {
             "recovering": {
@@ -3110,6 +3244,7 @@ class AgentGpuCliTests(unittest.TestCase):
     def test_running_job_cancel_writes_scoped_request(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw) / "gpu-jobs"
+            control_root = Path(raw) / "control"
             (root / "status").mkdir(parents=True)
             (root / "status" / "job-1.json").write_text(
                 json.dumps(
@@ -3122,6 +3257,7 @@ class AgentGpuCliTests(unittest.TestCase):
             )
             with (
                 mock.patch.object(train_cli, "jobs_root", return_value=root),
+                mock.patch.object(train_cli, "AGENT_CONTROL_ROOT", control_root),
                 mock.patch.object(train_cli, "flush_durable"),
                 mock.patch.dict(os.environ, {"SPRINT_RUN_ID": "run-1"}),
                 mock.patch("sys.stdout", io.StringIO()),
@@ -3135,7 +3271,11 @@ class AgentGpuCliTests(unittest.TestCase):
             self.assertEqual(request["run_id"], "run-1")
             self.assertEqual(request["job_id"], "job-1")
             self.assertEqual(request["reason"], "agent_cancelled")
-
+            self.assertRegex(request["request_id"], r"^[0-9a-f]{32}$")
+            self.assertEqual(
+                json.loads((control_root / "cancel" / "job-1.json").read_text()),
+                request,
+            )
     def test_worker_recognizes_scoped_running_job_cancel(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             marker = (
@@ -3503,3 +3643,31 @@ class StandingWorkerTests(unittest.TestCase):
     def test_standing_is_opt_in(self):
         self.assertFalse(gpu_worker.standing_enabled({}))
         self.assertTrue(gpu_worker.standing_enabled({"standing_gpu_worker": True}))
+
+
+class ModalProviderTerminationTests(unittest.TestCase):
+    def test_termination_waits_for_provider_acknowledgement(self) -> None:
+        sandbox = mock.Mock()
+        with mock.patch.object(
+            gpu_worker.modal.Sandbox, "from_id", return_value=sandbox
+        ):
+            error = gpu_worker.ModalSandboxProvider({}).terminate(
+                resilience.ProviderHandle(
+                    provider="modal-sandbox", attempt_id="sb-test"
+                )
+            )
+        self.assertIsNone(error)
+        sandbox.terminate.assert_called_once_with(wait=True)
+
+    def test_already_stopped_termination_is_idempotent(self) -> None:
+        sandbox = mock.Mock()
+        sandbox.terminate.side_effect = RuntimeError("container is not running")
+        with mock.patch.object(
+            gpu_worker.modal.Sandbox, "from_id", return_value=sandbox
+        ):
+            error = gpu_worker.ModalSandboxProvider({}).terminate(
+                resilience.ProviderHandle(
+                    provider="modal-sandbox", attempt_id="sb-test"
+                )
+            )
+        self.assertIsNone(error)

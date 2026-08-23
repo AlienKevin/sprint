@@ -198,6 +198,9 @@ def test_codex_comparison_models_pin_provider_compatible_tool_contracts(
             "SPRINT_CODEX_DEEPSEEK_MODEL": (
                 "@preset/sprint-deepseek-v4-flash-0731-official"
             ),
+            "SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON": json.dumps(
+                {"max_output_tokens": 384000}
+            ),
         },
     )
     assert result.returncode == 0, result.stderr
@@ -209,6 +212,7 @@ def test_codex_comparison_models_pin_provider_compatible_tool_contracts(
         "slug": "@preset/sprint-deepseek-v4-flash-0731-official",
         "context_window": 1048576,
         "max_context_window": 1048576,
+        "auto_compact_token_limit": 631808,
     }
     expected_catalog = official_deepseek | {
         # The runtime intentionally exposes only the selected model. Keeping
