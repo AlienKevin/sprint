@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Inspect the agent messages, tools, observations, timing, and retries behind each AGI4ALL trial.">
+  <title>The Race to AGI4ALL · Agent trajectory</title>
+  <link rel="stylesheet" href="/trajectory.css?v=20260823-1">
+</head>
+<body>
+  <header class="viewer-nav">
+    <a class="brand" href="/">AGI4ALL</a>
+    <span class="nav-slash">/</span>
+    <span>Agent trajectory</span>
+    <div class="nav-actions">
+      <a id="timeline-link" href="/timeline">Resource timeline</a>
+      <a href="/">Race overview</a>
+    </div>
+  </header>
+
+  <main>
+    <section class="trajectory-hero">
+      <div>
+        <p class="eyebrow">HARBOR-STYLE RUN INSPECTOR</p>
+        <h1>See how the agent worked.</h1>
+        <p class="lede">Messages, tool calls, observations, timing, and token usage from the six completed trials. DeepSeek relaunches are preserved as separate CPU attempts.</p>
+      </div>
+      <label class="run-picker"><span>Trial</span><select id="run"><option>Loading trajectories…</option></select></label>
+    </section>
+
+    <section class="run-summary" aria-live="polite">
+      <div class="run-identity"><span class="model-dot"></span><div><strong id="run-model">—</strong><small id="run-id">—</small></div></div>
+      <div><span>Elapsed trace</span><b id="summary-duration">—</b></div>
+      <div><span>Attempts</span><b id="summary-attempts">—</b></div>
+      <div><span>Steps</span><b id="summary-steps">—</b></div>
+      <div><span>Tool calls</span><b id="summary-tools">—</b></div>
+      <div><span>Total cost</span><b id="summary-cost">—</b></div>
+    </section>
+
+    <section class="attempt-panel" aria-labelledby="attempt-title">
+      <div class="panel-head"><div><p class="eyebrow">EXECUTION CONTINUITY</p><h2 id="attempt-title">CPU attempts</h2></div><p>Each segment is one agent sandbox attempt. A new segment indicates an infrastructure relaunch, not a new trial.</p></div>
+      <div id="attempt-rail" class="attempt-rail"></div>
+    </section>
+
+    <section class="trajectory-panel" aria-labelledby="trajectory-title">
+      <div class="panel-head trajectory-head">
+        <div><p class="eyebrow">ATIF TRAJECTORY</p><h2 id="trajectory-title">Agent activity</h2></div>
+        <p id="privacy-note">System/bootstrap messages are omitted; credential-like values and image payloads are redacted.</p>
+      </div>
+      <div class="trajectory-controls">
+        <label class="search"><span class="sr-only">Search trajectory</span><input id="search" type="search" placeholder="Search messages, commands, files…" autocomplete="off"></label>
+        <div class="filters" role="group" aria-label="Trajectory event filter">
+          <button class="active" data-filter="all" type="button">All</button>
+          <button data-filter="messages" type="button">Messages</button>
+          <button data-filter="tools" type="button">Tools</button>
+          <button data-filter="observations" type="button">Observations</button>
+        </div>
+        <button id="expand" class="expand-button" type="button">Expand all</button>
+        <span id="status" class="status">Loading…</span>
+      </div>
+      <div id="steps" class="steps" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <script src="/trajectory.js?v=20260823-1"></script>
+</body>
+</html>

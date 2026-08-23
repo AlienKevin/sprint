@@ -454,8 +454,8 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "class:'submission-target'" in app
     assert "el.getScreenCTM()" in app
     assert "nearest.distance<=22**2" in app
-    assert "app.js?v=20260823-1" in page
-    assert '"version":"20260823-1"' in (ROOT / "web/version.json").read_text()
+    assert "app.js?v=20260823-2" in page
+    assert '"version":"20260823-2"' in (ROOT / "web/version.json").read_text()
     assert "let observedVersion = null" in app
     assert "state.timelineUpdatedAt=tIndex.updated_at||null" in app
     assert "Date.parse(snapshotUpdatedAt(batch)||'')" in app

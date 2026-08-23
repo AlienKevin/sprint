@@ -418,6 +418,11 @@ main {
 .experiment-activity a:hover {
   color: var(--model-accent);
 }
+.experiment-links {
+  display: inline-flex;
+  gap: 14px;
+  align-items: center;
+}
 .tracker-note {
   margin: 14px 2px 0;
   color: var(--muted);

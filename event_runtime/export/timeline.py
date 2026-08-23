@@ -1887,11 +1887,23 @@ class Builder:
         )
         if self.events:
             origin = self.events[0]["epoch_ms"]
-            end = self.events[-1]["epoch_ms"]
+            observer_end = self.events[-1]["epoch_ms"]
+            terminal_epochs = [
+                event["epoch_ms"]
+                for event in self.events
+                if event["kind"] in {"stop_acknowledged", "cpu_interrupted"}
+            ]
+            # Provider-ledger reconciliation and final publication may happen long
+            # after the agent has stopped. Keep those durable observer events in
+            # the payload, but do not let them stretch the experiment activity
+            # clock and create a misleading blank tail in the public timeline.
+            end = max(terminal_epochs) if terminal_epochs else observer_end
             for event in self.events:
                 event["elapsed_ms"] = event["epoch_ms"] - origin
+                if event["epoch_ms"] > end:
+                    event["post_run"] = True
         else:
-            origin = end = None
+            origin = end = observer_end = None
 
         buckets: dict[int, Counter[str]] = defaultdict(Counter)
         for event in self.events:
@@ -2990,6 +3002,10 @@ class Builder:
                 "unit": "epoch_ms",
                 "origin_epoch_ms": origin,
                 "end_epoch_ms": end,
+                "observer_end_epoch_ms": observer_end,
+                "post_run_event_count": sum(
+                    bool(event.get("post_run")) for event in self.events
+                ),
                 "duration_ms": end - origin
                 if origin is not None and end is not None
                 else None,
@@ -3036,8 +3052,11 @@ def build_timeline(
     preserve_observer_timestamp(internal, payload, timestamp_key="generated_at")
     atomic_json(internal, payload, mode=0o600)
     if web_dir is not None:
+        from event_runtime.export import trajectory as trajectory_export
+
         public = web_dir / "data" / "timelines" / f"{builder.run_id}.json"
         atomic_json(public, payload, mode=0o644)
+        trajectory_export.build_public_trajectory(state_dir, web_dir=web_dir)
         index_path = web_dir / "data" / "timelines" / "index.json"
         try:
             index = json.loads(index_path.read_text())

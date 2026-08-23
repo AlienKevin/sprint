@@ -846,6 +846,45 @@ def test_stop_ack_closes_supervised_cpu_allocation(
     assert payload["coverage"]["requirements"]["cpu_agent_metrics"] is True
 
 
+def test_post_run_accounting_does_not_stretch_activity_clock(tmp_path: Path) -> None:
+    state = fixture_run(tmp_path)
+    (state / "STOP_ACK.json").write_text(
+        json.dumps({"acknowledged_at": "2026-08-07T12:00:20Z"})
+    )
+    audit = {
+        "session_id": "late-accounting",
+        "request_count": 1,
+        "cost_reconstruction_complete": True,
+        "calculated_api_usage_usd": 0.25,
+        "requests": [
+            {
+                "api_call_id": "late-api-call",
+                "usage_reported_at": "2026-08-07T14:00:00Z",
+                "model": "test-model",
+                "input_tokens": 100,
+                "output_tokens": 20,
+                "total_tokens": 120,
+                "calculated_cost_usd": 0.25,
+                "cost_reconstruction_status": "complete",
+            }
+        ],
+    }
+    path = next(state.glob("harbor-jobs/*/*/agent")) / "usage-audit.json"
+    path.write_text(json.dumps(audit))
+
+    payload = unified_timeline.build_timeline(state)
+
+    assert payload["clock"]["end_epoch_ms"] == 1786104020000
+    assert payload["clock"]["observer_end_epoch_ms"] == 1786111200000
+    assert payload["clock"]["post_run_event_count"] >= 1
+    late = next(
+        event
+        for event in payload["events"]
+        if event["kind"] == "model_request_usage"
+    )
+    assert late["post_run"] is True
+
+
 def test_missing_submitted_artifact_blocks_readiness(tmp_path: Path) -> None:
     payload = unified_timeline.build_timeline(
         fixture_run(tmp_path, missing_artifact=True)
