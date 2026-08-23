@@ -82,7 +82,7 @@ DEEPSEEK_ROUTED_FAMILY_SPECS: dict[str, dict[str, str]] = {
     # Codex + /goal harness as the OpenAI families.
     "deepseek": {
         "model": "deepseek/deepseek-v4-flash-vision-exp",
-        "resolved_model": "DeepSeek | deepseek/deepseek-v4-flash-vision-exp",
+        "resolved_model": "deepseek/deepseek-v4-flash-vision-exp-20260821",
         "provider": "DeepSeek",
         "provider_endpoint": "deepseek",
         "quantization": "unknown",
@@ -401,7 +401,7 @@ def matrix(
             family: {
                 "model": spec["model"],
                 "wrapper": "openai.sh",
-                "resolved_model_version": spec["model_id"],
+                "resolved_model_version": spec["resolved_model"],
                 "openrouter_preset": spec["preset"],
                 "provider": spec["provider"],
                 "provider_endpoint": spec["provider_endpoint"],
@@ -1359,6 +1359,7 @@ def launch(
         TrialCredentialSpec(
             run_id=arm["run_id"],
             model=arm["model"],
+            resolved_model=arm["resolved_model_version"],
             provider=arm["provider_endpoint"],
             budget_usd=configured_agent_budget_usd(),
         )

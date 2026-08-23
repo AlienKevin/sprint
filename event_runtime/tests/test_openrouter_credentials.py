@@ -69,11 +69,13 @@ def specs() -> list[TrialCredentialSpec]:
         TrialCredentialSpec(
             run_id="eval-deepseek-1",
             model="deepseek/deepseek-v4-flash-vision-exp",
+            resolved_model="deepseek/deepseek-v4-flash-vision-exp-20260821",
             provider="deepseek",
         ),
         TrialCredentialSpec(
             run_id="eval-luna-1",
             model="openai/gpt-5.6-luna",
+            resolved_model="openai/gpt-5.6-luna-20260709",
             provider="openai",
         ),
     ]

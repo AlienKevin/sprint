@@ -74,7 +74,10 @@ def test_batch_matrix_is_exact_six_arm_max_effort_contract() -> None:
     assert sum(row["model"] == "openai/gpt-5.6-luna" for row in rows) == 3
     assert {
         row["resolved_model_version"] for row in rows if row["family"] == "deepseek"
-    } == {"DeepSeek | deepseek/deepseek-v4-flash-vision-exp"}
+    } == {"deepseek/deepseek-v4-flash-vision-exp-20260821"}
+    assert {
+        row["resolved_model_version"] for row in rows if row["family"] == "luna"
+    } == {"openai/gpt-5.6-luna-20260709"}
     assert {
         (row["provider_endpoint"], row["quantization"])
         for row in rows

@@ -34,6 +34,7 @@ class OpenRouterManagementError(RuntimeError):
 class TrialCredentialSpec:
     run_id: str
     model: str
+    resolved_model: str
     provider: str
     budget_usd: float = 10.0
 
@@ -42,6 +43,7 @@ class TrialCredentialSpec:
 class ProvisionedTrialCredential:
     run_id: str
     model: str
+    resolved_model: str
     provider: str
     budget_usd: float
     key_hash: str
@@ -55,6 +57,7 @@ class ProvisionedTrialCredential:
         return {
             "run_id": self.run_id,
             "model": self.model,
+            "resolved_model": self.resolved_model,
             "provider": self.provider,
             "budget_usd": self.budget_usd,
             "key_hash": self.key_hash,
@@ -212,7 +215,7 @@ class OpenRouterManagementClient:
         ).get("data")
         if not isinstance(guardrail, dict) or not isinstance(key, dict):
             raise OpenRouterManagementError("guardrail/key verification was incomplete")
-        if guardrail.get("allowed_models") != [credential.model]:
+        if guardrail.get("allowed_models") != [credential.resolved_model]:
             raise OpenRouterManagementError("guardrail model allowlist mismatch")
         if guardrail.get("allowed_providers") != [credential.provider]:
             raise OpenRouterManagementError("guardrail provider allowlist mismatch")
@@ -308,7 +311,11 @@ def validate_specs(specs: list[TrialCredentialSpec]) -> None:
         if not SAFE_NAME.fullmatch(spec.run_id) or spec.run_id in seen:
             raise ValueError(f"unsafe or duplicate run ID: {spec.run_id!r}")
         seen.add(spec.run_id)
-        if "/" not in spec.model or not SAFE_NAME.fullmatch(spec.provider):
+        if (
+            "/" not in spec.model
+            or "/" not in spec.resolved_model
+            or not SAFE_NAME.fullmatch(spec.provider)
+        ):
             raise ValueError(f"invalid OpenRouter route for {spec.run_id}")
         if not math.isfinite(spec.budget_usd) or spec.budget_usd <= 0:
             raise ValueError(f"invalid trial budget for {spec.run_id}")
@@ -347,6 +354,7 @@ def provision_trial_credentials(
                 {
                     "run_id": spec.run_id,
                     "model": spec.model,
+                    "resolved_model": spec.resolved_model,
                     "provider": spec.provider,
                     "budget_usd": spec.budget_usd,
                     "guardrail_id": str(guardrail["id"]),
@@ -361,6 +369,7 @@ def provision_trial_credentials(
             credential = ProvisionedTrialCredential(
                 run_id=spec.run_id,
                 model=spec.model,
+                resolved_model=spec.resolved_model,
                 provider=spec.provider,
                 budget_usd=spec.budget_usd,
                 key_hash=str(key_data["hash"]),
