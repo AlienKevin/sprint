@@ -643,30 +643,38 @@ def aggregate_models(
         per_trial_cost_cap = configured_per_trial_cost_cap_usd()
     if finite_number(per_trial_cost_cap) is None or per_trial_cost_cap <= 0:
         raise RuntimeError("per-trial cost cap must be positive and finite")
-    trials_per_family = next(iter(family_sizes.values()))
-    common_cost_cap = per_trial_cost_cap * trials_per_family
+    common_cost_cap = per_trial_cost_cap
     output_models: list[dict[str, Any]] = []
     for family, runs in sorted(grouped.items()):
         family_origin_ms = min(
             cost_ledgers[run["run_id"]]["origin_epoch_ms"] for run in runs
         )
         events = sorted(
-            (
-                int(point["epoch_ms"]),
-                run,
-                point,
-            )
-            for run in runs
-            for point in run["points"]
-            if finite_number(point.get("hours_since_agent_launch")) is not None
-            and finite_number(point.get("epoch_ms")) is not None
+            [
+                (
+                    int(point["epoch_ms"]),
+                    run,
+                    point,
+                )
+                for run in runs
+                for point in run["points"]
+                if finite_number(point.get("hours_since_agent_launch")) is not None
+                and finite_number(point.get("epoch_ms")) is not None
+            ],
+            key=lambda item: (
+                item[0],
+                item[1]["run_id"],
+                int(item[2].get("submission_index") or 0),
+            ),
         )
         points: list[dict[str, Any]] = []
         for epoch_ms, source_run, point in events:
-            aggregate_cost = sum(
-                cumulative_cost_at_epoch(cost_ledgers[run["run_id"]], epoch_ms)
-                for run in runs
-            )
+            trial_cost = finite_number(point.get("cumulative_agent_cost_usd"))
+            if trial_cost is None:
+                raise RuntimeError(
+                    f"{source_run['run_id']} submission "
+                    f"{point.get('submission_index')} lacks its trial cost"
+                )
             points.append(
                 {
                     **point,
@@ -675,7 +683,11 @@ def aggregate_models(
                     "hours_since_agent_launch": round(
                         (epoch_ms - family_origin_ms) / 3_600_000.0, 6
                     ),
-                    "cumulative_agent_cost_usd": round(aggregate_cost, 6),
+                    # Model curves compare independent attempts at the same
+                    # per-trial spend.  Never add the other trials' concurrent
+                    # cost to a policy's x coordinate.
+                    "cumulative_agent_cost_usd": round(trial_cost, 6),
+                    "trial_agent_cost_usd": round(trial_cost, 6),
                 }
             )
         best = max(
@@ -931,7 +943,7 @@ def build(
         trusted=trusted_captures,
     )
     payload = {
-        "schema_version": 2,
+        "schema_version": 3,
         "generated_at": utc_now(),
         "batch_prefix": batch_prefix,
         "snapshot_status": "completed" if complete else "active_provisional",
@@ -952,7 +964,7 @@ def build(
             "common_auc_cap_usd": model_cost_cap,
             "per_trial_cost_cap_usd": per_trial_cost_cap,
             "trials_per_model": len(selected) // len(family_counts),
-            "aggregation": "sum cumulative cost across the model's trials; take the best policy quality produced by any trial",
+            "aggregation": "place every submitted policy at the cumulative cost of its own independent trial; take the best policy quality available at each per-trial price point",
         },
         "time": {
             "common_auc_cap_hours": common_time_cap,

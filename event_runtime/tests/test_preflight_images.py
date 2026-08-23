@@ -82,6 +82,18 @@ def test_warmup_checks_agent_shell_entrypoints() -> None:
         assert f"test -x /opt/{name}" in source
 
 
+def test_functional_canary_uses_current_training_cli_contract() -> None:
+    canary = load_script("canary.py")
+
+    assert canary.TRAINING_CANARY_CLI == (
+        "--num_envs=128 --max_iters=10 --chunk_iters=10 --save_interval=10 "
+        "--headless --device=cuda:0"
+    )
+    assert "--max_iterations" not in canary.TRAINING_CANARY_CLI
+    assert "--task=" not in canary.TRAINING_CANARY_CLI
+    assert "--seed=" not in canary.TRAINING_CANARY_CLI
+
+
 def test_successful_sandbox_uses_returncode_after_wait(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

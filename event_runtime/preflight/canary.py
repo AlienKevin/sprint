@@ -54,6 +54,14 @@ CANARY_RESOURCE_CONTRACT = {
     },
 }
 
+# Keep this invocation aligned with the training app shipped in the preflight
+# archive.  The app owns task registration internally and exposes ``max_iters``
+# (not the older Isaac Lab ``task`` / ``max_iterations`` flags).
+TRAINING_CANARY_CLI = (
+    "--num_envs=128 --max_iters=10 --chunk_iters=10 --save_interval=10 "
+    "--headless --device=cuda:0"
+)
+
 
 def atomic_write(payload: dict) -> None:
     tmp = REPORT.with_name(f".{REPORT.name}.{os.getpid()}.tmp")
@@ -372,8 +380,7 @@ def main() -> int:
         "export PYTHONPATH=/opt/event-verifier:/app; "
         "timeout --signal=TERM --kill-after=30 900 "
         "python3 /opt/sprint-isaac-bootstrap.py /app/train_sprint.py "
-        "--task=Isaac-G1-SprintTrain-v0 --num_envs=128 --max_iterations=10 "
-        "--seed=20260819 --headless --device=cuda:0 "
+        f"{TRAINING_CANARY_CLI} "
         f"2>&1 | tee /warm{remote_root}/training.log; "
         "kill $telemetry_pid 2>/dev/null || true; wait $telemetry_pid 2>/dev/null || true; "
         f"cp /app/policy_train.pt /warm{remote_root}/checkpoints/policy_final.pt; "

@@ -28,8 +28,8 @@
     </section>
 
     <section class="section">
-      <div class="section-head"><div><p class="kicker">RACE ECONOMICS</p><h2>Performance vs cost</h2></div><p>For each competitor, spend is combined across its active trials while the chart follows the best sealed policy found so far. The live comparison ends at the greatest cost reached by every competitor.</p></div>
-      <div class="chart-card"><svg id="cost-chart" role="img" aria-label="Continuous performance versus cumulative model cost"></svg><div id="cost-legend" class="legend"></div></div>
+      <div class="section-head"><div><p class="kicker">RACE ECONOMICS</p><h2>Performance vs cost</h2></div><p>Every dot is a submitted policy placed at the spend reached in its own independent trial. The line follows the best sealed policy available at each price point, up to the $10 trial budget.</p></div>
+      <div class="chart-card"><svg id="cost-chart" role="img" aria-label="Best policy performance versus cost within an independent trial"></svg><div id="cost-legend" class="legend"></div></div>
       <div id="cost-scores" class="performance-scores"></div>
       <p class="metric-note"><strong>Effective Speed</strong> = (counted distance ÷ 100m) × (counted distance ÷ time to that point). Distance counts only until the finish or the first whole-body lane or self-collision disqualification. Cost includes model API, CPU agents, and training sandboxes; verifier and website infrastructure are excluded.</p>
     </section>
@@ -60,6 +60,6 @@
   </main>
 
   <footer><span>The Race to AGI4ALL</span><span id="updated">No race data deployed yet</span></footer>
-  <script src="/app.js?v=20260821-1"></script>
+  <script src="/app.js?v=20260823-1"></script>
 </body>
 </html>

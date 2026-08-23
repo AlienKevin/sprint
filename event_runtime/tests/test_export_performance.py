@@ -46,7 +46,7 @@ def test_step_auc_uses_best_so_far_and_common_cap() -> None:
     assert continuous.step_auc(points, "cost", 10.0) == pytest.approx(1.2)
 
 
-def test_completed_comparison_uses_cost_cap_times_trial_count() -> None:
+def test_completed_comparison_uses_per_trial_cost_cap() -> None:
     runs = [
         {
             "run_id": "batch-luna-1",
@@ -118,7 +118,7 @@ def test_completed_comparison_carries_frontier_to_declared_budget() -> None:
     assert cap == pytest.approx(10.0)
 
 
-def test_single_family_snapshot_multiplies_cap_by_trial_count() -> None:
+def test_single_family_snapshot_keeps_per_trial_cap() -> None:
     runs = [
         {
             "run_id": "batch-luna-1",
@@ -152,7 +152,7 @@ def test_single_family_snapshot_multiplies_cap_by_trial_count() -> None:
     )
 
     assert [model["family"] for model in models] == ["luna"]
-    assert cap == pytest.approx(20.0)
+    assert cap == pytest.approx(10.0)
 
 
 def test_cli_prints_empty_single_family_snapshot(
@@ -213,10 +213,7 @@ def test_flash_and_pro_are_aggregated_as_separate_competitors() -> None:
         )
         for trial in range(1, 4)
     ]
-    ledgers = {
-        run["run_id"]: {"origin_epoch_ms": 0}
-        for run in runs
-    }
+    ledgers = {run["run_id"]: {"origin_epoch_ms": 0} for run in runs}
 
     models, cap = continuous.aggregate_models(
         runs,
@@ -230,7 +227,63 @@ def test_flash_and_pro_are_aggregated_as_separate_competitors() -> None:
         "pro-alibaba",
     ]
     assert [len(model["run_ids"]) for model in models] == [3, 3]
-    assert cap == pytest.approx(30.0)
+    assert cap == pytest.approx(10.0)
+
+
+def test_model_curve_uses_each_policy_own_trial_cost() -> None:
+    runs = [
+        {
+            "run_id": f"batch-luna-{trial}",
+            "model": "openai/gpt-5.6-luna",
+            "points": [
+                {
+                    "epoch_ms": 2000,
+                    "hours_since_agent_launch": 0.5,
+                    "submission_index": trial,
+                    "policy_sha256": str(trial) * 64,
+                    "continuous_score_mps": float(trial),
+                    "cumulative_agent_cost_usd": cost,
+                }
+            ],
+            "summary": {
+                "final_agent_cost_usd": 9.9,
+                "missing_readout_indices": [],
+            },
+        }
+        for trial, cost in ((1, 2.0), (2, 4.0), (3, 6.0))
+    ]
+    # If costs were still aggregated at the shared event timestamp, all three
+    # points would be placed at 12 USD.
+    ledgers = {
+        run["run_id"]: {
+            "origin_epoch_ms": 0,
+            "end_epoch_ms": 2000,
+            "api_events": [(2000, float(index * 2))],
+            "cpu_intervals": [],
+            "training_intervals": [],
+            "rates": {"cpu_per_s": 0.0, "training_per_s": 0.0},
+        }
+        for index, run in enumerate(runs, start=1)
+    }
+
+    models, cap = continuous.aggregate_models(
+        runs,
+        common_time_cap=1.0,
+        cost_ledgers=ledgers,
+        per_trial_cost_cap=10.0,
+    )
+
+    assert cap == pytest.approx(10.0)
+    assert [point["trial_agent_cost_usd"] for point in models[0]["points"]] == [
+        2.0,
+        4.0,
+        6.0,
+    ]
+    assert [point["cumulative_agent_cost_usd"] for point in models[0]["points"]] == [
+        2.0,
+        4.0,
+        6.0,
+    ]
 
 
 def test_frontier_replays_are_union_of_cost_and_time_record_setters() -> None:
@@ -401,8 +454,8 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "class:'submission-target'" in app
     assert "el.getScreenCTM()" in app
     assert "nearest.distance<=22**2" in app
-    assert "app.js?v=20260821-1" in page
-    assert '"version":"20260821-1"' in (ROOT / "web/version.json").read_text()
+    assert "app.js?v=20260823-1" in page
+    assert '"version":"20260823-1"' in (ROOT / "web/version.json").read_text()
     assert "let observedVersion = null" in app
     assert "state.timelineUpdatedAt=tIndex.updated_at||null" in app
     assert "Date.parse(snapshotUpdatedAt(batch)||'')" in app
@@ -458,10 +511,14 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "cost_auc_mps_at_common_cap" in app
     assert "path=`M${x(0)},${y(0)} `" in app
     assert "(run.points||[]).filter(plottable)" in app
+    assert "const xmax=finite(aucCap)?aucCap" in app
+    assert "Math.min(xmax,value)" in app
+    assert "eligible=rows.filter" in app
+    assert "trial cost ${fmtMoney(row.cumulative_agent_cost_usd)}" in app
     assert "effective speed (m/s)" in app
     assert "showReadout" in app
     assert "active_provisional" in app
-    assert "combined active-trial cost" in app
+    assert "cost within each independent trial" in app
     assert "best of ${trials}" not in app
     assert "hours_since_agent_launch" in app
     assert "hours_since_agent launch" not in app
