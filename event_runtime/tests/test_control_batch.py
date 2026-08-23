@@ -380,6 +380,7 @@ def test_openai_openrouter_catalogs_omit_unsupported_verbosity() -> None:
     for name in ("luna", "sol"):
         lock = json.loads((ROOT / f"event_runtime/models/{name}.json").read_text())
         assert lock["model"]["support_verbosity"] is False
+        assert lock["model"]["supports_parallel_tool_calls"] is False
 
 
 @pytest.mark.parametrize(

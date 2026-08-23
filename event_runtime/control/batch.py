@@ -1096,7 +1096,6 @@ def preflight(
                             }
                         ],
                         "tool_choice": "auto",
-                        "parallel_tool_calls": True,
                         "include": ["reasoning.encrypted_content"],
                         "prompt_cache_key": "sprint-provider-preflight",
                         "store": False,

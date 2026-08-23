@@ -12,7 +12,7 @@
     "input_modalities": ["text", "image"],
     "supports_image_detail_original": true,
     "truncation_policy": {"mode": "tokens", "limit": 10000},
-    "supports_parallel_tool_calls": true,
+    "supports_parallel_tool_calls": false,
     "tool_mode": "code_mode_only",
     "multi_agent_version": "v1",
     "use_responses_lite": true,
