@@ -21,6 +21,10 @@ REQUEST_2 = "b" * 32
 PENDING_REQUEST = "c" * 32
 
 
+def test_proxy_does_not_timeout_long_reasoning_requests() -> None:
+    assert proxy.UPSTREAM_SOCKET_TIMEOUT_SECONDS is None
+
+
 def test_terminal_response_event_exposes_exact_usage_cost() -> None:
     usage, response = proxy.usage_from_event(
         {

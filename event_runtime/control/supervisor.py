@@ -44,9 +44,17 @@ def state_dir_for(run_id: str) -> Path:
 
 
 def stop_requested(state_dir: Path) -> tuple[bool, str]:
-    """Operator stop must remain stopped."""
+    """Terminal controller or budget stops must remain stopped."""
     if (state_dir / "FINALIZED.json").is_file():
         return True, "FINALIZED"
+    budget_marker = state_dir / "BUDGET_STOP_REQUESTED.json"
+    if budget_marker.is_file():
+        try:
+            payload = json.loads(budget_marker.read_text())
+        except (OSError, json.JSONDecodeError):
+            return True, "BUDGET_STOP_REQUESTED.json:unreadable"
+        reason = str(payload.get("reason") or "agent_cost_budget_exhausted")
+        return True, f"BUDGET_STOP_REQUESTED.json:{reason}"
     for name in ("STOP_REQUESTED.json", "STOP_ACK.json"):
         path = state_dir / name
         if not path.is_file():
@@ -56,10 +64,13 @@ def stop_requested(state_dir: Path) -> tuple[bool, str]:
         except (OSError, json.JSONDecodeError):
             return True, f"{name}:unreadable"
         reason = str(payload.get("reason") or "")
-        if name == "STOP_ACK.json" and reason and reason != "operator_stop":
-            # Non-operator ack (e.g. agent crash marker) does not block relaunch.
-            continue
-        if name == "STOP_REQUESTED.json" or reason == "operator_stop":
+        terminal_ack_reasons = {
+            "agent_cost_budget_exhausted",
+            "budget_telemetry_unavailable",
+            "openrouter_route_identity_mismatch",
+            "operator_stop",
+        }
+        if name == "STOP_REQUESTED.json" or reason in terminal_ack_reasons:
             return True, f"{name}:{reason or 'operator_stop'}"
     # Also honor empty sentinel file used by some launchers.
     if (state_dir / "STOP").is_file():

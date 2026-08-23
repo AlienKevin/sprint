@@ -42,6 +42,14 @@ HOP_BY_HOP = {
     "upgrade",
 }
 
+# Max-effort reasoning requests can legitimately spend well over ten minutes
+# before OpenRouter returns the response headers or first SSE event.  Do not
+# impose a proxy-local wall-clock timeout: the independent budget watchdog
+# remains live while this socket is open and will terminate the sandbox at the
+# run's dollar cap.  A finite timeout here converts a healthy long request into
+# an unpriced interrupted generation, which must fail closed.
+UPSTREAM_SOCKET_TIMEOUT_SECONDS: float | None = None
+
 
 def valid_ledger_request_id(value: object) -> bool:
     return (
@@ -347,7 +355,7 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
         connection = http.client.HTTPSConnection(
             self.ledger_server.upstream_host,
             self.ledger_server.upstream_port,
-            timeout=600,
+            timeout=UPSTREAM_SOCKET_TIMEOUT_SECONDS,
             context=ssl.create_default_context(),
         )
         try:

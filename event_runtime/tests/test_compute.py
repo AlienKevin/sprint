@@ -1949,6 +1949,42 @@ class SuperviseTests(unittest.TestCase):
             self.assertTrue(stop)
             self.assertIn("STOP_REQUESTED", reason)
 
+    def test_budget_stop_marker_blocks_relaunch(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            (state / "BUDGET_STOP_REQUESTED.json").write_text(
+                json.dumps(
+                    {
+                        "reason": "agent_cost_budget_exhausted",
+                        "status": "stop_requested",
+                    }
+                )
+                + "\n"
+            )
+            stop, reason = supervise_lane.stop_requested(state)
+            self.assertTrue(stop)
+            self.assertIn("BUDGET_STOP_REQUESTED", reason)
+
+    def test_budget_fail_closed_ack_blocks_relaunch(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            (state / "STOP_ACK.json").write_text(
+                json.dumps({"reason": "budget_telemetry_unavailable"}) + "\n"
+            )
+            stop, reason = supervise_lane.stop_requested(state)
+            self.assertTrue(stop)
+            self.assertIn("budget_telemetry_unavailable", reason)
+
+    def test_nonterminal_agent_exit_ack_allows_relaunch(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            (state / "STOP_ACK.json").write_text(
+                json.dumps({"reason": "agent_exit"}) + "\n"
+            )
+            stop, reason = supervise_lane.stop_requested(state)
+            self.assertFalse(stop)
+            self.assertEqual(reason, "")
+
     def test_loop_relaunches_then_honors_stop(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             state = Path(raw)
