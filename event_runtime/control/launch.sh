@@ -475,10 +475,13 @@ elif [[ "$MODEL_API_HOST" == "openrouter.ai" ]]; then
       SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON='{"max_output_tokens":384000,"model":"deepseek/deepseek-v4-flash-vision-exp","reasoning":{"effort":"max"},"temperature":1.0,"top_p":0.95}'
       ;;
     codex:gpt-5.6-luna)
-      SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON='{"max_output_tokens":128000,"model":"openai/gpt-5.6-luna","reasoning":{"effort":"max"},"service_tier":"default","temperature":1.0,"top_p":1.0}'
+      # The official OpenAI route advertises neither sampling overrides nor
+      # text verbosity through OpenRouter. With require_parameters=true those
+      # fields disqualify the only allowed endpoint instead of being ignored.
+      SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON='{"max_output_tokens":128000,"model":"openai/gpt-5.6-luna","reasoning":{"effort":"max"},"service_tier":"default"}'
       ;;
     codex:gpt-5.6-sol)
-      SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON='{"max_output_tokens":128000,"model":"openai/gpt-5.6-sol","reasoning":{"effort":"max"},"service_tier":"default","temperature":1.0,"top_p":1.0}'
+      SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON='{"max_output_tokens":128000,"model":"openai/gpt-5.6-sol","reasoning":{"effort":"max"},"service_tier":"default"}'
       ;;
     *)
       SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON=''

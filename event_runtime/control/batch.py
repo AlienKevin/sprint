@@ -1068,10 +1068,37 @@ def preflight(
                     "https://openrouter.ai/api/v1/responses",
                     keys["OPENROUTER_API_KEY"],
                     {
-                        "model": spec["preset"],
+                        # Exercise the raw model route exactly as the trusted
+                        # proxy does. A preset probe can hide unsupported
+                        # parameters because its routing policy differs from
+                        # our fail-closed provider contract.
+                        "model": spec["model"],
                         "input": "Return OK.",
+                        "provider": {
+                            "only": [spec["provider_endpoint"]],
+                            "order": [spec["provider_endpoint"]],
+                            "allow_fallbacks": False,
+                            "require_parameters": True,
+                        },
                         "reasoning": {"effort": REASONING_EFFORT},
-                        "max_output_tokens": 64,
+                        "max_output_tokens": 128_000,
+                        "service_tier": "default",
+                        "tools": [
+                            {
+                                "type": "function",
+                                "name": "sprint_preflight_noop",
+                                "description": "Preflight-only no-op tool.",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {},
+                                    "additionalProperties": False,
+                                },
+                            }
+                        ],
+                        "tool_choice": "auto",
+                        "parallel_tool_calls": True,
+                        "include": ["reasoning.encrypted_content"],
+                        "prompt_cache_key": "sprint-provider-preflight",
                         "store": False,
                     },
                     generation_audit_url="https://openrouter.ai/api/v1/generation",
@@ -1079,7 +1106,6 @@ def preflight(
                 probe = provider_probes[key]
                 checks[f"{key}_inference"] = (
                     probe.get("provider") == "OpenAI"
-                    and probe.get("preset_id") == spec["preset_id"]
                     and probe.get("resolved_model") == spec["resolved_model"]
                     and probe.get("service_tier") == "default"
                 )

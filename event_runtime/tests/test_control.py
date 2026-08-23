@@ -1308,8 +1308,6 @@ class DurableOpsTests(unittest.TestCase):
             config["openrouter_request_contract"],
             {
                 "model": "openai/gpt-5.6-luna",
-                "temperature": 1.0,
-                "top_p": 1.0,
                 "max_output_tokens": 128_000,
                 "reasoning": {"effort": "max"},
                 "service_tier": "default",

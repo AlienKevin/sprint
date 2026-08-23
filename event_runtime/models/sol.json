@@ -5,7 +5,7 @@
   "model": {
     "slug": "gpt-5.6-sol",
     "prefer_websockets": true,
-    "support_verbosity": true,
+    "support_verbosity": false,
     "default_verbosity": "low",
     "apply_patch_tool_type": "freeform",
     "web_search_tool_type": "text_and_image",

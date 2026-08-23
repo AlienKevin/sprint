@@ -370,9 +370,16 @@ def test_generic_openai_catalog_installer_supports_sol(tmp_path: Path) -> None:
     model = catalog["models"][0]
     assert model["slug"] == "@preset/test-sol"
     assert model["multi_agent_version"] == "v2"
+    assert model["support_verbosity"] is False
     config = (codex_home / "config.toml").read_text()
     assert 'model = "@preset/test-sol"' in config
     assert 'wire_api = "responses"' in config
+
+
+def test_openai_openrouter_catalogs_omit_unsupported_verbosity() -> None:
+    for name in ("luna", "sol"):
+        lock = json.loads((ROOT / f"event_runtime/models/{name}.json").read_text())
+        assert lock["model"]["support_verbosity"] is False
 
 
 @pytest.mark.parametrize(
