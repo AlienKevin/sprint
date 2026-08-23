@@ -25,6 +25,8 @@ OPENROUTER_PROXY_BASE_URL=${SPRINT_OPENROUTER_PROXY_BASE_URL:-http://127.0.0.1:1
 OPENROUTER_UPSTREAM_URL=${SPRINT_OPENROUTER_UPSTREAM_URL:-https://openrouter.ai/api/v1}
 OPENROUTER_PROVIDER_ENDPOINT=${SPRINT_OPENROUTER_PROVIDER_ENDPOINT:-}
 OPENROUTER_QUANTIZATION=${SPRINT_OPENROUTER_QUANTIZATION:-}
+OPENROUTER_REQUEST_CONTRACT_JSON=${SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON:-}
+OPENROUTER_ALLOWED_INFERENCE_PATH=${SPRINT_OPENROUTER_ALLOWED_INFERENCE_PATH:-responses}
 
 if [[ ! "$STOP_ACK_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
   echo "SPRINT_STOP_ACK_TIMEOUT_SECONDS must be a positive integer" >&2
@@ -54,6 +56,11 @@ start_openrouter_proxy() {
     echo "OpenRouter ledger proxy missing: $OPENROUTER_PROXY_BIN" >&2
     exit 1
   }
+  local upstream_api_key=${OPENROUTER_API_KEY:-${OPENAI_API_KEY:-}}
+  [[ ${#upstream_api_key} -ge 16 ]] || {
+    echo "OpenRouter ledger proxy requires a sealed upstream key" >&2
+    exit 1
+  }
   local ledger_root="$DURABLE_DIR/runs/$RUN_ID/api-usage"
   local attempt=${SPRINT_CPU_LAUNCH_ATTEMPT:-1}
   local -a route_args=()
@@ -63,15 +70,26 @@ start_openrouter_proxy() {
   if [[ -n "$OPENROUTER_QUANTIZATION" ]]; then
     route_args+=(--quantization "$OPENROUTER_QUANTIZATION")
   fi
+  if [[ -n "$OPENROUTER_REQUEST_CONTRACT_JSON" ]]; then
+    route_args+=(--request-contract-json "$OPENROUTER_REQUEST_CONTRACT_JSON")
+  fi
+  route_args+=(--allowed-inference-path "$OPENROUTER_ALLOWED_INFERENCE_PATH")
   "$OPENROUTER_PROXY_BIN" \
     --upstream "$OPENROUTER_UPSTREAM_URL" \
     --ledger-root "$ledger_root" \
     --run-id "$RUN_ID" \
     --cpu-attempt "$attempt" \
     --runtime-dir "$RUNTIME_DIR" \
+    --upstream-api-key-stdin \
     "${route_args[@]}" \
-    >>"$AGENT_LOG_DIR/openrouter-ledger-proxy.log" 2>&1 &
+    >>"$AGENT_LOG_DIR/openrouter-ledger-proxy.log" 2>&1 \
+    <<<"$upstream_api_key" &
   proxy_pid=$!
+  upstream_api_key=""
+  unset OPENROUTER_API_KEY
+  # Codex requires an API-key-shaped value, but the trusted proxy ignores it.
+  # This token has no value at OpenRouter and cannot be used for direct calls.
+  export OPENAI_API_KEY=sprint-local-proxy-token
   printf '%s\n' "$proxy_pid" >"$AGENT_STATE_DIR/openrouter-proxy.pid"
   local ready=0
   # A legacy run may need one bounded ledger migration before the proxy can

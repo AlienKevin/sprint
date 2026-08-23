@@ -33,6 +33,13 @@ sys.path.insert(0, str(ROOT))
 from event_runtime.export import frontier as frontier_update  # noqa: E402
 from event_runtime.export import performance as performance_export  # noqa: E402
 from event_runtime.control import run as sprintctl  # noqa: E402
+from event_runtime.control.openrouter_credentials import (  # noqa: E402
+    OpenRouterManagementClient,
+    OpenRouterManagementError,
+    TrialCredentialSpec,
+    provision_trial_credentials,
+    revoke_trial_credentials,
+)
 
 
 UV = Path(os.environ.get("UV", "/home/ubuntu/.local/bin/uv"))
@@ -46,9 +53,7 @@ HARBOR_REVISION = "dafb1387151e1c32702963d44fe6c3cea66cf8cb"
 CODEX_VERSION = "0.147.0"
 TRIALS_PER_MODEL = 3
 DEFAULT_FAMILIES = ("deepseek", "luna")
-SUPPORTED_FAMILIES = (
-    "deepseek", "luna", "sol", "flash-baidu", "pro-alibaba"
-)
+SUPPORTED_FAMILIES = ("deepseek", "luna", "sol", "flash-baidu", "pro-alibaba")
 OPENAI_FAMILY_SPECS: dict[str, dict[str, str]] = {
     "luna": {
         "model": "openai/gpt-5.6-luna",
@@ -56,6 +61,8 @@ OPENAI_FAMILY_SPECS: dict[str, dict[str, str]] = {
         "preset": "@preset/sprint-gpt-5-6-luna-openai-standard",
         "preset_id": "f06bb802-6122-4e11-8e22-a3476113a3b1",
         "resolved_model": "openai/gpt-5.6-luna-20260709",
+        "provider": "OpenAI",
+        "provider_endpoint": "openai",
     },
     "sol": {
         "model": "openai/gpt-5.6-sol",
@@ -63,12 +70,16 @@ OPENAI_FAMILY_SPECS: dict[str, dict[str, str]] = {
         "preset": "@preset/sprint-gpt-5-6-sol-openai-standard",
         "preset_id": "798803cc-8d68-4249-b437-c6eb509df833",
         "resolved_model": "openai/gpt-5.6-sol-20260709",
+        "provider": "OpenAI",
+        "provider_endpoint": "openai",
     },
 }
 DEEPSEEK_ROUTED_FAMILY_SPECS: dict[str, dict[str, str]] = {
     # `deepseek` is the current public/default family. Keep `flash-baidu` as
     # an explicit legacy family so historical comparison batches remain
-    # reproducible after moving the default to Vision Exp + DeepSeek Harness.
+    # reproducible. The DeepSeek Harness implementation remains available as
+    # an opt-in launcher, but active comparison batches use the same pinned
+    # Codex + /goal harness as the OpenAI families.
     "deepseek": {
         "model": "deepseek/deepseek-v4-flash-vision-exp",
         "resolved_model": "DeepSeek | deepseek/deepseek-v4-flash-vision-exp",
@@ -76,8 +87,8 @@ DEEPSEEK_ROUTED_FAMILY_SPECS: dict[str, dict[str, str]] = {
         "provider_endpoint": "deepseek",
         "quantization": "unknown",
         "context_window": "1048576",
-        "wrapper": "deepseek_harness.sh",
-        "wire_api": "chat_completions",
+        "wrapper": "deepseek.sh",
+        "wire_api": "responses",
     },
     "flash-baidu": {
         "model": "deepseek/deepseek-v4-flash-0731",
@@ -119,6 +130,8 @@ PROVIDER_INFERENCE_ATTEMPTS = 10
 PROVIDER_INFERENCE_RETRY_SECONDS = 5.0
 PROVIDER_GENERATION_AUDIT_ATTEMPTS = 6
 OPENROUTER_CREDIT_SAFETY_FACTOR = 1.05
+OPENROUTER_USAGE_AUDIT_GRACE_SECONDS = 120
+OPENROUTER_USAGE_AUDIT_TOLERANCE_USD = 0.01
 VERCEL_DAILY_QUOTA_BACKOFF_SECONDS = 24 * 60 * 60
 VERCEL_DAILY_QUOTA_CODE = "api-deployments-free-per-day"
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,48}$")
@@ -172,9 +185,9 @@ def atomic_public_json(path: Path, payload: Any) -> bool:
         previous = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
         previous = None
-    if previous is not None and _public_material_state(previous) == _public_material_state(
-        payload
-    ):
+    if previous is not None and _public_material_state(
+        previous
+    ) == _public_material_state(payload):
         return False
     atomic_json(path, payload, mode=0o644)
     return True
@@ -193,6 +206,7 @@ def load_env(path: Path) -> dict[str, str]:
             in {
                 "OPENAI_API_KEY",
                 "OPENROUTER_API_KEY",
+                "OPENROUTER_MANAGEMENT_KEY",
             }
             and value
         ):
@@ -256,13 +270,20 @@ def fetch_openrouter_credit(api_key: str) -> dict[str, float]:
     except (KeyError, TypeError, ValueError) as exc:
         raise RuntimeError("OpenRouter credit response was invalid") from exc
     remaining = total - usage
-    if not all(math.isfinite(value) and value >= 0 for value in (total, usage, remaining)):
+    if not all(
+        math.isfinite(value) and value >= 0 for value in (total, usage, remaining)
+    ):
         raise RuntimeError("OpenRouter credit totals were invalid")
     return {
         "total_credits_usd": total,
         "total_usage_usd": usage,
         "remaining_credit_usd": remaining,
     }
+
+
+def verify_openrouter_management_access(management_key: str) -> None:
+    """Confirm the management credential without mutating account state."""
+    OpenRouterManagementClient(management_key).request("GET", "/keys?limit=1")
 
 
 def functional_gpu_canary_ready() -> bool:
@@ -303,8 +324,7 @@ def functional_gpu_canary_ready() -> bool:
         and canary.get("gpu_budget_mirror_verified")
         and (canary.get("gpu_budget_mirror") or {}).get("completed")
         and (canary.get("gpu_budget_mirror") or {}).get("updates_verified") == 2
-        and (canary.get("gpu_budget_mirror") or {}).get("observed_sequences")
-        == [1, 2]
+        and (canary.get("gpu_budget_mirror") or {}).get("observed_sequences") == [1, 2]
         and cost_proof_valid
         and canary.get("image_id") == contexts.get("agent_training", {}).get("image_id")
         and canary.get("verifier_image_id")
@@ -383,6 +403,9 @@ def matrix(
                 "wrapper": "openai.sh",
                 "resolved_model_version": spec["model_id"],
                 "openrouter_preset": spec["preset"],
+                "provider": spec["provider"],
+                "provider_endpoint": spec["provider_endpoint"],
+                "quantization": "unknown",
             }
             for family, spec in OPENAI_FAMILY_SPECS.items()
         },
@@ -412,6 +435,8 @@ def matrix(
                     "model": spec["model"],
                     "resolved_model_version": spec["resolved_model_version"],
                     "reasoning_effort": REASONING_EFFORT,
+                    "agent_kind": "codex",
+                    "goal_mode": "codex_session_goal",
                     "codex_version": CODEX_VERSION,
                     "wrapper": str(MODULE_DIR / "providers" / spec["wrapper"]),
                     "trial": trial,
@@ -430,6 +455,7 @@ def matrix(
                                 "quantization",
                                 "context_window",
                             )
+                            if key in spec
                         }
                         if "provider_endpoint" in spec
                         else {}
@@ -449,6 +475,10 @@ def batch_path(batch_id: str) -> Path:
     return batch_dir(batch_id) / "batch.json"
 
 
+def credential_journal_path(batch_id: str) -> Path:
+    return batch_dir(batch_id) / "openrouter-credentials.json"
+
+
 def read_batch(batch_id: str) -> dict[str, Any]:
     path = batch_path(batch_id)
     try:
@@ -458,6 +488,114 @@ def read_batch(batch_id: str) -> dict[str, Any]:
     if payload.get("batch_id") != batch_id:
         raise ValueError("batch state has mismatched ID")
     return payload
+
+
+def _local_provider_billed_cost(run_id: str) -> tuple[float, int, str | None]:
+    path = SCRIPT_DIR / run_id / "telemetry" / "agent-cost.json"
+    try:
+        payload = json.loads(path.read_text())
+        model_api = payload["components"]["model_api"]
+        cost = float(model_api["provider_billed_cost_usd"])
+        pending = int(model_api.get("pending_request_count", 0) or 0)
+        as_of = payload.get("as_of")
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return 0.0, 0, None
+    if not math.isfinite(cost) or cost < 0 or pending < 0:
+        return 0.0, 0, None
+    return cost, pending, str(as_of) if as_of else None
+
+
+def audit_openrouter_child_usage(
+    payload: dict[str, Any],
+    client: OpenRouterManagementClient,
+    *,
+    now: dt.datetime,
+) -> list[dict[str, str]]:
+    """Detect use of a child key that bypassed the trusted ledger proxy."""
+    alerts: list[dict[str, str]] = []
+    for arm in payload.get("arms", []):
+        credential = arm.get("openrouter_credential") or {}
+        key_hash = credential.get("key_hash")
+        if not key_hash:
+            continue
+        try:
+            key = client.key_usage(str(key_hash))
+            upstream_usage = float(key.get("usage", 0.0) or 0.0)
+            local_usage, pending, local_as_of = _local_provider_billed_cost(
+                arm["run_id"]
+            )
+            if not math.isfinite(upstream_usage) or upstream_usage < 0:
+                raise OpenRouterManagementError("API key usage was invalid")
+        except (OpenRouterManagementError, TypeError, ValueError) as exc:
+            alerts.append(
+                {
+                    "run_id": arm["run_id"],
+                    "kind": "openrouter_key_usage_audit",
+                    "source": type(exc).__name__,
+                    "count_in_tail": "1",
+                }
+            )
+            continue
+        delta = upstream_usage - local_usage
+        audit = arm.setdefault("openrouter_usage_audit", {})
+        audit.update(
+            {
+                "checked_at": utc_now(),
+                "key_usage_usd": upstream_usage,
+                "ledger_provider_billed_usd": local_usage,
+                "unreconciled_usd": max(0.0, delta),
+                "pending_request_count": pending,
+                "ledger_as_of": local_as_of,
+            }
+        )
+        if delta <= OPENROUTER_USAGE_AUDIT_TOLERANCE_USD:
+            audit.pop("mismatch_first_seen_at", None)
+            resolve_alerts(
+                payload,
+                run_id=arm["run_id"],
+                kind="openrouter_proxy_bypass",
+                resolution="child-key usage reconciled with trusted proxy ledger",
+            )
+            continue
+        first = audit.setdefault("mismatch_first_seen_at", utc_now())
+        try:
+            mismatch_age = (now - parse_time(first)).total_seconds()
+        except (TypeError, ValueError):
+            mismatch_age = 0
+            audit["mismatch_first_seen_at"] = utc_now()
+        if mismatch_age < OPENROUTER_USAGE_AUDIT_GRACE_SECONDS:
+            continue
+        alerts.append(
+            {
+                "run_id": arm["run_id"],
+                "kind": "openrouter_proxy_bypass",
+                "source": "child_key_usage",
+                "count_in_tail": "1",
+            }
+        )
+        if arm.get("stop_requested_at") is None:
+            sprintctl.persist_stop_request(
+                arm["run_id"], reason="openrouter_proxy_bypass_detected"
+            )
+            arm["stop_requested_at"] = utc_now()
+            arm["status"] = "stopping"
+    return alerts
+
+
+def revoke_batch_credentials(payload: dict[str, Any], env_file: Path) -> list[str]:
+    if payload.get("credential_status") == "revoked":
+        return list(payload.get("credential_cleanup_errors", []))
+    keys = load_env(env_file)
+    client = OpenRouterManagementClient(keys["OPENROUTER_MANAGEMENT_KEY"])
+    errors = revoke_trial_credentials(
+        client,
+        payload.get("openrouter_credentials", []),
+        journal_path=credential_journal_path(payload["batch_id"]),
+    )
+    payload["credential_status"] = "cleanup_error" if errors else "revoked"
+    payload["credentials_revoked_at"] = utc_now()
+    payload["credential_cleanup_errors"] = errors
+    return errors
 
 
 def provider_models(url: str, key: str) -> set[str]:
@@ -527,9 +665,7 @@ def provider_inference_probe(
         except urllib.error.HTTPError as exc:
             retryable = exc.code == 429 or 500 <= exc.code < 600
             if retryable and attempt + 1 < PROVIDER_INFERENCE_ATTEMPTS:
-                time.sleep(
-                    min(PROVIDER_INFERENCE_RETRY_SECONDS * (2**attempt), 30.0)
-                )
+                time.sleep(min(PROVIDER_INFERENCE_RETRY_SECONDS * (2**attempt), 30.0))
                 continue
             detail = ""
             try:
@@ -551,9 +687,7 @@ def provider_inference_probe(
             ) from exc
         except (urllib.error.URLError, TimeoutError) as exc:
             if attempt + 1 < PROVIDER_INFERENCE_ATTEMPTS:
-                time.sleep(
-                    min(PROVIDER_INFERENCE_RETRY_SECONDS * (2**attempt), 30.0)
-                )
+                time.sleep(min(PROVIDER_INFERENCE_RETRY_SECONDS * (2**attempt), 30.0))
                 continue
             reason = getattr(exc, "reason", str(exc))
             raise RuntimeError(f"provider inference request failed: {reason}") from exc
@@ -563,9 +697,7 @@ def provider_inference_probe(
     if generation_audit_url:
         audit_id = generation_id or str(result["id"])
         audit_url = (
-            generation_audit_url
-            + "?"
-            + urllib.parse.urlencode({"id": audit_id})
+            generation_audit_url + "?" + urllib.parse.urlencode({"id": audit_id})
         )
         audit_request = urllib.request.Request(
             audit_url,
@@ -801,6 +933,18 @@ def preflight(
     for family in families:
         name = required_keys[family]
         checks[f"secret_{name.lower()}"] = len(keys.get(name, "")) >= 16
+    checks["secret_openrouter_management_key"] = (
+        len(keys.get("OPENROUTER_MANAGEMENT_KEY", "")) >= 16
+    )
+    if check_providers and checks["secret_openrouter_management_key"]:
+        try:
+            verify_openrouter_management_access(keys["OPENROUTER_MANAGEMENT_KEY"])
+            checks["openrouter_management_access"] = True
+        except (OpenRouterManagementError, ValueError) as exc:
+            checks["openrouter_management_access"] = False
+            provider_errors["openrouter_management"] = str(exc)
+    else:
+        checks["openrouter_management_access"] = not check_providers
     auto_recharge_confirmed = os.environ.get(
         "SPRINT_OPENROUTER_AUTO_RECHARGE_CONFIRMED", ""
     ).strip().lower() in {"1", "true", "yes"}
@@ -1197,6 +1341,7 @@ def launch(
         "run_hours": RUN_HOURS,
         "site_deploy_interval_seconds": LIVE_SITE_DEPLOY_SECONDS,
         "modal_profile": modal_profile,
+        "env_file": str(env_file.resolve()),
         "preflight": report,
         "arms": matrix(
             batch_id,
@@ -1209,8 +1354,38 @@ def launch(
     }
     atomic_json(batch_path(batch_id), payload)
     keys = load_env(env_file)
+    management_client = OpenRouterManagementClient(keys["OPENROUTER_MANAGEMENT_KEY"])
+    credential_specs = [
+        TrialCredentialSpec(
+            run_id=arm["run_id"],
+            model=arm["model"],
+            provider=arm["provider_endpoint"],
+            budget_usd=configured_agent_budget_usd(),
+        )
+        for arm in payload["arms"]
+    ]
+    credentials = provision_trial_credentials(
+        management_client,
+        credential_specs,
+        journal_path=credential_journal_path(batch_id),
+    )
+    credentials_by_run = {credential.run_id: credential for credential in credentials}
+    payload["openrouter_credentials"] = [
+        credential.public_metadata() for credential in credentials
+    ]
+    payload["credential_status"] = "active"
+    for arm in payload["arms"]:
+        arm["openrouter_credential"] = credentials_by_run[
+            arm["run_id"]
+        ].public_metadata()
+    atomic_json(batch_path(batch_id), payload)
     base_env = dict(os.environ)
     base_env.update(keys)
+    # Management authority and the unrestricted workspace key must never enter
+    # an untrusted agent sandbox. Each arm receives only its sealed child key.
+    base_env.pop("OPENROUTER_MANAGEMENT_KEY", None)
+    base_env.pop("OPENROUTER_API_KEY", None)
+    base_env.pop("OPENAI_API_KEY", None)
     base_env.update(
         {
             "MODAL_PROFILE": modal_profile,
@@ -1227,21 +1402,20 @@ def launch(
             arm["launch_started_at"] = utc_now()
             atomic_json(batch_path(batch_id), payload)
             env = dict(base_env)
+            child_key = credentials_by_run[arm["run_id"]].api_key
+            env["OPENROUTER_API_KEY"] = child_key
+            env["OPENAI_API_KEY"] = child_key
             env["RUN_ID"] = arm["run_id"]
             env["MODEL"] = arm["model"]
             if arm.get("openrouter_preset"):
                 env["OPENROUTER_PRESET"] = arm["openrouter_preset"]
             if arm.get("provider_endpoint"):
                 env["OPENROUTER_MODEL"] = arm["model"]
-                env["SPRINT_OPENROUTER_PROVIDER_ENDPOINT"] = arm[
-                    "provider_endpoint"
-                ]
-                if arm.get("quantization") != "unknown":
+                env["SPRINT_OPENROUTER_PROVIDER_ENDPOINT"] = arm["provider_endpoint"]
+                if arm.get("quantization") not in {None, "unknown"}:
                     env["SPRINT_OPENROUTER_QUANTIZATION"] = arm["quantization"]
                 if arm["wrapper"].endswith("deepseek.sh"):
-                    env["SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW"] = arm[
-                        "context_window"
-                    ]
+                    env["SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW"] = arm["context_window"]
             output = run_checked([arm["wrapper"]], env=env)
             arm["status"] = "launched"
             arm["launch_output_sha256"] = hashlib.sha256(output.encode()).hexdigest()
@@ -1270,12 +1444,34 @@ def launch(
             except Exception as stop_exc:  # noqa: BLE001
                 started_arm["rollback_error"] = f"{type(stop_exc).__name__}: {stop_exc}"
         payload["status"] = "launch_error"
+        payload["credential_cleanup_errors"] = revoke_trial_credentials(
+            management_client,
+            payload.get("openrouter_credentials", []),
+            journal_path=credential_journal_path(batch_id),
+        )
         atomic_json(batch_path(batch_id), payload)
         raise
     payload["status"] = "running"
     payload["launched_at"] = utc_now()
     atomic_json(batch_path(batch_id), payload)
-    start_monitor_service(batch_id, env_file, modal_profile)
+    try:
+        start_monitor_service(batch_id, env_file, modal_profile)
+    except Exception:
+        for started_arm in launched:
+            try:
+                sprintctl.request_stop(
+                    started_arm["run_id"], reason="batch_monitor_start_failed"
+                )
+            except Exception:  # noqa: BLE001 - persisted state documents cleanup
+                pass
+        payload["status"] = "launch_error"
+        payload["credential_cleanup_errors"] = revoke_trial_credentials(
+            management_client,
+            payload.get("openrouter_credentials", []),
+            journal_path=credential_journal_path(batch_id),
+        )
+        atomic_json(batch_path(batch_id), payload)
+        raise
     return payload
 
 
@@ -1329,9 +1525,7 @@ def verifier_lane_stall_alerts(
         progress: list[dt.datetime] = []
         run_dir = SCRIPT_DIR / run_id
         ledgers = list(
-            (run_dir / "harbor-jobs").glob(
-                "*/*/artifacts/continuous/ledger.jsonl"
-            )
+            (run_dir / "harbor-jobs").glob("*/*/artifacts/continuous/ledger.jsonl")
         )
         ledgers.extend(
             (run_dir / "cpu-attempts").glob(
@@ -1529,7 +1723,13 @@ def public_tracking_batch(payload: dict[str, Any]) -> dict[str, Any]:
             continue
         try:
             batch_payloads.append(read_batch(batch_id))
-        except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        except (
+            FileNotFoundError,
+            KeyError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+        ):
             continue
     batch_payloads.append(payload)
 
@@ -1546,11 +1746,9 @@ def public_tracking_batch(payload: dict[str, Any]) -> dict[str, Any]:
         for arm in batch.get("arms", []):
             run_id = arm.get("run_id")
             if isinstance(run_id, str) and run_id:
-                invalidated_reason = raw_arms.get(run_id, {}).get(
-                    "invalidated_reason"
-                )
-                stop_reason = (
-                    (raw_arms.get(run_id, {}).get("stop_ack") or {}).get("reason")
+                invalidated_reason = raw_arms.get(run_id, {}).get("invalidated_reason")
+                stop_reason = (raw_arms.get(run_id, {}).get("stop_ack") or {}).get(
+                    "reason"
                 )
                 exclusion_reason = invalidated_reason or (
                     stop_reason
@@ -1572,8 +1770,7 @@ def public_tracking_batch(payload: dict[str, Any]) -> dict[str, Any]:
             if (
                 alert.get("kind") == "finalization"
                 and isinstance(alert_run_id, str)
-                and (arms_by_run.get(alert_run_id) or {}).get("status")
-                == "finalized"
+                and (arms_by_run.get(alert_run_id) or {}).get("status") == "finalized"
             ):
                 # A transient finalizer exception is no longer actionable once
                 # the durable FINALIZED marker exists. Source batch monitors
@@ -1605,9 +1802,7 @@ def public_tracking_batch(payload: dict[str, Any]) -> dict[str, Any]:
     return current
 
 
-def write_public_batch(
-    payload: dict[str, Any], *, update_current: bool = True
-) -> Path:
+def write_public_batch(payload: dict[str, Any], *, update_current: bool = True) -> Path:
     """Publish the batch record and, for its owning monitor, the active pointer."""
     public = public_batch(payload)
     public_path = WEB / "data" / "batches" / f"{payload['batch_id']}.json"
@@ -1822,13 +2017,35 @@ def mark_deployed_runs(payload: dict[str, Any]) -> list[dict[str, str]]:
     return alerts
 
 
-def monitor_cycle(batch_id: str, *, deploy: bool = True) -> dict[str, Any]:
+def monitor_cycle(
+    batch_id: str, *, deploy: bool = True, env_file: Path | None = None
+) -> dict[str, Any]:
     path = batch_path(batch_id)
     with frontier_update.file_lock(path.with_suffix(".lock")):
         payload = read_batch(batch_id)
         now = dt.datetime.now(dt.timezone.utc)
         finalized = 0
         cycle_alerts: list[dict[str, str]] = []
+        if payload.get("credential_status") == "active":
+            credential_env = env_file or Path(payload.get("env_file", ROOT / ".env"))
+            try:
+                management_key = load_env(credential_env)["OPENROUTER_MANAGEMENT_KEY"]
+                cycle_alerts.extend(
+                    audit_openrouter_child_usage(
+                        payload,
+                        OpenRouterManagementClient(management_key),
+                        now=now,
+                    )
+                )
+            except (KeyError, OSError, OpenRouterManagementError, ValueError) as exc:
+                cycle_alerts.append(
+                    {
+                        "run_id": "batch",
+                        "kind": "openrouter_key_usage_audit",
+                        "source": type(exc).__name__,
+                        "count_in_tail": "1",
+                    }
+                )
         for arm in payload["arms"]:
             run_id = arm["run_id"]
             run_path = SCRIPT_DIR / run_id / "run.json"
@@ -2022,6 +2239,24 @@ def monitor_cycle(batch_id: str, *, deploy: bool = True) -> dict[str, Any]:
             payload["status"] = "finalizing_site"
             payload["updated_at"] = utc_now()
             write_public_batch(payload, update_current=deploy)
+        if (
+            all_finalized
+            and deployed_current
+            and payload.get("credential_status") == "active"
+        ):
+            credential_env = env_file or Path(payload.get("env_file", ROOT / ".env"))
+            try:
+                revoke_batch_credentials(payload, credential_env)
+            except (KeyError, OSError, OpenRouterManagementError, ValueError) as exc:
+                payload["credential_status"] = "cleanup_error"
+                cycle_alerts.append(
+                    {
+                        "run_id": "batch",
+                        "kind": "openrouter_credential_cleanup",
+                        "source": type(exc).__name__,
+                        "count_in_tail": "1",
+                    }
+                )
         known = {
             (item.get("run_id"), item.get("kind"), item.get("source"))
             for item in payload.get("alerts", [])
@@ -2036,7 +2271,7 @@ def monitor_cycle(batch_id: str, *, deploy: bool = True) -> dict[str, Any]:
         return payload
 
 
-def stop_batch(batch_id: str) -> dict[str, Any]:
+def stop_batch(batch_id: str, *, env_file: Path | None = None) -> dict[str, Any]:
     payload = read_batch(batch_id)
     targets: list[dict[str, Any]] = []
     # Persist every lane's stop intent first. Modal lease fencing can wait on a
@@ -2053,6 +2288,15 @@ def stop_batch(batch_id: str) -> dict[str, Any]:
             targets.append(arm)
     payload["updated_at"] = utc_now()
     atomic_json(batch_path(batch_id), payload)
+
+    if payload.get("credential_status") == "active":
+        credential_env = env_file or Path(payload.get("env_file", ROOT / ".env"))
+        try:
+            revoke_batch_credentials(payload, credential_env)
+        except (KeyError, OSError, OpenRouterManagementError, ValueError) as exc:
+            payload["credential_status"] = "cleanup_error"
+            payload["credential_cleanup_errors"] = [f"{type(exc).__name__}: {exc}"]
+        atomic_json(batch_path(batch_id), payload)
 
     for arm in targets:
         try:
@@ -2131,13 +2375,17 @@ def main() -> int:
         )
     elif args.command == "monitor":
         while True:
-            output = monitor_cycle(args.batch_id, deploy=not args.no_deploy)
+            output = monitor_cycle(
+                args.batch_id,
+                deploy=not args.no_deploy,
+                env_file=args.env_file.resolve(),
+            )
             print(json.dumps(public_batch(output), indent=2), flush=True)
             if not args.loop or output.get("status") == "complete":
                 break
             time.sleep(max(10, args.poll_seconds))
     elif args.command == "stop":
-        output = stop_batch(args.batch_id)
+        output = stop_batch(args.batch_id, env_file=args.env_file.resolve())
     else:
         output = read_batch(args.batch_id)
     print(

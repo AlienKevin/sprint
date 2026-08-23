@@ -16,7 +16,20 @@ export MODAL_PROFILE="${MODAL_PROFILE:-kevinli020508}"
 
 MODEL="${MODEL:-deepseek/deepseek-v4-flash-0731}"
 ENDPOINT="${ENDPOINT:-https://openrouter.ai/api/v1}"
-if [[ "${MODEL#*/}" == deepseek-v4-flash* ]]; then
+if [[ "${MODEL#*/}" == "deepseek-v4-flash-vision-exp" ]]; then
+  if [[ -n "${SPRINT_OPENROUTER_PROVIDER_ENDPOINT:-}" \
+        && "$SPRINT_OPENROUTER_PROVIDER_ENDPOINT" != "deepseek" ]]; then
+    echo "DeepSeek V4 Flash Vision Exp is locked to the official DeepSeek endpoint" >&2
+    exit 2
+  fi
+  if [[ -n "${SPRINT_OPENROUTER_QUANTIZATION:-}" ]]; then
+    echo "DeepSeek V4 Flash Vision Exp official endpoint has no sealed quantization" >&2
+    exit 2
+  fi
+  export SPRINT_OPENROUTER_PROVIDER_ENDPOINT=deepseek
+  export SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW=1048576
+  unset SPRINT_OPENROUTER_QUANTIZATION
+elif [[ "${MODEL#*/}" == deepseek-v4-flash* ]]; then
   if [[ -n "${SPRINT_OPENROUTER_PROVIDER_ENDPOINT:-}" \
         && "$SPRINT_OPENROUTER_PROVIDER_ENDPOINT" != "baidu/fp8" ]]; then
     echo "DeepSeek V4 Flash provider is locked to baidu/fp8" >&2
@@ -30,7 +43,6 @@ if [[ "${MODEL#*/}" == deepseek-v4-flash* ]]; then
   export SPRINT_OPENROUTER_PROVIDER_ENDPOINT=baidu/fp8
   export SPRINT_OPENROUTER_QUANTIZATION=fp8
   export SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW=1048576
-  OPENROUTER_MODEL="$MODEL"
 fi
 if [[ -n "${SPRINT_OPENROUTER_PROVIDER_ENDPOINT:-}" ]]; then
   OPENROUTER_MODEL="${OPENROUTER_MODEL:-$MODEL}"
@@ -51,6 +63,7 @@ if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
 fi
 export OPENAI_API_KEY="$OPENROUTER_API_KEY"
 export SPRINT_CODEX_DEEPSEEK_BASE_URL="$ENDPOINT"
+export OPENROUTER_MODEL="${OPENROUTER_MODEL:-$MODEL}"
 export SPRINT_CODEX_DEEPSEEK_MODEL="$OPENROUTER_MODEL"
 echo "launcher: providers/deepseek.sh"
 echo "run_id:   $RUN_ID"

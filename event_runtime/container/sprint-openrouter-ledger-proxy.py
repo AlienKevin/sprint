@@ -146,9 +146,19 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0].rstrip("/")
-        record_usage = path.endswith("/responses") or path.endswith(
-            "/chat/completions"
+        inference_path = (
+            "responses"
+            if path in {"/responses", "/api/v1/responses"}
+            else "chat_completions"
+            if path in {"/chat/completions", "/api/v1/chat/completions"}
+            else None
         )
+        if self.ledger_server.allowed_inference_path is not None and (
+            inference_path != self.ledger_server.allowed_inference_path
+        ):
+            self.send_error(HTTPStatus.METHOD_NOT_ALLOWED, "inference path is sealed")
+            return
+        record_usage = inference_path is not None
         self._forward(record_usage=record_usage)
 
     def _request_body(self) -> bytes:
@@ -164,8 +174,12 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
         headers = {
             name: value
             for name, value in self.headers.items()
-            if name.lower() not in HOP_BY_HOP | {"host", "content-length"}
+            if name.lower()
+            not in HOP_BY_HOP | {"host", "content-length", "authorization"}
         }
+        headers["Authorization"] = self.ledger_server.upstream_authorization or str(
+            self.headers.get("Authorization") or ""
+        )
         headers["Content-Length"] = str(len(body))
         headers["Accept-Encoding"] = "identity"
         if router_metadata:
@@ -236,8 +250,22 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                         if isinstance(request_payload, dict)
                         else None
                     ),
-                    authorization=self.headers.get("Authorization"),
+                    authorization=self.ledger_server.upstream_authorization
+                    or self.headers.get("Authorization"),
                 )
+                if requested_model != self.ledger_server.canonical_model:
+                    raise OpenRouterPricingError(
+                        "sealed request model does not match run contract"
+                    )
+                if (
+                    promotion_snapshot.get("model")
+                    != self.ledger_server.canonical_model
+                    or promotion_snapshot.get("provider_tag")
+                    != self.ledger_server.provider_endpoint
+                ):
+                    raise OpenRouterPricingError(
+                        "sealed request route does not match run contract"
+                    )
             except OpenRouterPricingError:
                 self.ledger_server.write_stop(
                     {
@@ -367,13 +395,23 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                     and float(cost) >= 0
                 )
                 if valid_cost:
+                    response_model = terminal_response.get("model")
+                    identity_verified = response_model in {
+                        None,
+                        self.ledger_server.canonical_model,
+                        self.ledger_server.resolved_model,
+                    }
                     list_cost = undiscounted_cost_usd(cost, promotion_snapshot)
                     benchmark_cost = benchmark_cost_usd(
                         cost, promotion_snapshot, terminal_usage
                     )
                     record.update(
                         {
-                            "state": "complete",
+                            "state": (
+                                "complete"
+                                if identity_verified
+                                else "route_identity_mismatch"
+                            ),
                             "completed_at": utc_now(),
                             "generation_id": generation_id
                             or terminal_response.get("id"),
@@ -381,10 +419,8 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                             "undiscounted_cost_usd": list_cost,
                             "benchmark_cost_usd": benchmark_cost,
                             "promotion_adjustment_usd": list_cost - float(cost),
-                            "deepseek_peak_adjustment_usd": benchmark_cost
-                            - list_cost,
-                            "benchmark_adjustment_usd": benchmark_cost
-                            - float(cost),
+                            "deepseek_peak_adjustment_usd": benchmark_cost - list_cost,
+                            "benchmark_adjustment_usd": benchmark_cost - float(cost),
                             "promotion_discount_fraction": promotion_snapshot[
                                 "discount_fraction"
                             ],
@@ -392,7 +428,8 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                             "provider_cost_basis": PROVIDER_COST_BASIS,
                             "usage": terminal_usage,
                             "response_id": terminal_response.get("id"),
-                            "response_model": terminal_response.get("model"),
+                            "response_model": response_model,
+                            "route_identity_verified": identity_verified,
                             "response_status": terminal_response.get("status"),
                         }
                     )
@@ -421,6 +458,15 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                     self.ledger_server.complete_request(
                         request_id, benchmark_cost, float(cost)
                     )
+                    if not record.get("route_identity_verified", True):
+                        self.ledger_server.write_stop(
+                            {
+                                "schema_version": 2,
+                                "run_id": self.ledger_server.run_id,
+                                "reason": "openrouter_route_identity_mismatch",
+                                "status": "fail_closed",
+                            }
+                        )
                 elif upstream.status >= 400 and not generation_id:
                     self.ledger_server.complete_request(request_id, 0.0, 0.0)
                 else:
@@ -483,6 +529,8 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
         provider_endpoint: str | None = None,
         quantization: str | None = None,
         request_contract: dict[str, Any] | None = None,
+        allowed_inference_path: str | None = None,
+        upstream_api_key: str | None = None,
     ) -> None:
         parsed = urlsplit(upstream)
         if parsed.scheme != "https" or parsed.hostname != "openrouter.ai":
@@ -496,15 +544,26 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
         ):
             raise ValueError("provider endpoint must be one OpenRouter slug")
         allowed_quantizations = {
-            "int4", "int8", "fp4", "fp6", "fp8", "fp16", "bf16", "fp32", "unknown"
+            "int4",
+            "int8",
+            "fp4",
+            "fp6",
+            "fp8",
+            "fp16",
+            "bf16",
+            "fp32",
+            "unknown",
         }
         if quantization is not None and quantization not in allowed_quantizations:
             raise ValueError("invalid OpenRouter quantization")
         if request_contract is not None:
             allowed_contract_fields = {
+                "max_output_tokens",
                 "model",
                 "max_tokens",
+                "reasoning",
                 "reasoning_effort",
+                "service_tier",
                 "stream",
                 "temperature",
                 "top_p",
@@ -516,6 +575,10 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
                 )
             if not request_contract:
                 raise ValueError("request contract must not be empty")
+        if allowed_inference_path not in {None, "responses", "chat_completions"}:
+            raise ValueError("invalid allowed inference path")
+        if upstream_api_key is not None and len(upstream_api_key) < 16:
+            raise ValueError("upstream API key is missing or too short")
         self.upstream_host = parsed.hostname
         self.upstream_port = parsed.port or 443
         self.run_id = run_id
@@ -523,11 +586,16 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
         self.provider_endpoint = provider_endpoint
         self.quantization = quantization
         self.request_contract = request_contract
+        self.allowed_inference_path = allowed_inference_path
+        self.upstream_authorization = (
+            f"Bearer {upstream_api_key}" if upstream_api_key is not None else None
+        )
         self.run_root = ledger_root.parent
         run = json.loads((self.run_root / "state/run.json").read_text())
         if run.get("run_id") != run_id:
             raise ValueError("run identity mismatch")
         self.canonical_model = str(run.get("model") or "")
+        self.resolved_model = str(run.get("resolved_model_version") or "")
         self.requests_dir = ledger_root / "requests"
         self.runtime_dir = runtime_dir
         self.billing_lock = threading.Lock()
@@ -901,11 +969,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--provider-endpoint")
     parser.add_argument("--quantization")
     parser.add_argument("--request-contract-json")
+    parser.add_argument(
+        "--allowed-inference-path", choices=("responses", "chat_completions")
+    )
+    parser.add_argument("--upstream-api-key-stdin", action="store_true")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    upstream_api_key = None
+    if args.upstream_api_key_stdin:
+        upstream_api_key = sys.stdin.readline().rstrip("\r\n")
+        if len(upstream_api_key) < 16:
+            raise SystemExit("upstream API key was not provided on stdin")
     request_contract = None
     if args.request_contract_json:
         try:
@@ -924,6 +1001,8 @@ def main() -> int:
         provider_endpoint=args.provider_endpoint,
         quantization=args.quantization,
         request_contract=request_contract,
+        allowed_inference_path=args.allowed_inference_path,
+        upstream_api_key=upstream_api_key,
     )
     server.serve_forever(poll_interval=0.25)
     return 0

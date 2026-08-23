@@ -108,6 +108,41 @@ def test_chat_completions_contract_is_sealed_and_usage_is_forced() -> None:
     assert payload["reasoning_effort"] == "max"
 
 
+def test_responses_contract_seals_luna_benchmark_parameters() -> None:
+    body, payload = proxy.pin_provider_route(
+        json.dumps(
+            {
+                "model": "caller/other-model",
+                "input": "hello",
+                "temperature": 0.2,
+                "top_p": 0.2,
+                "max_output_tokens": 32,
+                "reasoning": {"effort": "low"},
+                "service_tier": "flex",
+            }
+        ).encode(),
+        provider_endpoint="openai",
+        quantization=None,
+        request_contract={
+            "model": "openai/gpt-5.6-luna",
+            "temperature": 1.0,
+            "top_p": 1.0,
+            "max_output_tokens": 128_000,
+            "reasoning": {"effort": "max"},
+            "service_tier": "default",
+        },
+    )
+
+    assert json.loads(body) == payload
+    assert payload["model"] == "openai/gpt-5.6-luna"
+    assert payload["provider"]["only"] == ["openai"]
+    assert payload["temperature"] == 1.0
+    assert payload["top_p"] == 1.0
+    assert payload["max_output_tokens"] == 128_000
+    assert payload["reasoning"] == {"effort": "max"}
+    assert payload["service_tier"] == "default"
+
+
 def test_chat_completion_usage_event_exposes_exact_usage_cost() -> None:
     usage, response = proxy.usage_from_event(
         {
@@ -284,9 +319,7 @@ def test_deepseek_peak_floor_applies_to_any_pinned_openrouter_provider() -> None
         "output_tokens": 100,
     }
 
-    assert proxy.benchmark_cost_usd(0.00005, parsed, usage) == pytest.approx(
-        0.0002312
-    )
+    assert proxy.benchmark_cost_usd(0.00005, parsed, usage) == pytest.approx(0.0002312)
 
 
 def test_non_deepseek_route_keeps_undiscounted_openrouter_cost() -> None:
@@ -394,6 +427,37 @@ def test_proxy_rejects_unknown_request_contract_fields(tmp_path: Path) -> None:
             provider_endpoint="provider",
             request_contract={"unsealed": True},
         )
+
+
+def test_responses_only_proxy_rejects_chat_and_other_post_paths(tmp_path: Path) -> None:
+    (tmp_path / "state").mkdir()
+    (tmp_path / "state/run.json").write_text(
+        json.dumps({"run_id": "run-1", "model": "openai/gpt-5.6-luna"})
+    )
+    server = proxy.LedgerProxyServer(
+        ("127.0.0.1", 0),
+        upstream="https://openrouter.ai/api/v1",
+        ledger_root=tmp_path / "api-usage",
+        run_id="run-1",
+        cpu_attempt=1,
+        allowed_inference_path="responses",
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        for path in ("/api/v1/chat/completions", "/api/v1/embeddings"):
+            client = http.client.HTTPConnection(
+                "127.0.0.1", server.server_port, timeout=5
+            )
+            client.request("POST", path, body=b"{}")
+            response = client.getresponse()
+            assert response.status == 405
+            response.read()
+            client.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def test_generic_openrouter_budget_gate_blocks_a_second_paid_request(
@@ -626,7 +690,9 @@ def test_streaming_chat_completions_is_sealed_metered_and_peak_normalized(
         model="deepseek/deepseek-v4-flash-vision-exp",
         provider_tag="deepseek",
     )
-    monkeypatch.setattr(proxy, "capture_endpoint_discount_snapshot", lambda **_: promotion)
+    monkeypatch.setattr(
+        proxy, "capture_endpoint_discount_snapshot", lambda **_: promotion
+    )
 
     class FakeResponse:
         status = 200
@@ -678,6 +744,7 @@ def test_streaming_chat_completions_is_sealed_metered_and_peak_normalized(
         ) -> None:
             FakeConnection.sent_body = json.loads(body)
             assert headers["X-OpenRouter-Metadata"] == "enabled"
+            assert headers["Authorization"] == "Bearer sealed-child-key-123456"
 
         def getresponse(self) -> FakeResponse:
             return FakeResponse()
@@ -703,6 +770,7 @@ def test_streaming_chat_completions_is_sealed_metered_and_peak_normalized(
         runtime_dir=tmp_path / "runtime",
         provider_endpoint="deepseek",
         request_contract=contract,
+        upstream_api_key="sealed-child-key-123456",
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

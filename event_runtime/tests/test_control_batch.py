@@ -65,9 +65,12 @@ def test_batch_matrix_is_exact_six_arm_max_effort_contract() -> None:
     assert {row["family"] for row in rows} == {"deepseek", "luna"}
     assert {row["reasoning_effort"] for row in rows} == {"max"}
     assert {row["codex_version"] for row in rows} == {"0.147.0"}
-    assert sum(
-        row["model"] == "deepseek/deepseek-v4-flash-vision-exp" for row in rows
-    ) == 3
+    assert {row["agent_kind"] for row in rows} == {"codex"}
+    assert {row["goal_mode"] for row in rows} == {"codex_session_goal"}
+    assert (
+        sum(row["model"] == "deepseek/deepseek-v4-flash-vision-exp" for row in rows)
+        == 3
+    )
     assert sum(row["model"] == "openai/gpt-5.6-luna" for row in rows) == 3
     assert {
         row["resolved_model_version"] for row in rows if row["family"] == "deepseek"
@@ -79,7 +82,7 @@ def test_batch_matrix_is_exact_six_arm_max_effort_contract() -> None:
     } == {("deepseek", "unknown")}
     assert {
         Path(row["wrapper"]).name for row in rows if row["family"] == "deepseek"
-    } == {"deepseek_harness.sh"}
+    } == {"deepseek.sh"}
     assert batch_eval.LIVE_SITE_DEPLOY_SECONDS == 20 * 60
 
 
@@ -151,9 +154,7 @@ def test_performance_snapshot_uses_the_active_batch(
     batch_eval.refresh_performance_snapshot(
         {
             "batch_id": "event-20260812-r4",
-            "preflight": {
-                "openrouter_credit_snapshot": {"per_trial_budget_usd": 12.5}
-            },
+            "preflight": {"openrouter_credit_snapshot": {"per_trial_budget_usd": 12.5}},
         }
     )
 
@@ -219,7 +220,7 @@ def test_single_family_replacement_uses_coexisting_comparison_snapshot(
                     "comparison-luna-1",
                     "comparison-sol-1",
                     "replacement-luna-1",
-                ]
+                ],
             },
         )
     ]
@@ -266,15 +267,13 @@ def test_batch_matrix_can_launch_three_deepseek_trials_only() -> None:
     assert len(rows) == 3
     assert {row["family"] for row in rows} == {"deepseek"}
     assert [row["trial"] for row in rows] == [1, 2, 3]
-    assert {row["model"] for row in rows} == {
-        "deepseek/deepseek-v4-flash-vision-exp"
-    }
+    assert {row["model"] for row in rows} == {"deepseek/deepseek-v4-flash-vision-exp"}
     assert {row["provider"] for row in rows} == {"DeepSeek"}
     assert {row["provider_endpoint"] for row in rows} == {"deepseek"}
     assert {row["quantization"] for row in rows} == {"unknown"}
-    assert {Path(row["wrapper"]).name for row in rows} == {
-        "deepseek_harness.sh"
-    }
+    assert {Path(row["wrapper"]).name for row in rows} == {"deepseek.sh"}
+    assert {row["agent_kind"] for row in rows} == {"codex"}
+    assert {row["goal_mode"] for row in rows} == {"codex_session_goal"}
 
 
 def test_batch_matrix_can_launch_three_luna_and_three_sol_trials() -> None:
@@ -301,18 +300,13 @@ def test_batch_matrix_can_launch_three_luna_and_three_sol_trials() -> None:
 
 
 def test_batch_matrix_can_seal_baidu_and_alibaba_deepseek_routes() -> None:
-    rows = batch_eval.matrix(
-        "eval-ds-routes", families=("flash-baidu", "pro-alibaba")
-    )
+    rows = batch_eval.matrix("eval-ds-routes", families=("flash-baidu", "pro-alibaba"))
     assert len(rows) == 6
     assert {row["provider_endpoint"] for row in rows} == {
         "baidu/fp8",
         "alibaba",
     }
-    assert {
-        (row["family"], row["model"], row["quantization"])
-        for row in rows
-    } == {
+    assert {(row["family"], row["model"], row["quantization"]) for row in rows} == {
         (
             "flash-baidu",
             "deepseek/deepseek-v4-flash-0731",
@@ -361,10 +355,7 @@ def test_generic_openai_catalog_installer_supports_sol(tmp_path: Path) -> None:
     subprocess.run(
         [
             "bash",
-            str(
-                ROOT
-                / "event_runtime/container/sprint-apply-openai-codex-config.sh"
-            ),
+            str(ROOT / "event_runtime/container/sprint-apply-openai-codex-config.sh"),
         ],
         env=env,
         check=True,
@@ -396,10 +387,7 @@ def test_generic_deepseek_catalog_installer_supports_pro(tmp_path: Path) -> None
     subprocess.run(
         [
             "bash",
-            str(
-                ROOT
-                / "event_runtime/container/sprint-apply-deepseek-codex-config.sh"
-            ),
+            str(ROOT / "event_runtime/container/sprint-apply-deepseek-codex-config.sh"),
         ],
         env=env,
         check=True,
@@ -418,14 +406,11 @@ def test_generic_deepseek_catalog_installer_supports_pro(tmp_path: Path) -> None
 
 
 def test_deepseek_catalog_never_emits_unsupported_verbosity() -> None:
-    catalog = json.loads(
-        (ROOT / "event_runtime/models/deepseek.json").read_text()
-    )
+    catalog = json.loads((ROOT / "event_runtime/models/deepseek.json").read_text())
     assert catalog["models"]
     assert all(model["support_verbosity"] is False for model in catalog["models"])
     assert all(
-        model["supports_parallel_tool_calls"] is False
-        for model in catalog["models"]
+        model["supports_parallel_tool_calls"] is False for model in catalog["models"]
     )
 
 
@@ -454,12 +439,64 @@ def test_env_loader_reads_only_required_model_keys(tmp_path: Path) -> None:
     path.write_text(
         "OPENAI_API_KEY='openai-secret'\n"
         'OPENROUTER_API_KEY="openrouter-secret"\n'
+        "OPENROUTER_MANAGEMENT_KEY=management-secret\n"
         "MODAL_TOKEN_SECRET=must-not-load\n"
     )
     assert batch_eval.load_env(path) == {
         "OPENAI_API_KEY": "openai-secret",
         "OPENROUTER_API_KEY": "openrouter-secret",
+        "OPENROUTER_MANAGEMENT_KEY": "management-secret",
     }
+
+
+def test_child_key_usage_audit_stops_persistent_proxy_bypass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "arms": [
+            {
+                "run_id": "eval-luna-1",
+                "status": "running",
+                "openrouter_credential": {"key_hash": "hash-1"},
+            }
+        ],
+        "alerts": [],
+    }
+
+    class Client:
+        def key_usage(self, key_hash: str) -> dict[str, float]:
+            assert key_hash == "hash-1"
+            return {"usage": 0.25}
+
+    monkeypatch.setattr(
+        batch_eval,
+        "_local_provider_billed_cost",
+        lambda _run_id: (0.10, 0, "2026-08-23T00:00:00Z"),
+    )
+    stopped: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        batch_eval.sprintctl,
+        "persist_stop_request",
+        lambda run_id, *, reason: stopped.append((run_id, reason)),
+    )
+    first_now = dt.datetime(2026, 8, 23, tzinfo=dt.timezone.utc)
+    assert (
+        batch_eval.audit_openrouter_child_usage(payload, Client(), now=first_now) == []
+    )
+    payload["arms"][0]["openrouter_usage_audit"]["mismatch_first_seen_at"] = (
+        first_now.isoformat().replace("+00:00", "Z")
+    )
+
+    alerts = batch_eval.audit_openrouter_child_usage(
+        payload,
+        Client(),
+        now=first_now
+        + dt.timedelta(seconds=batch_eval.OPENROUTER_USAGE_AUDIT_GRACE_SECONDS + 1),
+    )
+
+    assert alerts[0]["kind"] == "openrouter_proxy_bypass"
+    assert stopped == [("eval-luna-1", "openrouter_proxy_bypass_detected")]
+    assert payload["arms"][0]["status"] == "stopping"
 
 
 def test_openrouter_credit_requirement_covers_full_matrix_with_margin(
@@ -480,9 +517,7 @@ def test_openrouter_credit_requirement_covers_full_matrix_with_margin(
 
 def test_openrouter_credit_query_reports_remaining_without_secrets() -> None:
     response = io.BytesIO(
-        json.dumps(
-            {"data": {"total_credits": 100.0, "total_usage": 25.25}}
-        ).encode()
+        json.dumps({"data": {"total_credits": 100.0, "total_usage": 25.25}}).encode()
     )
     with mock.patch.object(
         batch_eval.urllib.request, "urlopen", return_value=response
@@ -1108,6 +1143,7 @@ def test_public_batch_never_contains_secrets_or_host_paths() -> None:
                 "family": "luna",
                 "model": "openai/gpt-5.6-luna",
                 "resolved_model_version": "gpt-5.6-luna",
+                "provider_endpoint": "openai",
                 "trial": 1,
                 "status": "running",
                 "OPENAI_API_KEY": "secret",
@@ -1192,9 +1228,7 @@ def test_write_public_batch_tracks_explicitly_coexisting_runs(
     assert [arm["run_id"] for arm in json.loads(historical.read_text())["arms"]] == [
         "replacement-luna-1"
     ]
-    current = json.loads(
-        (tmp_path / "web/data/batches/current.json").read_text()
-    )
+    current = json.loads((tmp_path / "web/data/batches/current.json").read_text())
     assert current["tracked_batch_ids"] == ["base", "replacement"]
     assert [arm["run_id"] for arm in current["arms"]] == [
         "base-sol-1",
@@ -1275,7 +1309,11 @@ def test_tracking_batch_ignores_delegated_site_alerts(
 @pytest.mark.parametrize(
     ("invalidated_reason", "stop_ack", "expected_reason"),
     [
-        (None, {"reason": "budget_telemetry_unavailable"}, "budget_telemetry_unavailable"),
+        (
+            None,
+            {"reason": "budget_telemetry_unavailable"},
+            "budget_telemetry_unavailable",
+        ),
         ("untrusted_agent_stop_marker", None, "untrusted_agent_stop_marker"),
     ],
 )
@@ -2161,6 +2199,7 @@ def test_partial_batch_launch_is_safely_rolled_back(
             "family": "luna",
             "model": "openai/gpt-5.6-luna",
             "resolved_model_version": "gpt-5.6-luna",
+            "provider_endpoint": "openai",
             "reasoning_effort": "max",
             "codex_version": "0.147.0",
             "wrapper": f"wrapper-{index}",
@@ -2182,7 +2221,36 @@ def test_partial_batch_launch_is_safely_rolled_back(
         }
 
     monkeypatch.setattr(batch_eval, "preflight", fake_preflight)
-    monkeypatch.setattr(batch_eval, "load_env", lambda _path: {})
+    monkeypatch.setattr(
+        batch_eval,
+        "load_env",
+        lambda _path: {"OPENROUTER_MANAGEMENT_KEY": "m" * 32},
+    )
+    monkeypatch.setattr(batch_eval, "OpenRouterManagementClient", lambda _key: object())
+
+    class FakeCredential:
+        def __init__(self, arm: dict[str, object]) -> None:
+            self.run_id = str(arm["run_id"])
+            self.api_key = f"child-{self.run_id}"
+
+        def public_metadata(self) -> dict[str, object]:
+            return {
+                "run_id": self.run_id,
+                "key_hash": f"hash-{self.run_id}",
+                "guardrail_id": f"guard-{self.run_id}",
+            }
+
+    monkeypatch.setattr(
+        batch_eval,
+        "provision_trial_credentials",
+        lambda _client, _specs, *, journal_path: [FakeCredential(arm) for arm in arms],
+    )
+    cleanup: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        batch_eval,
+        "revoke_trial_credentials",
+        lambda _client, credentials, *, journal_path: cleanup.extend(credentials) or [],
+    )
     monkeypatch.setattr(batch_eval.time, "sleep", lambda _seconds: None)
     calls = 0
 
@@ -2206,6 +2274,7 @@ def test_partial_batch_launch_is_safely_rolled_back(
     assert state["status"] == "launch_error"
     assert state["arms"][0]["status"] == "stopping_after_launch_rollback"
     assert stopped == [("eval-luna-1", "partial_batch_launch_rollback")]
+    assert len(cleanup) == 2
     assert preflight_calls[0]["probe_training_fleet"] is True
 
 

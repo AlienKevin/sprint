@@ -354,6 +354,32 @@ if [[ "$AGENT_KIND" == "deepseek-harness" ]]; then
   export SPRINT_OPENROUTER_PROVIDER_ENDPOINT=deepseek
   unset SPRINT_OPENROUTER_QUANTIZATION
 
+# New Vision Exp evaluations use Codex through the official DeepSeek endpoint.
+# Keep this before the legacy wildcard so Vision Exp cannot be rewritten to
+# V4 Flash 0731/Baidu.
+elif (( ! RESUMING )) \
+  && [[ "$AGENT_KIND" == "codex" ]] \
+  && [[ "$MODEL_API_HOST" == "openrouter.ai" ]] \
+  && [[ "${MODEL#*/}" == "deepseek-v4-flash-vision-exp" ]]; then
+  if [[ -n "${SPRINT_OPENROUTER_PROVIDER_ENDPOINT:-}" \
+        && "$SPRINT_OPENROUTER_PROVIDER_ENDPOINT" != "deepseek" ]]; then
+    echo "DeepSeek V4 Flash Vision Exp is locked to the official DeepSeek endpoint" >&2
+    exit 2
+  fi
+  if [[ -n "${SPRINT_OPENROUTER_QUANTIZATION:-}" ]]; then
+    echo "DeepSeek V4 Flash Vision Exp official endpoint has no sealed quantization" >&2
+    exit 2
+  fi
+  if [[ -n "${SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW:-}" \
+        && "$SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW" != "1048576" ]]; then
+    echo "DeepSeek V4 Flash Vision Exp context window is locked to 1048576" >&2
+    exit 2
+  fi
+  export SPRINT_OPENROUTER_PROVIDER_ENDPOINT=deepseek
+  unset SPRINT_OPENROUTER_QUANTIZATION
+  export SPRINT_CODEX_DEEPSEEK_MODEL="$MODEL"
+  export SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW=1048576
+
 # Every new legacy V4 Flash evaluation uses one sealed Baidu Qianfan FP8 endpoint.
 # The proxy replaces caller routing on every request, disables fallback, and
 # independently captures that endpoint's request-time promotion for billing.
@@ -393,7 +419,81 @@ elif (( RESUMING )) \
     echo "resuming DeepSeek V4 Flash 0731 requires its recorded fp8 quantization" >&2
     exit 2
   }
+elif (( RESUMING )) \
+  && [[ "$AGENT_KIND" == "codex" ]] \
+  && [[ "$MODEL_API_HOST" == "openrouter.ai" ]] \
+  && [[ "${MODEL#*/}" == "deepseek-v4-flash-vision-exp" ]]; then
+  [[ "${SPRINT_OPENROUTER_PROVIDER_ENDPOINT:-}" == "deepseek" ]] || {
+    echo "resuming DeepSeek V4 Flash Vision Exp requires its recorded official route" >&2
+    exit 2
+  }
+  [[ -z "${SPRINT_OPENROUTER_QUANTIZATION:-}" ]] || {
+    echo "resuming DeepSeek V4 Flash Vision Exp requires no quantization override" >&2
+    exit 2
+  }
+  export SPRINT_CODEX_DEEPSEEK_MODEL="$MODEL"
+  export SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW=1048576
 fi
+
+# OpenAI comparison arms use the official OpenAI provider with no fallback.
+# The request contract below also replaces the caller's model slug, but route
+# pinning remains an independent defense against provider drift.
+if [[ "$AGENT_KIND" == "codex" \
+      && "$MODEL_API_HOST" == "openrouter.ai" \
+      && "${MODEL#*/}" == "gpt-5.6-luna" ]]; then
+  if [[ -n "${SPRINT_OPENROUTER_PROVIDER_ENDPOINT:-}" \
+        && "$SPRINT_OPENROUTER_PROVIDER_ENDPOINT" != "openai" ]]; then
+    echo "GPT-5.6 Luna is locked to the official OpenAI endpoint" >&2
+    exit 2
+  fi
+  if [[ -n "${SPRINT_OPENROUTER_QUANTIZATION:-}" ]]; then
+    echo "GPT-5.6 Luna official endpoint has no quantization override" >&2
+    exit 2
+  fi
+  export SPRINT_OPENROUTER_PROVIDER_ENDPOINT=openai
+  unset SPRINT_OPENROUTER_QUANTIZATION
+fi
+
+# Freeze every model-side benchmark knob that has an authoritative value. The
+# inactive DeepSeek Harness path keeps its Chat Completions field names; active
+# Codex arms use Responses API field names.
+if (( RESUMING )); then
+  SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON=$(python3 - "$STATE_DIR/run.json" <<'PY'
+import json
+import sys
+
+contract = json.load(open(sys.argv[1])).get("openrouter_request_contract")
+print(json.dumps(contract, separators=(",", ":"), sort_keys=True) if contract else "")
+PY
+  )
+elif [[ "$MODEL_API_HOST" == "openrouter.ai" ]]; then
+  case "$AGENT_KIND:${MODEL#*/}" in
+    deepseek-harness:deepseek-v4-flash-vision-exp)
+      SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON='{"max_tokens":384000,"model":"deepseek/deepseek-v4-flash-vision-exp","reasoning_effort":"max","stream":true,"temperature":1.0,"top_p":0.95}'
+      ;;
+    codex:deepseek-v4-flash-vision-exp)
+      SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON='{"max_output_tokens":384000,"model":"deepseek/deepseek-v4-flash-vision-exp","reasoning":{"effort":"max"},"temperature":1.0,"top_p":0.95}'
+      ;;
+    codex:gpt-5.6-luna)
+      SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON='{"max_output_tokens":128000,"model":"openai/gpt-5.6-luna","reasoning":{"effort":"max"},"service_tier":"default","temperature":1.0,"top_p":1.0}'
+      ;;
+    codex:gpt-5.6-sol)
+      SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON='{"max_output_tokens":128000,"model":"openai/gpt-5.6-sol","reasoning":{"effort":"max"},"service_tier":"default","temperature":1.0,"top_p":1.0}'
+      ;;
+    *)
+      SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON=''
+      ;;
+  esac
+else
+  SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON=''
+fi
+export SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON
+if [[ "$AGENT_KIND" == "deepseek-harness" ]]; then
+  SPRINT_OPENROUTER_ALLOWED_INFERENCE_PATH=chat_completions
+else
+  SPRINT_OPENROUTER_ALLOWED_INFERENCE_PATH=responses
+fi
+export SPRINT_OPENROUTER_ALLOWED_INFERENCE_PATH
 
 TASK_SOURCE="$SOURCE_ROOT/events/g1-100-metres"
 TASK="$STATE_DIR/rendered-task"
@@ -435,22 +535,14 @@ import sys
 
 configured = sys.argv[1]
 budget = float(sys.argv[2])
-# Reserve only graceful teardown. The OpenRouter proxy serializes requests and
-# stops admitting paid work once exact completed-request cost reaches the cap,
-# so at most the one request already in flight may cross it.
-infrastructure_runway = 120 * (
-    (2 * 0.00003942 + 8 * 0.00000667)
-    + (6 * 0.00003942 + 12 * 0.00000667 + 0.000306)
-)
-minimum = math.ceil(infrastructure_runway * 100) / 100
+# The benchmark spends the complete cap before teardown. The OpenRouter proxy
+# serializes requests and stops admitting paid work after the crossing, so only
+# the request already in flight can add model cost beyond it.
+minimum = 0.0
 reserve = minimum if configured == "auto" else float(configured)
 if not math.isfinite(reserve) or reserve < 0 or reserve >= budget:
     raise SystemExit(
         "AGENT_COST_SHUTDOWN_RESERVE_USD must be finite, non-negative, and below the budget"
-    )
-if reserve < minimum:
-    raise SystemExit(
-        f"AGENT_COST_SHUTDOWN_RESERVE_USD must be at least {minimum:g}"
     )
 print(format(reserve, "g"), format(minimum, "g"))
 PY
@@ -643,18 +735,8 @@ openrouter_route = (
     if model_api_host == "openrouter.ai" and provider_endpoint
     else None
 )
-openrouter_request_contract = (
-    {
-        "model": "deepseek/deepseek-v4-flash-vision-exp",
-        "stream": True,
-        "temperature": 1.0,
-        "top_p": 0.95,
-        "max_tokens": 384000,
-        "reasoning_effort": "max",
-    }
-    if agent_kind == "deepseek-harness"
-    else None
-)
+contract_json = os.environ.get("SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON")
+openrouter_request_contract = json.loads(contract_json) if contract_json else None
 payload = {
     "run_id": run_id,
     "app_name": app,
@@ -905,18 +987,8 @@ openrouter_route = (
     if model_api_host == "openrouter.ai" and provider_endpoint
     else None
 )
-openrouter_request_contract = (
-    {
-        "model": "deepseek/deepseek-v4-flash-vision-exp",
-        "stream": True,
-        "temperature": 1.0,
-        "top_p": 0.95,
-        "max_tokens": 384000,
-        "reasoning_effort": "max",
-    }
-    if agent_kind == "deepseek-harness"
-    else None
-)
+contract_json = os.environ.get("SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON")
+openrouter_request_contract = json.loads(contract_json) if contract_json else None
 target = pathlib.Path(path)
 root_path = pathlib.Path(root)
 task_source_root = pathlib.Path(source_root) / "events/g1-100-metres"
@@ -1272,6 +1344,14 @@ elif [[ "$AGENT_KIND" == "codex" ]]; then
         --ae "SPRINT_OPENROUTER_QUANTIZATION=$SPRINT_OPENROUTER_QUANTIZATION"
       )
     fi
+    if [[ -n "$SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON" ]]; then
+      AGENT_HARBOR_ARGS+=(
+        --ae "SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON=$SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON"
+      )
+    fi
+    AGENT_HARBOR_ARGS+=(
+      --ae "SPRINT_OPENROUTER_ALLOWED_INFERENCE_PATH=$SPRINT_OPENROUTER_ALLOWED_INFERENCE_PATH"
+    )
   fi
   if [[ "${MODEL#*/}" == deepseek-v4-flash* || "${MODEL#*/}" == deepseek-v4-pro* ]]; then
     AGENT_HARBOR_ARGS+=(

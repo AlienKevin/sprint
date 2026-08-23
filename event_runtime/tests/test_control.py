@@ -1295,10 +1295,78 @@ class DurableOpsTests(unittest.TestCase):
         self.assertEqual(config["reasoning_effort"], "max")
         self.assertEqual(config["agent_allowed_host"], "openrouter.ai")
         self.assertEqual(
+            config["openrouter_route"],
+            {
+                "only": ["openai"],
+                "order": ["openai"],
+                "allow_fallbacks": False,
+                "require_parameters": True,
+                "quantizations": [],
+            },
+        )
+        self.assertEqual(
+            config["openrouter_request_contract"],
+            {
+                "model": "openai/gpt-5.6-luna",
+                "temperature": 1.0,
+                "top_p": 1.0,
+                "max_output_tokens": 128_000,
+                "reasoning": {"effort": "max"},
+                "service_tier": "default",
+            },
+        )
+        self.assertEqual(
             config["budget_enforcement"]["api_cost_source"],
             "openrouter_reported_per_request",
         )
+        self.assertEqual(config["agent_cost_budget_usd"], 10.0)
+        self.assertEqual(config["budget_enforcement"]["shutdown_reserve_usd"], 0.0)
+        self.assertEqual(
+            config["budget_enforcement"]["minimum_safe_shutdown_reserve_usd"],
+            0.0,
+        )
         self.assertTrue(config["usage_audit_required"])
+
+    def test_deepseek_vision_codex_dry_run_seals_benchmark_contract(self) -> None:
+        run_id = f"dry-{uuid.uuid4().hex[:12]}"
+        env = os.environ.copy()
+        key = "fake-openrouter-key-that-must-never-print-123456789"
+        env["OPENROUTER_API_KEY"] = key
+        env["OPENAI_API_KEY"] = key
+        completed = subprocess.run(
+            [
+                "bash",
+                str(ROOT / "event_runtime/control/launch.sh"),
+                "--dry-run",
+                "--run-id",
+                run_id,
+                "--agent-kind",
+                "codex",
+                "--model",
+                "deepseek/deepseek-v4-flash-vision-exp",
+                "--endpoint",
+                "https://openrouter.ai/api/v1",
+                "--reasoning-effort",
+                "max",
+            ],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        config = json.loads(completed.stdout)
+        self.assertEqual(config["openrouter_route"]["only"], ["deepseek"])
+        self.assertEqual(
+            config["openrouter_request_contract"],
+            {
+                "model": "deepseek/deepseek-v4-flash-vision-exp",
+                "temperature": 1.0,
+                "top_p": 0.95,
+                "max_output_tokens": 384_000,
+                "reasoning": {"effort": "max"},
+            },
+        )
 
     def test_sol_dry_run_pins_reconstructible_cost_policy(self) -> None:
         run_id = f"dry-{uuid.uuid4().hex[:12]}"
@@ -2156,7 +2224,7 @@ while True:
                 "budget-run", reason="agent_cost_budget_exhausted"
             )
 
-    def test_agent_cost_budget_stops_at_shutdown_reserve_threshold(self) -> None:
+    def test_agent_cost_budget_does_not_stop_below_full_budget(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             state_dir = Path(raw)
             run = {"agent_cost_budget_usd": 10.0}
@@ -2166,15 +2234,13 @@ while True:
                     state_dir,
                     run,
                     {
-                        "status": "stop_requested",
+                        "status": "within_budget",
                         "total_usd": 9.9,
-                        "stop_threshold_usd": 9.9,
+                        "stop_threshold_usd": 10.0,
                     },
                 )
-            self.assertTrue(stopped)
-            request_stop.assert_called_once_with(
-                "budget-run", reason="agent_cost_budget_exhausted"
-            )
+            self.assertFalse(stopped)
+            request_stop.assert_not_called()
 
     def test_agent_cost_budget_waits_for_complete_snapshot_and_threshold(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

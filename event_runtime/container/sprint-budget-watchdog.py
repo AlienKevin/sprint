@@ -807,7 +807,7 @@ def check_once(
     if not (math.isfinite(budget) and budget > 0 and 0 <= reserve < budget):
         raise BudgetTelemetryError("invalid budget or shutdown reserve")
     minimum_reserve = float(enforcement.get("minimum_safe_shutdown_reserve_usd") or 0)
-    if not math.isfinite(minimum_reserve) or minimum_reserve <= 0:
+    if not math.isfinite(minimum_reserve) or minimum_reserve < 0:
         raise BudgetTelemetryError("run contract has no valid minimum safe reserve")
     if reserve < minimum_reserve:
         canonical_model = str(run.get("model") or "").split("/", 1)[-1]

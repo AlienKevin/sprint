@@ -94,6 +94,16 @@ def test_functional_canary_uses_current_training_cli_contract() -> None:
     assert "--seed=" not in canary.TRAINING_CANARY_CLI
 
 
+def test_functional_canary_uses_trainer_owned_final_checkpoint() -> None:
+    source = (PREFLIGHT / "canary.py").read_text()
+
+    assert "export SPRINT_GPU_CHECKPOINT_DIR=/warm{remote_root}/checkpoints" in source
+    assert "export SPRINT_GPU_PROGRESS_FILE=/warm{remote_root}/progress.json" in source
+    assert "cp /app/policy_train.pt" not in source
+    assert '"[sprint] training complete"' in source
+    assert '"EXPORTED /app/policy_train.pt"' not in source
+
+
 def test_successful_sandbox_uses_returncode_after_wait(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

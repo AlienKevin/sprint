@@ -377,14 +377,16 @@ def main() -> int:
         "--durable-dir /nonexistent --force & telemetry_pid=$!; "
         "trap 'kill $telemetry_pid 2>/dev/null || true' EXIT; "
         f"export SPRINT_TRAIN_ROOT=/warm{remote_root}/logs; "
+        f"export SPRINT_GPU_CHECKPOINT_DIR=/warm{remote_root}/checkpoints; "
+        f"export SPRINT_GPU_PROGRESS_FILE=/warm{remote_root}/progress.json; "
         "export PYTHONPATH=/opt/event-verifier:/app; "
         "timeout --signal=TERM --kill-after=30 900 "
         "python3 /opt/sprint-isaac-bootstrap.py /app/train_sprint.py "
         f"{TRAINING_CANARY_CLI} "
         f"2>&1 | tee /warm{remote_root}/training.log; "
         "kill $telemetry_pid 2>/dev/null || true; wait $telemetry_pid 2>/dev/null || true; "
-        f"cp /app/policy_train.pt /warm{remote_root}/checkpoints/policy_final.pt; "
         f"test -s /warm{remote_root}/checkpoints/policy_final.pt; "
+        f"python3 -c \"import json; assert json.load(open('/warm{remote_root}/progress.json'))['finished'] is True\"; "
         f"python3 /warm{remote_root}/canary_policy_adapter.py "
         f"/warm{remote_root}/checkpoints/policy_final.pt; "
         f"grep -F 'Learning iteration 9/10' /warm{remote_root}/training.log; "
@@ -459,7 +461,7 @@ def main() -> int:
                 command=command,
                 timeout=1200,
                 required_output_substrings=(
-                    "EXPORTED /app/policy_train.pt",
+                    "[sprint] training complete",
                     "AGENT_PUBLISHED_VERIFIER_COMPLETED",
                 ),
             )
