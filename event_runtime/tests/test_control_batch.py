@@ -314,28 +314,12 @@ def test_batch_matrix_can_launch_three_luna_and_three_sol_trials() -> None:
     assert [row["trial"] for row in rows if row["family"] == "sol"] == [1, 2, 3]
 
 
-def test_batch_matrix_can_seal_baidu_and_alibaba_deepseek_routes() -> None:
-    rows = batch_eval.matrix("eval-ds-routes", families=("flash-baidu", "pro-alibaba"))
-    assert len(rows) == 6
-    assert {row["provider_endpoint"] for row in rows} == {
-        "baidu/fp8",
-        "alibaba",
-    }
-    assert {(row["family"], row["model"], row["quantization"]) for row in rows} == {
-        (
-            "flash-baidu",
-            "deepseek/deepseek-v4-flash-0731",
-            "fp8",
-        ),
-        (
-            "pro-alibaba",
-            "deepseek/deepseek-v4-pro-0813",
-            "unknown",
-        ),
-    }
-    assert {row["wrapper"] for row in rows} == {
-        str(ROOT / "event_runtime/control/providers/deepseek.sh")
-    }
+def test_batch_matrix_rejects_historical_nonofficial_provider_routes() -> None:
+    with pytest.raises(ValueError, match="invalid model families"):
+        batch_eval.matrix(
+            "eval-ds-routes",
+            families=("flash-baidu", "pro-alibaba"),
+        )
 
 
 def test_sol_model_lock_preserves_exact_codex_contract() -> None:

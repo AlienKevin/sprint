@@ -63,7 +63,10 @@ HARBOR_REVISION = "dafb1387151e1c32702963d44fe6c3cea66cf8cb"
 CODEX_VERSION = "0.149.1"
 TRIALS_PER_MODEL = 3
 DEFAULT_FAMILIES = ("deepseek", "luna")
-SUPPORTED_FAMILIES = ("deepseek", "luna", "sol", "flash-baidu", "pro-alibaba")
+# Production experiments must use OpenRouter with the model author's official
+# provider. Historical Baidu/Alibaba arms remain in the specs so archived runs
+# can still be rendered, but they are deliberately not launchable.
+SUPPORTED_FAMILIES = ("deepseek", "luna", "sol")
 OPENAI_FAMILY_SPECS: dict[str, dict[str, str]] = {
     "luna": {
         "model": "openai/gpt-5.6-luna",
@@ -440,7 +443,7 @@ def matrix(
         },
     }
     selected = tuple(dict.fromkeys(families))
-    unknown = sorted(set(selected) - set(specs))
+    unknown = sorted(set(selected) - set(SUPPORTED_FAMILIES))
     if not selected or unknown:
         raise ValueError(f"invalid model families: {unknown or list(selected)}")
     for family in selected:
