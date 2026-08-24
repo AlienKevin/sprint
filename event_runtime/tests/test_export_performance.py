@@ -457,7 +457,7 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "el.getScreenCTM()" in app
     assert "nearest.distance<=22**2" in app
     assert "app.js?v=20260824-3" in page
-    assert '"version":"20260824-6"' in (ROOT / "web/version.json").read_text()
+    assert '"version":"20260824-7"' in (ROOT / "web/version.json").read_text()
     preview = trajectory_app.split("function stepPreview", 1)[1].split(
         "function matchesFilter", 1
     )[0]
@@ -503,7 +503,7 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "Open rendered policy" in timeline_app
     assert "setModelAccent" in timeline_app
     assert "<title>Agents' 100m</title>" in page
-    assert "<h1>Agents' <em>100m.</em></h1>" in page
+    assert "<h1>Agents' <em>100m</em></h1>" in page
     assert '<span class="brand">Agents\' 100m</span>' in page
     assert "color: var(--bg)" in styles
     assert "background: var(--text)" in styles
