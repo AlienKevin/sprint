@@ -1255,6 +1255,33 @@ def refresh_agent_cost_snapshot(
         atomic_write_json(cost_path, cost_payload, mode=0o600)
         enforce_agent_cost_budget(run_id, state_dir, run, cost_payload)
 
+    # Once the run boundary is durable there is no live consumer to update.
+    # Replaying an expired sandbox's last mirror during archival is both
+    # unnecessary and unsafe: a previous attempt may legitimately have a
+    # different snapshot identity. Keep the final host ledger, but never let
+    # that stale live channel abort finalization.
+    if run_services_should_exit(state_dir, run):
+        terminal = {
+            "schema_version": 1,
+            "updated_at": utc_now(),
+            "agent_cost_mirror": "terminal_snapshot_not_mirrored",
+        }
+        atomic_write_json(
+            state_dir / "telemetry" / "agent-cost-mirror.json",
+            terminal,
+            mode=0o600,
+        )
+        atomic_write_json(
+            state_dir / "telemetry" / "gpu-budget-mirror.json",
+            {
+                "schema_version": 1,
+                "updated_at": terminal["updated_at"],
+                "gpu_budget_mirror": "terminal_snapshot_not_mirrored",
+            },
+            mode=0o600,
+        )
+        return cost_payload
+
     if budget_pulse_alive(state_dir):
         delegated = {
             "schema_version": 1,

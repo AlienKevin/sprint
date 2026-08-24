@@ -500,6 +500,9 @@ class DurableOpsTests(unittest.TestCase):
                 mock.patch.object(
                     sprintctl.agent_cost, "build_snapshot", return_value=payload
                 ),
+                mock.patch.object(
+                    sprintctl, "run_services_should_exit", return_value=False
+                ),
                 mock.patch.object(sprintctl, "budget_pulse_alive", return_value=True),
                 mock.patch.object(sprintctl, "enforce_agent_cost_budget"),
                 mock.patch.object(gpu_worker, "mirror_agent_cost") as agent_mirror,
@@ -517,6 +520,51 @@ class DurableOpsTests(unittest.TestCase):
                     "agent_cost_mirror"
                 ],
                 "delegated_to_budget_pulse",
+            )
+
+    def test_terminal_artifact_cost_refresh_does_not_mirror_expired_sandbox(
+        self,
+    ) -> None:
+        from event_runtime.compute import worker as gpu_worker
+
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            (state / "telemetry").mkdir()
+            run = {"run_id": "terminal-run"}
+            payload = {
+                "schema_version": 2,
+                "run_id": "terminal-run",
+                "total_usd": 2.0,
+            }
+            with (
+                mock.patch.object(
+                    sprintctl.agent_cost, "build_snapshot", return_value=payload
+                ),
+                mock.patch.object(
+                    sprintctl, "run_services_should_exit", return_value=True
+                ),
+                mock.patch.object(sprintctl, "enforce_agent_cost_budget"),
+                mock.patch.object(gpu_worker, "mirror_agent_cost") as agent_mirror,
+                mock.patch.object(gpu_worker, "mirror_gpu_budget") as gpu_mirror,
+            ):
+                result = sprintctl.refresh_agent_cost_snapshot(
+                    "terminal-run", state, run, {"events": []}
+                )
+
+            self.assertEqual(result, payload)
+            agent_mirror.assert_not_called()
+            gpu_mirror.assert_not_called()
+            self.assertEqual(
+                json.loads((state / "telemetry/agent-cost-mirror.json").read_text())[
+                    "agent_cost_mirror"
+                ],
+                "terminal_snapshot_not_mirrored",
+            )
+            self.assertEqual(
+                json.loads((state / "telemetry/gpu-budget-mirror.json").read_text())[
+                    "gpu_budget_mirror"
+                ],
+                "terminal_snapshot_not_mirrored",
             )
 
     def test_live_trace_sync_timeout_is_best_effort_and_persisted(self) -> None:
