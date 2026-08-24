@@ -39,7 +39,7 @@ def test_event_runtime_state_does_not_dirty_the_source_tree() -> None:
             "git",
             "check-ignore",
             "--quiet",
-            "runs/ops/arbitrary-batch-name/model-1/supervisor.json",
+            "runs/ops/arbitrary-batch-name/model-1/trial-launch.json",
         ],
         cwd=ROOT,
         check=False,
@@ -58,11 +58,11 @@ def test_launcher_provenance_guard_checks_source_not_generated_runs() -> None:
     )
 
 
-def test_resume_volume_guard_uses_untruncated_modal_json() -> None:
+def test_launcher_forbids_same_trial_cpu_resume() -> None:
     launcher = (ROOT / "event_runtime/control/launch.sh").read_text()
-    assert "modal volume list --json" in launcher
-    assert 'row.get("name") == target' in launcher
-    assert 'modal volume list 2>/dev/null | grep -qF "$VOLUME_NAME"' not in launcher
+    assert "CPU-agent resume is forbidden" in launcher
+    assert "--supervised-launch" not in launcher
+    assert "RESUMING" not in launcher
 
 
 def test_launcher_requires_exact_gpu_job_index_and_paces_dispatch() -> None:
@@ -237,7 +237,7 @@ def test_terminal_batch_bypasses_live_deploy_debounce() -> None:
     )
 
 
-def test_provider_retry_does_not_make_batch_terminal(
+def test_agent_exit_makes_single_cpu_trial_terminal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     run_id = "eval-deepseek-1"
@@ -245,9 +245,7 @@ def test_provider_retry_does_not_make_batch_terminal(
     state_dir.mkdir()
     (state_dir / "STOP_ACK.json").write_text('{"reason":"agent_exit"}\n')
     monkeypatch.setattr(batch_eval, "SCRIPT_DIR", tmp_path)
-    monkeypatch.setattr(batch_eval, "supervisor_active", lambda _run_id: True)
-
-    assert not batch_eval.arm_terminal(
+    assert batch_eval.arm_terminal(
         {
             "run_id": run_id,
             "harbor_alive": False,
@@ -266,7 +264,7 @@ def test_provider_retry_does_not_make_batch_terminal(
                 ]
             }
         )
-        == batch_eval.LIVE_SITE_DEPLOY_SECONDS
+        == 0
     )
     assert (
         batch_eval.deployment_debounce_seconds(
@@ -3196,7 +3194,7 @@ def test_batch_monitor_reads_stopped_lane_locally_without_modal_poll(
     assert batch_eval.live_run_monitor_status(run_id) == expected
 
 
-def test_batch_monitor_does_not_treat_agent_exit_ack_as_terminal(
+def test_batch_monitor_treats_agent_exit_ack_as_terminal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     run_id = "eval-deepseek-1"
@@ -3204,22 +3202,25 @@ def test_batch_monitor_does_not_treat_agent_exit_ack_as_terminal(
     state_dir.mkdir()
     (state_dir / "STOP_ACK.json").write_text('{"reason":"agent_exit"}\n')
     (state_dir / "monitor.pid").write_text("1234\n")
-    expected = {
-        "schema_version": 2,
-        "run_id": run_id,
-        "harbor_alive": True,
-        "stop_ack": {"reason": "agent_exit"},
-    }
-    (state_dir / "status.json").write_text(json.dumps(expected))
+    (state_dir / "status.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "run_id": run_id,
+                "harbor_alive": True,
+                "stop_ack": {"reason": "agent_exit"},
+            }
+        )
+    )
     monkeypatch.setattr(batch_eval, "SCRIPT_DIR", tmp_path)
     monkeypatch.setattr(batch_eval.sprintctl, "process_alive", lambda *_args: True)
     monkeypatch.setattr(
         batch_eval.sprintctl,
         "status_snapshot",
-        lambda *_args, **_kwargs: pytest.fail("retry ack is not terminal"),
+        lambda *_args, **_kwargs: pytest.fail("terminal lane must not be polled"),
     )
 
-    assert batch_eval.live_run_monitor_status(run_id) == expected
+    assert batch_eval.live_run_monitor_status(run_id) is None
 
 
 def test_batch_monitor_recovers_status_when_run_state_appears(

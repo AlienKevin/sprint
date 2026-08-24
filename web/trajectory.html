@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="description" content="Inspect agent reasoning, messages, tools, observations, timing, retries, and token usage for every Agents' 100m trial.">
+  <meta name="description" content="Inspect agent reasoning, messages, tools, observations, timing, and token usage for every Agents' 100m trial.">
   <title>Agents' 100m · Agent trajectory</title>
-  <link rel="stylesheet" href="/trajectory.css?v=20260824-6">
+  <link rel="stylesheet" href="/trajectory.css?v=20260824-8">
 </head>
 <body>
   <header class="viewer-nav">
@@ -27,18 +27,12 @@
         <div class="run-identity"><span class="model-dot"></span><div><strong id="run-model">—</strong><small id="run-id">—</small></div></div>
         <dl class="summary-stats">
           <div><dt>Elapsed</dt><dd id="summary-duration">—</dd></div>
-          <div><dt>Attempts</dt><dd id="summary-attempts">—</dd></div>
           <div><dt>Steps</dt><dd id="summary-steps">—</dd></div>
           <div><dt>Tool calls</dt><dd id="summary-tools">—</dd></div>
           <div class="wide"><dt>Total cost</dt><dd id="summary-cost">—</dd></div>
         </dl>
       </section>
 
-      <section class="attempt-card" aria-labelledby="attempt-title">
-        <div class="rail-heading"><p class="eyebrow">EXECUTION CONTINUITY</p><h2 id="attempt-title">CPU attempts</h2></div>
-        <p>Each segment is one agent sandbox attempt. A new segment is an infrastructure relaunch, not a new trial.</p>
-        <div id="attempt-rail" class="attempt-rail"></div>
-      </section>
     </aside>
 
     <section class="trace-column" aria-labelledby="trajectory-title">
@@ -65,6 +59,6 @@
 
   </main>
 
-  <script src="/trajectory.js?v=20260824-7"></script>
+  <script src="/trajectory.js?v=20260824-8"></script>
 </body>
 </html>

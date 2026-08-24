@@ -2244,7 +2244,7 @@ class Builder:
         cpu_intervals = self._paired_intervals(
             self.events,
             start_kinds={"cpu_allocated", "cpu_reallocated"},
-            # STOP_ACK is the exact boundary at which the supervised agent
+            # STOP_ACK is the exact boundary at which the single agent
             # process and its sampler have stopped. Controller/Harbor cleanup
             # may finish later, but that tail is no longer CPU-agent work and
             # cannot legitimately produce cpu-agent samples.
@@ -2482,12 +2482,12 @@ class Builder:
                 and all(
                     interval["end_epoch_ms"] is not None for interval in cpu_intervals
                 )
-                if self.run.get("cpu_supervised")
+                if self.run.get("cpu_execution_policy") == "single_attempt_no_resume"
                 else True
             ),
             "cpu_agent_metrics": (
                 bool(cpu_coverage) and all(item["covered"] for item in cpu_coverage)
-                if self.run.get("cpu_supervised")
+                if self.run.get("cpu_execution_policy") == "single_attempt_no_resume"
                 else self.counts["metric_role:cpu-agent"] > 0
             ),
             "training_gpu_lifecycle": (

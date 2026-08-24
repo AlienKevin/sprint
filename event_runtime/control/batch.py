@@ -7,7 +7,6 @@ import argparse
 import concurrent.futures
 import copy
 import datetime as dt
-import fcntl
 import hashlib
 import json
 import math
@@ -2423,42 +2422,16 @@ def live_run_monitor_status(run_id: str) -> dict[str, Any] | None:
     return payload
 
 
-def supervisor_active(run_id: str) -> bool:
-    """Return whether the durable lane supervisor still owns its run lock."""
-    lock_path = SCRIPT_DIR / run_id / "supervise.lock"
-    if not lock_path.is_file():
-        return False
-    try:
-        with lock_path.open("r+") as handle:
-            try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                return True
-            finally:
-                try:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-                except OSError:
-                    pass
-    except OSError:
-        # Fail closed: an unreadable supervisor lock must not authorize
-        # finalization while a replacement CPU attempt may still be starting.
-        return True
-    return False
-
-
 def arm_terminal(arm: dict[str, Any]) -> bool:
-    """Distinguish a terminal run from a supervised provider-retry boundary."""
+    """Return whether the arm's single CPU execution has ended."""
     run_id = str(arm.get("run_id") or "")
     state_dir = SCRIPT_DIR / run_id
     if sprintctl.terminal_stop_acknowledged(state_dir):
         return True
     ack = arm.get("stop_ack")
     if ack:
-        if not isinstance(ack, dict):
-            return True
-        if str(ack.get("reason") or "") != "agent_exit":
-            return True
-    return arm.get("harbor_alive") is False and not supervisor_active(run_id)
+        return True
+    return arm.get("harbor_alive") is False
 
 
 def public_batch(payload: dict[str, Any]) -> dict[str, Any]:

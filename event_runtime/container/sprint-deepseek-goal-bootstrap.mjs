@@ -10,7 +10,7 @@
 export const name = 'sprint-deepseek-goal-bootstrap'
 export const inject = ['goals']
 
-const HOST_OWNED_MUTATIONS = ['edit', 'pause', 'complete', 'block', 'clear']
+const HOST_OWNED_MUTATIONS = ['edit', 'pause', 'complete', 'block', 'clear', 'resume']
 
 function requiredObjective() {
   const objective = process.env.DSH_GOAL_OBJECTIVE?.trim()
@@ -34,8 +34,7 @@ export function apply(ctx) {
   //
   // Put the authority boundary at the service itself so every caller (current
   // tools and future plugins alike) receives an ordinary tool error before any
-  // goal/change event is committed.  `resume` remains available because a
-  // supervised CPU relaunch legitimately has to re-arm the same goal.
+  // goal/change event is committed. The CPU rollout is never resumed in place.
   for (const mutation of HOST_OWNED_MUTATIONS) {
     if (typeof ctx.goals[mutation] !== 'function') {
       throw new Error(`DeepSeek Harness goal service is missing ${mutation}()`)
@@ -51,15 +50,8 @@ export function apply(ctx) {
     const current = ctx.goals.get(agent)
     if (current === undefined) {
       ctx.goals.create(agent, { objective })
-    } else {
-      if (current.objective !== objective) {
-        throw new Error('persisted DeepSeek Harness goal does not match this run objective')
-      }
-      if (current.phase === 'active' && current.activation === 'disarmed') {
-        // A supervised CPU relaunch replays the direct human instruction.  That
-        // prompt is the authority to re-arm this same persisted goal.
-        ctx.goals.resume(agent, { id: current.id, revision: current.revision })
-      }
+    } else if (current.objective !== objective) {
+      throw new Error('persisted DeepSeek Harness goal does not match this run objective')
     }
     return next()
   })

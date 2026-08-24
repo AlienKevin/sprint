@@ -581,7 +581,7 @@ def harbor_final_source(
 ) -> dict[str, Any] | None:
     """Load the complete normally-exited session Harbor archived locally.
 
-    The durable mirror remains authoritative for abruptly killed CPU attempts.
+    The durable mirror remains authoritative if the CPU execution ends abruptly.
     On a normal exit, Harbor's own archive may contain a final tail written
     after the last mirror interval; merge that signed superset instead of
     silently dropping the last model requests.

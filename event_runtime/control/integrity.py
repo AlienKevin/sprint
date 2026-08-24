@@ -54,14 +54,59 @@ def build_integrity_report(
 
     cpu_attempts = int(run.get("cpu_launch_attempt") or 1)
     observations["cpu_launch_attempts"] = cpu_attempts
-    if cpu_attempts > 1:
+    execution_policy = str(run.get("cpu_execution_policy") or "")
+    observations["cpu_execution_policy"] = execution_policy or None
+    if execution_policy != "single_attempt_no_resume":
         reasons.append(
             _reason(
-                "cpu_agent_relaunched",
+                "cpu_execution_policy_mismatch",
                 "run.json",
-                f"CPU agent required {cpu_attempts} launch attempts",
+                "CPU agent is not sealed to one non-resumable execution",
             )
         )
+    if cpu_attempts != 1:
+        reasons.append(
+            _reason(
+                "cpu_attempt_contract_violation",
+                "run.json",
+                f"CPU launch attempt must remain 1, observed {cpu_attempts}",
+            )
+        )
+
+    cpu_exit_path = state_dir / "CPU_TRIAL_EXIT.json"
+    cpu_exit = _read_json(cpu_exit_path)
+    observations["cpu_exit"] = cpu_exit or None
+    terminal_evidence = any(
+        (state_dir / name).is_file()
+        for name in ("FINALIZED.json", "STOP_ACK.json", "CPU_TRIAL_EXIT.json")
+    )
+    if terminal_evidence and not cpu_exit:
+        reasons.append(
+            _reason(
+                "cpu_exit_record_missing",
+                "CPU_TRIAL_EXIT.json",
+                "terminal trial lacks its authoritative CPU process boundary",
+            )
+        )
+    elif cpu_exit:
+        if int(cpu_exit.get("attempt") or 0) != 1:
+            reasons.append(
+                _reason(
+                    "cpu_exit_attempt_mismatch",
+                    "CPU_TRIAL_EXIT.json",
+                    "CPU process exit does not belong to launch attempt 1",
+                )
+            )
+        raw_code = cpu_exit.get("raw_exit_code")
+        requested = bool(cpu_exit.get("stop_requested"))
+        if isinstance(raw_code, int) and raw_code != 0 and not requested:
+            reasons.append(
+                _reason(
+                    "cpu_agent_unexpected_exit",
+                    "CPU_TRIAL_EXIT.json",
+                    f"authoritative CPU process exited {raw_code} without a stop request",
+                )
+            )
 
     stop_ack = _read_json(state_dir / "STOP_ACK.json")
     stop_reason = str(stop_ack.get("reason") or "")

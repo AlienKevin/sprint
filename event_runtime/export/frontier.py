@@ -457,35 +457,7 @@ def load_state(path: Path, job: Path, trial: Path, web: Path) -> dict[str, Any]:
     if state.get("job") != str(job.resolve()) or state.get("trial") != str(
         trial.resolve()
     ):
-        # A supervised trial legitimately moves: supervisor.py relaunches the
-        # same logical run into a fresh cpu-attempts/<n>/harbor-jobs/... tree
-        # after Harbor or the agent is lost. The old guard treated that as a
-        # foreign state file and raised, which killed the frontier worker for
-        # the rest of the run -- taking per-policy artifact sync and the site
-        # deploy down with it (observed on both lane arms, 2026-08-03).
-        #
-        # The state file is already per-run (runs/ops/<run_id>/frontier-state.json),
-        # and `policies` is keyed by policy_hash rather than by path, so carrying
-        # the accumulated history across a relaunch is safe and is exactly what
-        # the Pareto front needs. Migrate when the new paths belong to this run;
-        # keep raising when they do not, which is the case the guard was for.
-        run_id = path.resolve().parent.name
-        same_run = run_id in job.resolve().parts or run_id in trial.resolve().parts
-        if not same_run:
-            raise ValueError("frontier state belongs to a different explicit job/trial")
-        migrations = state.setdefault("path_migrations", [])
-        migrations.append(
-            {
-                "at": utc_now(),
-                "from_job": state.get("job"),
-                "from_trial": state.get("trial"),
-                "to_job": str(job.resolve()),
-                "to_trial": str(trial.resolve()),
-            }
-        )
-        del migrations[:-50]
-        state["job"] = str(job.resolve())
-        state["trial"] = str(trial.resolve())
+        raise ValueError("frontier state belongs to a different explicit job/trial")
     return state
 
 

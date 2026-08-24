@@ -102,7 +102,6 @@ fi
 echo "--- launch ---"
 LAUNCH_ARGS=(
   "$ROOT/event_runtime/control/launch.sh"
-  --supervised-launch
   --run-id "$RUN_ID" \
   --agent-kind codex \
   --model "$MODEL" \
@@ -111,29 +110,26 @@ LAUNCH_ARGS=(
   --codex-version "$CODEX_VERSION"
 )
 LAUNCH_JSON=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${LAUNCH_ARGS[@]}")
-SUPERVISOR_ARGS=(
-  "$ROOT/event_runtime/control/start_supervisor.py"
+TRIAL_ARGS=(
+  "$ROOT/event_runtime/control/start_trial.py"
   --run-id "$RUN_ID" \
   --batch-id "${SPRINT_BATCH_ID:-}" \
   --launch-argv-json "$LAUNCH_JSON" \
-  --secret-env OPENAI_API_KEY \
-  --max-restarts "${CPU_MAX_RESTARTS:-50}" \
-  --min-backoff-s "${CPU_MIN_BACKOFF_S:-30}" \
-  --max-backoff-s "${CPU_MAX_BACKOFF_S:-600}"
+  --secret-env OPENAI_API_KEY
 )
 if [[ -n "${SPRINT_DEEPSEEK_PRICING_SNAPSHOT:-}" ]]; then
-  SUPERVISOR_ARGS+=(--secret-env SPRINT_DEEPSEEK_PRICING_SNAPSHOT)
+  TRIAL_ARGS+=(--secret-env SPRINT_DEEPSEEK_PRICING_SNAPSHOT)
 fi
 if [[ -n "${SPRINT_OPENROUTER_PROVIDER_ENDPOINT:-}" ]]; then
-  SUPERVISOR_ARGS+=(
+  TRIAL_ARGS+=(
     --launch-env OPENROUTER_MODEL
     --launch-env SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW
     --launch-env SPRINT_CODEX_DEEPSEEK_MODEL
     --launch-env SPRINT_OPENROUTER_PROVIDER_ENDPOINT
   )
   if [[ -n "${SPRINT_OPENROUTER_QUANTIZATION:-}" ]]; then
-    SUPERVISOR_ARGS+=(--launch-env SPRINT_OPENROUTER_QUANTIZATION)
+    TRIAL_ARGS+=(--launch-env SPRINT_OPENROUTER_QUANTIZATION)
   fi
 fi
-python3 "${SUPERVISOR_ARGS[@]}"
-echo "supervisor unit=sprint-lane-${RUN_ID}.service log=/data/sprint-launch-${RUN_ID}.log"
+python3 "${TRIAL_ARGS[@]}"
+echo "trial unit=sprint-trial-${RUN_ID}.service log=/data/sprint-launch-${RUN_ID}.log"

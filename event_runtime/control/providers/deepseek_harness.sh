@@ -26,6 +26,7 @@ if [[ -n "${SPRINT_OPENROUTER_QUANTIZATION:-}" ]]; then
   exit 2
 fi
 export SPRINT_OPENROUTER_PROVIDER_ENDPOINT=deepseek
+export OPENROUTER_MODEL="$MODEL"
 unset SPRINT_OPENROUTER_QUANTIZATION
 
 LAUNCH_ARGS=(
@@ -55,15 +56,12 @@ fi
 
 echo "--- launch ---"
 LAUNCH_JSON=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' \
-  "$ROOT/event_runtime/control/launch.sh" --supervised-launch "${LAUNCH_ARGS[@]}")
-python3 "$ROOT/event_runtime/control/start_supervisor.py" \
+  "$ROOT/event_runtime/control/launch.sh" "${LAUNCH_ARGS[@]}")
+python3 "$ROOT/event_runtime/control/start_trial.py" \
   --run-id "$RUN_ID" \
   --batch-id "${SPRINT_BATCH_ID:-}" \
   --launch-argv-json "$LAUNCH_JSON" \
   --secret-env OPENROUTER_API_KEY \
   --launch-env OPENROUTER_MODEL \
-  --launch-env SPRINT_OPENROUTER_PROVIDER_ENDPOINT \
-  --max-restarts "${CPU_MAX_RESTARTS:-50}" \
-  --min-backoff-s "${CPU_MIN_BACKOFF_S:-30}" \
-  --max-backoff-s "${CPU_MAX_BACKOFF_S:-600}"
-echo "supervisor unit=sprint-lane-${RUN_ID}.service log=/data/sprint-launch-${RUN_ID}.log"
+  --launch-env SPRINT_OPENROUTER_PROVIDER_ENDPOINT
+echo "trial unit=sprint-trial-${RUN_ID}.service log=/data/sprint-launch-${RUN_ID}.log"

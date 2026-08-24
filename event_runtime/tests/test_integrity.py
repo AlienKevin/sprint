@@ -10,11 +10,33 @@ sys.path.insert(0, str(ROOT))
 from event_runtime.control.integrity import build_integrity_report  # noqa: E402
 
 
+def run_contract(run_id: str, *, attempt: int = 1) -> dict[str, object]:
+    return {
+        "run_id": run_id,
+        "cpu_launch_attempt": attempt,
+        "cpu_execution_policy": "single_attempt_no_resume",
+    }
+
+
+def write_clean_exit(path: Path, *, code: int = 0, requested: bool = True) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "attempt": 1,
+                "raw_exit_code": code,
+                "stop_requested": requested,
+                "execution_policy": "single_attempt_no_resume",
+            }
+        )
+    )
+
+
 def test_clean_single_attempt_run_is_eligible(tmp_path: Path) -> None:
-    run = {"run_id": "clean-run", "cpu_launch_attempt": 1}
+    run = run_contract("clean-run")
     (tmp_path / "STOP_ACK.json").write_text(
         json.dumps({"reason": "agent_cost_budget_exhausted"})
     )
+    write_clean_exit(tmp_path / "CPU_TRIAL_EXIT.json")
 
     report = build_integrity_report(tmp_path, run)
 
@@ -26,10 +48,11 @@ def test_clean_single_attempt_run_is_eligible(tmp_path: Path) -> None:
 def test_controller_relaunch_and_budget_telemetry_failure_are_invalid(
     tmp_path: Path,
 ) -> None:
-    run = {"run_id": "bad-run", "cpu_launch_attempt": 3}
+    run = run_contract("bad-run", attempt=3)
     (tmp_path / "STOP_ACK.json").write_text(
         json.dumps({"reason": "budget_telemetry_unavailable"})
     )
+    write_clean_exit(tmp_path / "CPU_TRIAL_EXIT.json")
 
     report = build_integrity_report(tmp_path, run)
 
@@ -37,7 +60,7 @@ def test_controller_relaunch_and_budget_telemetry_failure_are_invalid(
     assert report["benchmark_valid"] is False
     assert report["replacement_required"] is True
     assert {reason["code"] for reason in report["reasons"]} == {
-        "cpu_agent_relaunched",
+        "cpu_attempt_contract_violation",
         "budget_telemetry_unavailable",
     }
 
@@ -57,7 +80,7 @@ def test_gpu_retry_and_unconfirmed_termination_are_invalid(tmp_path: Path) -> No
     )
 
     report = build_integrity_report(
-        tmp_path, {"run_id": "gpu-retry", "cpu_launch_attempt": 1}
+        tmp_path, run_contract("gpu-retry")
     )
 
     assert {reason["code"] for reason in report["reasons"]} == {
@@ -82,7 +105,7 @@ def test_expected_idempotent_teardown_error_is_not_an_integrity_failure(
     )
 
     report = build_integrity_report(
-        tmp_path, {"run_id": "expected-stop", "cpu_launch_attempt": 1}
+        tmp_path, run_contract("expected-stop")
     )
 
     assert report["benchmark_valid"] is True
@@ -96,7 +119,7 @@ def test_unattributed_gpu_termination_requires_replacement(tmp_path: Path) -> No
     )
 
     report = build_integrity_report(
-        tmp_path, {"run_id": "unknown-stop", "cpu_launch_attempt": 1}
+        tmp_path, run_contract("unknown-stop")
     )
 
     assert report["benchmark_valid"] is False
@@ -120,7 +143,7 @@ def test_worker_budget_stop_is_attributed_without_legacy_reason_field(
     )
 
     report = build_integrity_report(
-        tmp_path, {"run_id": "budget-stop", "cpu_launch_attempt": 1}
+        tmp_path, run_contract("budget-stop")
     )
 
     assert report["benchmark_valid"] is True
@@ -139,7 +162,7 @@ def test_unacknowledged_control_request_requires_replacement(tmp_path: Path) -> 
     )
 
     report = build_integrity_report(
-        tmp_path, {"run_id": "lost-cancel", "cpu_launch_attempt": 1}
+        tmp_path, run_contract("lost-cancel")
     )
 
     assert report["benchmark_valid"] is False

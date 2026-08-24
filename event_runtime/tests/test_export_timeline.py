@@ -838,13 +838,18 @@ def test_training_cost_legacy_falls_back_to_worker_starting(
     ] == 37_000
 
 
-def test_stop_ack_closes_supervised_cpu_allocation(
+def test_stop_ack_closes_single_cpu_allocation(
     tmp_path: Path,
 ) -> None:
     state = fixture_run(tmp_path)
     run_path = state / "run.json"
     run = json.loads(run_path.read_text())
-    run.update({"cpu_supervised": True, "cpu_launch_attempt": 1})
+    run.update(
+        {
+            "cpu_execution_policy": "single_attempt_no_resume",
+            "cpu_launch_attempt": 1,
+        }
+    )
     run_path.write_text(json.dumps(run))
     telemetry_path = state / "telemetry" / "host-samples.jsonl"
     rows = [json.loads(line) for line in telemetry_path.read_text().splitlines()]

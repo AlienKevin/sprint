@@ -41,7 +41,6 @@ REASONING_EFFORT=""
 PROMPT_TEMPLATE_OVERRIDE=""
 DRY_RUN=0
 START_MONITOR=1
-SUPERVISED_LAUNCH=0
 DEEPSEEK_OPENROUTER_MODEL=${DEEPSEEK_OPENROUTER_MODEL:-deepseek/deepseek-v4-flash-0731}
 OPENAI_OPENROUTER_PRESET=${SPRINT_OPENROUTER_PRESET:-}
 
@@ -60,7 +59,6 @@ Options:
   --standing-gpu             Hold a dedicated A10G for the whole run.
   --dry-run                  Print redacted configuration; launch nothing.
   --no-monitor               Do not start the host monitor automatically.
-  --supervised-launch        Create or resume this run on the same Volume.
 EOF
 }
 
@@ -76,7 +74,6 @@ while (($#)); do
     --standing-gpu) STANDING_GPU=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     --no-monitor) START_MONITOR=0; shift ;;
-    --supervised-launch) SUPERVISED_LAUNCH=1; shift ;;
     -h|--help) usage; exit 0 ;;
     --)
       shift
@@ -257,85 +254,11 @@ ENV_FILE="$SECRET_DIR/harbor.env"
 REMOTE_PASSWORD="/durable/runs/$RUN_ID/secrets/restic-password"
 CPU_LAUNCH_ATTEMPT=1
 
-# A replacement CPU sandbox must execute the exact benchmark/Harbor source and
-# immutable images used at launch, even when main has advanced meanwhile. New
-# runs record the Sprint commit. Resumes materialize that commit in a detached
-# host worktree and read image IDs from run.json rather than today's warm-up
-# manifest. This keeps recovery possible without changing evaluation semantics.
-RESUMING=0
 WARMUP_MANIFEST_PATH="$ROOT/runs/ops/modal-image-warmup.json"
 if [[ -f "$STATE_DIR/run.json" ]]; then
-  if (( ! SUPERVISED_LAUNCH )); then
-    echo "run ID already exists: $RUN_ID" >&2
-    exit 1
-  fi
-  RESUMING=1
-  read -r SPRINT_SOURCE_COMMIT HARBOR_COMMIT HARBOR_BRANCH \
-    AGENT_TRAINING_IMAGE_ID VERIFIER_IMAGE_ID < <(
-    python3 - "$STATE_DIR/run.json" <<'PY'
-import json
-import re
-import sys
-
-payload = json.load(open(sys.argv[1]))
-provenance = payload.get("evaluation_provenance") or {}
-values = (
-    payload.get("sprint_source_commit"),
-    payload.get("harbor_commit"),
-    payload.get("harbor_branch"),
-    provenance.get("agent_training_image_id"),
-    provenance.get("verifier_image_id"),
-)
-if not isinstance(values[0], str) or not re.fullmatch(r"[0-9a-f]{40}", values[0]):
-    raise SystemExit("resume requires a recorded sprint_source_commit")
-if not isinstance(values[1], str) or not re.fullmatch(r"[0-9a-f]{40}", values[1]):
-    raise SystemExit("resume requires a recorded Harbor commit")
-if not isinstance(values[2], str) or not values[2]:
-    raise SystemExit("resume requires a recorded Harbor branch")
-if not all(isinstance(value, str) and re.fullmatch(r"im-[A-Za-z0-9]+", value) for value in values[3:]):
-    raise SystemExit("resume requires recorded immutable Modal image IDs")
-print(*values)
-PY
-  )
-  SOURCE_ROOT="/data/sprint-run-sources/$RUN_ID-$SPRINT_SOURCE_COMMIT"
-  if [[ ! -e "$SOURCE_ROOT/.git" ]]; then
-    mkdir -p /data/sprint-run-sources
-    git -C "$ROOT" worktree add --detach "$SOURCE_ROOT" "$SPRINT_SOURCE_COMMIT"
-  fi
-  [[ "$(git -C "$SOURCE_ROOT" rev-parse HEAD)" == "$SPRINT_SOURCE_COMMIT" ]] || {
-    echo "resume source worktree is not pinned to $SPRINT_SOURCE_COMMIT" >&2
-    exit 1
-  }
-  HARBOR="$SOURCE_ROOT/harbor"
-  WARMUP_MANIFEST_PATH="$STATE_DIR/resume-image-provenance.json"
-  python3 - "$STATE_DIR/run.json" "$WARMUP_MANIFEST_PATH" <<'PY'
-import json
-import os
-import pathlib
-import sys
-
-run = json.load(open(sys.argv[1]))
-provenance = run["evaluation_provenance"]
-payload = {
-    "completed": True,
-    "completed_at_epoch_s": provenance["image_warmup_completed_at_epoch_s"],
-    "contexts": {
-        "agent_training": {
-            "sha256": provenance["agent_training_context_sha256"],
-            "image_id": provenance["agent_training_image_id"],
-        },
-        "verifier": {
-            "sha256": provenance["verifier_context_sha256"],
-            "image_id": provenance["verifier_image_id"],
-        },
-    },
-}
-target = pathlib.Path(sys.argv[2])
-temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
-os.chmod(temporary, 0o600)
-os.replace(temporary, target)
-PY
+  echo "run ID already exists and CPU-agent resume is forbidden: $RUN_ID" >&2
+  echo "use a new run ID to restart the whole trial from scratch" >&2
+  exit 1
 fi
 
 # Vision Exp is currently available only from DeepSeek's official OpenRouter
@@ -357,10 +280,9 @@ if [[ "$AGENT_KIND" == "deepseek-harness" ]]; then
 # New Vision Exp evaluations use Codex through the official DeepSeek endpoint.
 # Keep this before the legacy wildcard so Vision Exp cannot be rewritten to
 # V4 Flash 0731/Baidu.
-elif (( ! RESUMING )) \
-  && [[ "$AGENT_KIND" == "codex" ]] \
-  && [[ "$MODEL_API_HOST" == "openrouter.ai" ]] \
-  && [[ "${MODEL#*/}" == "deepseek-v4-flash-vision-exp" ]]; then
+elif [[ "$AGENT_KIND" == "codex" \
+  && "$MODEL_API_HOST" == "openrouter.ai" \
+  && "${MODEL#*/}" == "deepseek-v4-flash-vision-exp" ]]; then
   if [[ -n "${SPRINT_OPENROUTER_PROVIDER_ENDPOINT:-}" \
         && "$SPRINT_OPENROUTER_PROVIDER_ENDPOINT" != "deepseek" ]]; then
     echo "DeepSeek V4 Flash Vision Exp is locked to the official DeepSeek endpoint" >&2
@@ -383,10 +305,9 @@ elif (( ! RESUMING )) \
 # Every new legacy V4 Flash evaluation uses one sealed Baidu Qianfan FP8 endpoint.
 # The proxy replaces caller routing on every request, disables fallback, and
 # independently captures that endpoint's request-time promotion for billing.
-elif (( ! RESUMING )) \
-  && [[ "$AGENT_KIND" == "codex" ]] \
-  && [[ "$MODEL_API_HOST" == "openrouter.ai" ]] \
-  && [[ "${MODEL#*/}" == deepseek-v4-flash* ]]; then
+elif [[ "$AGENT_KIND" == "codex" \
+  && "$MODEL_API_HOST" == "openrouter.ai" \
+  && "${MODEL#*/}" == deepseek-v4-flash* ]]; then
   if [[ -n "${SPRINT_OPENROUTER_PROVIDER_ENDPOINT:-}" \
         && "$SPRINT_OPENROUTER_PROVIDER_ENDPOINT" != "baidu/fp8" ]]; then
     echo "DeepSeek V4 Flash provider is locked to baidu/fp8" >&2
@@ -405,32 +326,6 @@ elif (( ! RESUMING )) \
   MODEL=deepseek/deepseek-v4-flash-0731
   export SPRINT_OPENROUTER_PROVIDER_ENDPOINT=baidu/fp8
   export SPRINT_OPENROUTER_QUANTIZATION=fp8
-  export SPRINT_CODEX_DEEPSEEK_MODEL="$MODEL"
-  export SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW=1048576
-elif (( RESUMING )) \
-  && [[ "$AGENT_KIND" == "codex" ]] \
-  && [[ "$MODEL_API_HOST" == "openrouter.ai" ]] \
-  && [[ "${MODEL#*/}" == "deepseek-v4-flash-0731" ]]; then
-  [[ "${SPRINT_OPENROUTER_PROVIDER_ENDPOINT:-}" == "baidu/fp8" ]] || {
-    echo "resuming DeepSeek V4 Flash 0731 requires its recorded baidu/fp8 route" >&2
-    exit 2
-  }
-  [[ "${SPRINT_OPENROUTER_QUANTIZATION:-}" == "fp8" ]] || {
-    echo "resuming DeepSeek V4 Flash 0731 requires its recorded fp8 quantization" >&2
-    exit 2
-  }
-elif (( RESUMING )) \
-  && [[ "$AGENT_KIND" == "codex" ]] \
-  && [[ "$MODEL_API_HOST" == "openrouter.ai" ]] \
-  && [[ "${MODEL#*/}" == "deepseek-v4-flash-vision-exp" ]]; then
-  [[ "${SPRINT_OPENROUTER_PROVIDER_ENDPOINT:-}" == "deepseek" ]] || {
-    echo "resuming DeepSeek V4 Flash Vision Exp requires its recorded official route" >&2
-    exit 2
-  }
-  [[ -z "${SPRINT_OPENROUTER_QUANTIZATION:-}" ]] || {
-    echo "resuming DeepSeek V4 Flash Vision Exp requires no quantization override" >&2
-    exit 2
-  }
   export SPRINT_CODEX_DEEPSEEK_MODEL="$MODEL"
   export SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW=1048576
 fi
@@ -457,16 +352,7 @@ fi
 # Freeze every model-side benchmark knob that has an authoritative value. The
 # inactive DeepSeek Harness path keeps its Chat Completions field names; active
 # Codex arms use Responses API field names.
-if (( RESUMING )); then
-  SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON=$(python3 - "$STATE_DIR/run.json" <<'PY'
-import json
-import sys
-
-contract = json.load(open(sys.argv[1])).get("openrouter_request_contract")
-print(json.dumps(contract, separators=(",", ":"), sort_keys=True) if contract else "")
-PY
-  )
-elif [[ "$MODEL_API_HOST" == "openrouter.ai" ]]; then
+if [[ "$MODEL_API_HOST" == "openrouter.ai" ]]; then
   case "$AGENT_KIND:${MODEL#*/}" in
     deepseek-harness:deepseek-v4-flash-vision-exp)
       SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON='{"max_tokens":384000,"model":"deepseek/deepseek-v4-flash-vision-exp","reasoning_effort":"max","stream":true,"temperature":1.0,"top_p":0.95}'
@@ -500,20 +386,6 @@ export SPRINT_OPENROUTER_ALLOWED_INFERENCE_PATH
 
 TASK_SOURCE="$SOURCE_ROOT/events/g1-100-metres"
 TASK="$STATE_DIR/rendered-task"
-if [[ "$RESUMING" == "1" && "${MODEL#*/}" == "deepseek-v4-flash" \
-      && -z "${SPRINT_DEEPSEEK_PRICING_SNAPSHOT:-}" ]]; then
-  SPRINT_DEEPSEEK_PRICING_SNAPSHOT=$(python3 - "$STATE_DIR/run.json" <<'PY'
-import json
-import sys
-
-snapshot = json.load(open(sys.argv[1])).get("api_pricing_snapshot")
-if not isinstance(snapshot, dict):
-    raise SystemExit("resume is missing its frozen DeepSeek pricing snapshot")
-print(json.dumps(snapshot, separators=(",", ":"), sort_keys=True))
-PY
-  )
-  export SPRINT_DEEPSEEK_PRICING_SNAPSHOT
-fi
 BUDGET_CONFIG="$SOURCE_ROOT/event_runtime/control/budget.env"
 [[ -f "$BUDGET_CONFIG" ]] || {
   echo "missing global event budget configuration: $BUDGET_CONFIG" >&2
@@ -580,18 +452,6 @@ actual_commit=$(tr -d '[:space:]' <"$HARBOR/.sprint-upstream-commit")
 
 DEEPSEEK_PRICING_SNAPSHOT_JSON=${SPRINT_DEEPSEEK_PRICING_SNAPSHOT:-}
 if [[ "${MODEL#*/}" == "deepseek-v4-flash" ]]; then
-  if [[ -z "$DEEPSEEK_PRICING_SNAPSHOT_JSON" && "$RESUMING" == "1" ]]; then
-    DEEPSEEK_PRICING_SNAPSHOT_JSON=$(python3 - "$STATE_DIR/run.json" <<'PY'
-import json
-import sys
-
-snapshot = json.load(open(sys.argv[1])).get("api_pricing_snapshot")
-if not isinstance(snapshot, dict):
-    raise SystemExit("resume is missing its frozen DeepSeek pricing snapshot")
-print(json.dumps(snapshot, separators=(",", ":"), sort_keys=True))
-PY
-    )
-  fi
   [[ -n "$DEEPSEEK_PRICING_SNAPSHOT_JSON" ]] || {
     echo "DeepSeek launch requires its provider pricing snapshot from batch preflight" >&2
     exit 1
@@ -855,16 +715,15 @@ if ((DRY_RUN)); then
   exit 0
 fi
 
-# New evaluations only start from image definitions that were eagerly built
-# and exercised on Modal. A resume consumes the recorded immutable IDs above.
-if (( ! RESUMING )); then
-  if [[ -n "$(git -C "$ROOT" status --porcelain --untracked-files=all -- event_runtime events harbor)" ]]; then
-    echo "new evaluations require committed benchmark, Harbor, and launcher source" >&2
-    exit 1
-  fi
-  python3 "$ROOT/event_runtime/preflight/check_images.py"
-  read -r AGENT_TRAINING_IMAGE_ID VERIFIER_IMAGE_ID < <(
-    python3 - "$WARMUP_MANIFEST_PATH" <<'PY'
+# Evaluations only start from image definitions that were eagerly built and
+# exercised on Modal. A stopped CPU trial is never resumed in place.
+if [[ -n "$(git -C "$ROOT" status --porcelain --untracked-files=all -- event_runtime events harbor)" ]]; then
+  echo "new evaluations require committed benchmark, Harbor, and launcher source" >&2
+  exit 1
+fi
+python3 "$ROOT/event_runtime/preflight/check_images.py"
+read -r AGENT_TRAINING_IMAGE_ID VERIFIER_IMAGE_ID < <(
+  python3 - "$WARMUP_MANIFEST_PATH" <<'PY'
 import json
 import re
 import sys
@@ -877,53 +736,11 @@ if not all(isinstance(value, str) and re.fullmatch(r"im-[A-Za-z0-9]+", value)
     raise SystemExit("warm-up manifest contains an invalid Modal image ID")
 print(agent, verifier)
 PY
-  )
-  SPRINT_SOURCE_COMMIT=$(git -C "$ROOT" rev-parse HEAD)
-fi
+)
+SPRINT_SOURCE_COMMIT=$(git -C "$ROOT" rev-parse HEAD)
 
 umask 077
-if (( RESUMING )); then
-  CPU_LAUNCH_ATTEMPT=$(python3 - "$STATE_DIR/run.json" <<'PY'
-import json
-import sys
-payload = json.load(open(sys.argv[1]))
-print(int(payload.get("cpu_launch_attempt") or 1) + 1)
-PY
-)
-  JOBS_ROOT="$STATE_DIR/cpu-attempts/$(printf '%02d' "$CPU_LAUNCH_ATTEMPT")/harbor-jobs"
-  [[ -f "$PASSWORD_FILE" && -f "$ENV_FILE" ]] || {
-    echo "cannot resume without run secret files: $RUN_ID" >&2
-    exit 1
-  }
-  # A resumed evaluation must keep the credential that authenticated its first
-  # request.  In particular, a host may have both an official OpenAI key and an
-  # OpenRouter key in different env vars; silently rewriting harbor.env from a
-  # newly-created supervisor can otherwise switch credentials mid-run.  Refuse
-  # that drift before touching the sealed env file.
-  STORED_AGENT_SECRET=$(python3 - "$ENV_FILE" "$AGENT_SECRET_NAME" <<'PY'
-import pathlib
-import sys
-
-path = pathlib.Path(sys.argv[1])
-name = sys.argv[2]
-values = {}
-for raw in path.read_text(encoding="utf-8").splitlines():
-    if not raw or raw.lstrip().startswith("#") or "=" not in raw:
-        continue
-    key, value = raw.split("=", 1)
-    values[key] = value
-value = values.get(name)
-if not value:
-    raise SystemExit(f"sealed agent env is missing {name}")
-print(value, end="")
-PY
-)
-  if [[ "$STORED_AGENT_SECRET" != "$AGENT_SECRET" ]]; then
-    echo "refusing to resume $RUN_ID with a different $AGENT_SECRET_NAME" >&2
-    echo "restore the run's original provider credential before resuming" >&2
-    exit 78
-  fi
-elif [[ -e "$SECRET_DIR" || -e "$JOBS_ROOT" ]]; then
+if [[ -e "$SECRET_DIR" || -e "$JOBS_ROOT" ]]; then
   echo "partial run state already exists: $RUN_ID" >&2
   exit 1
 fi
@@ -946,9 +763,7 @@ fi
 if [[ "$AGENT_KIND" == "codex" && "${MODEL#*/}" == deepseek-v4-flash* ]]; then
   printf 'SPRINT_CODEX_PROVIDER=deepseek\n' >>"$ENV_FILE"
 fi
-if (( ! RESUMING )); then
-  openssl rand -hex 32 >"$PASSWORD_FILE"
-fi
+openssl rand -hex 32 >"$PASSWORD_FILE"
 chmod 0600 "$ENV_FILE" "$PASSWORD_FILE"
 
 # The host needs Modal credentials to create the sandbox, but the untrusted
@@ -969,8 +784,8 @@ python3 - "$STATE_DIR/run.json" "$RUN_ID" "$APP_NAME" "$TRAINING_APP_NAME" \
   "$STATE_DIR" "$JOBS_ROOT" "$SECRET_DIR" "$MODAL_PROFILE" \
   "$AGENT_KIND" "$MODEL" "$ENDPOINT" "$REASONING_EFFORT" "$CODEX_VERSION" \
   "$SANDBOX_TIMEOUT_SECONDS" "$DEPLOY_DEBOUNCE_SECONDS" "$HARBOR" \
-  "$HARBOR_COMMIT" "$HARBOR_BRANCH" "$RESUMING" "$CPU_LAUNCH_ATTEMPT" \
-  "$SUPERVISED_LAUNCH" "$STANDING_GPU" "$MODEL_API_HOST" \
+  "$HARBOR_COMMIT" "$HARBOR_BRANCH" "$CPU_LAUNCH_ATTEMPT" \
+  "$STANDING_GPU" "$MODEL_API_HOST" \
   "$PROMPT_TEMPLATE" "$WARMUP_MANIFEST_PATH" "$ROOT" "$BATCH_ID" \
   "$SOURCE_ROOT" "$SPRINT_SOURCE_COMMIT" "$TASK" \
   "$AGENT_COST_BUDGET_USD" "$AGENT_COST_SHUTDOWN_RESERVE_USD" \
@@ -986,7 +801,7 @@ import sys
 
 (path, run_id, app, training_app, verifier_app, volume, state, jobs, secrets, profile, agent_kind, model,
  endpoint, effort, codex_version, sandbox_timeout, debounce, harbor, commit,
- branch, resuming, cpu_attempt, supervised, standing_gpu_flag,
+ branch, cpu_attempt, standing_gpu_flag,
  model_api_host, prompt_template, warmup_manifest_path, root, batch_id, source_root,
  sprint_source_commit, rendered_task_root, agent_cost_budget, shutdown_reserve, minimum_reserve,
  pricing_snapshot_json, model_api_cost_basis) = sys.argv[1:]
@@ -1019,7 +834,7 @@ def sha256_file(file_path):
 
 lock_fd = os.open(target.with_name("run.json.lock"), os.O_CREAT | os.O_RDWR, 0o600)
 fcntl.flock(lock_fd, fcntl.LOCK_EX)
-base = {
+payload = {
     "schema_version": 2,
     "run_id": run_id,
     "batch_id": batch_id or None,
@@ -1197,116 +1012,14 @@ base = {
     "scoring_deduplication_key": "task_fingerprint_plus_policy_sha256",
     "evaluation_result_policy": "all_blind_archival_submissions",
     "verifier_cost_attribution": "measurement_overhead_separate_from_agent_cost",
-    "cpu_supervised": supervised == "1",
+    "cpu_execution_policy": "single_attempt_no_resume",
     "cpu_launch_attempt": int(cpu_attempt),
-}
-if resuming == "1":
-    payload = json.loads(target.read_text())
-    expected = {
-        "run_id": run_id,
-        "app_name": app,
-        "training_app_name": training_app,
-        "verifier_app_name": verifier_app,
-        "volume_name": volume,
-        "agent_kind": agent_kind,
-        "model": model,
-        "endpoint": endpoint or None,
-        "reasoning_effort": effort,
-        "codex_version": codex_version if agent_kind == "codex" else None,
-        "deepseek_harness_version": (
-            os.environ.get("DEEPSEEK_HARNESS_VERSION")
-            if agent_kind == "deepseek-harness"
-            else None
-        ),
-        "deepseek_harness_sdk_version": (
-            os.environ.get("DEEPSEEK_HARNESS_SDK_VERSION")
-            if agent_kind == "deepseek-harness"
-            else None
-        ),
-        "deepseek_harness_config_sha256": base[
-            "deepseek_harness_config_sha256"
-        ],
-        "harbor_commit": commit,
-        "agent_cost_budget_usd": float(agent_cost_budget),
-        "budget_enforcement": base["budget_enforcement"],
-        "openrouter_request_contract": base["openrouter_request_contract"],
-        "provider_usage_ledger_required": base[
-            "provider_usage_ledger_required"
-        ],
-    }
-    if "openrouter_route" in payload:
-        expected["openrouter_route"] = base["openrouter_route"]
-    mismatches = {
-        key: (payload.get(key), value)
-        for key, value in expected.items()
-        if payload.get(key) != value
-    }
-    if mismatches:
-        raise SystemExit(f"resume configuration mismatch: {mismatches}")
-    recorded_provenance = payload.get("evaluation_provenance") or {}
-    current_provenance = base["evaluation_provenance"]
-    provenance_keys = (
-        "prompt_template_sha256",
-        "task_toml_sha256",
-        "instruction_template_sha256",
-        "rendered_instruction_sha256",
-        "agent_training_context_sha256",
-        "agent_training_image_id",
-        "verifier_context_sha256",
-        "verifier_image_id",
-    )
-    provenance_mismatches = {
-        key: (recorded_provenance.get(key), current_provenance.get(key))
-        for key in provenance_keys
-        if recorded_provenance.get(key) != current_provenance.get(key)
-    }
-    if provenance_mismatches:
-        raise SystemExit(
-            f"resume evaluation provenance mismatch: {provenance_mismatches}"
-        )
-    history = list(payload.get("cpu_launch_history") or [])
-    history.append({
+    "cpu_launch_history": [{
         "attempt": int(cpu_attempt),
         "launched_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "jobs_root": jobs,
-    })
-    payload.update({
-        "jobs_root": jobs,
-        "expected_job_path": str(pathlib.Path(jobs) / run_id),
-        "harbor_path": harbor,
-        "task_path": str(task_root),
-        "task_source_path": str(task_source_root),
-        "sprint_source_commit": sprint_source_commit,
-        "cpu_launch_attempt": int(cpu_attempt),
-        "cpu_launch_history": history,
-        "cpu_supervised": supervised == "1",
-        # Refresh security metadata when an older durable run is resumed under
-        # the current launcher. The actual policy comes from task.toml and the
-        # Harbor arguments below; keeping run.json current makes the audit trail
-        # accurately describe the resumed sandbox.
-        "agent_cloud_control_plane_credentials_injected": False,
-        "agent_network_policy": "model-api-only",
-        "agent_allowed_host": model_api_host,
-        "gpu_worker_network_policy": "no-network",
-        "verifier_network_policy": "no-network",
-        "gpu_job_index_required": True,
-        "openrouter_route": base["openrouter_route"],
-        "modal_billing_required": True,
-        "cgroup_telemetry_required": True,
-        "gpu_pipeline_telemetry_required": True,
-        "resource_contract": base["resource_contract"],
-        "telemetry_gpu_max_gap_seconds": 45,
-        "telemetry_gpu_pipeline_max_gap_seconds": 45,
-        "telemetry_cpu_max_gap_seconds": 45,
-        "telemetry_resource_roles": ["cpu-agent", "training-gpu", "verifier-gpu"],
-    })
-else:
-    payload = base
-    payload["cpu_launch_history"] = [{
-        "attempt": int(cpu_attempt),
-        "launched_at": payload["created_at"],
-        "jobs_root": jobs,
-    }]
+    }],
+}
 tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
 tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 os.chmod(tmp, 0o600)
@@ -1436,41 +1149,10 @@ fi
 unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN \
   CLAUDE_FORCE_OAUTH OPENAI_API_KEY OPENAI_BASE_URL HARBOR_API_KEY AGENT_SECRET
 export MODAL_PROFILE
-if (( ! RESUMING )); then
-  python3 -m modal volume create --version 1 "$VOLUME_NAME"
-  python3 -m modal volume put "$VOLUME_NAME" "$PASSWORD_FILE" \
-    "runs/$RUN_ID/secrets/restic-password"
-else
-  # A resume against a vanished Volume is unrecoverable: every durable path
-  # (gpu-jobs, checkpoints, telemetry, restic snapshots) lives on it, and this
-  # branch never recreates it. Left unchecked the launcher just exits 1 and the
-  # supervisor relaunches into the same wall until max_restarts burns out, which
-  # is exactly how lane-luna-20260803T035544Z died silently after 15 restarts
-  # Missing provider usage is fatal because it would corrupt cost comparison.
-  # instead, so the operator sees the cause rather than a restart-budget
-  # exhaustion several hours later.
-  if ! python3 -m modal volume list --json 2>/dev/null | python3 -c '
-import json
-import sys
-
-target = sys.argv[1]
-rows = json.load(sys.stdin)
-raise SystemExit(
-    0 if any(isinstance(row, dict) and row.get("name") == target for row in rows)
-    else 1
-)
-' "$VOLUME_NAME"; then
-    echo "FATAL: resume requested but Volume '$VOLUME_NAME' does not exist." >&2
-    echo "       Durable state for $RUN_ID is gone; this run cannot be resumed." >&2
-    echo "       Relaunch as a NEW run id (fresh volume) instead of resuming." >&2
-    printf '{"at":"%s","run_id":"%s","reason":"durable_volume_missing","volume":"%s"}\n' \
-      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$RUN_ID" "$VOLUME_NAME" \
-      >> "$STATE_DIR/controller-errors.jsonl" 2>/dev/null || true
-    exit 78   # EX_CONFIG: unrecoverable configuration, not a transient failure
-  fi
-fi
-# Resume relaunches rewrite the same remote path; Modal requires --force.
-python3 -m modal volume put -f "$VOLUME_NAME" "$STATE_DIR/run.json" \
+python3 -m modal volume create --version 1 "$VOLUME_NAME"
+python3 -m modal volume put "$VOLUME_NAME" "$PASSWORD_FILE" \
+  "runs/$RUN_ID/secrets/restic-password"
+python3 -m modal volume put "$VOLUME_NAME" "$STATE_DIR/run.json" \
   "runs/$RUN_ID/state/run.json"
 
 start_controller_worker() {

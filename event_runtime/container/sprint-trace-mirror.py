@@ -5,7 +5,7 @@ Agent CLIs write their native JSONL locally. This process tails those files
 and places complete-line chunks on the run's durable volume. A chunk is
 published before its cursor, so termination at any instruction leaves either
 the previous cursor or a harmless replayable chunk. Consumers deduplicate
-native records when CPU attempts are replayed.
+native records across repeated mirror reads of the one CPU execution.
 
 Raw chunks are private forensic data and may contain tool arguments/output.
 Only the summary from ``event_runtime.export.timeline`` is public-safe.

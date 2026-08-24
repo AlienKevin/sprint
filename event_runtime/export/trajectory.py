@@ -341,7 +341,7 @@ def _materialize_deepseek_trajectories(state_dir: Path) -> list[tuple[int, Path]
 
 
 def discover_trajectories(state_dir: Path) -> list[tuple[int, Path]]:
-    """Return one reconstructed ATIF trajectory for each CPU attempt."""
+    """Return the reconstructed ATIF trajectory for the CPU execution."""
     _materialize_deepseek_trajectories(state_dir)
     paths = sorted(
         state_dir.glob("trace/reconstructed/cpu-attempt-*/*/trajectory.json")

@@ -947,17 +947,7 @@ def mirror_agent_cost(run: dict[str, Any], payload: dict[str, Any]) -> dict[str,
             return {"agent_cost_mirror": "agent_stopped"}
         ack = state_dir / "STOP_ACK.json"
         if ack.is_file():
-            try:
-                ack_reason = str(json.loads(ack.read_text()).get("reason") or "")
-            except (OSError, json.JSONDecodeError):
-                return {"agent_cost_mirror": "agent_stopped"}
-            # A supervised provider retry replaces the previous attempt's ACK
-            # with ``agent_exit`` before the next CPU sandbox starts.  That ACK
-            # is an attempt boundary, not a run stop, so the fresh sandbox must
-            # continue receiving the trusted cost mirror.  Every explicit stop
-            # is fenced by STOP_REQUESTED; unknown ACK reasons stay fail-closed.
-            if ack_reason != "agent_exit":
-                return {"agent_cost_mirror": "agent_stopped"}
+            return {"agent_cost_mirror": "agent_stopped"}
     container_id = str(run.get("agent_container_id") or "")
     if not container_id.startswith("ta-"):
         return {"agent_cost_mirror": "unavailable"}
@@ -2984,8 +2974,7 @@ def reconcile_live_agent_cancel_requests(
         for item in read_live_agent_cancel_requests(run):
             by_request_id[str(item["request_id"])] = item
     except RuntimeError:
-        # A supervised CPU relaunch can temporarily remove the live channel.
-        # The committed copy is sufficient for restart-safe replay.
+        # A transient exec failure cannot erase the durable fallback request.
         pass
     for request in by_request_id.values():
         request_id = str(request["request_id"])
@@ -3425,9 +3414,8 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
                 reconcile_live_agent_cancel_requests(run, indexed=indexed)
             )
         except (RuntimeError, ValueError, json.JSONDecodeError) as exc:
-            # CPU sandboxes may be between supervised attempts. The request is
-            # retained in the durable fallback and will be retried; GPU
-            # reconciliation must continue meanwhile.
+            # Preserve the durable request across transient control-channel
+            # failures; GPU reconciliation must continue meanwhile.
             actions.append(
                 {
                     "action": "control_channel_retry",

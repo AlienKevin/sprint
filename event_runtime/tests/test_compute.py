@@ -28,8 +28,7 @@ sys.path.insert(0, str(ENV))
 
 from event_runtime.compute import claim as gpu_claim  # noqa: E402
 from event_runtime.compute import worker as gpu_worker  # noqa: E402
-from event_runtime.control import start_supervisor as start_lane_supervisor  # noqa: E402
-from event_runtime.control import supervisor as supervise_lane  # noqa: E402
+from event_runtime.control import start_trial as start_cpu_trial  # noqa: E402
 from event_runtime.control import credentials as validate_agent_env  # noqa: E402
 from event_runtime.container import sprint_resilience as resilience  # noqa: E402
 
@@ -1936,202 +1935,18 @@ class TimelineAccountingTests(unittest.TestCase):
         self.assertEqual(summary["per_job"][0]["attempts"], 2)
 
 
-class SuperviseTests(unittest.TestCase):
-    def test_operator_stop_blocks_relaunch(self) -> None:
-        ok, reason = supervise_lane.should_relaunch(
-            stop=True,
-            harbor_alive=False,
-            max_restarts=10,
-            restarts=0,
-            consecutive_failures=0,
-        )
-        self.assertFalse(ok)
-        self.assertEqual(reason, "operator_stop")
-
-    def test_alive_skips_relaunch(self) -> None:
-        ok, reason = supervise_lane.should_relaunch(
-            stop=False,
-            harbor_alive=True,
-            max_restarts=10,
-            restarts=0,
-            consecutive_failures=0,
-        )
-        self.assertFalse(ok)
-        self.assertEqual(reason, "already_alive")
-
-    def test_relaunch_clears_stale_stopped_state_before_launch(self) -> None:
+class SingleCpuTrialTests(unittest.TestCase):
+    def test_success_records_one_complete_process_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
-            state_dir = Path(raw)
-            supervise_lane.save_supervise_state(
-                state_dir,
-                {
-                    "schema_version": 1,
-                    "restarts": 0,
-                    "consecutive_failures": 0,
-                    "last_launch_at": None,
-                    "last_exit_code": None,
-                    "stopped": True,
-                },
-            )
-
-            state_seen_by_launch: dict = {}
-
-            def launch_fn() -> int:
-                state_seen_by_launch.update(
-                    supervise_lane.load_supervise_state(state_dir)
+            with mock.patch.object(start_cpu_trial, "OPS", Path(raw)):
+                code = start_cpu_trial.run_once(
+                    "unit-single-success", ["/bin/sh", "-c", "exit 0"]
                 )
-                return 78
-
-            supervise_lane.run_loop(
-                "unit-clear-stale-stop",
-                launch_fn=launch_fn,
-                alive_fn=lambda: False,
-                stop_fn=lambda: (False, ""),
-                sleep_fn=lambda _s: None,
-                max_restarts=5,
-                state_dir=state_dir,
-            )
-
-            self.assertFalse(state_seen_by_launch["stopped"])
-            self.assertEqual(state_seen_by_launch["last_decision"], "relaunch")
-
-    def test_backoff_grows_and_caps(self) -> None:
-        self.assertEqual(supervise_lane.next_backoff_s(1, min_s=30, max_s=600), 30)
-        self.assertEqual(supervise_lane.next_backoff_s(2, min_s=30, max_s=600), 60)
-        self.assertEqual(supervise_lane.next_backoff_s(10, min_s=30, max_s=600), 600)
-
-    def test_parallel_lane_restart_jitter_is_stable_and_distinct(self) -> None:
-        first = supervise_lane.restart_jitter_s("lane-1", 3, ceiling_s=30)
-        self.assertEqual(
-            first, supervise_lane.restart_jitter_s("lane-1", 3, ceiling_s=30)
-        )
-        self.assertNotEqual(
-            first, supervise_lane.restart_jitter_s("lane-2", 3, ceiling_s=30)
-        )
-        self.assertGreaterEqual(first, 0)
-        self.assertLessEqual(first, 30)
-
-    def test_rate_limit_result_hidden_by_successful_harbor_exit_is_retryable(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            state = Path(raw)
-            jobs = state / "attempt-1"
-            trial = jobs / "trial"
-            trial.mkdir(parents=True)
-            (trial / "result.json").write_text(
-                json.dumps(
-                    {
-                        "exception_info": {
-                            "exception_type": "ApiRateLimitError",
-                            "exception_message": "429 Too Many Requests",
-                        }
-                    }
-                )
-            )
-            (state / "run.json").write_text(
-                json.dumps(
-                    {"cpu_launch_history": [{"attempt": 1, "jobs_root": str(jobs)}]}
-                )
-            )
-
-            self.assertEqual(
-                supervise_lane.classify_launch_exit(state, 1, 0),
-                supervise_lane.RECOVERABLE_RATE_LIMIT_EXIT,
-            )
-            self.assertEqual(supervise_lane.classify_launch_exit(state, 1, 9), 9)
-
-    def test_stop_requested_file(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            state = Path(raw)
-            (state / "STOP_REQUESTED.json").write_text(
-                json.dumps({"reason": "operator_stop"}) + "\n"
-            )
-            stop, reason = supervise_lane.stop_requested(state)
-            self.assertTrue(stop)
-            self.assertIn("STOP_REQUESTED", reason)
-
-    def test_budget_stop_marker_blocks_relaunch(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            state = Path(raw)
-            (state / "BUDGET_STOP_REQUESTED.json").write_text(
-                json.dumps(
-                    {
-                        "reason": "agent_cost_budget_exhausted",
-                        "status": "stop_requested",
-                    }
-                )
-                + "\n"
-            )
-            stop, reason = supervise_lane.stop_requested(state)
-            self.assertTrue(stop)
-            self.assertIn("BUDGET_STOP_REQUESTED", reason)
-
-    def test_budget_fail_closed_ack_blocks_relaunch(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            state = Path(raw)
-            (state / "STOP_ACK.json").write_text(
-                json.dumps({"reason": "budget_telemetry_unavailable"}) + "\n"
-            )
-            stop, reason = supervise_lane.stop_requested(state)
-            self.assertTrue(stop)
-            self.assertIn("budget_telemetry_unavailable", reason)
-
-    def test_nonterminal_agent_exit_ack_allows_relaunch(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            state = Path(raw)
-            (state / "STOP_ACK.json").write_text(
-                json.dumps({"reason": "agent_exit"}) + "\n"
-            )
-            stop, reason = supervise_lane.stop_requested(state)
-            self.assertFalse(stop)
-            self.assertEqual(reason, "")
-
-    def test_loop_relaunches_then_honors_stop(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            state = Path(raw)
-            launches = {"n": 0}
-            alive = {"v": False}
-            stopped = {"v": False}
-
-            def launch_fn() -> int:
-                launches["n"] += 1
-                alive["v"] = True
-                return 0
-
-            def alive_fn() -> bool:
-                return alive["v"]
-
-            def stop_fn() -> tuple[bool, str]:
-                return stopped["v"], "operator_stop" if stopped["v"] else ""
-
-            sleeps: list[float] = []
-
-            def sleep_fn(sec: float) -> None:
-                sleeps.append(sec)
-                # After first successful launch, kill process and request stop
-                # on second decision cycle.
-                if launches["n"] >= 1:
-                    alive["v"] = False
-                    stopped["v"] = True
-
-            result = supervise_lane.run_loop(
-                "unit-sup",
-                launch_fn=launch_fn,
-                alive_fn=alive_fn,
-                stop_fn=stop_fn,
-                sleep_fn=sleep_fn,
-                max_restarts=5,
-                min_backoff_s=1,
-                max_backoff_s=4,
-                max_iterations=5,
-                state_dir=state,
-            )
-            self.assertGreaterEqual(launches["n"], 1)
-            self.assertTrue(result["stopped"])
+            self.assertEqual(code, 0)
+            state = Path(raw) / "unit-single-success"
             lifecycle = [
                 json.loads(line)
-                for line in (state / "telemetry" / "cpu_lifecycle.jsonl")
+                for line in (state / "telemetry/cpu_lifecycle.jsonl")
                 .read_text()
                 .splitlines()
             ]
@@ -2139,65 +1954,37 @@ class SuperviseTests(unittest.TestCase):
                 [row["event"] for row in lifecycle],
                 ["cpu_launch_started", "cpu_launch_exited"],
             )
-            self.assertEqual(lifecycle[-1]["exit_code"], 0)
-            # After stop, must not keep launching.
-            n_after_stop = launches["n"]
-            result2 = supervise_lane.run_loop(
-                "unit-sup",
-                launch_fn=launch_fn,
-                alive_fn=lambda: False,
-                stop_fn=lambda: (True, "operator_stop"),
-                sleep_fn=lambda _s: None,
-                max_restarts=5,
-                min_backoff_s=1,
-                max_backoff_s=4,
-                max_iterations=3,
-                state_dir=state,
-            )
-            self.assertEqual(launches["n"], n_after_stop)
-            self.assertEqual(result2["history"][0]["decision"], "operator_stop")
+            exit_record = json.loads((state / "CPU_TRIAL_EXIT.json").read_text())
+            self.assertEqual(exit_record["attempt"], 1)
+            self.assertEqual(exit_record["reason"], "agent_process_completed")
+            self.assertFalse(exit_record["recoverable_in_place"])
 
-    def test_unrecoverable_launcher_exit_stops_and_writes_failure(self) -> None:
+    def test_nonzero_exit_is_not_retried(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
-            state = Path(raw)
-            launches = {"n": 0}
+            with mock.patch.object(start_cpu_trial, "OPS", Path(raw)):
+                code = start_cpu_trial.run_once(
+                    "unit-single-failure", ["/bin/sh", "-c", "exit 17"]
+                )
+            self.assertEqual(code, 17)
+            state = Path(raw) / "unit-single-failure"
+            lifecycle = (state / "telemetry/cpu_lifecycle.jsonl").read_text().splitlines()
+            self.assertEqual(len(lifecycle), 2)
+            exit_record = json.loads((state / "CPU_TRIAL_EXIT.json").read_text())
+            self.assertEqual(exit_record["raw_exit_code"], 17)
+            self.assertEqual(exit_record["reason"], "agent_process_failed")
 
-            def launch_fn() -> int:
-                launches["n"] += 1
-                return 78
-
-            result = supervise_lane.run_loop(
-                "unit-unrecoverable",
-                launch_fn=launch_fn,
-                alive_fn=lambda: False,
-                stop_fn=lambda: (False, ""),
-                sleep_fn=lambda _s: None,
-                max_restarts=50,
-                state_dir=state,
-            )
-            self.assertEqual(launches["n"], 1)
-            self.assertEqual(result["state"]["last_decision"], "unrecoverable_exit:78")
-            failure = json.loads((state / "SUPERVISOR_FAILED.json").read_text())
-            self.assertEqual(failure["reason"], "unrecoverable_exit:78")
-            self.assertFalse(failure["recoverable"])
-
-    def test_retry_exhaustion_is_visible(self) -> None:
+    def test_existing_stop_marker_attributes_exit_to_requested_stop(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
-            state = Path(raw)
-            result = supervise_lane.run_loop(
-                "unit-exhausted",
-                launch_fn=lambda: 1,
-                alive_fn=lambda: False,
-                stop_fn=lambda: (False, ""),
-                sleep_fn=lambda _s: None,
-                max_restarts=2,
-                state_dir=state,
-            )
-            self.assertEqual(result["restarts"], 2)
-            failure = json.loads((state / "SUPERVISOR_FAILED.json").read_text())
-            self.assertIn(
-                failure["reason"], {"max_restarts", "max_consecutive_failures"}
-            )
+            state = Path(raw) / "unit-single-stop"
+            state.mkdir(parents=True)
+            (state / "STOP_REQUESTED.json").write_text('{"reason":"operator_stop"}\n')
+            with mock.patch.object(start_cpu_trial, "OPS", Path(raw)):
+                start_cpu_trial.run_once(
+                    "unit-single-stop", ["/bin/sh", "-c", "exit 143"]
+                )
+            exit_record = json.loads((state / "CPU_TRIAL_EXIT.json").read_text())
+            self.assertEqual(exit_record["reason"], "requested_stop")
+            self.assertTrue(exit_record["stop_requested"])
 
 
 class TryClaimPersistenceTests(unittest.TestCase):
@@ -2753,15 +2540,13 @@ class NetworkIsolationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("extra Harbor arguments are disabled", result.stderr)
 
-    def test_resume_refreshes_network_policy_metadata(self) -> None:
+    def test_single_cpu_policy_preserves_network_metadata(self) -> None:
         launcher = (ROOT / "event_runtime/control/launch.sh").read_text()
-        update_start = launcher.index("    payload.update({")
-        update_end = launcher.index("    })", update_start)
-        resume_update = launcher[update_start:update_end]
-        self.assertIn('"agent_network_policy": "model-api-only"', resume_update)
-        self.assertIn('"agent_allowed_host": model_api_host', resume_update)
-        self.assertIn('"gpu_worker_network_policy": "no-network"', resume_update)
-        self.assertIn('"verifier_network_policy": "no-network"', resume_update)
+        self.assertIn('"cpu_execution_policy": "single_attempt_no_resume"', launcher)
+        self.assertIn('"agent_network_policy": "model-api-only"', launcher)
+        self.assertIn('"agent_allowed_host": model_api_host', launcher)
+        self.assertIn('"gpu_worker_network_policy": "no-network"', launcher)
+        self.assertIn('"verifier_network_policy": "no-network"', launcher)
 
     def test_unreviewed_endpoint_is_rejected_before_launch(self) -> None:
         import subprocess
@@ -3640,42 +3425,26 @@ class LauncherWiringTests(unittest.TestCase):
         self.assertIn('--ek "modal_image_id=$AGENT_TRAINING_IMAGE_ID"', launcher)
         self.assertIn('--ek "verifier_image_id=$VERIFIER_IMAGE_ID"', launcher)
 
-    def test_cpu_resume_uses_launch_source_and_recorded_images(self) -> None:
+    def test_cpu_trial_is_fresh_and_non_resumable(self) -> None:
         launcher = (ROOT / "event_runtime/control/launch.sh").read_text()
         self.assertIn('"sprint_source_commit": sprint_source_commit', launcher)
-        self.assertIn('payload.get("sprint_source_commit")', launcher)
-        self.assertIn(
-            'SOURCE_ROOT="/data/sprint-run-sources/$RUN_ID-$SPRINT_SOURCE_COMMIT"',
-            launcher,
-        )
-        self.assertIn('git -C "$ROOT" worktree add --detach "$SOURCE_ROOT"', launcher)
-        self.assertIn('provenance.get("agent_training_image_id")', launcher)
-        self.assertIn('provenance.get("verifier_image_id")', launcher)
-        self.assertGreater(
-            launcher.index('python3 "$ROOT/event_runtime/preflight/check_images.py"'),
-            launcher.index("if (( ! RESUMING )); then"),
-        )
-        self.assertIn(
-            'if [[ "$STORED_AGENT_SECRET" != "$AGENT_SECRET" ]]; then',
-            launcher,
-        )
-        self.assertIn(
-            "refusing to resume $RUN_ID with a different $AGENT_SECRET_NAME",
-            launcher,
-        )
+        self.assertIn("CPU-agent resume is forbidden", launcher)
+        self.assertNotIn("--supervised-launch", launcher)
+        self.assertNotIn("RESUMING", launcher)
+        self.assertNotIn("cpu_supervised", launcher)
 
-    def test_all_model_launchers_default_to_systemd_supervisor(self) -> None:
+    def test_all_model_launchers_use_non_restarting_trial_unit(self) -> None:
         for name in ("openai.sh", "deepseek.sh", "deepseek_harness.sh"):
             text = (ROOT / "event_runtime/control/providers" / name).read_text()
-            self.assertIn("start_supervisor.py", text)
-            self.assertIn("--supervised-launch", text)
-            self.assertIn("CPU_MAX_RESTARTS", text)
-            self.assertIn("CPU_MAX_RESTARTS:-50", text)
+            self.assertIn("start_trial.py", text)
+            self.assertNotIn("--supervised-launch", text)
+            self.assertNotIn("CPU_MAX_RESTARTS", text)
         deepseek_harness = (
             ROOT / "event_runtime/control/providers/deepseek_harness.sh"
         ).read_text()
         self.assertIn("--secret-env OPENROUTER_API_KEY", deepseek_harness)
         self.assertIn("--launch-env OPENROUTER_MODEL", deepseek_harness)
+        self.assertIn('export OPENROUTER_MODEL="$MODEL"', deepseek_harness)
         self.assertIn(
             "--launch-env SPRINT_OPENROUTER_PROVIDER_ENDPOINT",
             deepseek_harness,
@@ -3684,11 +3453,9 @@ class LauncherWiringTests(unittest.TestCase):
         self.assertIn("providers/openai.sh", luna)
         for name in ("run-opus.sh", "run-terra.sh", "run-lane.sh"):
             self.assertFalse((ROOT / "runs" / name).exists())
-        starter = (
-            ROOT / "event_runtime" / "control" / "start_supervisor.py"
-        ).read_text()
-        self.assertIn("Restart=on-failure", starter)
-        self.assertIn("RestartPreventExitStatus=75 78", starter)
+        starter = (ROOT / "event_runtime/control/start_trial.py").read_text()
+        self.assertIn("--property=Restart=no", starter)
+        self.assertNotIn("RestartPreventExitStatus", starter)
 
     def test_cpu_sandbox_has_full_modal_lifetime_and_no_gpu(self) -> None:
         launcher = (ROOT / "event_runtime/control/launch.sh").read_text()
@@ -3704,7 +3471,7 @@ class LauncherWiringTests(unittest.TestCase):
         self.assertIn("cpus = 4", verifier)
         self.assertIn("memory_mb = 10240", verifier)
 
-    def test_supervisor_starter_uses_systemd_watchdog_without_secret_in_argv(
+    def test_trial_starter_uses_non_restarting_systemd_unit_without_secret_in_argv(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -3714,7 +3481,7 @@ class LauncherWiringTests(unittest.TestCase):
                 "unit-run",
             ]
             argv = [
-                "start_supervisor.py",
+                "start_trial.py",
                 "--run-id",
                 "unit-run",
                 "--launch-argv-json",
@@ -3732,7 +3499,7 @@ class LauncherWiringTests(unittest.TestCase):
             ]
             completed = mock.Mock(returncode=0)
             with (
-                mock.patch.object(start_lane_supervisor, "OPS", Path(raw)),
+                mock.patch.object(start_cpu_trial, "OPS", Path(raw)),
                 mock.patch.object(sys, "argv", argv),
                 mock.patch.dict(
                     "os.environ",
@@ -3749,16 +3516,16 @@ class LauncherWiringTests(unittest.TestCase):
                 mock.patch.object(Path, "is_file", return_value=True),
                 mock.patch("os.access", return_value=True),
                 mock.patch.object(
-                    start_lane_supervisor.shutil, "which", return_value=None
+                    start_cpu_trial.shutil, "which", return_value=None
                 ),
                 mock.patch.object(
-                    start_lane_supervisor.subprocess, "run", return_value=completed
+                    start_cpu_trial.subprocess, "run", return_value=completed
                 ) as run,
             ):
-                self.assertEqual(start_lane_supervisor.main(), 0)
+                self.assertEqual(start_cpu_trial.main(), 0)
             command = run.call_args.args[0]
-            self.assertIn("--property=Restart=on-failure", command)
-            self.assertIn("--property=RestartPreventExitStatus=75 78", command)
+            self.assertIn("--property=Restart=no", command)
+            self.assertIn("--property=KillMode=control-group", command)
             self.assertIn("--setenv=OPENAI_API_KEY", command)
             self.assertIn("--setenv=OPENROUTER_API_KEY", command)
             self.assertIn("--setenv=SPRINT_DEEPSEEK_PRICING_SNAPSHOT", command)
@@ -3773,7 +3540,7 @@ class LauncherWiringTests(unittest.TestCase):
             self.assertNotIn("pricing-secret-value", command)
             self.assertNotIn("baidu/fp8", command)
             metadata = json.loads(
-                (Path(raw) / "unit-run" / "supervisor.json").read_text()
+                (Path(raw) / "unit-run" / "trial-launch.json").read_text()
             )
             self.assertEqual(metadata["launch_argv"], launch)
             self.assertEqual(metadata["batch_id"], "eval-batch")
@@ -3784,6 +3551,10 @@ class LauncherWiringTests(unittest.TestCase):
             self.assertEqual(
                 metadata["controller_python"],
                 str(ROOT / "harbor/.venv/bin/python3"),
+            )
+            self.assertEqual(metadata["process_manager_restart"], "no")
+            self.assertEqual(
+                metadata["cpu_execution_policy"], "single_attempt_no_resume"
             )
 
     def test_goal_templates_are_launchable_and_synced(self) -> None:

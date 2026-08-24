@@ -517,8 +517,7 @@ def build_snapshot(
         remote = dict(canonical_components.get(name) or {})
         # Sandbox infrastructure values are fallback estimates until the host
         # mirror arrives. Feeding them back into the host with max() creates a
-        # circular high-water mark across recovery gaps, permanently charging
-        # idle supervisor backoff as CPU time. Host infrastructure is always
+        # circular high-water mark across stale mirrors. Host infrastructure is always
         # authoritative, both live and after STOP_ACK.
         if name != "model_api":
             return host

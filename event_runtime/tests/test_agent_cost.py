@@ -697,7 +697,7 @@ def test_host_skips_cost_mirror_after_agent_stop(
     execute.assert_not_called()
 
 
-def test_host_mirrors_cost_after_recoverable_agent_exit_ack(
+def test_host_stops_cost_mirror_after_agent_exit_ack(
     tmp_path: Path, monkeypatch
 ) -> None:
     (tmp_path / "STOP_ACK.json").write_text(json.dumps({"reason": "agent_exit"}))
@@ -711,8 +711,8 @@ def test_host_mirrors_cost_after_recoverable_agent_exit_ack(
         {"schema_version": 2, "checked_at_epoch_s": 100.0, "total_usd": 1.0},
     )
 
-    assert detail["agent_cost_mirror"] == "updated"
-    execute.assert_called_once()
+    assert detail["agent_cost_mirror"] == "agent_stopped"
+    execute.assert_not_called()
 
 
 def test_host_treats_finished_agent_task_as_stopped(monkeypatch) -> None:

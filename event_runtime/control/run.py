@@ -102,14 +102,7 @@ def agent_kind(run: dict[str, Any]) -> str:
 
 
 def update_run_fields(state_dir: Path, **updates: Any) -> dict[str, Any]:
-    """Atomically update discovered run fields without clobbering a relaunch.
-
-    The monitor can spend tens of seconds probing Modal while the supervisor
-    advances ``run.json`` to a new CPU attempt.  Rewriting the monitor's stale
-    copy here would roll back the attempt number, history, and jobs root.
-    Always reload under the same lock used by the launcher and apply only the
-    fields this discovery pass owns.
-    """
+    """Atomically update the authoritative single-attempt run record."""
     path = state_dir / "run.json"
     with file_lock(state_dir / "run.json.lock"):
         current = json.loads(path.read_text())
@@ -1894,7 +1887,7 @@ def usage_audit_ready(trial: Path, run: dict[str, Any]) -> tuple[bool, list[str]
 def run_usage_audit_ready(
     state_dir: Path, run: dict[str, Any]
 ) -> tuple[bool, list[str]]:
-    """Validate accounting across every CPU attempt, including killed attempts."""
+    """Validate accounting across the complete authoritative CPU execution."""
     details: list[str] = []
     path = state_dir / "usage" / "run-usage-audit.json"
     try:
@@ -2114,6 +2107,11 @@ def final_conditions(
         "artifact_manifest": False,
         "finished_at": False,
         "harbor_exited": not harbor_alive(run),
+        # The non-restarting host wrapper owns the one authoritative CPU
+        # process boundary. Harbor can seal its result files a few moments
+        # before that wrapper returns, so finalization must wait for the exit
+        # record instead of certifying a still-unwinding process.
+        "cpu_process_exited": (state_dir / "CPU_TRIAL_EXIT.json").is_file(),
     }
     if all_submissions:
         conditions["continuous_result_set"] = False
@@ -2610,66 +2608,6 @@ def _budget_watchdog_age(ref: float, checked_at: float) -> float:
     return age
 
 
-def _supervisor_lock_held(state_dir: Path) -> bool:
-    """Return whether the lane supervisor still owns its retry lifecycle."""
-    lock_path = state_dir / "supervise.lock"
-    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
-    try:
-        import fcntl
-
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return True
-        else:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-            return False
-    finally:
-        os.close(fd)
-
-
-def _supervised_retry_gap_allows_host_pulse(
-    state_dir: Path, run: dict[str, Any], canonical: dict[str, Any]
-) -> bool:
-    """Allow host accounting while no billable CPU attempt is alive.
-
-    A provider-rate-limit exit can leave the lane supervisor in exponential
-    backoff while an already-dispatched GPU job keeps accruing cost.  There is
-    no sandbox watchdog during that gap, so requiring its timestamp to remain
-    fresh eventually starves the GPU mirror and makes the worker fail closed.
-
-    The host pulse is authoritative during this narrow state only when the
-    last sandbox acknowledged a recoverable ``agent_exit``, the supervisor
-    still owns its lock, Harbor is not alive, and the last trusted snapshot
-    proves there was no API request in flight.  Completed OpenRouter charges
-    are immutable in the durable ledger and CPU/GPU allocation is tracked by
-    host lifecycle events, so advancing the host mirror here cannot hide new
-    spend.  As soon as the next Harbor attempt is alive, freshness is required
-    again.
-    """
-    if terminal_stop_acknowledged(state_dir):
-        return False
-    ack_path = state_dir / "STOP_ACK.json"
-    try:
-        ack_reason = str(json.loads(ack_path.read_text()).get("reason") or "")
-    except (OSError, json.JSONDecodeError):
-        return False
-    if ack_reason != "agent_exit":
-        return False
-    try:
-        if harbor_alive(run):
-            return False
-    except (KeyError, OSError, ValueError):
-        return False
-
-    model_api = (canonical.get("components") or {}).get("model_api") or {}
-    pending = model_api.get("pending_request_count")
-    if isinstance(pending, bool) or not isinstance(pending, int) or pending != 0:
-        return False
-
-    return _supervisor_lock_held(state_dir)
-
-
 def _budget_pulse_once_unlocked(
     run_id: str, *, now: float | None = None
 ) -> dict[str, Any]:
@@ -2708,13 +2646,7 @@ def _budget_pulse_once_unlocked(
     if not isinstance(checked_at, (int, float)) or isinstance(checked_at, bool):
         raise RuntimeError("budget pulse watchdog timestamp is missing")
     pulse_source = "in_sandbox_watchdog"
-    try:
-        upstream_age = _budget_watchdog_age(ref, float(checked_at))
-    except RuntimeError:
-        if not _supervised_retry_gap_allows_host_pulse(state_dir, run, canonical):
-            raise
-        upstream_age = ref - float(checked_at)
-        pulse_source = "host_supervised_retry_gap"
+    upstream_age = _budget_watchdog_age(ref, float(checked_at))
 
     # This is local-only and fast: provider charges come from the freshly
     # fetched watchdog, while host GPU lifecycle events are already persisted
@@ -2817,37 +2749,28 @@ def run_results_finished(state_dir: Path, run: dict[str, Any]) -> bool:
 
 
 def terminal_stop_acknowledged(state_dir: Path) -> bool:
-    """Return whether STOP_ACK closes the run rather than one CPU attempt."""
+    """Return whether the authoritative CPU execution acknowledged a stop."""
     path = state_dir / "STOP_ACK.json"
     if not path.is_file():
         return False
     try:
-        reason = str(json.loads(path.read_text()).get("reason") or "")
+        json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
         # An unreadable acknowledgement cannot safely authorize more work.
         return True
-    # Supervised provider retries write this when the current CPU sandbox
-    # exits.  The next attempt must keep its budget pulse and GPU dispatcher.
-    return reason != "agent_exit"
+    return True
 
 
 def run_services_should_exit(state_dir: Path, run: dict[str, Any]) -> bool:
-    """Keep retry-owned safety services alive across Harbor attempt results."""
+    """Stop safety services after the one CPU execution reaches a boundary."""
     if (state_dir / "FINALIZED.json").is_file() or terminal_stop_acknowledged(
         state_dir
     ):
         return True
-    # Each supervised CPU attempt writes finished Harbor results, including
-    # transient provider failures.  Those files are not a run boundary while
-    # the supervisor still owns the lane and may relaunch the next attempt.
-    if _supervisor_lock_held(state_dir):
-        return False
     try:
         return run_results_finished(state_dir, run)
     except KeyError:
-        # A legacy/incomplete terminal record may predate the durable jobs-root
-        # fields. It cannot authorize new work once no supervisor owns the
-        # lane, so final reconciliation is the conservative fail-closed path.
+        # An incomplete terminal record cannot authorize additional work.
         return True
 
 

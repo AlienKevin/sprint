@@ -87,9 +87,9 @@ cpus = 2
 # CPU-only agent sandbox: Modal Sandboxes without a GPU requirement are not
 # subject to infrastructure preemption. Isaac training runs on a separate A10G
 # worker through `event gpu`; checkpoint and recovery semantics are implemented
-# by `event_runtime.compute`. The durable launcher
-# passes Modal's maximum 86,400-second Sandbox lifetime; the host supervisor
-# recreates this CPU sandbox from the same Volume if its process exits early.
+# by `event_runtime.compute`. The launcher gives each trial one non-restarting
+# CPU-agent process. Any unexpected process loss invalidates that trial; it is
+# never resumed with missing model context or transient in-memory state.
 # Do NOT use Harbor --override-gpus 0; that would also strip verifier GPUs.
 gpus = 0
 memory_mb = 8192

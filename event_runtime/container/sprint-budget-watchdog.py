@@ -985,7 +985,7 @@ def check_once(
         # The host timeline has exact process-exit and provider-backed GPU
         # termination boundaries. Sandbox-local markers are deliberately only
         # a fail-safe for the interval before the first mirror arrives; across
-        # recoveries they cannot distinguish an idle supervisor backoff from a
+        # stale snapshots they cannot distinguish an ended process from a
         # still-billable sandbox. A fresh mirror is therefore authoritative for
         # infrastructure while the local API ledger remains the lower-latency
         # source for the request currently in flight.

@@ -115,7 +115,7 @@ def test_native_goal_bootstrap_precedes_first_model_step() -> None:
     bootstrap = (CONTAINER / "sprint-deepseek-goal-bootstrap.mjs").read_text()
     assert "ctx.on('agent/pre-step'" in bootstrap
     assert "ctx.goals.create(agent, { objective })" in bootstrap
-    assert "ctx.goals.resume(agent, { id: current.id, revision: current.revision })" in bootstrap
+    assert "ctx.goals.resume" not in bootstrap
     assert "textual /goal command" in bootstrap
     runner = (CONTAINER / "sprint-deepseek-harness-runner.py").read_text()
     assert 'os.environ["DSH_GOAL_OBJECTIVE"] = objective' in runner
@@ -133,26 +133,22 @@ def test_native_benchmark_goal_is_host_owned() -> None:
 process.env.DSH_GOAL_OBJECTIVE = 'fixed benchmark objective'
 const plugin = await import({json.dumps(bootstrap.as_uri())})
 const handlers = new Map()
-const originalResume = () => 'resume-ok'
 const goals = {{
   create: () => {{ throw new Error('not used') }},
   get: () => ({{ objective: 'fixed benchmark objective', phase: 'active', activation: 'armed' }}),
   edit: () => 'edit-must-not-run',
   pause: () => 'pause-must-not-run',
-  resume: originalResume,
+  resume: () => 'resume-must-not-run',
   complete: () => 'complete-must-not-run',
   block: () => 'block-must-not-run',
   clear: () => 'clear-must-not-run',
 }}
 const ctx = {{ goals, on: (name, handler) => handlers.set(name, handler) }}
 plugin.apply(ctx)
-for (const mutation of ['edit', 'pause', 'complete', 'block', 'clear']) {{
+for (const mutation of ['edit', 'pause', 'resume', 'complete', 'block', 'clear']) {{
   let message = ''
   try {{ goals[mutation]() }} catch (error) {{ message = String(error.message) }}
   if (!message.includes('benchmark goal is host-owned')) throw new Error(`${{mutation}} was not fenced: ${{message}}`)
-}}
-if (goals.resume !== originalResume || goals.resume() !== 'resume-ok') {{
-  throw new Error('resume must remain available for supervised relaunch')
 }}
 let continued = false
 handlers.get('agent/pre-step')({{ agent: {{}} }}, () => {{ continued = true }})

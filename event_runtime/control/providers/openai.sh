@@ -68,7 +68,6 @@ fi
 echo "--- launch ---"
 LAUNCH_ARGS=(
   "$ROOT/event_runtime/control/launch.sh"
-  --supervised-launch
   --run-id "$RUN_ID"
   --agent-kind codex
   --model "$MODEL"
@@ -77,12 +76,9 @@ LAUNCH_ARGS=(
   --codex-version "$CODEX_VERSION"
 )
 LAUNCH_JSON=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${LAUNCH_ARGS[@]}")
-python3 "$ROOT/event_runtime/control/start_supervisor.py" \
+python3 "$ROOT/event_runtime/control/start_trial.py" \
   --run-id "$RUN_ID" \
   --batch-id "${SPRINT_BATCH_ID:-}" \
   --launch-argv-json "$LAUNCH_JSON" \
-  --secret-env OPENAI_API_KEY \
-  --max-restarts "${CPU_MAX_RESTARTS:-50}" \
-  --min-backoff-s "${CPU_MIN_BACKOFF_S:-30}" \
-  --max-backoff-s "${CPU_MAX_BACKOFF_S:-600}"
-echo "supervisor unit=sprint-lane-${RUN_ID}.service log=/data/sprint-launch-${RUN_ID}.log"
+  --secret-env OPENAI_API_KEY
+echo "trial unit=sprint-trial-${RUN_ID}.service log=/data/sprint-launch-${RUN_ID}.log"

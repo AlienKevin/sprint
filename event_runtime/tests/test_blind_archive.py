@@ -271,6 +271,18 @@ def test_all_submission_finalization_needs_no_final_policy_or_verifier(
         json.dumps({"finished_at": "2026-08-09T00:00:00Z"})
     )
     (state / "STOP_ACK.json").write_text("{}\n")
+    (state / "CPU_TRIAL_EXIT.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "run_id": "run",
+                "attempt": 1,
+                "execution_policy": "single_attempt_no_resume",
+                "raw_exit_code": 0,
+                "stop_requested": True,
+            }
+        )
+    )
     (state / "archive-manifest.json").write_text('{"attempts": {}}\n')
     ledger_digest = sprintctl.read_ledger(ledger).digest
     (state / "frontier-state.json").write_text(
