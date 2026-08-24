@@ -14,8 +14,9 @@ from deepseek_harness import DeepSeekHarness
 
 
 MODEL = "deepseek/deepseek-v4-flash-vision-exp"
-RUNTIME = "/usr/local/bin/dsh-jsonrpc-agent"
-CORDIS = "/opt/deepseek-harness-minimal.cordis.yml"
+RUNTIME = os.environ.get("DSH_PROBE_RUNTIME", "/usr/local/bin/dsh-jsonrpc-agent")
+CORDIS = os.environ.get("DSH_PROBE_CORDIS", "/opt/deepseek-harness-minimal.cordis.yml")
+FAILED_PARTIAL_TEXT = "partial-stream-content-must-not-surface"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -30,6 +31,33 @@ class Handler(BaseHTTPRequestHandler):
             return
         length = int(self.headers.get("Content-Length") or 0)
         type(self).request_payloads.append(json.loads(self.rfile.read(length)))
+        if len(type(self).request_payloads) == 1:
+            # Simulate the observed provider failure: valid SSE content arrives,
+            # but the stream closes before the required [DONE] sentinel. The
+            # harness must retry the same durable request surface and must not
+            # carry this failed partial output into the retry.
+            event = {
+                "id": "probe-failed-generation",
+                "object": "chat.completion.chunk",
+                "model": MODEL,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "role": "assistant",
+                            "content": FAILED_PARTIAL_TEXT,
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            }
+            body = f"data: {json.dumps(event)}\n\n".encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         events = [
             {
                 "id": "probe-generation",
@@ -119,11 +147,13 @@ def main() -> int:
                 )
             )
         assert result.final_response == "smoke-ok", result.final_response
-        # With maxGoalRounds=1, the initial human step is the single allowed
-        # goal round. Goal creation must happen before that request; a second
-        # request would exceed the configured round bound.
-        assert len(Handler.request_payloads) == 1, len(Handler.request_payloads)
-        request = Handler.request_payloads[0]
+        # The first provider attempt closes without [DONE]. The finite retry
+        # executor opens a retry turn over the same surface history; it is not a
+        # second goal round and it does not require a CPU-agent relaunch.
+        assert len(Handler.request_payloads) == 2, len(Handler.request_payloads)
+        first_request, request = Handler.request_payloads
+        assert first_request == request
+        assert FAILED_PARTIAL_TEXT not in json.dumps(request)
         assert request.get("model") == MODEL
         assert request.get("stream") is True
         assert request.get("max_tokens") == 384_000
@@ -151,6 +181,23 @@ def main() -> int:
             "update_goal",
         }, names
         events = result.events
+        retry_events = [event for event in events if event.get("type") == "llm/retry"]
+        retry_started_events = [
+            event for event in events if event.get("type") == "llm/retry-started"
+        ]
+        assert len(retry_events) == 1, retry_events
+        assert len(retry_started_events) == 1, retry_started_events
+        retry = retry_events[0]["data"]
+        assert retry["mode"] == "normal"
+        assert retry["retry"] == 1
+        assert retry["maxRetries"] == 5
+        assert retry["failure"]["code"] == "STREAM_CLOSED"
+        surface_messages = [
+            event
+            for event in events
+            if event.get("type") in {"assistant/message", "user/message"}
+        ]
+        assert FAILED_PARTIAL_TEXT not in json.dumps(surface_messages)
         created_at = next(
             index
             for index, event in enumerate(events)

@@ -47,6 +47,21 @@ def test_minimal_cordis_contract_is_sealed() -> None:
     assert "inputModalities: [text, image]" in config
     assert "thinking: enabled" in config
     assert "reasoningEffort: max" in config
+    assert "@deepseek-ai/dsh-llm-retry" in config
+    assert "mode: normal" in config
+    assert "maxRetries: 5" in config
+    for code in {
+        "EMPTY_RESPONSE",
+        "RATE_LIMIT",
+        "SERVER",
+        "TIMEOUT",
+        "TRANSPORT",
+        "STREAM_CLOSED",
+    }:
+        assert f"- {code}" in config
+    assert "initialDelayMs: 500" in config
+    assert "maxDelayMs: 10000" in config
+    assert "jitterRatio: 0.1" in config
     assert "persona: You are a helpful software engineer assistant." in config
     assert "includeHarnessIdentity: false" in config
     assert "includeRuntimeContext: false" in config
@@ -111,6 +126,15 @@ def test_native_goal_bootstrap_precedes_first_model_step() -> None:
     assert not template.lstrip().startswith("/goal")
 
 
+def test_offline_probe_exercises_non_surface_stream_closed_retry() -> None:
+    probe = (CONTAINER / "sprint-deepseek-harness-probe.py").read_text()
+    assert 'FAILED_PARTIAL_TEXT = "partial-stream-content-must-not-surface"' in probe
+    assert "len(Handler.request_payloads) == 2" in probe
+    assert "first_request == request" in probe
+    assert 'retry["failure"]["code"] == "STREAM_CLOSED"' in probe
+    assert "FAILED_PARTIAL_TEXT not in json.dumps(surface_messages)" in probe
+
+
 def test_image_pins_runtime_and_sdk_versions() -> None:
     dockerfile = (
         ROOT / "events/g1-100-metres/environment/Dockerfile"
@@ -137,6 +161,7 @@ def test_image_pins_runtime_and_sdk_versions() -> None:
         "dsh-goal-round-driver",
         "dsh-tool-goal",
         "dsh-llm-deepseek",
+        "dsh-llm-retry",
         "dsh-tool-bash-persistent",
         "dsh-tool-str-replace-editor",
         "dsh-session-persistence-jsonl",

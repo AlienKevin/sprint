@@ -18,6 +18,25 @@
     thinking: enabled
     reasoningEffort: max
     maxTokens: 384000
+    # Keep retries finite and preserve the official normal-policy defaults,
+    # while additionally treating a provider stream that closes before its
+    # required [DONE] sentinel as a safe request-level transport retry. The
+    # retry executor rebuilds the request from durable surface history, so
+    # partial failed chunks do not enter the next request.
+    retryPolicy:
+      mode: normal
+      maxRetries: 5
+      retryableCodes:
+        - EMPTY_RESPONSE
+        - RATE_LIMIT
+        - SERVER
+        - TIMEOUT
+        - TRANSPORT
+        - STREAM_CLOSED
+      backoff:
+        initialDelayMs: 500
+        maxDelayMs: 10000
+        jitterRatio: 0.1
     models:
       - id: deepseek/deepseek-v4-flash-vision-exp
         name: DeepSeek-V4-Flash-Vision-Exp
@@ -26,6 +45,9 @@
         inputModalities: [text, image]
         imagePixelBudget: 640000
         imageMaxBytes: 1048576
+
+- id: llm-retry
+  name: '@deepseek-ai/dsh-llm-retry'
 
 - id: sandbox
   name: '@deepseek-ai/dsh-sandbox-local'
