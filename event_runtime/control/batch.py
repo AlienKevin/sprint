@@ -2802,6 +2802,48 @@ def stop_batch(batch_id: str, *, env_file: Path | None = None) -> dict[str, Any]
         return payload
 
 
+def run_monitor_command(
+    batch_id: str,
+    *,
+    deploy: bool,
+    env_file: Path,
+    loop: bool,
+    poll_seconds: int,
+) -> dict[str, Any]:
+    """Run one monitor cycle or own the sole long-lived monitor loop.
+
+    ``batch.lock`` serializes individual state transitions, but it deliberately
+    does not identify the daemon responsible for future cycles.  Without a
+    lifetime lease, two differently named systemd units can both survive: one
+    performs work while the other waits forever on every cycle.  That hides a
+    duplicate controller behind apparently correct snapshots and can make a
+    manual stop wait on the wrong process.
+
+    A one-shot monitor remains available for diagnostics.  A loop must hold
+    ``monitor-owner.lock`` for its entire lifetime and a duplicate exits
+    successfully, allowing the canonical systemd unit to remain the only
+    authority without entering a restart storm.
+    """
+    if not loop:
+        return monitor_cycle(batch_id, deploy=deploy, env_file=env_file)
+
+    owner_path = batch_dir(batch_id) / "monitor-owner.lock"
+    with frontier_update.file_lock(owner_path, blocking=False) as acquired:
+        if not acquired:
+            return {
+                "schema_version": 1,
+                "batch_id": batch_id,
+                "status": "monitor_already_running",
+                "updated_at": utc_now(),
+            }
+        while True:
+            output = monitor_cycle(batch_id, deploy=deploy, env_file=env_file)
+            print(json.dumps(public_batch(output), indent=2), flush=True)
+            if output.get("status") == "complete":
+                return output
+            time.sleep(max(10, poll_seconds))
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     sub = result.add_subparsers(dest="command", required=True)
@@ -2864,16 +2906,13 @@ def main() -> int:
             coexist_batch_ids=tuple(args.coexist_with_batch),
         )
     elif args.command == "monitor":
-        while True:
-            output = monitor_cycle(
-                args.batch_id,
-                deploy=not args.no_deploy,
-                env_file=args.env_file.resolve(),
-            )
-            print(json.dumps(public_batch(output), indent=2), flush=True)
-            if not args.loop or output.get("status") == "complete":
-                break
-            time.sleep(max(10, args.poll_seconds))
+        output = run_monitor_command(
+            args.batch_id,
+            deploy=not args.no_deploy,
+            env_file=args.env_file.resolve(),
+            loop=args.loop,
+            poll_seconds=args.poll_seconds,
+        )
     elif args.command == "stop":
         output = stop_batch(args.batch_id, env_file=args.env_file.resolve())
     else:

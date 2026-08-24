@@ -106,6 +106,103 @@ def test_batch_matrix_is_exact_six_arm_max_effort_contract() -> None:
     assert batch_eval.LIVE_SITE_DEPLOY_SECONDS == 20 * 60
 
 
+def test_one_shot_batch_monitor_does_not_claim_lifetime_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[str, bool, Path]] = []
+    env_file = tmp_path / ".env"
+    monkeypatch.setattr(
+        batch_eval,
+        "monitor_cycle",
+        lambda batch_id, *, deploy, env_file: calls.append(
+            (batch_id, deploy, env_file)
+        )
+        or {"batch_id": batch_id, "status": "running"},
+    )
+    monkeypatch.setattr(
+        batch_eval.frontier_update,
+        "file_lock",
+        lambda *_args, **_kwargs: pytest.fail(
+            "one-shot diagnostics must not claim the daemon owner lease"
+        ),
+    )
+
+    result = batch_eval.run_monitor_command(
+        "eval", deploy=False, env_file=env_file, loop=False, poll_seconds=10
+    )
+
+    assert result == {"batch_id": "eval", "status": "running"}
+    assert calls == [("eval", False, env_file)]
+
+
+def test_duplicate_batch_monitor_exits_without_running_a_cycle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(batch_eval, "BATCH_ROOT", tmp_path / "batches")
+
+    @contextlib.contextmanager
+    def denied_owner(path: Path, *, blocking: bool = True):
+        assert path == tmp_path / "batches/eval/monitor-owner.lock"
+        assert blocking is False
+        yield False
+
+    monkeypatch.setattr(batch_eval.frontier_update, "file_lock", denied_owner)
+    monkeypatch.setattr(
+        batch_eval,
+        "monitor_cycle",
+        lambda *_args, **_kwargs: pytest.fail(
+            "a duplicate monitor must not run even one controller cycle"
+        ),
+    )
+
+    result = batch_eval.run_monitor_command(
+        "eval", deploy=True, env_file=tmp_path / ".env", loop=True, poll_seconds=10
+    )
+
+    assert result["batch_id"] == "eval"
+    assert result["status"] == "monitor_already_running"
+
+
+def test_batch_monitor_holds_owner_until_terminal_cycle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(batch_eval, "BATCH_ROOT", tmp_path / "batches")
+    owner_open = False
+    observed_owner: list[bool] = []
+
+    @contextlib.contextmanager
+    def acquired_owner(path: Path, *, blocking: bool = True):
+        nonlocal owner_open
+        assert path == tmp_path / "batches/eval/monitor-owner.lock"
+        assert blocking is False
+        owner_open = True
+        try:
+            yield True
+        finally:
+            owner_open = False
+
+    def terminal_cycle(
+        batch_id: str, *, deploy: bool, env_file: Path
+    ) -> dict[str, object]:
+        observed_owner.append(owner_open)
+        assert batch_id == "eval"
+        assert deploy is True
+        assert env_file == tmp_path / ".env"
+        return {"batch_id": batch_id, "status": "complete"}
+
+    monkeypatch.setattr(batch_eval.frontier_update, "file_lock", acquired_owner)
+    monkeypatch.setattr(batch_eval, "monitor_cycle", terminal_cycle)
+    monkeypatch.setattr(batch_eval, "public_batch", lambda payload: payload)
+
+    result = batch_eval.run_monitor_command(
+        "eval", deploy=True, env_file=tmp_path / ".env", loop=True, poll_seconds=10
+    )
+
+    assert result == {"batch_id": "eval", "status": "complete"}
+    assert observed_owner == [True]
+    assert owner_open is False
+
+
 def test_terminal_batch_bypasses_live_deploy_debounce() -> None:
     assert (
         batch_eval.deployment_debounce_seconds(

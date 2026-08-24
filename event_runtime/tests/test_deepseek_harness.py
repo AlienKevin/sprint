@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -126,13 +127,54 @@ def test_native_goal_bootstrap_precedes_first_model_step() -> None:
     assert not template.lstrip().startswith("/goal")
 
 
+def test_native_benchmark_goal_is_host_owned() -> None:
+    bootstrap = CONTAINER / "sprint-deepseek-goal-bootstrap.mjs"
+    script = f"""
+process.env.DSH_GOAL_OBJECTIVE = 'fixed benchmark objective'
+const plugin = await import({json.dumps(bootstrap.as_uri())})
+const handlers = new Map()
+const originalResume = () => 'resume-ok'
+const goals = {{
+  create: () => {{ throw new Error('not used') }},
+  get: () => ({{ objective: 'fixed benchmark objective', phase: 'active', activation: 'armed' }}),
+  edit: () => 'edit-must-not-run',
+  pause: () => 'pause-must-not-run',
+  resume: originalResume,
+  complete: () => 'complete-must-not-run',
+  block: () => 'block-must-not-run',
+  clear: () => 'clear-must-not-run',
+}}
+const ctx = {{ goals, on: (name, handler) => handlers.set(name, handler) }}
+plugin.apply(ctx)
+for (const mutation of ['edit', 'pause', 'complete', 'block', 'clear']) {{
+  let message = ''
+  try {{ goals[mutation]() }} catch (error) {{ message = String(error.message) }}
+  if (!message.includes('benchmark goal is host-owned')) throw new Error(`${{mutation}} was not fenced: ${{message}}`)
+}}
+if (goals.resume !== originalResume || goals.resume() !== 'resume-ok') {{
+  throw new Error('resume must remain available for supervised relaunch')
+}}
+let continued = false
+handlers.get('agent/pre-step')({{ agent: {{}} }}, () => {{ continued = true }})
+if (!continued) throw new Error('pre-step did not continue')
+"""
+    subprocess.run(
+        ["node", "--input-type=module", "--eval", script],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+
 def test_offline_probe_exercises_non_surface_stream_closed_retry() -> None:
     probe = (CONTAINER / "sprint-deepseek-harness-probe.py").read_text()
     assert 'FAILED_PARTIAL_TEXT = "partial-stream-content-must-not-surface"' in probe
-    assert "len(Handler.request_payloads) == 2" in probe
-    assert "first_request == request" in probe
+    assert "len(Handler.request_payloads) == 4" in probe
+    assert "first_request == retry_request" in probe
     assert 'retry["failure"]["code"] == "STREAM_CLOSED"' in probe
     assert "FAILED_PARTIAL_TEXT not in json.dumps(surface_messages)" in probe
+    assert '"benchmark goal is host-owned" in mutation_surface' in probe
+    assert 'get("operation") == "edit"' in probe
 
 
 def test_runner_records_only_versioned_structured_notifications() -> None:

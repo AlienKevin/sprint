@@ -25,13 +25,101 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, _format: str, *_args: object) -> None:
         return
 
+    def _send_events(self, events: list[dict[str, object]]) -> None:
+        body = b"".join(
+            f"data: {json.dumps(event)}\n\n".encode() for event in events
+        ) + b"data: [DONE]\n\n"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_tool_call(
+        self, call_id: str, name: str, arguments: dict[str, object]
+    ) -> None:
+        self._send_events(
+            [
+                {
+                    "id": f"probe-{call_id}",
+                    "object": "chat.completion.chunk",
+                    "model": MODEL,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "role": "assistant",
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": call_id,
+                                        "type": "function",
+                                        "function": {
+                                            "name": name,
+                                            "arguments": json.dumps(arguments),
+                                        },
+                                    }
+                                ],
+                            },
+                            "finish_reason": None,
+                        }
+                    ],
+                },
+                {
+                    "id": f"probe-{call_id}",
+                    "object": "chat.completion.chunk",
+                    "model": MODEL,
+                    "choices": [
+                        {"index": 0, "delta": {}, "finish_reason": "tool_calls"}
+                    ],
+                    "usage": {
+                        "prompt_tokens": 100,
+                        "completion_tokens": 10,
+                        "total_tokens": 110,
+                    },
+                },
+            ]
+        )
+
+    @staticmethod
+    def _goal_ref(value: object) -> tuple[str, int, str] | None:
+        if isinstance(value, str):
+            try:
+                return Handler._goal_ref(json.loads(value))
+            except (json.JSONDecodeError, TypeError):
+                return None
+        if isinstance(value, list):
+            for item in value:
+                found = Handler._goal_ref(item)
+                if found is not None:
+                    return found
+            return None
+        if not isinstance(value, dict):
+            return None
+        goal_id = value.get("id")
+        revision = value.get("revision")
+        objective = value.get("objective")
+        if (
+            isinstance(goal_id, str)
+            and goal_id.startswith("goal-")
+            and isinstance(revision, int)
+            and isinstance(objective, str)
+        ):
+            return goal_id, revision, objective
+        for item in value.values():
+            found = Handler._goal_ref(item)
+            if found is not None:
+                return found
+        return None
+
     def do_POST(self) -> None:  # noqa: N802
         if self.path != "/api/v1/chat/completions":
             self.send_error(404)
             return
         length = int(self.headers.get("Content-Length") or 0)
         type(self).request_payloads.append(json.loads(self.rfile.read(length)))
-        if len(type(self).request_payloads) == 1:
+        request_number = len(type(self).request_payloads)
+        if request_number == 1:
             # Simulate the observed provider failure: valid SSE content arrives,
             # but the stream closes before the required [DONE] sentinel. The
             # harness must retry the same durable request surface and must not
@@ -57,6 +145,33 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+            return
+        if request_number == 2:
+            # The successful retry asks the real goal tool for the host-seeded
+            # id and revision.  This makes the next request a valid, realistic
+            # attempt to mutate the benchmark objective.
+            self._send_tool_call("call_probe_get_goal", "get_goal", {})
+            return
+        if request_number == 3:
+            goal_ref = self._goal_ref(type(self).request_payloads[-1])
+            if goal_ref is None:
+                self.send_error(500, "get_goal tool result was absent")
+                return
+            goal_id, revision, _objective = goal_ref
+            self._send_tool_call(
+                "call_probe_update_goal",
+                "update_goal",
+                {
+                    "goal_id": goal_id,
+                    "revision": revision,
+                    "action": "edit",
+                    "objective": "mutated objective must never persist",
+                    "max_goal_rounds": 1,
+                },
+            )
+            return
+        if request_number != 4:
+            self.send_error(500, f"unexpected request {request_number}")
             return
         events = [
             {
@@ -85,14 +200,7 @@ class Handler(BaseHTTPRequestHandler):
                 },
             },
         ]
-        body = b"".join(
-            f"data: {json.dumps(event)}\n\n".encode() for event in events
-        ) + b"data: [DONE]\n\n"
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        self._send_events(events)
 
 
 def main() -> int:
@@ -150,10 +258,17 @@ def main() -> int:
         # The first provider attempt closes without [DONE]. The finite retry
         # executor opens a retry turn over the same surface history; it is not a
         # second goal round and it does not require a CPU-agent relaunch.
-        assert len(Handler.request_payloads) == 2, len(Handler.request_payloads)
-        first_request, request = Handler.request_payloads
-        assert first_request == request
-        assert FAILED_PARTIAL_TEXT not in json.dumps(request)
+        assert len(Handler.request_payloads) == 4, len(Handler.request_payloads)
+        first_request, retry_request, goal_result_request, mutation_result_request = (
+            Handler.request_payloads
+        )
+        assert first_request == retry_request
+        assert FAILED_PARTIAL_TEXT not in json.dumps(retry_request)
+        assert "call_probe_get_goal" in json.dumps(goal_result_request)
+        mutation_surface = json.dumps(mutation_result_request)
+        assert "call_probe_update_goal" in mutation_surface
+        assert "benchmark goal is host-owned" in mutation_surface
+        request = first_request
         assert request.get("model") == MODEL
         assert request.get("stream") is True
         assert request.get("max_tokens") == 384_000
@@ -213,6 +328,11 @@ def main() -> int:
         goal = events[created_at]["data"]["goal"]
         assert goal["objective"] == objective
         assert goal["maxGoalRounds"] == 1
+        assert not any(
+            event.get("type") == "goal/change"
+            and event.get("data", {}).get("operation") == "edit"
+            for event in events
+        )
         print("DEEPSEEK_HARNESS_PROTOCOL_OK")
         return 0
     finally:
