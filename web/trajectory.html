@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="description" content="Inspect agent reasoning, messages, tools, observations, timing, retries, and token usage for every Agents' 100m trial.">
   <title>Agents' 100m · Agent trajectory</title>
-  <link rel="stylesheet" href="/trajectory.css?v=20260824-2">
+  <link rel="stylesheet" href="/trajectory.css?v=20260824-5">
 </head>
 <body>
   <header class="viewer-nav">
@@ -63,24 +63,8 @@
       <div id="steps" class="steps" aria-live="polite"></div>
     </section>
 
-    <aside class="viewer-rail right-rail">
-      <section class="metrics-card">
-        <div class="rail-heading"><p class="eyebrow">MODEL USAGE</p><h2>Run metrics</h2></div>
-        <dl class="token-stats">
-          <div><dt>Input</dt><dd id="summary-input">—</dd></div>
-          <div><dt>Cache read</dt><dd id="summary-cache">—</dd></div>
-          <div><dt>Output</dt><dd id="summary-output">—</dd></div>
-          <div><dt>Reasoning</dt><dd id="summary-reasoning">—</dd></div>
-        </dl>
-      </section>
-      <section class="legend-card">
-        <div class="rail-heading"><p class="eyebrow">DISPLAY CONTRACT</p><h2>Reasoning</h2></div>
-        <p><span class="legend-swatch full"></span><strong>DeepSeek</strong> shows the full reasoning content returned by the official provider.</p>
-        <p><span class="legend-swatch summary"></span><strong>Luna</strong> shows OpenAI’s official reasoning summary. Raw hidden reasoning is not exposed by the API.</p>
-      </section>
-    </aside>
   </main>
 
-  <script src="/trajectory.js?v=20260824-4"></script>
+  <script src="/trajectory.js?v=20260824-6"></script>
 </body>
 </html>

@@ -60,7 +60,7 @@ HOP_BY_HOP = {
 # run's dollar cap.  A finite timeout here converts a healthy long request into
 # an unpriced interrupted generation, which must fail closed.
 UPSTREAM_SOCKET_TIMEOUT_SECONDS: float | None = None
-OPENROUTER_GENERATION_RECOVERY_TIMEOUT_SECONDS = 30.0
+OPENROUTER_GENERATION_RECOVERY_TIMEOUT_SECONDS = 120.0
 OPENROUTER_GENERATION_RECOVERY_POLL_SECONDS = 0.25
 
 
@@ -108,6 +108,36 @@ def recover_openrouter_generation(
         return None
     data = payload.get("data") if isinstance(payload, dict) else None
     return data if isinstance(data, dict) else None
+
+
+def recover_openrouter_key_usage_usd(authorization: str | None) -> float | None:
+    """Return the isolated child key's aggregate provider-billed usage."""
+    if not authorization:
+        return None
+    request = urllib.request.Request(
+        "https://openrouter.ai/api/v1/key",
+        headers={"Authorization": authorization, "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            payload = json.load(response)
+    except (
+        json.JSONDecodeError,
+        urllib.error.HTTPError,
+        urllib.error.URLError,
+        TimeoutError,
+    ):
+        return None
+    data = payload.get("data") if isinstance(payload, dict) else None
+    value = data.get("usage") if isinstance(data, dict) else None
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(float(value))
+        or float(value) < 0
+    ):
+        return None
+    return float(value)
 
 
 def usage_from_event(event: object) -> tuple[dict[str, Any] | None, dict[str, Any]]:
@@ -877,10 +907,17 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                     self.ledger_server.complete_request(request_id, 0.0, 0.0)
                 else:
                     self.ledger_server.require_cost_recovery(request_id)
-                    if not self.ledger_server.recover_request_until(
+                    recovered = self.ledger_server.recover_request_until(
                         request_id,
                         timeout_seconds=OPENROUTER_GENERATION_RECOVERY_TIMEOUT_SECONDS,
-                    ):
+                    )
+                    if not recovered:
+                        recovered = (
+                            self.ledger_server.resolve_unbilled_request_from_key_usage(
+                                request_id
+                            )
+                        )
+                    if not recovered:
                         self.ledger_server.write_stop(
                             {
                                 "schema_version": 2,
@@ -1480,6 +1517,65 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
             if remaining <= 0:
                 return False
             time.sleep(min(OPENROUTER_GENERATION_RECOVERY_POLL_SECONDS, remaining))
+        return True
+
+    def resolve_unbilled_request_from_key_usage(self, request_id: str) -> bool:
+        """Seal a missing generation only when the isolated key proves $0 billed.
+
+        OpenRouter occasionally returns an ``X-Generation-Id`` for a stream
+        that never becomes a generation audit and is not charged.  Every
+        experiment has a fresh child key used by exactly one trusted proxy, so
+        the key's aggregate usage is an independent provider-side total.  If it
+        still equals the sum of completed request charges after the recovery
+        window, this named request was unbilled.  Any positive or ambiguous
+        delta remains fail-closed.
+        """
+        if (
+            request_id not in self.cost_recovery_required_request_ids
+            or self.in_flight_request_ids
+            or len(self.cost_recovery_required_request_ids) != 1
+        ):
+            return False
+        key_usage = recover_openrouter_key_usage_usd(self.upstream_authorization)
+        if key_usage is None:
+            return False
+        billed = self.provider_billed_api_cost_usd
+        tolerance = 1e-9
+        if key_usage + tolerance < billed or key_usage - billed > tolerance:
+            return False
+        path = self.requests_dir / f"{request_id}.json"
+        record = json.loads(path.read_text())
+        if (
+            record.get("run_id") != self.run_id
+            or record.get("state") != "cost_recovery_required"
+            or (record.get("promotion_snapshot") or {}).get("cost_basis")
+            != self.model_api_cost_basis
+        ):
+            return False
+        record.update(
+            {
+                "state": "recovered_not_billed",
+                "completed_at": utc_now(),
+                "provider_reported_cost_usd": 0.0,
+                "undiscounted_cost_usd": 0.0,
+                "benchmark_cost_usd": 0.0,
+                "promotion_adjustment_usd": 0.0,
+                "deepseek_peak_adjustment_usd": 0.0,
+                "benchmark_adjustment_usd": 0.0,
+                "promotion_discount_fraction": (
+                    record.get("promotion_snapshot") or {}
+                ).get("discount_fraction"),
+                "cost_basis": self.model_api_cost_basis,
+                "provider_cost_basis": PROVIDER_COST_BASIS,
+                "aggregate_key_usage_at_recovery_usd": key_usage,
+                "route_identity_verified": True,
+                "recovered_after_missing_generation": True,
+            }
+        )
+        atomic_json(path, record)
+        self.cost_recovery_required_request_ids.remove(request_id)
+        self.completed_request_count += 1
+        self.write_summary()
         return True
 
     def budget_snapshot(self) -> tuple[bool, dict[str, Any]]:

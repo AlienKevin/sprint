@@ -80,6 +80,53 @@ def test_terminal_response_event_exposes_exact_usage_cost() -> None:
     assert response["id"] == "gen-1"
 
 
+def test_openrouter_child_key_usage_recovery_uses_provider_total(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b'{"data":{"usage":0.03448014}}'
+
+    def urlopen(request: object, timeout: float):
+        assert request.full_url == "https://openrouter.ai/api/v1/key"
+        assert request.headers["Authorization"] == "Bearer isolated-key"
+        assert timeout == 5
+        return Response()
+
+    monkeypatch.setattr(proxy.urllib.request, "urlopen", urlopen)
+
+    assert proxy.recover_openrouter_key_usage_usd(
+        "Bearer isolated-key"
+    ) == pytest.approx(0.03448014)
+
+
+@pytest.mark.parametrize("value", [None, True, -0.01, "0.1"])
+def test_openrouter_child_key_usage_recovery_rejects_invalid_totals(
+    value: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps({"data": {"usage": value}}).encode()
+
+    monkeypatch.setattr(
+        proxy.urllib.request, "urlopen", lambda *_args, **_kwargs: Response()
+    )
+
+    assert proxy.recover_openrouter_key_usage_usd("Bearer key") is None
+
+
 def test_generic_proxy_seals_provider_endpoint_and_quantization() -> None:
     body, payload = proxy.pin_provider_route(
         json.dumps(
@@ -1168,6 +1215,98 @@ def test_proxy_generation_recovery_has_hard_deadline(
     monkeypatch.setattr(proxy.time, "monotonic", lambda: next(monotonic))
     try:
         assert server.recover_request_until(REQUEST_1, timeout_seconds=1.0) is False
+    finally:
+        server.server_close()
+
+
+def test_proxy_resolves_missing_generation_only_when_child_key_proves_unbilled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_root = tmp_path / "runs/run-1"
+    write_run_contract(run_root)
+    record = run_root / f"api-usage/requests/{PENDING_REQUEST}.json"
+    record.parent.mkdir(parents=True)
+    record.write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "ledger_request_id": PENDING_REQUEST,
+                "run_id": "run-1",
+                "state": "cost_recovery_required",
+                "generation_id": "gen-never-audited",
+                "provider_reported_cost_usd": None,
+                "promotion_snapshot": {
+                    "cost_basis": UNDISCOUNTED_BASIS,
+                    "discount_fraction": 0.0,
+                },
+            }
+        )
+    )
+    monkeypatch.setattr(proxy, "recover_openrouter_generation", lambda *_args: None)
+    server = proxy.LedgerProxyServer(
+        ("127.0.0.1", 0),
+        upstream="https://openrouter.ai/api/v1",
+        ledger_root=run_root / "api-usage",
+        run_id="run-1",
+        cpu_attempt=1,
+        upstream_api_key="isolated-child-key",
+    )
+    server.cost_recovery_required_request_ids.add(PENDING_REQUEST)
+    monkeypatch.setattr(
+        proxy,
+        "recover_openrouter_key_usage_usd",
+        lambda authorization: server.provider_billed_api_cost_usd,
+    )
+    try:
+        assert server.resolve_unbilled_request_from_key_usage(PENDING_REQUEST) is True
+        assert server.completed_request_count == 1
+        assert not server.cost_recovery_required_request_ids
+        recovered = json.loads(record.read_text())
+        assert recovered["state"] == "recovered_not_billed"
+        assert recovered["provider_reported_cost_usd"] == 0.0
+        assert recovered["benchmark_cost_usd"] == 0.0
+        assert recovered["aggregate_key_usage_at_recovery_usd"] == 0.0
+        assert recovered["recovered_after_missing_generation"] is True
+    finally:
+        server.server_close()
+
+
+def test_proxy_keeps_missing_generation_fail_closed_when_child_key_usage_grew(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_root = tmp_path / "runs/run-1"
+    write_run_contract(run_root)
+    record = run_root / f"api-usage/requests/{PENDING_REQUEST}.json"
+    record.parent.mkdir(parents=True)
+    record.write_text(
+        json.dumps(
+            {
+                "ledger_request_id": PENDING_REQUEST,
+                "run_id": "run-1",
+                "state": "cost_recovery_required",
+                "provider_reported_cost_usd": None,
+                "promotion_snapshot": {"cost_basis": UNDISCOUNTED_BASIS},
+            }
+        )
+    )
+    monkeypatch.setattr(proxy, "recover_openrouter_generation", lambda *_args: None)
+    server = proxy.LedgerProxyServer(
+        ("127.0.0.1", 0),
+        upstream="https://openrouter.ai/api/v1",
+        ledger_root=run_root / "api-usage",
+        run_id="run-1",
+        cpu_attempt=1,
+        upstream_api_key="isolated-child-key",
+    )
+    server.cost_recovery_required_request_ids.add(PENDING_REQUEST)
+    monkeypatch.setattr(
+        proxy, "recover_openrouter_key_usage_usd", lambda _authorization: 0.01
+    )
+    try:
+        assert server.resolve_unbilled_request_from_key_usage(PENDING_REQUEST) is False
+        assert server.completed_request_count == 0
+        assert server.cost_recovery_required_request_ids == {PENDING_REQUEST}
+        assert json.loads(record.read_text())["state"] == "cost_recovery_required"
     finally:
         server.server_close()
 

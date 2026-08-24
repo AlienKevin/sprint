@@ -440,6 +440,8 @@ def test_dashboard_loads_continuous_readouts() -> None:
     app = (ROOT / "web/app.js").read_text()
     page = (ROOT / "web/index.html").read_text()
     styles = (ROOT / "web/styles.css").read_text()
+    trajectory_app = (ROOT / "web/trajectory.js").read_text()
+    trajectory_page = (ROOT / "web/trajectory.html").read_text()
     timeline_page = (ROOT / "web/timeline.html").read_text()
     timeline_app = (ROOT / "web/timeline.js").read_text()
     assert "/data/performance/current.json" in app
@@ -454,8 +456,19 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "class:'submission-target'" in app
     assert "el.getScreenCTM()" in app
     assert "nearest.distance<=22**2" in app
-    assert "app.js?v=20260823-2" in page
-    assert '"version":"20260823-2"' in (ROOT / "web/version.json").read_text()
+    assert "app.js?v=20260824-3" in page
+    assert '"version":"20260824-6"' in (ROOT / "web/version.json").read_text()
+    preview = trajectory_app.split("function stepPreview", 1)[1].split(
+        "function matchesFilter", 1
+    )[0]
+    assert preview.index("if(step.reasoning_content)") < preview.index(
+        "const calls=step.tool_calls"
+    )
+    assert "activity tool terminal" in trajectory_app
+    assert "meta.append(el('b','',`#" in trajectory_app
+    assert "fmtClock(step.timestamp)" not in trajectory_app
+    assert 'class="right-rail"' not in trajectory_page
+    assert "trajectory.js?v=20260824-6" in trajectory_page
     assert "let observedVersion = null" in app
     assert "state.timelineUpdatedAt=tIndex.updated_at||null" in app
     assert "Date.parse(snapshotUpdatedAt(batch)||'')" in app
@@ -489,15 +502,15 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "showPolicy(point)" in timeline_app
     assert "Open rendered policy" in timeline_app
     assert "setModelAccent" in timeline_app
-    assert "<title>The Race to AGI4ALL</title>" in page
-    assert "The Race to<br><em>AGI4ALL.</em>" in page
-    assert '<span class="brand">AGI4ALL</span>' in page
+    assert "<title>Agents' 100m</title>" in page
+    assert "<h1>Agents' <em>100m.</em></h1>" in page
+    assert '<span class="brand">Agents\' 100m</span>' in page
     assert "color: var(--bg)" in styles
     assert "background: var(--text)" in styles
     assert 'id="live"' not in page
     assert "$('#live')" not in app
     assert "AI agents compete to produce the fastest policy at the lowest cost." in page
-    assert "The Race to AGI4ALL · Race control" in timeline_page
+    assert "Agents' 100m · Race control" in timeline_page
     assert page.index("Performance vs cost") < page.index("Performance over time")
     assert "The Time-Adjusted Effective Speed compares competitors" in page
     assert 'id="time-performance" hidden' in page
@@ -506,8 +519,9 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert 'id="readout-timeline"' in page
     assert 'id="policy-grid"' not in page
     assert 'id="run-links"' not in page
-    assert "Cost-Adjusted Effective Speed" in app
-    assert "Best Cost-Adjusted Effective Speed" not in app
+    assert '<strong>Effective Speed</strong>' in app
+    assert "highest Effective Speed" in app
+    assert "Math.max(0,...(performance[key]?.points||[])" in app
     assert "cost_auc_mps_at_common_cap" in app
     assert "path=`M${x(0)},${y(0)} `" in app
     assert "(run.points||[]).filter(plottable)" in app
