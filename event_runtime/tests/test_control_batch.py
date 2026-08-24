@@ -2083,7 +2083,7 @@ def test_batch_stop_persists_all_intents_before_slow_dispatch(
     @contextlib.contextmanager
     def recording_lock(path: Path, *, blocking: bool = True):
         assert path == batch_eval.batch_path(batch_id).with_suffix(".lock")
-        assert blocking is True
+        assert blocking is False
         assert persisted == ["run-1", "run-2", "run-3"]
         assert dispatched == ["run-1", "run-2", "run-3"]
         events.append("lock:entered")
@@ -2110,6 +2110,59 @@ def test_batch_stop_persists_all_intents_before_slow_dispatch(
         "stopping",
     ]
     assert events[-1] == "lock:exited"
+
+
+def test_batch_stop_journals_transition_when_monitor_holds_state_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    batch_id = "stop-journal"
+    run_id = "stop-journal-luna-1"
+    monkeypatch.setattr(batch_eval, "SCRIPT_DIR", tmp_path / "ops")
+    monkeypatch.setattr(batch_eval, "BATCH_ROOT", tmp_path / "batches")
+    run_dir = batch_eval.SCRIPT_DIR / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.json").write_text("{}\n")
+    batch_eval.atomic_json(
+        batch_eval.batch_path(batch_id),
+        {
+            "batch_id": batch_id,
+            "status": "running",
+            "arms": [{"run_id": run_id, "status": "running"}],
+            "alerts": [],
+            "credential_status": "revoked",
+        },
+    )
+
+    @contextlib.contextmanager
+    def busy_lock(_path: Path, *, blocking: bool = True):
+        assert blocking is False
+        yield False
+
+    with (
+        mock.patch.object(
+            batch_eval.sprintctl, "persist_stop_request", lambda *_args, **_kwargs: None
+        ),
+        mock.patch.object(
+            batch_eval.sprintctl,
+            "request_stop",
+            lambda *_args, **_kwargs: {"status": "requested"},
+        ),
+        mock.patch.object(batch_eval.frontier_update, "file_lock", busy_lock),
+    ):
+        projected = batch_eval.stop_batch(batch_id)
+
+    assert projected["arms"][0]["status"] == "stopping"
+    assert batch_eval.batch_stop_marker_path(batch_id).is_file()
+    # The monitor-owned batch document is untouched until it can consume the
+    # journal, so the stop path cannot clobber a concurrent monitor commit.
+    assert batch_eval.read_batch(batch_id)["arms"][0]["status"] == "running"
+
+    stored = batch_eval.read_batch(batch_id)
+    consumed = batch_eval.consume_batch_stop_transition(batch_id, stored)
+    assert consumed["arms"][0]["status"] == "stopping"
+    assert consumed["arms"][0]["stop_dispatch_status"] == "requested"
+    assert not batch_eval.batch_stop_marker_path(batch_id).exists()
+    assert batch_eval.read_batch(batch_id)["arms"][0]["status"] == "stopping"
 
 
 def test_website_deploy_yields_batch_control_lock(

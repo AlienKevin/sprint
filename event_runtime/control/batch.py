@@ -556,6 +556,12 @@ def credential_journal_path(batch_id: str) -> Path:
     return batch_dir(batch_id) / "openrouter-credentials.json"
 
 
+def batch_stop_marker_path(batch_id: str) -> Path:
+    """Return the durable operator-stop transition journal for a batch."""
+
+    return batch_dir(batch_id) / "operator-stop.json"
+
+
 def read_batch(batch_id: str) -> dict[str, Any]:
     path = batch_path(batch_id)
     try:
@@ -564,6 +570,75 @@ def read_batch(batch_id: str) -> dict[str, Any]:
         raise FileNotFoundError(f"unknown batch: {batch_id}") from exc
     if payload.get("batch_id") != batch_id:
         raise ValueError("batch state has mismatched ID")
+    return payload
+
+
+def apply_batch_stop_transition(
+    payload: dict[str, Any], transition: dict[str, Any]
+) -> dict[str, Any]:
+    """Idempotently merge a durable operator-stop transition into batch state.
+
+    Run stop markers and credential revocation are the safety boundary.  This
+    batch-level merge is deliberately presentation/control metadata only, so a
+    slow monitor must never make the operator wait to publish it.
+    """
+
+    target_ids = {
+        str(value)
+        for value in transition.get("target_run_ids", [])
+        if isinstance(value, str) and value
+    }
+    dispatch_results = transition.get("dispatch_results")
+    if not isinstance(dispatch_results, dict):
+        dispatch_results = {}
+    requested_at = str(transition.get("requested_at") or utc_now())
+    for arm in payload.get("arms", []):
+        run_id = str(arm.get("run_id") or "")
+        if run_id not in target_ids:
+            continue
+        # A late replay of the journal must not demote a completed arm.
+        if arm.get("status") in {"finalized", "invalid_infrastructure"}:
+            continue
+        arm["stop_requested_at"] = arm.get("stop_requested_at") or requested_at
+        arm["status"] = "stopping"
+        result = dispatch_results.get(run_id)
+        if not isinstance(result, dict):
+            continue
+        if "status" in result:
+            arm["stop_dispatch_status"] = str(result["status"])
+            arm.pop("stop_dispatch_error", None)
+        elif "error" in result:
+            arm["stop_dispatch_error"] = str(result["error"])
+
+    credential_cleanup = transition.get("credential_cleanup")
+    if isinstance(credential_cleanup, dict):
+        for key, value in credential_cleanup.items():
+            payload[key] = copy.deepcopy(value)
+    payload["operator_stop"] = {
+        "requested_at": requested_at,
+        "journaled_at": transition.get("journaled_at"),
+    }
+    payload["updated_at"] = utc_now()
+    return payload
+
+
+def consume_batch_stop_transition(
+    batch_id: str, payload: dict[str, Any]
+) -> dict[str, Any]:
+    """Apply and remove a stop journal while the caller owns ``batch.lock``."""
+
+    marker = batch_stop_marker_path(batch_id)
+    try:
+        transition = json.loads(marker.read_text())
+    except FileNotFoundError:
+        return payload
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"invalid operator-stop journal for {batch_id}: {exc}") from exc
+    if not isinstance(transition, dict) or transition.get("batch_id") != batch_id:
+        raise RuntimeError(f"operator-stop journal has mismatched batch ID: {batch_id}")
+    apply_batch_stop_transition(payload, transition)
+    atomic_json(batch_path(batch_id), payload)
+    marker.unlink(missing_ok=True)
     return payload
 
 
@@ -2545,6 +2620,11 @@ def monitor_cycle(
     path = batch_path(batch_id)
     with releasable_batch_lock(path.with_suffix(".lock")) as batch_lock:
         payload = read_batch(batch_id)
+        # An operator stop has already fenced every run and revoked its child
+        # credentials before this journal is written.  Consume it immediately,
+        # before any provider audit, volume read, finalization, or deployment
+        # can block this monitor cycle.
+        payload = consume_batch_stop_transition(batch_id, payload)
         now = dt.datetime.now(dt.timezone.utc)
         finalized = 0
         cycle_alerts: list[dict[str, str]] = []
@@ -2896,29 +2976,29 @@ def stop_batch(batch_id: str, *, env_file: Path | None = None) -> dict[str, Any]
             dispatch_results[arm["run_id"]] = {"error": f"{type(exc).__name__}: {exc}"}
 
     path = batch_path(batch_id)
-    # Re-read only after acquiring the state lock. The cost-control effects
-    # above are already durable; this short critical section only publishes
-    # their authoritative batch representation.
-    with frontier_update.file_lock(path.with_suffix(".lock")):
+    transition = {
+        "schema_version": 1,
+        "batch_id": batch_id,
+        "requested_at": utc_now(),
+        "journaled_at": utc_now(),
+        "target_run_ids": sorted(target_ids),
+        "dispatch_results": dispatch_results,
+        "credential_cleanup": credential_cleanup or {},
+    }
+    # The journal is the durable batch-level state transition.  It is written
+    # only after every per-run stop marker and credential revocation attempt,
+    # and can be replayed idempotently by either this command or the monitor.
+    atomic_json(batch_stop_marker_path(batch_id), transition)
+
+    # Never queue an operator behind a monitor that is blocked in provider or
+    # Volume I/O.  Merge immediately when the state lock is free; otherwise
+    # return the projected state and let the next monitor cycle consume the
+    # journal before doing any external work.
+    with frontier_update.file_lock(path.with_suffix(".lock"), blocking=False) as acquired:
         payload = read_batch(batch_id)
-        for arm in payload["arms"]:
-            result = dispatch_results.get(arm["run_id"])
-            if result is not None:
-                arm["stop_requested_at"] = arm.get("stop_requested_at") or utc_now()
-                arm["status"] = "stopping"
-                if "status" in result:
-                    arm["stop_dispatch_status"] = result["status"]
-                    arm.pop("stop_dispatch_error", None)
-                else:
-                    arm["stop_dispatch_error"] = result["error"]
-            elif arm.get("status") != "finalized" and arm["run_id"] in target_ids:
-                arm["stop_requested_at"] = arm.get("stop_requested_at") or utc_now()
-                arm["status"] = "stopping"
-        if credential_cleanup is not None:
-            for key, value in credential_cleanup.items():
-                payload[key] = value
-        payload["updated_at"] = utc_now()
-        atomic_json(path, payload)
+        if not acquired:
+            return apply_batch_stop_transition(payload, transition)
+        payload = consume_batch_stop_transition(batch_id, payload)
         return payload
 
 
