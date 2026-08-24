@@ -22,6 +22,9 @@ sys.path.insert(0, str(OPS))
 sys.path.insert(0, str(ROOT))
 
 from event_runtime.control import batch as batch_eval  # noqa: E402
+from event_runtime.container.sprint_openrouter_usage import (  # noqa: E402
+    empty_token_usage,
+)
 from event_runtime.export import frontier as frontier_update  # noqa: E402
 from event_runtime.preflight import canary as training_gpu_canary  # noqa: E402
 from event_runtime.export import timeline as unified_timeline  # noqa: E402
@@ -558,12 +561,13 @@ def test_local_provider_billed_cost_uses_durable_summary_when_live_field_missing
     (summary_dir / "summary.json").write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "run_id": run_id,
                 "provider_billed_model_api_usd": 1.25,
                 "pending_request_count": 1,
                 "in_flight_request_count": 1,
                 "updated_at": "2026-08-23T00:01:01Z",
+                "token_usage": empty_token_usage(),
             }
         )
     )
@@ -600,11 +604,12 @@ def test_local_provider_billed_cost_combines_newest_trusted_observations(
     (summary_dir / "summary.json").write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "run_id": run_id,
                 "provider_billed_model_api_usd": 1.25,
                 "pending_request_count": 1,
                 "updated_at": "2026-08-23T00:01:01Z",
+                "token_usage": empty_token_usage(),
             }
         )
     )
@@ -784,10 +789,11 @@ def test_controller_recovers_generation_and_uploads_summary_last(
     (ledger / "summary.json").write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "run_id": run_id,
                 "provider_billed_model_api_usd": 0.1,
                 "pending_request_count": 1,
+                "token_usage": empty_token_usage(),
             }
         )
     )
@@ -835,6 +841,15 @@ def test_controller_recovers_generation_and_uploads_summary_last(
     assert recovered["usage"]["input_tokens"] == 100
     assert summary["pending_request_count"] == 0
     assert summary["provider_billed_model_api_usd"] == pytest.approx(0.13)
+    assert summary["token_usage"] == {
+        "input_tokens": 100,
+        "ordinary_uncached_input_tokens": 100,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 10,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 110,
+    }
     assert uploads[-1][0].endswith("/api-usage/summary.json")
 
 
@@ -860,10 +875,11 @@ def test_controller_marks_generationless_zero_delta_unbilled(
     (ledger / "summary.json").write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "run_id": run_id,
                 "provider_billed_model_api_usd": 0.0,
                 "pending_request_count": 1,
+                "token_usage": empty_token_usage(),
             }
         )
     )

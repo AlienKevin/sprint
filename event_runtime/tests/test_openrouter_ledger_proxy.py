@@ -8,6 +8,8 @@ import threading
 
 import pytest
 
+from event_runtime.container.sprint_openrouter_usage import empty_token_usage
+
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "event_runtime/container/sprint-openrouter-ledger-proxy.py"
@@ -772,7 +774,7 @@ def test_live_proxy_observes_watchdog_recovered_pending_cost(tmp_path: Path) -> 
     (record.parent.parent / "summary.json").write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 3,
                 "run_id": "run-1",
                 "model_api_usd": 1.0,
                 "completed_request_count": 10,
@@ -781,6 +783,7 @@ def test_live_proxy_observes_watchdog_recovered_pending_cost(tmp_path: Path) -> 
                 "cost_recovery_required_count": 1,
                 "in_flight_request_ids": [],
                 "cost_recovery_required_request_ids": [PENDING_REQUEST],
+                "token_usage": empty_token_usage(),
             }
         )
     )
@@ -953,7 +956,7 @@ def test_proxy_restart_recovers_exact_generation_before_becoming_ready(
     (record.parent.parent / "summary.json").write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "run_id": "run-1",
                 "model_api_usd": 1.0,
                 "provider_billed_model_api_usd": 0.75,
@@ -963,6 +966,7 @@ def test_proxy_restart_recovers_exact_generation_before_becoming_ready(
                 "cost_recovery_required_count": 1,
                 "in_flight_request_ids": [],
                 "cost_recovery_required_request_ids": [PENDING_REQUEST],
+                "token_usage": empty_token_usage(),
             }
         )
     )
@@ -992,6 +996,15 @@ def test_proxy_restart_recovers_exact_generation_before_becoming_ready(
         assert server.api_cost_usd == pytest.approx(2.76)
         assert server.provider_billed_api_cost_usd == pytest.approx(0.85)
         assert server.completed_request_count == 5
+        assert server.token_usage == {
+            "input_tokens": 1_000_000,
+            "ordinary_uncached_input_tokens": 1_000_000,
+            "cached_input_tokens": 0,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 1_000_000,
+            "reasoning_output_tokens": 0,
+            "total_tokens": 2_000_000,
+        }
         recovered = json.loads(record.read_text())
         assert recovered["state"] == "recovered_complete"
         assert recovered["benchmark_cost_usd"] == pytest.approx(1.76)
@@ -1216,6 +1229,16 @@ def test_streaming_chat_completions_is_sealed_metered_and_peak_normalized(
     summary = json.loads((run_root / "api-usage/summary.json").read_text())
     assert summary["provider_billed_model_api_usd"] == pytest.approx(0.0001156)
     assert summary["model_api_usd"] == pytest.approx(0.0002312)
+    assert summary["schema_version"] == 3
+    assert summary["token_usage"] == {
+        "input_tokens": 1_000,
+        "ordinary_uncached_input_tokens": 200,
+        "cached_input_tokens": 800,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 100,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 1_100,
+    }
     records = list((run_root / "api-usage/requests").glob("*.json"))
     assert len(records) == 1
     record = json.loads(records[0].read_text())
@@ -1245,7 +1268,7 @@ def test_proxy_restart_trusts_completed_rollup_without_scanning_history(
     (requests.parent / "summary.json").write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 3,
                 "run_id": "run-1",
                 "model_api_usd": 1.5,
                 "completed_request_count": 2_000,
@@ -1254,6 +1277,7 @@ def test_proxy_restart_trusts_completed_rollup_without_scanning_history(
                 "cost_recovery_required_count": 0,
                 "in_flight_request_ids": [],
                 "cost_recovery_required_request_ids": [],
+                "token_usage": empty_token_usage(),
             }
         )
         + "\n"
@@ -1297,7 +1321,7 @@ def test_proxy_restart_reconciles_only_named_pending_request(tmp_path: Path) -> 
     (requests.parent / "summary.json").write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 3,
                 "run_id": "run-1",
                 "model_api_usd": 1.0,
                 "completed_request_count": 100,
@@ -1306,6 +1330,7 @@ def test_proxy_restart_reconciles_only_named_pending_request(tmp_path: Path) -> 
                 "cost_recovery_required_count": 0,
                 "in_flight_request_ids": [PENDING_REQUEST],
                 "cost_recovery_required_request_ids": [],
+                "token_usage": empty_token_usage(),
             }
         )
         + "\n"

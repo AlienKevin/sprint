@@ -47,6 +47,11 @@ from event_runtime.container.sprint_openrouter_pricing import (  # noqa: E402
     benchmark_cost_usd,
     undiscounted_cost_usd,
 )
+from event_runtime.container.sprint_openrouter_usage import (  # noqa: E402
+    add_token_usage,
+    empty_token_usage,
+    generation_usage_payload,
+)
 
 
 UV = Path(os.environ.get("UV", "/home/ubuntu/.local/bin/uv"))
@@ -545,7 +550,7 @@ def _local_provider_billed_cost(run_id: str) -> tuple[float, int, str | None]:
     summary_path = state_dir / "provider-api-usage" / "api-usage" / "summary.json"
     try:
         summary = json.loads(summary_path.read_text())
-        if summary.get("schema_version") != 2 or summary.get("run_id") != run_id:
+        if summary.get("schema_version") != 3 or summary.get("run_id") != run_id:
             raise ValueError("provider summary identity mismatch")
         summary_cost = float(summary["provider_billed_model_api_usd"])
         summary_pending = max(
@@ -573,47 +578,6 @@ def _local_provider_billed_cost(run_id: str) -> tuple[float, int, str | None]:
     )
 
 
-def _generation_usage_payload(generation: dict[str, Any]) -> dict[str, Any]:
-    """Normalize a generation audit into the Responses usage contract."""
-    values: list[int] = []
-    for raw in (
-        generation.get("native_tokens_prompt"),
-        generation.get("native_tokens_cached", 0),
-        generation.get("native_tokens_completion"),
-    ):
-        try:
-            value = float(raw)
-        except (TypeError, ValueError) as exc:
-            raise OpenRouterManagementError(
-                "generation audit had invalid native token counts"
-            ) from exc
-        if not math.isfinite(value) or not value.is_integer():
-            raise OpenRouterManagementError(
-                "generation audit had invalid native token counts"
-            )
-        values.append(int(value))
-    input_tokens, cached_tokens, output_tokens = values
-    if (
-        min(input_tokens, cached_tokens, output_tokens) < 0
-        or cached_tokens > input_tokens
-    ):
-        raise OpenRouterManagementError(
-            "generation audit had inconsistent native token counts"
-        )
-    return {
-        "input_tokens": input_tokens,
-        "input_tokens_details": {
-            "cached_tokens": cached_tokens,
-            "cache_write_tokens": 0,
-        },
-        "output_tokens": output_tokens,
-        "output_tokens_details": {"reasoning_tokens": 0},
-        "total_tokens": input_tokens + output_tokens,
-        "cost": float(generation["total_cost"]),
-        "cost_details": {"upstream_inference_cost": float(generation["total_cost"])},
-    }
-
-
 def _rebuild_provider_summary(
     run_id: str,
     request_paths: list[Path],
@@ -624,6 +588,7 @@ def _rebuild_provider_summary(
     completed = 0
     in_flight: list[str] = []
     recovery: list[str] = []
+    token_usage = empty_token_usage()
     for path in request_paths:
         record = replacements.get(path.stem)
         if record is None:
@@ -654,6 +619,14 @@ def _rebuild_provider_summary(
             provider_total += provider_value
             benchmark_total += benchmark_value
             completed += 1
+            usage = record.get("usage")
+            if usage is not None:
+                try:
+                    add_token_usage(token_usage, usage)
+                except ValueError as exc:
+                    raise OpenRouterManagementError(
+                        "provider ledger token usage was invalid"
+                    ) from exc
         elif record.get("state") == "in_flight":
             in_flight.append(request_id)
         elif record.get("state") == "cost_recovery_required":
@@ -662,7 +635,7 @@ def _rebuild_provider_summary(
             raise OpenRouterManagementError("provider ledger state was invalid")
     pending = len(in_flight) + len(recovery)
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "run_id": run_id,
         "updated_at": utc_now(),
         "model_api_usd": benchmark_total,
@@ -671,6 +644,7 @@ def _rebuild_provider_summary(
         "model_api_cost_basis": BENCHMARK_COST_BASIS,
         "provider_billed_cost_basis": PROVIDER_COST_BASIS,
         "completed_request_count": completed,
+        "token_usage": token_usage,
         "pending_request_count": pending,
         "in_flight_request_count": len(in_flight),
         "cost_recovery_required_count": len(recovery),
@@ -703,7 +677,7 @@ def reconcile_openrouter_child_ledger(
         raise OpenRouterManagementError(
             "provider ledger summary was unavailable"
         ) from exc
-    if summary.get("schema_version") != 2 or summary.get("run_id") != run_id:
+    if summary.get("schema_version") != 3 or summary.get("run_id") != run_id:
         raise OpenRouterManagementError("provider ledger summary identity mismatch")
     request_paths = sorted(requests_dir.glob("*.json"))
     pending_records: list[tuple[Path, dict[str, Any]]] = []
@@ -749,7 +723,12 @@ def reconcile_openrouter_child_ledger(
                 raise OpenRouterManagementError("generation audit model mismatch")
             if str(provider).casefold() != str(arm.get("provider") or "").casefold():
                 raise OpenRouterManagementError("generation audit provider mismatch")
-            usage = _generation_usage_payload(generation)
+            try:
+                usage = generation_usage_payload(generation)
+            except ValueError as exc:
+                raise OpenRouterManagementError(
+                    "generation audit had invalid native token counts"
+                ) from exc
             try:
                 list_cost = undiscounted_cost_usd(
                     provider_cost, record.get("promotion_snapshot")

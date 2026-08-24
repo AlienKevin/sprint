@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from event_runtime.container.sprint_openrouter_usage import empty_token_usage
+
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "event_runtime/container/sprint-budget-watchdog.py"
@@ -811,7 +813,7 @@ def test_openrouter_recovery_reads_only_named_pending_request(
     (requests.parent / "summary.json").write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 3,
                 "run_id": "unit",
                 "model_api_usd": 1.25,
                 "completed_request_count": 2_000,
@@ -820,6 +822,7 @@ def test_openrouter_recovery_reads_only_named_pending_request(
                 "cost_recovery_required_count": 1,
                 "in_flight_request_ids": [],
                 "cost_recovery_required_request_ids": [request_id],
+                "token_usage": empty_token_usage(),
             }
         )
     )
@@ -829,6 +832,9 @@ def test_openrouter_recovery_reads_only_named_pending_request(
         lambda generation_id, api_key: {
             "id": generation_id,
             "total_cost": 0.456,
+            "native_tokens_prompt": 100,
+            "native_tokens_cached": 80,
+            "native_tokens_completion": 10,
         },
     )
 
@@ -841,6 +847,15 @@ def test_openrouter_recovery_reads_only_named_pending_request(
     summary = json.loads((requests.parent / "summary.json").read_text())
     assert summary["in_flight_request_ids"] == []
     assert summary["cost_recovery_required_request_ids"] == []
+    assert summary["token_usage"] == {
+        "input_tokens": 100,
+        "ordinary_uncached_input_tokens": 20,
+        "cached_input_tokens": 80,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 10,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 110,
+    }
 
 
 def test_openrouter_watchdog_uses_exact_rollup_without_rescanning_shards(
@@ -855,7 +870,7 @@ def test_openrouter_watchdog_uses_exact_rollup_without_rescanning_shards(
     (requests.parent / "summary.json").write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 3,
                 "run_id": "unit",
                 "updated_at": "2026-08-19T00:00:00Z",
                 "model_api_usd": 1.25,
@@ -863,6 +878,9 @@ def test_openrouter_watchdog_uses_exact_rollup_without_rescanning_shards(
                 "pending_request_count": 0,
                 "in_flight_request_count": 0,
                 "cost_recovery_required_count": 0,
+                "in_flight_request_ids": [],
+                "cost_recovery_required_request_ids": [],
+                "token_usage": empty_token_usage(),
             }
         )
         + "\n"

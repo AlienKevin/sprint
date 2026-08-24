@@ -41,7 +41,7 @@ def _terminal_provider_summary(
         )
     except (OSError, json.JSONDecodeError):
         return None
-    if not isinstance(summary, dict) or summary.get("schema_version") != 2:
+    if not isinstance(summary, dict) or summary.get("schema_version") != 3:
         return None
     if summary.get("run_id") != run_id:
         return None

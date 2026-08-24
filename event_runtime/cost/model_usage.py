@@ -230,7 +230,7 @@ def provider_usage_records(state_dir: Path, run_id: str) -> list[dict[str, Any]]
         try:
             summary = json.loads(path.read_text())
             settled = (
-                summary.get("schema_version") == 2
+                summary.get("schema_version") == 3
                 and summary.get("run_id") == run_id
                 and int(summary.get("pending_request_count") or 0) == 0
                 and int(summary.get("in_flight_request_count") or 0) == 0

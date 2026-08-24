@@ -1849,7 +1849,7 @@ def provider_usage_ledger_settled(
         try:
             summary = json.loads(path.read_text())
             valid = (
-                summary.get("schema_version") == 2
+                summary.get("schema_version") == 3
                 and summary.get("run_id") == run.get("run_id")
                 and int(summary.get("pending_request_count") or 0) == 0
                 and int(summary.get("in_flight_request_count") or 0) == 0

@@ -25,6 +25,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from event_runtime.cost import modal as modal_cost  # noqa: E402
+from event_runtime.container.sprint_openrouter_usage import (  # noqa: E402
+    validate_token_usage_totals,
+)
 
 SCHEMA_VERSION = 6
 DEFAULT_BUCKET_SECONDS = 60
@@ -1194,25 +1197,94 @@ class Builder:
         records = sorted(root.glob("**/requests/*.json")) if root.is_dir() else []
         self.source_counts["provider_usage_summary_files"] = len(summaries)
         self.source_counts["provider_usage_record_files"] = len(records)
+        valid_summaries: list[tuple[pathlib.Path, dict[str, Any], dict[str, int]]] = []
         for summary_path in summaries:
+            summary: dict[str, Any] = {}
             try:
                 summary = json.loads(summary_path.read_text())
+                token_usage = validate_token_usage_totals(
+                    summary.get("token_usage")
+                )
                 valid = (
-                    summary.get("run_id") == self.run_id
+                    summary.get("schema_version") == 3
+                    and summary.get("run_id") == self.run_id
                     and int(summary.get("pending_request_count") or 0) == 0
                     and int(summary.get("cost_recovery_required_count") or 0) == 0
                 )
             except (OSError, ValueError, TypeError, json.JSONDecodeError):
                 valid = False
+                token_usage = None
             if valid:
                 self.counts["complete_provider_usage_summaries"] += 1
             else:
                 self.counts["incomplete_provider_usage_summaries"] += 1
+            if (
+                isinstance(token_usage, dict)
+                and summary.get("schema_version") == 3
+                and summary.get("run_id") == self.run_id
+            ):
+                valid_summaries.append((summary_path, summary, token_usage))
 
         # Codex supplies richer signed session telemetry. The provider summary
         # remains an independent billing-settlement gate, but its request rows
         # must not be added a second time when Codex rows already exist.
         if self.counts["model_requests"]:
+            return
+
+        # Live synchronization intentionally copies only this constant-size
+        # cumulative summary. Emit it as one replaceable usage sample until
+        # the final per-request ledger is present; final records then become
+        # the sole source and cannot be double counted.
+        if not records:
+            for summary_path, summary, token_usage in valid_summaries:
+                try:
+                    completed = int(summary.get("completed_request_count") or 0)
+                    calculated_cost = float(summary["model_api_usd"])
+                    provider_cost = float(summary["provider_billed_model_api_usd"])
+                    pending = int(summary.get("pending_request_count") or 0)
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    self.counts["incomplete_model_request_costs"] += 1
+                    continue
+                if (
+                    completed < 0
+                    or pending < 0
+                    or not math.isfinite(calculated_cost)
+                    or calculated_cost < 0
+                    or not math.isfinite(provider_cost)
+                    or provider_cost < 0
+                    or provider_cost > calculated_cost + 1e-12
+                ):
+                    self.counts["incomplete_model_request_costs"] += 1
+                    continue
+                data = {
+                    "api_call_id": f"openrouter-summary:{self.run_id}",
+                    "session_id": f"openrouter:{self.run_id}",
+                    "request_count": completed,
+                    "model": self.run.get("model"),
+                    "reasoning_effort": self.run.get("reasoning_effort"),
+                    **token_usage,
+                    "pricing_snapshot_id": None,
+                    "calculated_cost_usd": calculated_cost,
+                    "provider_reported_cost_usd": provider_cost,
+                    "promotion_savings_usd": calculated_cost - provider_cost,
+                    "provider_cost_basis": summary.get(
+                        "provider_billed_cost_basis"
+                    ),
+                    "calculated_cost_basis": summary.get("model_api_cost_basis"),
+                    "cost_reconstruction_status": (
+                        "complete" if pending == 0 else "in_progress"
+                    ),
+                    "cumulative_summary": True,
+                }
+                self.add_event(
+                    epoch_ms=parse_epoch_ms(summary.get("updated_at")),
+                    category="usage",
+                    kind="model_request_usage",
+                    source=self.relative(summary_path),
+                    identity=f"openrouter-summary:{self.run_id}",
+                    data=data,
+                )
+                self.counts["model_requests"] += completed
             return
 
         for path in records:
@@ -2041,7 +2113,12 @@ class Builder:
             for field in token_fields
         }
         usage_summary = {
-            "request_count": len(usage_events),
+            "request_count": sum(
+                int(event.get("request_count", 1))
+                for event in usage_events
+                if isinstance(event.get("request_count", 1), int)
+                and not isinstance(event.get("request_count", 1), bool)
+            ),
             **usage_totals,
             "calculated_api_usage_usd": (
                 sum(

@@ -36,6 +36,12 @@ from sprint_openrouter_pricing import (  # noqa: E402
     benchmark_cost_usd,
     undiscounted_cost_usd,
 )
+from sprint_openrouter_usage import (  # noqa: E402
+    add_token_usage,
+    empty_token_usage,
+    generation_usage_payload,
+    validate_token_usage_totals,
+)
 
 
 CPU_USD_PER_SECOND = 2 * 0.00003942 + 8 * 0.00000667
@@ -164,7 +170,7 @@ def openrouter_api_cost(
         try:
             summary = json.loads(summary_path.read_text())
             schema = summary.get("schema_version")
-            if schema not in {1, 2} or summary.get("run_id") != run_id:
+            if schema != 3 or summary.get("run_id") != run_id:
                 raise BudgetTelemetryError(
                     "OpenRouter ledger summary identity mismatch"
                 )
@@ -174,6 +180,7 @@ def openrouter_api_cost(
             pending = int(summary["pending_request_count"])
             in_flight = int(summary["in_flight_request_count"])
             recovery_required = int(summary["cost_recovery_required_count"])
+            token_usage = validate_token_usage_totals(summary.get("token_usage"))
             in_flight_ids_raw = summary.get("in_flight_request_ids")
             recovery_ids_raw = summary.get("cost_recovery_required_request_ids")
             has_pending_ids = isinstance(in_flight_ids_raw, list) and isinstance(
@@ -240,6 +247,7 @@ def openrouter_api_cost(
                     existing = _record_costs(record)
                     if existing is not None:
                         recovered_cost, recovered_provider_cost = existing
+                        recovered_usage = record.get("usage")
                     else:
                         generation_id = record.get("generation_id")
                         recovered = (
@@ -260,6 +268,7 @@ def openrouter_api_cost(
                         recovered_cost, recovered_provider_cost = _recover_record_cost(
                             record, float(candidate), recovered
                         )
+                        recovered_usage = generation_usage_payload(recovered)
                         record.update(
                             {
                                 "state": "recovered_complete",
@@ -267,17 +276,20 @@ def openrouter_api_cost(
                                 .isoformat()
                                 .replace("+00:00", "Z"),
                                 "generation_audit": recovered,
+                                "usage": recovered_usage,
                             }
                         )
                         atomic_json(path, record)
                     total += recovered_cost
                     provider_total += recovered_provider_cost
                     completed += 1
+                    if recovered_usage is not None:
+                        add_token_usage(token_usage, recovered_usage)
                 pending = len(in_flight_ids) + len(remaining_recovery_ids)
                 atomic_json(
                     summary_path,
                     {
-                        "schema_version": 2,
+                        "schema_version": 3,
                         "run_id": run_id,
                         "updated_at": dt.datetime.now(dt.timezone.utc)
                         .isoformat()
@@ -288,6 +300,7 @@ def openrouter_api_cost(
                         "model_api_cost_basis": BENCHMARK_COST_BASIS,
                         "provider_billed_cost_basis": PROVIDER_COST_BASIS,
                         "completed_request_count": completed,
+                        "token_usage": token_usage,
                         "pending_request_count": pending,
                         "in_flight_request_count": len(in_flight_ids),
                         "cost_recovery_required_count": len(remaining_recovery_ids),
@@ -309,6 +322,7 @@ def openrouter_api_cost(
     recovery_required = 0
     in_flight_ids: set[str] = set()
     recovery_ids: set[str] = set()
+    token_usage = empty_token_usage()
     for path in sorted(requests_dir.glob("*.json")) if requests_dir.is_dir() else ():
         try:
             record = json.loads(path.read_text())
@@ -324,6 +338,9 @@ def openrouter_api_cost(
             total += benchmark_cost
             provider_total += provider_cost
             completed += 1
+            usage = record.get("usage")
+            if usage is not None:
+                add_token_usage(token_usage, usage)
             continue
         generation_id = record.get("generation_id")
         state = record.get("state")
@@ -350,6 +367,7 @@ def openrouter_api_cost(
             benchmark_cost, provider_cost = _recover_record_cost(
                 record, float(recovered_cost), recovered
             )
+            recovered_usage = generation_usage_payload(recovered)
             record.update(
                 {
                     "state": "recovered_complete",
@@ -357,12 +375,14 @@ def openrouter_api_cost(
                     .isoformat()
                     .replace("+00:00", "Z"),
                     "generation_audit": recovered,
+                    "usage": recovered_usage,
                 }
             )
             atomic_json(path, record)
             total += benchmark_cost
             provider_total += provider_cost
             completed += 1
+            add_token_usage(token_usage, recovered_usage)
             continue
         if state not in {"in_flight", "cost_recovery_required"}:
             raise BudgetTelemetryError(f"invalid OpenRouter ledger state: {path}")
@@ -381,7 +401,7 @@ def openrouter_api_cost(
     atomic_json(
         summary_path,
         {
-            "schema_version": 2,
+            "schema_version": 3,
             "run_id": run_id,
             "updated_at": dt.datetime.now(dt.timezone.utc)
             .isoformat()
@@ -392,6 +412,7 @@ def openrouter_api_cost(
             "model_api_cost_basis": BENCHMARK_COST_BASIS,
             "provider_billed_cost_basis": PROVIDER_COST_BASIS,
             "completed_request_count": completed,
+            "token_usage": token_usage,
             "pending_request_count": pending,
             "in_flight_request_count": in_flight,
             "cost_recovery_required_count": recovery_required,

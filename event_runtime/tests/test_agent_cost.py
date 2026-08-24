@@ -17,6 +17,9 @@ sys.path.insert(0, str(ROOT))
 
 from event_runtime.compute import worker as gpu_worker  # noqa: E402
 from event_runtime.cost import agent as agent_cost  # noqa: E402
+from event_runtime.container.sprint_openrouter_usage import (  # noqa: E402
+    empty_token_usage,
+)
 
 
 def timeline_fixture() -> dict:
@@ -159,7 +162,7 @@ def test_snapshot_uses_complete_provider_compute_when_volume_is_unavailable(
     (telemetry / "budget-watchdog.json").write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "run_id": "run-1",
                 "status": "within_budget",
                 "total_usd": 1.0,
@@ -340,7 +343,7 @@ def test_terminal_provider_summary_clears_stale_pending_request(
     summary_path.write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "run_id": "run-1",
                 "completed_request_count": 2,
                 "pending_request_count": 0,
@@ -352,6 +355,7 @@ def test_terminal_provider_summary_clears_stale_pending_request(
                 "provider_billed_model_api_usd": 4.0,
                 "promotion_savings_usd": 1.5,
                 "model_api_cost_basis": "fixture_list_price",
+                "token_usage": empty_token_usage(),
             }
         )
     )

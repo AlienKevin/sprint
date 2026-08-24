@@ -32,6 +32,13 @@ from sprint_openrouter_pricing import (  # noqa: E402
     capture_endpoint_discount_snapshot,
     undiscounted_cost_usd,
 )
+from sprint_openrouter_usage import (  # noqa: E402
+    add_token_usage,
+    empty_token_usage,
+    generation_usage_payload,
+    normalize_token_usage,
+    validate_token_usage_totals,
+)
 
 
 HOP_BY_HOP = {
@@ -802,7 +809,10 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                 atomic_json(record_path, record)
                 if valid_cost:
                     self.ledger_server.complete_request(
-                        request_id, benchmark_cost, float(cost)
+                        request_id,
+                        benchmark_cost,
+                        float(cost),
+                        terminal_usage,
                     )
                     if not record.get("route_identity_verified", True):
                         self.ledger_server.write_stop(
@@ -955,6 +965,7 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
             self.completed_request_count,
             self.in_flight_request_ids,
             self.cost_recovery_required_request_ids,
+            self.token_usage,
         ) = loaded
         self._reconcile_pending_requests()
         self.write_summary()
@@ -966,12 +977,12 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
 
     def _load_summary(
         self,
-    ) -> tuple[float, float, int, set[str], set[str]] | None:
+    ) -> tuple[float, float, int, set[str], set[str], dict[str, int]] | None:
         if not self.summary_path.is_file():
             return None
         summary = json.loads(self.summary_path.read_text())
         schema = summary.get("schema_version")
-        if schema not in {1, 2} or summary.get("run_id") != self.run_id:
+        if schema != 3 or summary.get("run_id") != self.run_id:
             raise ValueError("ledger summary identity mismatch")
         total = float(summary["model_api_usd"])
         provider_total = float(summary.get("provider_billed_model_api_usd", total))
@@ -981,11 +992,8 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
         recovery_count = int(summary["cost_recovery_required_count"])
         in_flight_raw = summary.get("in_flight_request_ids")
         recovery_raw = summary.get("cost_recovery_required_request_ids")
-        if in_flight_raw is None and recovery_raw is None and pending == 0:
-            in_flight_raw, recovery_raw = [], []
         if not isinstance(in_flight_raw, list) or not isinstance(recovery_raw, list):
-            # A legacy pending summary lacks identities, so rebuild it once.
-            return None
+            raise ValueError("ledger summary lacks pending request identities")
         if not all(
             valid_ledger_request_id(item) for item in in_flight_raw + recovery_raw
         ):
@@ -1009,14 +1017,25 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
             and all(in_flight | recovery_required)
         ):
             raise ValueError("invalid ledger summary")
-        return total, provider_total, completed, in_flight, recovery_required
+        token_usage = validate_token_usage_totals(summary.get("token_usage"))
+        return (
+            total,
+            provider_total,
+            completed,
+            in_flight,
+            recovery_required,
+            token_usage,
+        )
 
-    def _rebuild_totals(self) -> tuple[float, float, int, set[str], set[str]]:
+    def _rebuild_totals(
+        self,
+    ) -> tuple[float, float, int, set[str], set[str], dict[str, int]]:
         total = 0.0
         provider_total = 0.0
         completed = 0
         in_flight: set[str] = set()
         recovery_required: set[str] = set()
+        token_usage = empty_token_usage()
         for path in sorted(self.requests_dir.glob("*.json")):
             record = json.loads(path.read_text())
             if record.get("run_id") != self.run_id:
@@ -1049,13 +1068,23 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
                 total += value
                 provider_total += provider_value
                 completed += 1
+                usage = record.get("usage")
+                if usage is not None:
+                    add_token_usage(token_usage, usage)
             elif record.get("state") == "in_flight":
                 in_flight.add(request_id)
             elif record.get("state") == "cost_recovery_required":
                 recovery_required.add(request_id)
             else:
                 raise ValueError("invalid unpriced ledger record")
-        return total, provider_total, completed, in_flight, recovery_required
+        return (
+            total,
+            provider_total,
+            completed,
+            in_flight,
+            recovery_required,
+            token_usage,
+        )
 
     def _reconcile_pending_requests(self, *, include_in_flight: bool = True) -> None:
         for request_id in (
@@ -1106,6 +1135,9 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
                     raise ValueError("invalid benchmark cost")
                 self.api_cost_usd += benchmark_cost
                 self.provider_billed_api_cost_usd += provider_cost
+                usage = record.get("usage")
+                if usage is not None:
+                    add_token_usage(self.token_usage, usage)
                 continue
             record.update(
                 {
@@ -1139,6 +1171,7 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
                         and float(candidate) >= 0
                     ):
                         provider_cost = float(candidate)
+                        recovered_usage = generation_usage_payload(recovered)
                         try:
                             list_cost = undiscounted_cost_usd(
                                 provider_cost, record.get("promotion_snapshot")
@@ -1172,6 +1205,7 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
                                 ).get("cost_basis", BENCHMARK_COST_BASIS),
                                 "provider_cost_basis": PROVIDER_COST_BASIS,
                                 "generation_audit": recovered,
+                                "usage": recovered_usage,
                                 "recovered_after_proxy_restart": True,
                             }
                         )
@@ -1196,6 +1230,9 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
                     raise ValueError("invalid benchmark cost")
                 self.api_cost_usd += benchmark_cost
                 self.provider_billed_api_cost_usd += provider_cost
+                usage = record.get("usage")
+                if usage is not None:
+                    add_token_usage(self.token_usage, usage)
             elif record.get("state") != "cost_recovery_required":
                 raise ValueError("invalid recovery ledger state")
 
@@ -1206,6 +1243,7 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
                 self.api_cost_usd,
                 self.provider_billed_api_cost_usd,
                 self.completed_request_count,
+                tuple(self.token_usage.items()),
                 frozenset(self.in_flight_request_ids),
                 frozenset(self.cost_recovery_required_request_ids),
             )
@@ -1214,6 +1252,7 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
                 self.api_cost_usd,
                 self.provider_billed_api_cost_usd,
                 self.completed_request_count,
+                tuple(self.token_usage.items()),
                 frozenset(self.in_flight_request_ids),
                 frozenset(self.cost_recovery_required_request_ids),
             )
@@ -1239,7 +1278,7 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
         atomic_json(
             self.summary_path,
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "run_id": self.run_id,
                 "updated_at": utc_now(),
                 "model_api_usd": self.api_cost_usd,
@@ -1250,6 +1289,7 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
                 "model_api_cost_basis": BENCHMARK_COST_BASIS,
                 "provider_billed_cost_basis": PROVIDER_COST_BASIS,
                 "completed_request_count": self.completed_request_count,
+                "token_usage": self.token_usage,
                 "pending_request_count": pending,
                 "in_flight_request_count": len(self.in_flight_request_ids),
                 "cost_recovery_required_count": len(
@@ -1273,9 +1313,16 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
         self.write_summary()
 
     def complete_request(
-        self, request_id: str, cost: float, provider_cost: float | None = None
+        self,
+        request_id: str,
+        cost: float,
+        provider_cost: float | None = None,
+        usage: object = None,
     ) -> None:
         provider_cost = cost if provider_cost is None else provider_cost
+        normalized_usage = (
+            normalize_token_usage(usage) if usage is not None else None
+        )
         if (
             not math.isfinite(cost)
             or cost < 0
@@ -1290,6 +1337,8 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
         self.completed_request_count += 1
         self.api_cost_usd += cost
         self.provider_billed_api_cost_usd += provider_cost
+        if normalized_usage is not None:
+            add_token_usage(self.token_usage, normalized_usage, normalized=True)
         self.write_summary()
 
     def require_cost_recovery(self, request_id: str) -> None:
@@ -1309,6 +1358,7 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
                 self.api_cost_usd,
                 self.provider_billed_api_cost_usd,
                 self.completed_request_count,
+                tuple(self.token_usage.items()),
                 frozenset(self.in_flight_request_ids),
                 frozenset(self.cost_recovery_required_request_ids),
             )
@@ -1317,6 +1367,7 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
                 self.api_cost_usd,
                 self.provider_billed_api_cost_usd,
                 self.completed_request_count,
+                tuple(self.token_usage.items()),
                 frozenset(self.in_flight_request_ids),
                 frozenset(self.cost_recovery_required_request_ids),
             )

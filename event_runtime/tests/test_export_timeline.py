@@ -12,6 +12,9 @@ sys.path.insert(0, str(OPS))
 sys.path.insert(0, str(ROOT))
 
 from event_runtime.export import timeline as unified_timeline  # noqa: E402
+from event_runtime.container.sprint_openrouter_usage import (  # noqa: E402
+    empty_token_usage,
+)
 
 
 def write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -1045,7 +1048,7 @@ def test_openrouter_chat_ledger_is_generic_usage_source(tmp_path: Path) -> None:
     (ledger / "summary.json").write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "run_id": "timeline-fixture",
                 "model_api_usd": 0.025,
                 "provider_billed_model_api_usd": 0.02,
@@ -1053,6 +1056,15 @@ def test_openrouter_chat_ledger_is_generic_usage_source(tmp_path: Path) -> None:
                 "pending_request_count": 0,
                 "in_flight_request_count": 0,
                 "cost_recovery_required_count": 0,
+                "token_usage": {
+                    "input_tokens": 1_000,
+                    "ordinary_uncached_input_tokens": 200,
+                    "cached_input_tokens": 800,
+                    "cache_write_input_tokens": 0,
+                    "output_tokens": 100,
+                    "reasoning_output_tokens": 60,
+                    "total_tokens": 1_100,
+                },
             }
         )
     )
@@ -1102,6 +1114,71 @@ def test_openrouter_chat_ledger_is_generic_usage_source(tmp_path: Path) -> None:
     assert request["elapsed_ms"] == 18_000
 
 
+def test_live_openrouter_summary_exposes_cumulative_tokens_without_request_scan(
+    tmp_path: Path,
+) -> None:
+    state = fixture_run(tmp_path)
+    run_path = state / "run.json"
+    run = json.loads(run_path.read_text())
+    run.update(
+        {
+            "agent_kind": "deepseek-harness",
+            "model": "deepseek/deepseek-v4-flash-vision-exp",
+            "reasoning_effort": "max",
+            "provider_usage_ledger_required": True,
+            "usage_audit_required": False,
+        }
+    )
+    run_path.write_text(json.dumps(run))
+    ledger = state / "provider-api-usage" / "api-usage"
+    ledger.mkdir(parents=True)
+    (ledger / "summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "run_id": "timeline-fixture",
+                "updated_at": "2026-08-07T12:00:18Z",
+                "model_api_usd": 0.25,
+                "provider_billed_model_api_usd": 0.20,
+                "model_api_cost_basis": "benchmark-list-price",
+                "provider_billed_cost_basis": "openrouter-reported",
+                "completed_request_count": 7,
+                "pending_request_count": 0,
+                "in_flight_request_count": 0,
+                "cost_recovery_required_count": 0,
+                "in_flight_request_ids": [],
+                "cost_recovery_required_request_ids": [],
+                "token_usage": {
+                    "input_tokens": 10_000,
+                    "ordinary_uncached_input_tokens": 1_500,
+                    "cached_input_tokens": 8_000,
+                    "cache_write_input_tokens": 500,
+                    "output_tokens": 900,
+                    "reasoning_output_tokens": 600,
+                    "total_tokens": 10_900,
+                },
+            }
+        )
+    )
+
+    payload = unified_timeline.build_timeline(state)
+
+    assert payload["coverage"]["requirements"]["model_usage_and_cost"] is True
+    assert payload["usage_summary"]["request_count"] == 7
+    assert payload["usage_summary"]["input_tokens"] == 10_000
+    assert payload["usage_summary"]["cached_input_tokens"] == 8_000
+    assert payload["usage_summary"]["cache_write_input_tokens"] == 500
+    assert payload["usage_summary"]["output_tokens"] == 900
+    assert payload["usage_summary"]["reasoning_output_tokens"] == 600
+    assert payload["usage_summary"]["calculated_api_usage_usd"] == 0.25
+    assert payload["usage_summary"]["provider_billed_api_usage_usd"] == 0.20
+    events = [
+        event for event in payload["events"] if event["kind"] == "model_request_usage"
+    ]
+    assert len(events) == 1
+    assert events[0]["cumulative_summary"] is True
+
+
 def test_codex_usage_still_requires_settled_provider_summary(tmp_path: Path) -> None:
     state = fixture_run(tmp_path)
     run_path = state / "run.json"
@@ -1142,11 +1219,12 @@ def test_codex_usage_still_requires_settled_provider_summary(tmp_path: Path) -> 
     (ledger / "summary.json").write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "run_id": "timeline-fixture",
                 "pending_request_count": 1,
                 "in_flight_request_count": 1,
                 "cost_recovery_required_count": 0,
+                "token_usage": empty_token_usage(),
             }
         )
     )
