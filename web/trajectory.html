@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="description" content="Inspect agent reasoning, messages, tools, observations, timing, and token usage for every Agents' 100m trial.">
   <title>Agents' 100m · Agent trajectory</title>
-  <link rel="stylesheet" href="/trajectory.css?v=20260824-12">
+  <link rel="stylesheet" href="/trajectory.css?v=20260824-13">
 </head>
 <body>
   <header class="viewer-nav">
@@ -57,13 +57,7 @@
       </section>
     </aside>
 
-    <section class="trace-column" aria-labelledby="trajectory-title">
-      <header class="trace-heading">
-        <p class="eyebrow">ATIF RUN TRACE</p>
-        <h1 id="trajectory-title">What the agent did.</h1>
-        <p>Reasoning, messages, tool calls, and their outputs in exact execution order.</p>
-      </header>
-
+    <section class="trace-column" aria-label="Agent trace">
       <div class="trajectory-controls">
         <span id="status" class="status">Loading…</span>
         <div class="trace-view-toggle filters" role="group" aria-label="Trace detail">
@@ -74,8 +68,6 @@
         <label class="search"><span class="sr-only">Search trajectory</span><input id="search" type="search" placeholder="Search trace…" autocomplete="off"></label>
         <button id="expand" class="expand-button" type="button">Expand all</button>
       </div>
-
-      <p id="privacy-note" class="privacy-note">System/bootstrap messages are omitted; credential-like values and image payloads are redacted.</p>
       <div id="steps" class="steps" aria-live="polite"></div>
     </section>
 
