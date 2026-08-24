@@ -457,7 +457,7 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "el.getScreenCTM()" in app
     assert "nearest.distance<=22**2" in app
     assert "app.js?v=20260824-3" in page
-    assert '"version":"20260824-7"' in (ROOT / "web/version.json").read_text()
+    assert '"version":"20260824-8"' in (ROOT / "web/version.json").read_text()
     preview = trajectory_app.split("function stepPreview", 1)[1].split(
         "function matchesFilter", 1
     )[0]
@@ -509,7 +509,7 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "background: var(--text)" in styles
     assert 'id="live"' not in page
     assert "$('#live')" not in app
-    assert "AI agents compete to produce the fastest policy at the lowest cost." in page
+    assert "Which agent runs the fastest?" in page
     assert "Agents' 100m · Race control" in timeline_page
     assert page.index("Performance vs cost") < page.index("Performance over time")
     assert "The Time-Adjusted Effective Speed compares competitors" in page
