@@ -3039,7 +3039,18 @@ def run_monitor_command(
         while True:
             output = monitor_cycle(batch_id, deploy=deploy, env_file=env_file)
             print(json.dumps(public_batch(output), indent=2), flush=True)
-            if output.get("status") == "complete":
+            if output.get("status") in {"complete", "complete_with_invalid_trials"}:
+                # The unit is enabled so an interrupted active batch resumes
+                # after a host reboot. Once terminal, remove that boot-time
+                # activation link before exiting; otherwise every historical
+                # batch monitor is resurrected on the next login/reboot.
+                unit_name = f"sprint-batch-{batch_id}-monitor.service"
+                subprocess.run(
+                    ["systemctl", "--user", "disable", unit_name],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
                 return output
             time.sleep(max(10, poll_seconds))
 

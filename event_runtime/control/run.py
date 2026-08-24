@@ -2187,7 +2187,7 @@ def final_conditions(
     return all(conditions.values()), conditions, details
 
 
-def finalize(
+def _finalize_owned(
     run_id: str,
     *,
     upload: bool = True,
@@ -2321,6 +2321,48 @@ def finalize(
             f"runs/{run_id}/state/FINALIZED.json",
         )
     return True, payload
+
+
+def finalize(
+    run_id: str,
+    *,
+    upload: bool = True,
+    include_remote: bool = True,
+) -> tuple[bool, dict[str, Any]]:
+    """Finalize one run under a nonblocking, process-wide ownership lease.
+
+    Every run has an independent monitor, while its batch monitor is also able
+    to recover finalization if that lane monitor dies.  Without a dedicated
+    lease both processes can recursively download the same durable Volume and
+    compete with every other lane for the account-wide VolumeListFiles lock.
+    The observer must return promptly when another healthy finalizer owns the
+    work; it can consume ``FINALIZED.json`` on its next cycle.
+    """
+
+    state_dir, run = load_run(run_id)
+    with file_lock(state_dir / "finalize.lock", blocking=False) as acquired:
+        if acquired:
+            return _finalize_owned(
+                run_id,
+                upload=upload,
+                include_remote=include_remote,
+            )
+
+    final_path = state_dir / "FINALIZED.json"
+    try:
+        payload = json.loads(final_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        payload = {
+            "schema_version": 1,
+            "timeline_schema_version": UNIFIED_TIMELINE_SCHEMA_VERSION,
+            "run_id": run_id,
+            "agent_kind": agent_kind(run),
+            "complete": False,
+            "conditions": {"finalization_lease_available": False},
+            "details": ["another host process is finalizing this run"],
+            "checked_at": utc_now(),
+        }
+    return bool(payload.get("complete") is True), payload
 
 
 def record_controller_error(run_id: str, exc: BaseException) -> None:

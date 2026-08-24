@@ -310,6 +310,35 @@ class DurableOpsTests(unittest.TestCase):
             self.assertEqual(observed, [str(os.getpid())])
             self.assertFalse((state / "monitor.pid").exists())
 
+    def test_finalize_returns_promptly_when_another_process_owns_lease(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+
+            @contextlib.contextmanager
+            def busy_lock(_path: Path, *, blocking: bool = True):
+                self.assertFalse(blocking)
+                yield False
+
+            with (
+                mock.patch.object(
+                    sprintctl,
+                    "load_run",
+                    return_value=(
+                        state,
+                        {"run_id": "lease-run", "agent_kind": "codex"},
+                    ),
+                ),
+                mock.patch.object(sprintctl, "file_lock", side_effect=busy_lock),
+                mock.patch.object(sprintctl, "_finalize_owned") as owned,
+            ):
+                complete, payload = sprintctl.finalize("lease-run")
+
+            self.assertFalse(complete)
+            self.assertEqual(
+                payload["conditions"], {"finalization_lease_available": False}
+            )
+            owned.assert_not_called()
+
     def test_budget_pulse_uses_fresh_watchdog_and_mirrors_both_consumers(
         self,
     ) -> None:

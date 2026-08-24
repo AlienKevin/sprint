@@ -206,6 +206,12 @@ def test_batch_monitor_holds_owner_until_terminal_cycle(
     monkeypatch.setattr(batch_eval.frontier_update, "file_lock", acquired_owner)
     monkeypatch.setattr(batch_eval, "monitor_cycle", terminal_cycle)
     monkeypatch.setattr(batch_eval, "public_batch", lambda payload: payload)
+    disabled: list[list[str]] = []
+    monkeypatch.setattr(
+        batch_eval.subprocess,
+        "run",
+        lambda command, **_kwargs: disabled.append(command),
+    )
 
     result = batch_eval.run_monitor_command(
         "eval", deploy=True, env_file=tmp_path / ".env", loop=True, poll_seconds=10
@@ -214,6 +220,9 @@ def test_batch_monitor_holds_owner_until_terminal_cycle(
     assert result == {"batch_id": "eval", "status": "complete"}
     assert observed_owner == [True]
     assert owner_open is False
+    assert disabled == [
+        ["systemctl", "--user", "disable", "sprint-batch-eval-monitor.service"]
+    ]
 
 
 def test_terminal_batch_bypasses_live_deploy_debounce() -> None:
