@@ -28,7 +28,7 @@ class DeepSeekHarness(BaseInstalledAgent):
     @override
     def get_version_command(self) -> str | None:
         return (
-            "node -p \"require('/usr/local/lib/node_modules/"
+            "node -p \"require('/opt/deepseek-harness/node_modules/"
             "@deepseek-ai/dsh-sdk-jsonrpc-demo/package.json').version\""
         )
 

@@ -62,6 +62,13 @@ if hashlib.sha256(canonical).hexdigest() != lock.get("model_messages_sha256"):
 locked_model = dict(model)
 locked_model["slug"] = model_slug
 locked_model["model_messages"] = messages
+# OpenRouter's official OpenAI endpoint does not advertise the Responses API
+# ``parallel_tool_calls`` parameter. Codex treats a missing catalog capability
+# as enabled and sends ``parallel_tool_calls=true``; with fail-closed provider
+# routing OpenRouter then rejects the request before inference. Disable the
+# unsupported field in the runtime catalog. The trusted ledger proxy removes
+# the resulting false field, which is behaviorally equivalent for this route.
+locked_model["supports_parallel_tool_calls"] = False
 catalog_path.write_text(
     json.dumps({"models": [locked_model]}, indent=2, ensure_ascii=False) + "\n",
     encoding="utf-8",

@@ -19,6 +19,15 @@ def test_factory_registers_deepseek_harness() -> None:
     assert DeepSeekHarness.name() == "deepseek-harness"
 
 
+def test_harbor_adapter_checks_the_pinned_local_runtime_graph() -> None:
+    version_command = DeepSeekHarness.get_version_command(None)  # type: ignore[arg-type]
+    assert (
+        "/opt/deepseek-harness/node_modules/"
+        "@deepseek-ai/dsh-sdk-jsonrpc-demo/package.json"
+    ) in version_command
+    assert "/usr/local/lib/node_modules/@deepseek-ai" not in version_command
+
+
 def test_deepseek_harness_rejects_nonbenchmark_reasoning_effort(
     tmp_path: Path,
 ) -> None:

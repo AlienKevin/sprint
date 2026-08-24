@@ -383,6 +383,7 @@ def test_generic_openai_catalog_installer_supports_sol(tmp_path: Path) -> None:
     assert model["slug"] == "@preset/test-sol"
     assert model["multi_agent_version"] == "v2"
     assert model["support_verbosity"] is True
+    assert model["supports_parallel_tool_calls"] is False
     config = (codex_home / "config.toml").read_text()
     assert 'model = "@preset/test-sol"' in config
     assert 'wire_api = "responses"' in config
