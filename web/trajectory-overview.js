@@ -23,13 +23,10 @@
   const compactLanes = [
     {key: 'cpu', label: 'CPU', color: colors.cpu},
     {key: 'training', label: 'TRAIN GPU', color: colors.training},
-    {key: 'verifier', label: 'VERIFY GPU', color: colors.verifier},
   ];
   const detailedLanes = [
-    ...compactLanes.slice(0, 2),
+    ...compactLanes,
     {key: 'trainingMemory', label: 'TRAIN MEM', color: '#d5efa9'},
-    compactLanes[2],
-    {key: 'verifierMemory', label: 'VERIFY MEM', color: '#d9c9ff'},
   ];
   const state = {
     timeline: null,
@@ -48,7 +45,7 @@
     return `${minutes}m ${String(seconds % 60).padStart(2, '0')}s`;
   };
   const activeLanes = () => state.expanded ? detailedLanes : compactLanes;
-  const chartHeight = () => state.expanded ? 330 : 154;
+  const chartHeight = () => state.expanded ? 215 : 126;
   const bounds = () => ({x0: 82, x1: Math.max(100, canvas.clientWidth - 12)});
   const xFor = epoch => {
     const clock = state.timeline.clock;
@@ -319,8 +316,8 @@
     overview.classList.toggle('is-expanded', state.expanded);
     mode.textContent = state.expanded ? 'full resource detail' : 'select to jump';
     canvas.setAttribute('aria-label', state.expanded
-      ? 'Detailed CPU, training GPU, training memory, verifier GPU, verifier memory, and tool activity timeline. Select a point to jump to the nearest agent step.'
-      : 'CPU and GPU utilization over the run. Select a point to jump to the nearest agent step.');
+      ? 'Detailed agent CPU, training GPU, training memory, and tool activity timeline. Select a point to jump to the nearest agent step.'
+      : 'Agent CPU and training GPU utilization over the run. Select a point to jump to the nearest agent step.');
     resize();
   });
   new ResizeObserver(resize).observe(stage);
