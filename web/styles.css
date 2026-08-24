@@ -86,6 +86,7 @@ h1 {
   letter-spacing: -0.075em;
   margin: 24px 0 34px;
   font-weight: 760;
+  white-space: nowrap;
 }
 h1 em {
   display: inline-block;
@@ -927,6 +928,7 @@ footer {
   }
   h1 {
     font-size: 58px;
+    white-space: normal;
   }
   .hero-score-row {
     grid-template-columns: 1fr 64px;
