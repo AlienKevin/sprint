@@ -9,7 +9,9 @@
   const toggle = document.querySelector('#utilization-toggle');
   const mode = document.querySelector('#utilization-mode');
   const overview = document.querySelector('.utilization-overview');
+  const dockSentinel = document.querySelector('#pulse-dock-sentinel');
   const dock = document.querySelector('.trajectory-controls');
+  const narrowViewport = window.matchMedia('(max-width: 850px)');
   const colors = {
     line: '#242a31',
     muted: '#7d838c',
@@ -36,6 +38,7 @@
     hoverEpoch: null,
     scrollFrame: null,
     expanded: false,
+    docked: false,
   };
 
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
@@ -45,7 +48,7 @@
     return `${minutes}m ${String(seconds % 60).padStart(2, '0')}s`;
   };
   const activeLanes = () => state.expanded ? detailedLanes : compactLanes;
-  const chartHeight = () => state.expanded ? 215 : 126;
+  const chartHeight = () => state.docked ? 94 : state.expanded ? 215 : 126;
   const bounds = () => ({x0: 82, x1: Math.max(100, canvas.clientWidth - 12)});
   const xFor = epoch => {
     const clock = state.timeline.clock;
@@ -116,8 +119,8 @@
     ctx.clearRect(0, 0, width, height);
     if (!state.timeline || !state.series) return;
     const {x0, x1} = bounds();
-    const laneTop = 8;
-    const laneHeight = state.expanded ? 47 : 31;
+    const laneTop = state.docked ? 3 : 8;
+    const laneHeight = state.docked ? 22 : state.expanded ? 47 : 31;
 
     lanes.forEach((lane, index) => {
       const y = laneTop + index * laneHeight;
@@ -171,7 +174,7 @@
     ctx.fillStyle = colors.muted;
     ctx.font = '8px ui-monospace, monospace';
     const duration = state.timeline.clock.end_epoch_ms - state.timeline.clock.origin_epoch_ms;
-    const tickCount = state.expanded ? 4 : 1;
+    const tickCount = state.expanded && !state.docked ? 4 : 1;
     for (let index = 0; index <= tickCount; index += 1) {
       const label = index === 0 ? '0m' : fmtDuration(duration * index / tickCount);
       const px = x0 + (x1 - x0) * index / tickCount;
@@ -309,8 +312,8 @@
     const next = steps[clamp(index + (event.key === 'ArrowRight' ? 1 : -1), 0, steps.length - 1)];
     if (next) jumpToEpoch(Date.parse(next.timestamp));
   });
-  toggle.addEventListener('click', () => {
-    state.expanded = !state.expanded;
+  function setExpanded(expanded) {
+    state.expanded = expanded;
     toggle.setAttribute('aria-expanded', String(state.expanded));
     toggle.textContent = state.expanded ? 'Collapse details' : 'Expand details';
     overview.classList.toggle('is-expanded', state.expanded);
@@ -319,6 +322,23 @@
       ? 'Detailed agent CPU, training GPU, training memory, and tool activity timeline. Select a point to jump to the nearest agent step.'
       : 'Agent CPU and training GPU utilization over the run. Select a point to jump to the nearest agent step.');
     resize();
+  }
+  function setDocked(docked) {
+    const next = narrowViewport.matches && docked;
+    if (next === state.docked) return;
+    state.docked = next;
+    document.body.classList.toggle('pulse-docked', next);
+    if (next && state.expanded) setExpanded(false);
+    else resize();
+  }
+  toggle.addEventListener('click', () => setExpanded(!state.expanded));
+  const dockObserver = new IntersectionObserver(entries => {
+    const entry = entries[0];
+    setDocked(!entry.isIntersecting && entry.boundingClientRect.top < 58);
+  }, {rootMargin: '-58px 0px 0px'});
+  dockObserver.observe(dockSentinel);
+  narrowViewport.addEventListener('change', () => {
+    if (!narrowViewport.matches) setDocked(false);
   });
   new ResizeObserver(resize).observe(stage);
 })();

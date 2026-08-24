@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="description" content="Inspect agent reasoning, messages, tools, observations, timing, and token usage for every Agents' 100m trial.">
   <title>Agents' 100m · Agent trajectory</title>
-  <link rel="stylesheet" href="/trajectory.css?v=20260824-11">
+  <link rel="stylesheet" href="/trajectory.css?v=20260824-12">
 </head>
 <body>
   <header class="viewer-nav">
@@ -21,7 +21,9 @@
   <main class="viewer-layout">
     <aside class="viewer-rail left-rail">
       <a class="back-link" href="/">← Back to race overview</a>
+      <span id="pulse-dock-sentinel" class="pulse-dock-sentinel" aria-hidden="true"></span>
       <section class="utilization-overview" aria-labelledby="utilization-title">
+        <a class="utilization-dock-back" href="/" aria-label="Back to race overview">← Back</a>
         <header class="utilization-head">
           <div class="run-identity">
             <span class="model-dot"></span>
@@ -29,13 +31,15 @@
           </div>
           <p id="utilization-status" class="utilization-status">Loading utilization…</p>
         </header>
-        <label class="run-picker pulse-run-picker"><span>Trial</span><select id="run"><option>Loading trajectories…</option></select></label>
-        <dl class="pulse-stats" aria-live="polite">
-          <div><dt>Elapsed</dt><dd id="summary-duration">—</dd></div>
-          <div><dt>Steps</dt><dd id="summary-steps">—</dd></div>
-          <div><dt>Tools</dt><dd id="summary-tools">—</dd></div>
-          <div><dt>Cost</dt><dd id="summary-cost">—</dd></div>
-        </dl>
+        <div class="utilization-meta">
+          <label class="run-picker pulse-run-picker"><span>Trial</span><select id="run"><option>Loading trajectories…</option></select></label>
+          <dl class="pulse-stats" aria-live="polite">
+            <div><dt>Elapsed</dt><dd id="summary-duration">—</dd></div>
+            <div><dt>Steps</dt><dd id="summary-steps">—</dd></div>
+            <div><dt>Tools</dt><dd id="summary-tools">—</dd></div>
+            <div><dt>Cost</dt><dd id="summary-cost">—</dd></div>
+          </dl>
+        </div>
         <div class="utilization-title-row">
           <div><p class="eyebrow">RUN PULSE</p><h2 id="utilization-title">Resources alongside the trace</h2></div>
           <span id="utilization-mode">select to jump</span>
@@ -78,6 +82,6 @@
   </main>
 
   <script src="/trajectory.js?v=20260824-9"></script>
-  <script src="/trajectory-overview.js?v=20260824-3"></script>
+  <script src="/trajectory-overview.js?v=20260824-4"></script>
 </body>
 </html>
