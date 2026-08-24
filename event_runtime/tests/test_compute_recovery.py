@@ -257,6 +257,22 @@ class WorkerAttemptGuardTests(unittest.TestCase):
             (143, "failed"),
         )
 
+    def test_only_explicit_boolean_progress_completion_ends_teardown(self) -> None:
+        self.assertTrue(
+            worker_run.progress_declares_completion(
+                {"finished": True, "completed_iterations": 10}
+            )
+        )
+        for progress in (
+            None,
+            {},
+            {"finished": False},
+            {"finished": 1},
+            {"finished": "true"},
+            "finished",
+        ):
+            self.assertFalse(worker_run.progress_declares_completion(progress))
+
     def test_replacement_without_checkpoint_is_rejected_without_resume_arg(
         self,
     ) -> None:

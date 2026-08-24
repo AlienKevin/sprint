@@ -303,6 +303,18 @@ def progress_snapshot(
     return progress, latest_checkpoint(checkpoint_dir, verify_hash=verify_checkpoint)
 
 
+def progress_declares_completion(progress: object) -> bool:
+    """Return whether the child atomically declared its useful work complete.
+
+    Isaac/Kit teardown can hang after training has already committed every
+    requested artifact. The progress file is the cooperative boundary: the
+    worker terminates a lingering simulator only after ``finished`` is the
+    literal JSON boolean ``true``. Required output validation still runs
+    before the job can be reported as successful.
+    """
+    return isinstance(progress, dict) and progress.get("finished") is True
+
+
 def checkpoint_resume_metadata(checkpoint: str | None) -> dict[str, str]:
     if not checkpoint:
         return {}
@@ -1041,6 +1053,7 @@ def main() -> int:
     interrupted = False
     activity_watchdog_fired = False
     progress_watchdog_fired = False
+    completion_declared = False
     budget_watchdog_fired = False
     budget_termination_reason: str | None = None
     agent_cancel_fired = False
@@ -1075,6 +1088,7 @@ def main() -> int:
             nonlocal activity_watchdog_fired, progress_watchdog_fired
             nonlocal budget_watchdog_fired, budget_termination_reason
             nonlocal agent_cancel_fired
+            nonlocal completion_declared
             nonlocal last_watchdog_phase
             progress, checkpoint = progress_snapshot(
                 progress_file,
@@ -1132,6 +1146,14 @@ def main() -> int:
                 agent_cancel_fired = True
                 error = "agent cancelled GPU job"
                 print(f"{error}; stopping GPU child", flush=True)
+                stop_child(proc)
+                return
+            if not completion_declared and progress_declares_completion(progress):
+                completion_declared = True
+                print(
+                    "GPU job declared completion; ending simulator teardown",
+                    flush=True,
+                )
                 stop_child(proc)
                 return
             if phase != "training":
@@ -1193,6 +1215,21 @@ def main() -> int:
         progress_watchdog_fired=progress_watchdog_fired,
         retryable_infrastructure_failure=app_launcher_failure,
     )
+    if (
+        completion_declared
+        and not interrupted
+        and not activity_watchdog_fired
+        and not progress_watchdog_fired
+        and not budget_watchdog_fired
+        and not agent_cancel_fired
+    ):
+        # The child may have required SIGKILL because Isaac/Kit teardown was
+        # stuck. The durable completion marker plus the required artifact
+        # checks below are the success boundary, not the destructor exit code.
+        exit_code = 0
+        final_status = "succeeded"
+        error = None
+        attempt_record["completion_source"] = "progress_file"
     if budget_watchdog_fired:
         final_status = "terminated"
         attempt_record["termination_reason"] = (

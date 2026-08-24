@@ -135,7 +135,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    finally:
-        simulation_app.close()
+    main()
+    # The functional canary runs in an ephemeral GPU sandbox. Its policy and
+    # completion record are atomically committed above; waiting for Isaac/Kit
+    # destruction has occasionally hung despite all useful work being done.
+    # Exercise the same durable completion boundary as production workers.
+    os._exit(0)
