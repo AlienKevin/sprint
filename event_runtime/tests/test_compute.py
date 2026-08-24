@@ -3468,12 +3468,21 @@ class LauncherWiringTests(unittest.TestCase):
         )
 
     def test_all_model_launchers_default_to_systemd_supervisor(self) -> None:
-        for name in ("openai.sh", "deepseek.sh"):
+        for name in ("openai.sh", "deepseek.sh", "deepseek_harness.sh"):
             text = (ROOT / "event_runtime/control/providers" / name).read_text()
             self.assertIn("start_supervisor.py", text)
             self.assertIn("--supervised-launch", text)
             self.assertIn("CPU_MAX_RESTARTS", text)
             self.assertIn("CPU_MAX_RESTARTS:-50", text)
+        deepseek_harness = (
+            ROOT / "event_runtime/control/providers/deepseek_harness.sh"
+        ).read_text()
+        self.assertIn("--secret-env OPENROUTER_API_KEY", deepseek_harness)
+        self.assertIn("--launch-env OPENROUTER_MODEL", deepseek_harness)
+        self.assertIn(
+            "--launch-env SPRINT_OPENROUTER_PROVIDER_ENDPOINT",
+            deepseek_harness,
+        )
         luna = (ROOT / "event_runtime/control/providers/luna.sh").read_text()
         self.assertIn('providers/openai.sh', luna)
         for name in ("run-opus.sh", "run-terra.sh", "run-lane.sh"):
@@ -3516,6 +3525,8 @@ class LauncherWiringTests(unittest.TestCase):
                 "--secret-env",
                 "OPENAI_API_KEY",
                 "--secret-env",
+                "OPENROUTER_API_KEY",
+                "--secret-env",
                 "SPRINT_DEEPSEEK_PRICING_SNAPSHOT",
                 "--launch-env",
                 "SPRINT_OPENROUTER_PROVIDER_ENDPOINT",
@@ -3530,6 +3541,7 @@ class LauncherWiringTests(unittest.TestCase):
                     "os.environ",
                     {
                         "OPENAI_API_KEY": "secret-value",
+                        "OPENROUTER_API_KEY": "openrouter-secret-value",
                         "SPRINT_DEEPSEEK_PRICING_SNAPSHOT": "pricing-secret-value",
                         "SPRINT_OPENROUTER_PROVIDER_ENDPOINT": "baidu/fp8",
                         "UV": "/test/bin/uv",
@@ -3551,6 +3563,7 @@ class LauncherWiringTests(unittest.TestCase):
             self.assertIn("--property=Restart=on-failure", command)
             self.assertIn("--property=RestartPreventExitStatus=75 78", command)
             self.assertIn("--setenv=OPENAI_API_KEY", command)
+            self.assertIn("--setenv=OPENROUTER_API_KEY", command)
             self.assertIn("--setenv=SPRINT_DEEPSEEK_PRICING_SNAPSHOT", command)
             self.assertIn("--setenv=SPRINT_OPENROUTER_PROVIDER_ENDPOINT", command)
             self.assertIn("--setenv=UV=/test/bin/uv", command)

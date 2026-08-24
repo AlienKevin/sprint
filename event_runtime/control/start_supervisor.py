@@ -51,6 +51,7 @@ def main() -> int:
     secret_envs = list(dict.fromkeys(args.secret_env))
     allowed_secret_envs = {
         "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
         "CLAUDE_CODE_OAUTH_TOKEN",
         "SPRINT_DEEPSEEK_PRICING_SNAPSHOT",
     }

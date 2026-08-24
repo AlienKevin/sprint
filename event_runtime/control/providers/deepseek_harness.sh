@@ -61,6 +61,8 @@ python3 "$ROOT/event_runtime/control/start_supervisor.py" \
   --batch-id "${SPRINT_BATCH_ID:-}" \
   --launch-argv-json "$LAUNCH_JSON" \
   --secret-env OPENROUTER_API_KEY \
+  --launch-env OPENROUTER_MODEL \
+  --launch-env SPRINT_OPENROUTER_PROVIDER_ENDPOINT \
   --max-restarts "${CPU_MAX_RESTARTS:-50}" \
   --min-backoff-s "${CPU_MIN_BACKOFF_S:-30}" \
   --max-backoff-s "${CPU_MAX_BACKOFF_S:-600}"
