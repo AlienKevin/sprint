@@ -188,6 +188,7 @@ input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
 .step > summary:hover .step-preview, .step[open] .step-preview { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); background: var(--panel-raised); }
 .step-preview strong { display: block; margin-bottom: 5px; color: var(--muted); font-size: 9px; letter-spacing: .08em; text-transform: uppercase; }
 .step-preview p { display: -webkit-box; overflow: hidden; margin: 0; color: #d7d8da; font: 13px/1.55 Inter, ui-sans-serif, system-ui, sans-serif; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: pre-wrap; }
+.step[open] .step-preview p { display: block; overflow: visible; -webkit-line-clamp: unset; }
 .step-body { margin: 8px 0 0 111px; }
 .content-block { margin: 9px 0 0; }
 .content-label { display: block; margin-bottom: 6px; color: var(--muted); font-size: 8px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
@@ -212,7 +213,7 @@ pre { max-height: 70vh; overflow: auto; margin: 0; padding: 13px; border: 1px so
 .terminal-command pre { max-height: 46vh; padding-left: 6px; border: 0; background: transparent; color: #f0f1ed; }
 .terminal-output { border-top: 1px solid #202225; }
 .terminal-output-label { display: block; padding: 8px 13px 0; color: var(--muted); font: 800 8px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; }
-.terminal-output pre { border: 0; background: transparent; color: #b9c0c4; }
+.terminal-output pre { max-height: min(32vh, 280px); border: 0; background: transparent; color: #b9c0c4; }
 .empty { padding: 70px 20px; color: var(--muted); text-align: center; }
 .step.jump-flash .step-preview { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
