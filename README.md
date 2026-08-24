@@ -20,8 +20,15 @@ git clone git@github.com:AlienKevin/sprint.git
 cd sprint
 uv sync --project harbor --extra modal
 uv run --project harbor modal setup
-cp .env.example .env  # add OpenRouter keys and MODAL_PROFILE
+cp .env.example .env
 ```
+
+Add both OpenRouter credentials to `.env`: `OPENROUTER_API_KEY` is the parent
+inference key used for preflight credit, model, route, and provider probes;
+`OPENROUTER_MANAGEMENT_KEY` creates and revokes the model/provider/budget-locked
+key used by each trial. `MODAL_PROFILE` is optional when the active Modal CLI
+profile already selects the intended account. Native OpenAI, DeepSeek, and
+Claude credentials are not used by the current benchmark.
 
 ## Run the benchmark
 
