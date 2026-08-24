@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 SCHEMA_VERSION = 1
+DEEPSEEK_ATIF_TRANSFORM_VERSION = 2
 PUBLIC_RUN_LIMIT = 6
 MAX_PUBLIC_STRING_CHARS = 200_000
 
@@ -191,7 +192,10 @@ def _deepseek_atif(events: list[dict[str, Any]], *, model: str | None) -> dict[s
                 tool_calls.append(call)
             source = message_data.get("source")
             source_model = source.get("model") if isinstance(source, dict) else None
-            usage = message_data.get("usage")
+            # Current DeepSeek Harness session events attach request usage to
+            # the assistant/message event data, alongside ``message`` and
+            # ``step``.  It is not part of the message object itself.
+            usage = data.get("usage")
             usage = usage if isinstance(usage, dict) else {}
             step: dict[str, Any] = {
                 "step_id": seq,
@@ -285,9 +289,17 @@ def _materialize_deepseek_trajectories(state_dir: Path) -> list[tuple[int, Path]
             / f"deepseek-harness-{source}"
             / "trajectory.json"
         )
-        fingerprint = _source_fingerprint(
+        source_fingerprint = _source_fingerprint(
             [(index, path) for index, path in enumerate(chunk_paths, start=1)]
         )
+        # Derived trajectories must be rebuilt when the transform changes,
+        # even if the immutable raw notification chunks have not changed.
+        fingerprint = hashlib.sha256(
+            (
+                f"deepseek-atif-transform-v{DEEPSEEK_ATIF_TRANSFORM_VERSION}:"
+                f"{source_fingerprint}"
+            ).encode()
+        ).hexdigest()
         previous = _read_json(target)
         if previous.get("deepseek_source_fingerprint") != fingerprint:
             payload = _deepseek_atif(

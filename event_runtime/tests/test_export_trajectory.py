@@ -215,11 +215,11 @@ def test_build_public_trajectory_from_deepseek_harness_events(tmp_path: Path) ->
                         "kind": "model",
                         "model": "deepseek/deepseek-v4-flash-vision-exp",
                     },
-                    "usage": {
-                        "inputTokens": 3,
-                        "cacheReadTokens": 7,
-                        "outputTokens": 2,
-                    },
+                },
+                "usage": {
+                    "inputTokens": 3,
+                    "cacheReadTokens": 7,
+                    "outputTokens": 2,
                 },
             },
         },
