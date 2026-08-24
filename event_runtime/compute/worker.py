@@ -10,6 +10,7 @@ CPU (gpus=0) so GPU preemption cannot kill the harness.
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import gzip
 import hashlib
 import json
@@ -48,6 +49,7 @@ from event_runtime.container.sprint_resilience import (  # noqa: E402
 WORKER_TAG_ROLE = "gpu-worker"
 MAX_ACTIVE_TRAINING_JOBS_PER_RUN = 1
 STOP_DISPATCH_LOCK_TIMEOUT_SEC = 10 * 60
+STOP_TERMINATE_MAX_WORKERS = 8
 CLAIM_STALE_SEC = int(os.environ.get("SPRINT_GPU_CLAIM_STALE_SEC", "900"))
 HEARTBEAT_TIMEOUT_SEC = int(
     os.environ.get(
@@ -3191,6 +3193,7 @@ def _stop_all_locked(
     run: dict[str, Any], *, reason: str = "operator_stop"
 ) -> list[dict[str, Any]]:
     stopped: list[dict[str, Any]] = []
+    provider_terminations: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for job_id in list_job_ids(run):
         job = load_job(run, job_id)
         if job:
@@ -3224,11 +3227,31 @@ def _stop_all_locked(
             event="gpu_released",
             reason=reason,
         )
-        error = _terminate_sandbox(job)
-        if error:
-            payload["terminate_error"] = error
-            persist_job(run, payload)
         stopped.append(payload)
+        provider_terminations.append((payload, job))
+
+    # Every lease is durably fenced before any provider call starts. Remote
+    # Sandbox termination can take tens of seconds even for an already-dead
+    # worker, so doing it serially makes operator stop latency grow with the
+    # agent's queue depth. Fan out the idempotent provider calls with a small,
+    # fixed bound, then persist any errors on the controller thread.
+    if provider_terminations:
+        max_workers = min(STOP_TERMINATE_MAX_WORKERS, len(provider_terminations))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = [
+                pool.submit(_terminate_sandbox, job)
+                for _payload, job in provider_terminations
+            ]
+            for (payload, _job), future in zip(
+                provider_terminations, futures, strict=True
+            ):
+                try:
+                    error = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    error = f"{type(exc).__name__}: {exc}"
+                if error:
+                    payload["terminate_error"] = error
+                    persist_job(run, payload)
     return stopped
 
 

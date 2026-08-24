@@ -2072,7 +2072,7 @@ def test_batch_stop_persists_all_intents_before_slow_dispatch(
 
     def dispatch(run_id: str, *, reason: str):
         assert persisted == ["run-1", "run-2", "run-3"]
-        assert "lock:entered" not in events
+        assert "intent:published" in events
         assert "credentials:revoked" in events
         dispatched.append(run_id)
         events.append(f"dispatch:{run_id}")
@@ -2082,7 +2082,7 @@ def test_batch_stop_persists_all_intents_before_slow_dispatch(
 
     def revoke(payload: dict[str, object], env_file: Path):
         assert env_file == tmp_path / ".env"
-        assert "lock:entered" not in events
+        assert "intent:published" in events
         payload["credential_status"] = "revoked"
         payload["credentials_revoked_at"] = "now"
         payload["credential_cleanup_errors"] = []
@@ -2094,8 +2094,12 @@ def test_batch_stop_persists_all_intents_before_slow_dispatch(
         assert path == batch_eval.batch_path(batch_id).with_suffix(".lock")
         assert blocking is False
         assert persisted == ["run-1", "run-2", "run-3"]
-        assert dispatched == ["run-1", "run-2", "run-3"]
-        events.append("lock:entered")
+        if "intent:published" not in events:
+            assert dispatched == []
+            events.append("intent:published")
+        else:
+            assert set(dispatched) == {"run-1", "run-2", "run-3"}
+            events.append("final:published")
         yield True
         events.append("lock:exited")
 
@@ -2107,7 +2111,7 @@ def test_batch_stop_persists_all_intents_before_slow_dispatch(
     ):
         result = batch_eval.stop_batch(batch_id, env_file=tmp_path / ".env")
 
-    assert dispatched == ["run-1", "run-2", "run-3"]
+    assert set(dispatched) == {"run-1", "run-2", "run-3"}
     assert all(arm["status"] == "stopping" for arm in result["arms"])
     assert result["arms"][0]["stop_dispatch_error"].startswith("RuntimeError:")
     assert result["arms"][1]["stop_dispatch_status"] == "requested"
@@ -2119,6 +2123,44 @@ def test_batch_stop_persists_all_intents_before_slow_dispatch(
         "stopping",
     ]
     assert events[-1] == "lock:exited"
+
+
+def test_batch_stop_dispatches_lanes_concurrently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    batch_id = "stop-concurrent"
+    monkeypatch.setattr(batch_eval, "SCRIPT_DIR", tmp_path / "ops")
+    monkeypatch.setattr(batch_eval, "BATCH_ROOT", tmp_path / "batches")
+    arms = [{"run_id": f"run-{index}", "status": "running"} for index in range(3)]
+    for arm in arms:
+        run_dir = batch_eval.SCRIPT_DIR / arm["run_id"]
+        run_dir.mkdir(parents=True)
+        (run_dir / "run.json").write_text("{}\n")
+    batch_eval.atomic_json(
+        batch_eval.batch_path(batch_id),
+        {
+            "batch_id": batch_id,
+            "arms": arms,
+            "alerts": [],
+            "credential_status": "revoked",
+        },
+    )
+    rendezvous = threading.Barrier(len(arms))
+
+    def dispatch(_run_id: str, *, reason: str):
+        assert reason == "operator_batch_stop"
+        rendezvous.wait(timeout=2)
+        return {"status": "requested"}
+
+    with (
+        mock.patch.object(
+            batch_eval.sprintctl, "persist_stop_request", lambda *_args, **_kwargs: None
+        ),
+        mock.patch.object(batch_eval.sprintctl, "request_stop", dispatch),
+    ):
+        result = batch_eval.stop_batch(batch_id)
+
+    assert all(arm["stop_dispatch_status"] == "requested" for arm in result["arms"])
 
 
 def test_batch_stop_journals_transition_when_monitor_holds_state_lock(

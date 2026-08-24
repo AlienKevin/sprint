@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -3155,6 +3156,45 @@ class RetryAndFencingTests(unittest.TestCase):
                                 out = gpu_worker._stop_all_locked(run)
         self.assertEqual(out[0]["status"], "terminated")
         self.assertEqual(order[:2], ["persist:terminated", "terminate"])
+
+    def test_stop_fences_all_jobs_before_parallel_provider_termination(self) -> None:
+        run = {"run_id": "unit"}
+        jobs = {
+            job_id: {
+                "job_id": job_id,
+                "status": "running",
+                "attempt": 1,
+                "lease_id": f"lease-{job_id}",
+                "sandbox_id": f"sb-{job_id}",
+            }
+            for job_id in ("one", "two")
+        }
+        fenced: list[str] = []
+        rendezvous = threading.Barrier(2)
+
+        def persist(_run, payload):
+            fenced.append(payload["job_id"])
+            return payload
+
+        def terminate(_job):
+            self.assertEqual(set(fenced), {"one", "two"})
+            rendezvous.wait(timeout=2)
+            return None
+
+        with (
+            mock.patch.object(gpu_worker, "list_job_ids", return_value=list(jobs)),
+            mock.patch.object(
+                gpu_worker, "load_job", side_effect=lambda _run, job_id: jobs[job_id]
+            ),
+            mock.patch.object(gpu_worker, "load_heartbeat", return_value=None),
+            mock.patch.object(gpu_worker, "persist_job", side_effect=persist),
+            mock.patch.object(gpu_worker, "_close_attempt_timeline"),
+            mock.patch.object(gpu_worker, "_timeline_event"),
+            mock.patch.object(gpu_worker, "_terminate_sandbox", side_effect=terminate),
+        ):
+            out = gpu_worker._stop_all_locked(run)
+
+        self.assertEqual([item["status"] for item in out], ["terminated", "terminated"])
 
     def test_stop_preserves_completed_attempt_and_does_not_terminate(self) -> None:
         run = {"run_id": "unit"}

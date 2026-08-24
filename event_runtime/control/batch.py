@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import copy
 import contextlib
 import datetime as dt
@@ -2944,6 +2945,41 @@ def stop_batch(batch_id: str, *, env_file: Path | None = None) -> dict[str, Any]
     for arm in targets:
         sprintctl.persist_stop_request(arm["run_id"], reason="operator_batch_stop")
 
+    path = batch_path(batch_id)
+    requested_at = utc_now()
+
+    def publish_transition(transition: dict[str, Any]) -> dict[str, Any]:
+        """Journal a stop phase and merge it without waiting on batch I/O."""
+        atomic_json(batch_stop_marker_path(batch_id), transition)
+        with frontier_update.file_lock(
+            path.with_suffix(".lock"), blocking=False
+        ) as acquired:
+            payload = read_batch(batch_id)
+            if not acquired:
+                return apply_batch_stop_transition(payload, transition)
+            return consume_batch_stop_transition(batch_id, payload)
+
+    # Publish stop intent before management API or Modal calls. This fences the
+    # batch monitor's provider audit immediately and prevents a long teardown
+    # from presenting the batch as normally running. A final journal below
+    # replaces these pending fields idempotently.
+    intent = {
+        "schema_version": 1,
+        "batch_id": batch_id,
+        "requested_at": requested_at,
+        "journaled_at": utc_now(),
+        "target_run_ids": sorted(target_ids),
+        "dispatch_results": {
+            run_id: {"status": "pending"} for run_id in sorted(target_ids)
+        },
+        "credential_cleanup": {
+            "credential_status": "revoking"
+            if snapshot.get("credential_status") == "active"
+            else snapshot.get("credential_status")
+        },
+    }
+    publish_transition(intent)
+
     credential_cleanup: dict[str, Any] | None = None
     if snapshot.get("credential_status") == "active":
         credential_env = env_file or Path(snapshot.get("env_file", ROOT / ".env"))
@@ -2962,44 +2998,40 @@ def stop_batch(batch_id: str, *, env_file: Path | None = None) -> dict[str, Any]
             if key in snapshot
         }
 
-    dispatch_results: dict[str, dict[str, str]] = {}
-    for arm in targets:
+    def dispatch_stop(arm: dict[str, Any]) -> tuple[str, dict[str, str]]:
+        run_id = str(arm["run_id"])
         try:
-            result = sprintctl.request_stop(arm["run_id"], reason="operator_batch_stop")
-            dispatch_results[arm["run_id"]] = {
+            result = sprintctl.request_stop(run_id, reason="operator_batch_stop")
+            return run_id, {
                 "status": str(result.get("status") or "requested")
             }
         except Exception as exc:  # noqa: BLE001
             # The durable STOP_REQUESTED marker is already authoritative; a
             # per-run monitor can complete this dispatch even if the immediate
             # provider call fails.
-            dispatch_results[arm["run_id"]] = {"error": f"{type(exc).__name__}: {exc}"}
+            return run_id, {"error": f"{type(exc).__name__}: {exc}"}
 
-    path = batch_path(batch_id)
+    dispatch_results: dict[str, dict[str, str]] = {}
+    if targets:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(len(targets), 8)
+        ) as pool:
+            for run_id, result in pool.map(dispatch_stop, targets):
+                dispatch_results[run_id] = result
+
     transition = {
         "schema_version": 1,
         "batch_id": batch_id,
-        "requested_at": utc_now(),
+        "requested_at": requested_at,
         "journaled_at": utc_now(),
         "target_run_ids": sorted(target_ids),
         "dispatch_results": dispatch_results,
         "credential_cleanup": credential_cleanup or {},
     }
-    # The journal is the durable batch-level state transition.  It is written
-    # only after every per-run stop marker and credential revocation attempt,
-    # and can be replayed idempotently by either this command or the monitor.
-    atomic_json(batch_stop_marker_path(batch_id), transition)
-
-    # Never queue an operator behind a monitor that is blocked in provider or
-    # Volume I/O.  Merge immediately when the state lock is free; otherwise
-    # return the projected state and let the next monitor cycle consume the
-    # journal before doing any external work.
-    with frontier_update.file_lock(path.with_suffix(".lock"), blocking=False) as acquired:
-        payload = read_batch(batch_id)
-        if not acquired:
-            return apply_batch_stop_transition(payload, transition)
-        payload = consume_batch_stop_transition(batch_id, payload)
-        return payload
+    # Replace the intent journal with the completed teardown phase. The merge
+    # remains non-blocking; a monitor that owns batch.lock consumes it first on
+    # its next cycle.
+    return publish_transition(transition)
 
 
 def run_monitor_command(
