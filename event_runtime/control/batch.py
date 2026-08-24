@@ -3002,6 +3002,13 @@ def parser() -> argparse.ArgumentParser:
     return result
 
 
+def public_command_output(command: str, output: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a CLI result without treating control records as batch state."""
+    if command == "preflight" or output.get("status") == "monitor_already_running":
+        return output
+    return public_batch(output)
+
+
 def main() -> int:
     args = parser().parse_args()
     if args.command == "preflight":
@@ -3037,11 +3044,7 @@ def main() -> int:
         output = stop_batch(args.batch_id, env_file=args.env_file.resolve())
     else:
         output = read_batch(args.batch_id)
-    print(
-        json.dumps(
-            output if args.command == "preflight" else public_batch(output), indent=2
-        )
-    )
+    print(json.dumps(public_command_output(args.command, output), indent=2))
     return 0
 
 

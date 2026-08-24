@@ -165,6 +165,17 @@ def test_duplicate_batch_monitor_exits_without_running_a_cycle(
     assert result["status"] == "monitor_already_running"
 
 
+def test_duplicate_monitor_control_record_is_safe_for_cli_output() -> None:
+    result = {
+        "schema_version": 1,
+        "batch_id": "eval",
+        "status": "monitor_already_running",
+        "updated_at": "2026-08-24T00:00:00Z",
+    }
+
+    assert batch_eval.public_command_output("monitor", result) == result
+
+
 def test_batch_monitor_holds_owner_until_terminal_cycle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -890,11 +901,14 @@ def test_child_key_usage_audit_fetches_all_arms_in_one_snapshot(
         ),
     )
 
-    assert batch_eval.audit_openrouter_child_usage(
-        payload,
-        Client(),
-        now=dt.datetime(2026, 8, 23, tzinfo=dt.timezone.utc),
-    ) == []
+    assert (
+        batch_eval.audit_openrouter_child_usage(
+            payload,
+            Client(),
+            now=dt.datetime(2026, 8, 23, tzinfo=dt.timezone.utc),
+        )
+        == []
+    )
     assert calls == [{"hash-1", "hash-2"}]
 
 
