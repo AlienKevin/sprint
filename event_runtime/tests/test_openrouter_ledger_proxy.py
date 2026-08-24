@@ -274,6 +274,32 @@ def test_chat_completions_contract_is_sealed_and_usage_is_forced() -> None:
     assert payload["reasoning_effort"] == "max"
 
 
+def test_proxy_sanitizes_binary_terminal_text_before_provider_request() -> None:
+    body, payload = proxy.pin_provider_route(
+        json.dumps(
+            {
+                "model": "deepseek/deepseek-v4-flash-vision-exp",
+                "messages": [
+                    {
+                        "role": "tool",
+                        "content": "restic:\udf8b\u0000\u001b[31m\ufffd",
+                    }
+                ],
+            }
+        ).encode(),
+        provider_endpoint="deepseek",
+        quantization=None,
+    )
+
+    assert json.loads(body) == payload
+    content = payload["messages"][0]["content"]
+    assert content == "restic:\ufffd\\x00\\x1b[31m\ufffd"
+    assert not any(0xD800 <= ord(character) <= 0xDFFF for character in content)
+    assert all(
+        ord(character) >= 0x20 or character in "\t\n\r" for character in content
+    )
+
+
 def test_responses_contract_seals_luna_benchmark_parameters() -> None:
     body, payload = proxy.pin_provider_route(
         json.dumps(

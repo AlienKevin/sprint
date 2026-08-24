@@ -53,6 +53,7 @@ def test_minimal_cordis_contract_is_sealed() -> None:
     assert "workspaceContext: false" in config
     assert "enabled: false" in config
     assert "@deepseek-ai/dsh-tool-bash-persistent" in config
+    assert "maxOutputChars: 16000" in config
     assert "@deepseek-ai/dsh-tool-str-replace-editor" in config
     assert "@deepseek-ai/dsh-session-persistence-jsonl" in config
     assert "@deepseek-ai/dsh-goal" in config

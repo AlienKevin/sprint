@@ -348,6 +348,7 @@ def pin_provider_route(
         raise ValueError("request body is not JSON") from exc
     if not isinstance(payload, dict):
         raise ValueError("request body is not an object")
+    payload = sanitize_request_text(payload)
     provider: dict[str, Any] = {
         "only": [provider_endpoint],
         "order": [provider_endpoint],
@@ -391,6 +392,40 @@ def pin_provider_route(
         payload.pop("text")
     seal_goal_tool_schema(payload)
     return json.dumps(payload, separators=(",", ":")).encode(), payload
+
+
+def _sanitize_model_string(value: str) -> str:
+    """Make model-visible text valid Unicode without hiding useful whitespace.
+
+    Terminal tools can observe arbitrary bytes (for example, when a model cats
+    a binary checkpoint).  The DeepSeek Harness PTY replaces most malformed
+    UTF-8, but a split terminal chunk can still surface a lone UTF-16 surrogate
+    and C0 controls in the JSON request.  Python's JSON encoder preserves those
+    as escapes, while model providers are allowed to reject them as invalid
+    text.  Render controls visibly and replace lone surrogates before the
+    request crosses the trusted proxy boundary.
+    """
+    rendered: list[str] = []
+    for character in value:
+        codepoint = ord(character)
+        if 0xD800 <= codepoint <= 0xDFFF:
+            rendered.append("\N{REPLACEMENT CHARACTER}")
+        elif codepoint < 0x20 and character not in "\t\n\r":
+            rendered.append(f"\\x{codepoint:02x}")
+        else:
+            rendered.append(character)
+    return "".join(rendered)
+
+
+def sanitize_request_text(value: Any) -> Any:
+    """Recursively sanitize string values in an inference request payload."""
+    if isinstance(value, str):
+        return _sanitize_model_string(value)
+    if isinstance(value, list):
+        return [sanitize_request_text(item) for item in value]
+    if isinstance(value, dict):
+        return {key: sanitize_request_text(item) for key, item in value.items()}
+    return value
 
 
 class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):

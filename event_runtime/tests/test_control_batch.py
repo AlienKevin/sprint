@@ -322,6 +322,17 @@ def test_batch_matrix_rejects_historical_nonofficial_provider_routes() -> None:
         )
 
 
+def test_every_launchable_family_uses_its_official_openrouter_provider() -> None:
+    rows = batch_eval.matrix(
+        "eval-official-routes",
+        families=batch_eval.SUPPORTED_FAMILIES,
+    )
+    assert rows
+    for row in rows:
+        assert row["provider_endpoint"] == row["model"].split("/", 1)[0]
+        assert row["provider"] in {"DeepSeek", "OpenAI"}
+
+
 def test_sol_model_lock_preserves_exact_codex_contract() -> None:
     lock = json.loads((ROOT / "event_runtime/models/sol.json").read_text())
     model = lock["model"]

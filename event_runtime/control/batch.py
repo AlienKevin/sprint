@@ -448,6 +448,12 @@ def matrix(
         raise ValueError(f"invalid model families: {unknown or list(selected)}")
     for family in selected:
         spec = specs[family]
+        model_owner = str(spec["model"]).split("/", 1)[0]
+        provider_endpoint = str(spec.get("provider_endpoint") or "")
+        if model_owner not in {"deepseek", "openai"} or provider_endpoint != model_owner:
+            raise ValueError(
+                f"{family} must use its model author's official OpenRouter provider"
+            )
         for trial in range(1, trials_per_model + 1):
             run_id = f"{batch_id}-{family}-{trial}"
             if not RUN_ID_RE.fullmatch(run_id):

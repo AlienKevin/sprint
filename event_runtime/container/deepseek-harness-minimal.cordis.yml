@@ -89,6 +89,10 @@
   name: '@deepseek-ai/dsh-tool-bash-persistent'
   config:
     timeoutMs: 300000
+    # Pin the package's documented default explicitly. Model-visible command
+    # output is bounded even when a command accidentally reads a binary file;
+    # the trusted OpenRouter proxy additionally normalizes malformed Unicode.
+    maxOutputChars: 16000
     description: |-
       Run commands in a bash shell
       * When invoking this tool, the contents of the "command" parameter does NOT need to be XML-escaped.
