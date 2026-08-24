@@ -39,6 +39,7 @@
     scrollFrame: null,
     expanded: false,
     docked: false,
+    selectedStepId: null,
   };
 
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
@@ -237,13 +238,26 @@
     return best;
   }
 
-  function jumpToEpoch(epoch) {
+  function jumpToEpoch(epoch, forceScroll = false) {
     const step = nearestStep(epoch);
     const target = step && document.getElementById(step.step_id);
     if (!target) return;
-    target.scrollIntoView({behavior: 'smooth', block: 'start'});
-    target.classList.add('jump-flash');
-    setTimeout(() => target.classList.remove('jump-flash'), 1200);
+    const stepEpoch = Date.parse(step.timestamp || '');
+    if (Number.isFinite(stepEpoch)) state.cursorEpoch = stepEpoch;
+    if (state.selectedStepId === step.step_id && !forceScroll) {
+      draw();
+      return;
+    }
+    document.querySelector('.step.timeline-selected')?.classList.remove('timeline-selected');
+    state.selectedStepId = step.step_id;
+    target.classList.add('timeline-selected');
+    const number = step.public_step_id ?? step.attempt_step_id;
+    status.textContent = `Step #${number} · ${fmtDuration(stepEpoch - state.timeline.clock.origin_epoch_ms)}`;
+    const previousBehavior = document.documentElement.style.scrollBehavior;
+    document.documentElement.style.scrollBehavior = 'auto';
+    target.scrollIntoView({behavior: 'auto', block: 'start'});
+    document.documentElement.style.scrollBehavior = previousBehavior;
+    draw();
   }
 
   function syncFromScroll() {
@@ -301,7 +315,7 @@
   });
   canvas.addEventListener('click', event => {
     const rect = canvas.getBoundingClientRect();
-    jumpToEpoch(epochFor(event.clientX - rect.left));
+    jumpToEpoch(epochFor(event.clientX - rect.left), true);
   });
   canvas.addEventListener('keydown', event => {
     if (!['ArrowLeft', 'ArrowRight'].includes(event.key) || !state.timeline) return;
@@ -319,10 +333,10 @@
     toggle.title = state.expanded ? 'Collapse resource details' : 'Expand resource details';
     overview.classList.toggle('is-expanded', state.expanded);
     document.body.classList.toggle('pulse-expanded', state.expanded);
-    mode.textContent = state.expanded ? 'full resource detail' : 'select to jump';
+    mode.textContent = state.expanded ? 'full resource detail' : 'hover, then click';
     canvas.setAttribute('aria-label', state.expanded
-      ? 'Detailed agent CPU, training GPU, training memory, tool calls, and resource events over the run. Select a point to jump to the nearest agent step.'
-      : 'Agent CPU, training GPU, tool calls, and resource events over the run. Select a point to jump to the nearest agent step.');
+      ? 'Detailed agent CPU, training GPU, training memory, tool calls, and resource events over the run. Hover to preview and click to select the nearest agent step.'
+      : 'Agent CPU, training GPU, tool calls, and resource events over the run. Hover to preview and click to select the nearest agent step.');
     resize();
   }
   function setDocked(docked) {

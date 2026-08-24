@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="description" content="Inspect agent reasoning, messages, tools, observations, timing, and token usage for every Agents' 100m trial.">
   <title>Agents' 100m · Agent trajectory</title>
-  <link rel="stylesheet" href="/trajectory.css?v=20260824-15">
+  <link rel="stylesheet" href="/trajectory.css?v=20260824-16">
 </head>
 <body>
   <header class="viewer-nav">
@@ -40,10 +40,10 @@
         <label class="run-picker" hidden><span>Trial</span><select id="run"><option>Loading trajectories…</option></select></label>
         <div class="utilization-title-row">
           <div><p class="eyebrow">RUN PULSE</p><h2 id="utilization-title">Resources alongside the trace</h2></div>
-          <span id="utilization-mode">select to jump</span>
+          <span id="utilization-mode">hover, then click</span>
         </div>
         <div id="utilization-stage" class="utilization-stage">
-          <canvas id="utilization-chart" height="126" tabindex="0" role="img" aria-label="Agent CPU, training GPU, tool calls, and resource events over the run. Select a point to jump to the nearest agent step."></canvas>
+          <canvas id="utilization-chart" height="126" tabindex="0" role="img" aria-label="Agent CPU, training GPU, tool calls, and resource events over the run. Hover to preview and click to select the nearest agent step."></canvas>
           <div id="utilization-tip" class="utilization-tip" hidden></div>
           <button id="utilization-toggle" class="utilization-toggle" type="button" aria-expanded="false" aria-controls="utilization-stage" aria-label="Expand resource details" title="Expand resource details" disabled></button>
         </div>
@@ -72,6 +72,6 @@
   </main>
 
   <script src="/trajectory.js?v=20260824-9"></script>
-  <script src="/trajectory-overview.js?v=20260824-5"></script>
+  <script src="/trajectory-overview.js?v=20260824-6"></script>
 </body>
 </html>
