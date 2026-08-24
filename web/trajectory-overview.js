@@ -6,9 +6,6 @@
   const stage = canvas.parentElement;
   const tip = document.querySelector('#utilization-tip');
   const status = document.querySelector('#utilization-status');
-  const toggle = document.querySelector('#utilization-toggle');
-  const mode = document.querySelector('#utilization-mode');
-  const overview = document.querySelector('.utilization-overview');
   const dockSentinel = document.querySelector('#pulse-dock-sentinel');
   const dock = document.querySelector('.trajectory-controls');
   const narrowViewport = window.matchMedia('(max-width: 850px)');
@@ -25,10 +22,6 @@
     {key: 'cpu', label: 'CPU', color: colors.cpu},
     {key: 'training', label: 'TRAIN GPU', color: colors.training},
   ];
-  const detailedLanes = [
-    ...compactLanes,
-    {key: 'trainingMemory', label: 'TRAIN MEM', color: '#d5efa9'},
-  ];
   const state = {
     timeline: null,
     trajectory: null,
@@ -38,7 +31,6 @@
     scrollFrame: null,
     scrollSyncLocked: false,
     scrollUnlockTimer: null,
-    expanded: false,
     docked: false,
     selectedStepId: null,
   };
@@ -49,8 +41,7 @@
     const minutes = Math.floor(seconds / 60);
     return `${minutes}m ${String(seconds % 60).padStart(2, '0')}s`;
   };
-  const activeLanes = () => state.expanded ? detailedLanes : compactLanes;
-  const chartHeight = () => state.expanded ? 215 : state.docked ? 94 : 126;
+  const chartHeight = () => state.docked ? 94 : 126;
   const bounds = () => ({x0: 82, x1: Math.max(100, canvas.clientWidth - 12)});
   const xFor = epoch => {
     const clock = state.timeline.clock;
@@ -117,12 +108,12 @@
   function draw() {
     const width = canvas.clientWidth;
     const height = chartHeight();
-    const lanes = activeLanes();
+    const lanes = compactLanes;
     ctx.clearRect(0, 0, width, height);
     if (!state.timeline || !state.series) return;
     const {x0, x1} = bounds();
     const laneTop = state.docked ? 3 : 8;
-    const laneHeight = state.docked ? 22 : state.expanded ? 47 : 31;
+    const laneHeight = state.docked ? 22 : 31;
 
     lanes.forEach((lane, index) => {
       const y = laneTop + index * laneHeight;
@@ -135,18 +126,6 @@
       ctx.moveTo(x0, y + laneHeight - 2);
       ctx.lineTo(x1, y + laneHeight - 2);
       ctx.stroke();
-      if (state.expanded) {
-        ctx.strokeStyle = '#242a3188';
-        ctx.setLineDash([2, 4]);
-        ctx.beginPath();
-        ctx.moveTo(x0, y + laneHeight / 2);
-        ctx.lineTo(x1, y + laneHeight / 2);
-        ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.fillStyle = colors.muted;
-        ctx.fillText('100', x0 - 23, y + 8);
-        ctx.fillText('0', x0 - 10, y + laneHeight - 5);
-      }
       drawLine(state.series[lane.key], y + 3, laneHeight - 8, lane.color);
     });
 
@@ -168,7 +147,7 @@
     ctx.fillStyle = colors.muted;
     ctx.font = '8px ui-monospace, monospace';
     const duration = state.timeline.clock.end_epoch_ms - state.timeline.clock.origin_epoch_ms;
-    const tickCount = state.expanded && !state.docked ? 4 : 1;
+    const tickCount = 1;
     for (let index = 0; index <= tickCount; index += 1) {
       const label = index === 0 ? '0m' : fmtDuration(duration * index / tickCount);
       const px = x0 + (x1 - x0) * index / tickCount;
@@ -180,14 +159,14 @@
     if (markerEpoch != null) {
       const px = xFor(markerEpoch);
       ctx.strokeStyle = state.hoverEpoch != null ? '#ffffffaa' : '#ffffff70';
-      ctx.lineWidth = 1;
+      ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(px, 5);
       ctx.lineTo(px, height - 18);
       ctx.stroke();
       ctx.fillStyle = colors.text;
       ctx.beginPath();
-      ctx.arc(px, 5, 2.5, 0, Math.PI * 2);
+      ctx.arc(px, 5, 3, 0, Math.PI * 2);
       ctx.fill();
     }
   }
@@ -209,7 +188,7 @@
     if (!state.timeline) return;
     const rect = canvas.getBoundingClientRect();
     state.hoverEpoch = epochFor(event.clientX - rect.left);
-    const values = activeLanes().map(lane => [lane.label, nearestValue(state.series[lane.key], state.hoverEpoch)]);
+    const values = compactLanes.map(lane => [lane.label, nearestValue(state.series[lane.key], state.hoverEpoch)]);
     tip.textContent = `${fmtDuration(state.hoverEpoch - state.timeline.clock.origin_epoch_ms)} · ${values.map(([label, value]) => `${label} ${value == null ? 'idle' : `${Math.round(value)}%`}`).join(' · ')}`;
     tip.hidden = false;
     tip.style.left = `${clamp(event.clientX - rect.left + 12, 8, rect.width - tip.offsetWidth - 8)}px`;
@@ -282,7 +261,6 @@
     state.timeline = null;
     state.series = null;
     status.textContent = 'Loading utilization…';
-    toggle.disabled = true;
     draw();
     const runId = trajectory.run?.run_id || '';
     try {
@@ -292,7 +270,6 @@
       state.series = buildSeries(state.timeline);
       state.cursorEpoch = Date.parse(trajectory.steps?.[0]?.timestamp || '') || state.timeline.clock.origin_epoch_ms;
       status.textContent = 'Scroll the trace or select the chart';
-      toggle.disabled = false;
       resize();
       syncFromScroll();
     } catch (error) {
@@ -333,28 +310,13 @@
     const next = steps[clamp(index + (event.key === 'ArrowRight' ? 1 : -1), 0, steps.length - 1)];
     if (next) jumpToEpoch(Date.parse(next.timestamp));
   });
-  function setExpanded(expanded) {
-    state.expanded = expanded;
-    toggle.setAttribute('aria-expanded', String(state.expanded));
-    toggle.setAttribute('aria-label', state.expanded ? 'Collapse resource details' : 'Expand resource details');
-    toggle.title = state.expanded ? 'Collapse resource details' : 'Expand resource details';
-    overview.classList.toggle('is-expanded', state.expanded);
-    document.body.classList.toggle('pulse-expanded', state.expanded);
-    mode.textContent = state.expanded ? 'full resource detail' : 'hover, then click';
-    canvas.setAttribute('aria-label', state.expanded
-      ? 'Detailed agent CPU, training GPU, training memory, and tool calls over the run. Hover to preview and click to select the nearest agent step.'
-      : 'Agent CPU, training GPU, and tool calls over the run. Hover to preview and click to select the nearest agent step.');
-    resize();
-  }
   function setDocked(docked) {
     const next = narrowViewport.matches && docked;
     if (next === state.docked) return;
     state.docked = next;
     document.body.classList.toggle('pulse-docked', next);
-    if (next && state.expanded) setExpanded(false);
-    else resize();
+    resize();
   }
-  toggle.addEventListener('click', () => setExpanded(!state.expanded));
   const dockObserver = new IntersectionObserver(entries => {
     const entry = entries[0];
     setDocked(!entry.isIntersecting && entry.boundingClientRect.top < 58);

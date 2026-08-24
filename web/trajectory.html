@@ -5,29 +5,23 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="description" content="Inspect agent reasoning, messages, tools, observations, timing, and token usage for every Agents' 100m trial.">
   <title>Agents' 100m · Agent trajectory</title>
-  <link rel="stylesheet" href="/trajectory.css?v=20260824-16">
+  <link rel="stylesheet" href="/trajectory.css?v=20260824-17">
 </head>
 <body>
   <header class="viewer-nav">
     <a class="brand" href="/">Agents' 100m</a>
     <span class="nav-slash">/</span>
     <span>Agent trajectory</span>
-    <div class="nav-actions">
-      <a id="timeline-link" href="/timeline">Resource timeline</a>
-      <a href="/">Race overview</a>
-    </div>
   </header>
 
   <main class="viewer-layout">
     <aside class="viewer-rail left-rail">
-      <a class="back-link" href="/">← Back to race overview</a>
       <span id="pulse-dock-sentinel" class="pulse-dock-sentinel" aria-hidden="true"></span>
-      <section class="utilization-overview" aria-labelledby="utilization-title">
-        <a class="utilization-dock-back" href="/" aria-label="Back to race overview">← Back</a>
+      <section class="utilization-overview" aria-label="Run resource utilization">
         <header class="utilization-head">
           <div class="run-identity">
             <span class="model-dot"></span>
-            <div><strong id="run-model">—</strong><small id="run-id">—</small></div>
+            <div><strong id="run-model">—</strong></div>
           </div>
           <dl class="pulse-stats" aria-live="polite">
             <div><dt>Elapsed</dt><dd id="summary-duration">—</dd></div>
@@ -38,14 +32,9 @@
           <p id="utilization-status" class="sr-only" aria-live="polite">Loading utilization…</p>
         </header>
         <label class="run-picker" hidden><span>Trial</span><select id="run"><option>Loading trajectories…</option></select></label>
-        <div class="utilization-title-row">
-          <div><p class="eyebrow">RUN PULSE</p><h2 id="utilization-title">Resources alongside the trace</h2></div>
-          <span id="utilization-mode">hover, then click</span>
-        </div>
         <div id="utilization-stage" class="utilization-stage">
           <canvas id="utilization-chart" height="126" tabindex="0" role="img" aria-label="Agent CPU, training GPU, and tool calls over the run. Hover to preview and click to select the nearest agent step."></canvas>
           <div id="utilization-tip" class="utilization-tip" hidden></div>
-          <button id="utilization-toggle" class="utilization-toggle" type="button" aria-expanded="false" aria-controls="utilization-stage" aria-label="Expand resource details" title="Expand resource details" disabled></button>
         </div>
         <footer class="utilization-footer">
           <span><i class="pulse-dot cpu"></i>CPU</span>
@@ -58,10 +47,6 @@
     <section class="trace-column" aria-label="Agent trace">
       <div class="trajectory-controls">
         <span id="status" class="status">Loading…</span>
-        <div class="trace-view-toggle filters" role="group" aria-label="Trace detail">
-          <button class="active" data-filter="focus" type="button">Focus</button>
-          <button data-filter="full" type="button">Full</button>
-        </div>
         <label class="jump-control"><span class="sr-only">Jump to step</span><input id="jump-step" type="number" min="1" placeholder="step #" inputmode="numeric"></label>
         <label class="search"><span class="sr-only">Search trajectory</span><input id="search" type="search" placeholder="Search trace…" autocomplete="off"></label>
         <button id="expand" class="expand-button" type="button">Expand all</button>
@@ -71,7 +56,7 @@
 
   </main>
 
-  <script src="/trajectory.js?v=20260824-9"></script>
-  <script src="/trajectory-overview.js?v=20260824-7"></script>
+  <script src="/trajectory.js?v=20260824-10"></script>
+  <script src="/trajectory-overview.js?v=20260824-8"></script>
 </body>
 </html>
