@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import subprocess
 import time
 from typing import Any
 
@@ -64,21 +65,29 @@ def main() -> int:
         "SPRINT_OPENROUTER_ALLOWED_INFERENCE_PATH": "chat_completions",
         "DSH_GOAL_MAX_ROUNDS": "1",
     }
-    run = {
-        "run_id": RUN_ID,
-        "agent_kind": "deepseek-harness",
-        "model": MODEL,
-        "reasoning_effort": "max",
-        "usage_audit_required": True,
-        "standing_gpu_worker": False,
-        "agent_cost_budget_usd": 10.0,
-        "cpu_launch_attempt": 1,
-        "budget_enforcement": {
-            "api_cost_source": "openrouter_reported_per_request",
-            "shutdown_reserve_usd": 0.0,
-            "minimum_safe_shutdown_reserve_usd": 0.0,
-        },
-    }
+    launch_contract = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "event_runtime/control/launch.sh"),
+            "--dry-run",
+            "--run-id",
+            RUN_ID,
+            "--agent-kind",
+            "deepseek-harness",
+            "--model",
+            MODEL,
+            "--reasoning-effort",
+            "max",
+        ],
+        env=os.environ.copy(),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=True,
+    )
+    run = json.loads(launch_contract.stdout)
+    run["standing_gpu_worker"] = False
+    run["cpu_launch_attempt"] = 1
     try:
         sandbox = modal.Sandbox.create(
             "python3",
@@ -185,6 +194,7 @@ def main() -> int:
         endpoints = snapshot.get("endpoints") or []
         endpoint = endpoints[0] if endpoints else {}
         checks = {
+            "launch_contract_usage_audit": run.get("usage_audit_required") is True,
             "record_complete": record.get("state") == "complete",
             "chat_completions_path": record.get("api_path")
             == "/api/v1/chat/completions",

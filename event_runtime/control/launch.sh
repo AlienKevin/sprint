@@ -811,10 +811,10 @@ payload = {
         else None
     ),
     "usage_audit_required": (
-        agent_kind == "codex"
-        and (
-            model_api_host == "openrouter.ai"
-            or model.split("/", 1)[-1]
+        model_api_host == "openrouter.ai"
+        or (
+            agent_kind == "codex"
+            and model.split("/", 1)[-1]
             in {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
         )
     ),
@@ -1144,12 +1144,16 @@ base = {
     "modal_billing_required": True,
     "cgroup_telemetry_required": True,
     "gpu_pipeline_telemetry_required": True,
-    # OpenAI cost is accepted only from Harbor's per-request, checksummed usage
-    # audit. Aggregate cached/uncached counters cannot recover long-context or
-    # cache-write pricing correctly.
-    "usage_audit_required": agent_kind == "codex" and (
+    # OpenRouter cost is accepted only from the trusted per-request ledger.
+    # Aggregate cached/uncached counters cannot recover dynamic provider,
+    # long-context, cache-write, promotion, or peak-floor pricing correctly.
+    "usage_audit_required": (
         model_api_host == "openrouter.ai"
-        or model.split("/", 1)[-1] in {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
+        or (
+            agent_kind == "codex"
+            and model.split("/", 1)[-1]
+            in {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
+        )
     ),
     "hosted_model_tools_policy": (
         "disabled" if agent_kind in {"codex", "deepseek-harness"} else None

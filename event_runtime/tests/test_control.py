@@ -1563,7 +1563,7 @@ class DurableOpsTests(unittest.TestCase):
         self.assertEqual(config["deepseek_harness_version"], "0.1.1-rc.2")
         self.assertEqual(config["deepseek_harness_sdk_version"], "0.1.1rc1")
         self.assertTrue(config["provider_usage_ledger_required"])
-        self.assertFalse(config["usage_audit_required"])
+        self.assertTrue(config["usage_audit_required"])
         self.assertEqual(
             config["openrouter_route"],
             {
