@@ -9,6 +9,8 @@ import json
 import os
 import subprocess
 import sys
+import threading
+import time
 import urllib.error
 from pathlib import Path
 from unittest import mock
@@ -114,10 +116,10 @@ def test_one_shot_batch_monitor_does_not_claim_lifetime_owner(
     monkeypatch.setattr(
         batch_eval,
         "monitor_cycle",
-        lambda batch_id, *, deploy, env_file: calls.append(
-            (batch_id, deploy, env_file)
-        )
-        or {"batch_id": batch_id, "status": "running"},
+        lambda batch_id, *, deploy, env_file: (
+            calls.append((batch_id, deploy, env_file))
+            or {"batch_id": batch_id, "status": "running"}
+        ),
     )
     monkeypatch.setattr(
         batch_eval.frontier_update,
@@ -1985,7 +1987,12 @@ def test_batch_stop_persists_all_intents_before_slow_dispatch(
         (run_dir / "run.json").write_text("{}\n")
     batch_eval.atomic_json(
         batch_eval.batch_path(batch_id),
-        {"batch_id": batch_id, "arms": arms, "alerts": []},
+        {
+            "batch_id": batch_id,
+            "arms": arms,
+            "alerts": [],
+            "credential_status": "active",
+        },
     )
     persisted: list[str] = []
     dispatched: list[str] = []
@@ -1999,17 +2006,29 @@ def test_batch_stop_persists_all_intents_before_slow_dispatch(
 
     def dispatch(run_id: str, *, reason: str):
         assert persisted == ["run-1", "run-2", "run-3"]
-        assert "lock:entered" in events
+        assert "lock:entered" not in events
+        assert "credentials:revoked" in events
         dispatched.append(run_id)
+        events.append(f"dispatch:{run_id}")
         if run_id == "run-1":
             raise RuntimeError("provider unavailable")
         return {"status": "requested"}
+
+    def revoke(payload: dict[str, object], env_file: Path):
+        assert env_file == tmp_path / ".env"
+        assert "lock:entered" not in events
+        payload["credential_status"] = "revoked"
+        payload["credentials_revoked_at"] = "now"
+        payload["credential_cleanup_errors"] = []
+        events.append("credentials:revoked")
+        return []
 
     @contextlib.contextmanager
     def recording_lock(path: Path, *, blocking: bool = True):
         assert path == batch_eval.batch_path(batch_id).with_suffix(".lock")
         assert blocking is True
         assert persisted == ["run-1", "run-2", "run-3"]
+        assert dispatched == ["run-1", "run-2", "run-3"]
         events.append("lock:entered")
         yield True
         events.append("lock:exited")
@@ -2017,14 +2036,16 @@ def test_batch_stop_persists_all_intents_before_slow_dispatch(
     with (
         mock.patch.object(batch_eval.sprintctl, "persist_stop_request", persist),
         mock.patch.object(batch_eval.sprintctl, "request_stop", dispatch),
+        mock.patch.object(batch_eval, "revoke_batch_credentials", revoke),
         mock.patch.object(batch_eval.frontier_update, "file_lock", recording_lock),
     ):
-        result = batch_eval.stop_batch(batch_id)
+        result = batch_eval.stop_batch(batch_id, env_file=tmp_path / ".env")
 
     assert dispatched == ["run-1", "run-2", "run-3"]
     assert all(arm["status"] == "stopping" for arm in result["arms"])
     assert result["arms"][0]["stop_dispatch_error"].startswith("RuntimeError:")
     assert result["arms"][1]["stop_dispatch_status"] == "requested"
+    assert result["credential_status"] == "revoked"
     stored = json.loads(batch_eval.batch_path(batch_id).read_text())
     assert [arm["status"] for arm in stored["arms"]] == [
         "stopping",
@@ -2032,6 +2053,179 @@ def test_batch_stop_persists_all_intents_before_slow_dispatch(
         "stopping",
     ]
     assert events[-1] == "lock:exited"
+
+
+def test_website_deploy_yields_batch_control_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    batch_id = "deploy-unlocked"
+    monkeypatch.setattr(batch_eval, "BATCH_ROOT", tmp_path / "batches")
+    monkeypatch.setattr(batch_eval, "WEB", tmp_path / "web")
+    monkeypatch.setattr(
+        batch_eval.frontier_update, "PIPELINE_LOCK", tmp_path / "pipeline.lock"
+    )
+    state_path = batch_eval.batch_path(batch_id)
+    payload = {
+        "batch_id": batch_id,
+        "arms": [],
+        "alerts": [],
+        "deploy": {"last_deployed_site_hash": "old"},
+        "credential_status": "active",
+        "status": "running",
+    }
+    batch_eval.atomic_json(state_path, payload)
+    events: list[str] = []
+
+    class Lease:
+        held = True
+
+        def release(self) -> None:
+            assert self.held
+            self.held = False
+            events.append("batch:released")
+
+        def acquire(self) -> None:
+            assert not self.held
+            self.held = True
+            events.append("batch:acquired")
+
+    lease = Lease()
+
+    @contextlib.contextmanager
+    def deployment_lock(path: Path, *, blocking: bool = True):
+        assert path == tmp_path / "pipeline.lock"
+        assert blocking is False
+        events.append("deploy-lock:entered")
+        yield True
+        events.append("deploy-lock:exited")
+
+    def refresh(current: dict[str, object]) -> None:
+        assert current["batch_id"] == batch_id
+        assert not lease.held
+        events.append("performance")
+
+    def deploy(state: dict[str, object], **_kwargs) -> tuple[bool, str]:
+        assert not lease.held
+        events.append("vercel")
+        concurrent = json.loads(state_path.read_text())
+        concurrent["credential_status"] = "revoked"
+        concurrent["status"] = "stopping"
+        batch_eval.atomic_json(state_path, concurrent)
+        state["site_status"] = "deployed"
+        state["last_deployed_site_hash"] = "new"
+        return True, "https://deployment.example"
+
+    with (
+        mock.patch.object(batch_eval.frontier_update, "file_lock", deployment_lock),
+        mock.patch.object(batch_eval, "refresh_performance_snapshot", refresh),
+        mock.patch.object(batch_eval.frontier_update, "deploy_if_needed", deploy),
+    ):
+        updated, error, error_kind, attempted = (
+            batch_eval.deploy_website_outside_batch_lock(
+                payload,
+                state_path=state_path,
+                batch_lock=lease,
+                now=dt.datetime(2026, 8, 24, tzinfo=dt.timezone.utc),
+                debounce_seconds=1200,
+            )
+        )
+
+    assert attempted is True
+    assert error is None
+    assert error_kind is None
+    assert lease.held is True
+    assert updated["deploy"]["site_status"] == "deployed"
+    assert updated["credential_status"] == "revoked"
+    assert updated["status"] == "stopping"
+    assert events == [
+        "deploy-lock:entered",
+        "batch:released",
+        "performance",
+        "vercel",
+        "batch:acquired",
+        "deploy-lock:exited",
+    ]
+
+
+def test_hung_website_deploy_does_not_block_operator_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    batch_id = "deploy-stop"
+    run_id = "deploy-stop-luna-1"
+    monkeypatch.setattr(batch_eval, "BATCH_ROOT", tmp_path / "batches")
+    monkeypatch.setattr(batch_eval, "SCRIPT_DIR", tmp_path / "ops")
+    monkeypatch.setattr(batch_eval, "WEB", tmp_path / "web")
+    monkeypatch.setattr(
+        batch_eval.frontier_update, "PIPELINE_LOCK", tmp_path / "pipeline.lock"
+    )
+    run_dir = batch_eval.SCRIPT_DIR / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.json").write_text("{}\n")
+    state_path = batch_eval.batch_path(batch_id)
+    batch_eval.atomic_json(
+        state_path,
+        {
+            "batch_id": batch_id,
+            "arms": [{"run_id": run_id, "status": "running"}],
+            "alerts": [],
+            "credential_status": "revoked",
+            "deploy": {"last_deployed_site_hash": "old"},
+        },
+    )
+    deploy_started = threading.Event()
+    allow_deploy_to_finish = threading.Event()
+    monitor_errors: list[BaseException] = []
+
+    def blocking_deploy(*_args, **_kwargs) -> tuple[bool, str]:
+        deploy_started.set()
+        assert allow_deploy_to_finish.wait(timeout=5)
+        return True, "https://deployment.example"
+
+    def monitor() -> None:
+        try:
+            with batch_eval.releasable_batch_lock(
+                state_path.with_suffix(".lock")
+            ) as lease:
+                payload = batch_eval.read_batch(batch_id)
+                batch_eval.deploy_website_outside_batch_lock(
+                    payload,
+                    state_path=state_path,
+                    batch_lock=lease,
+                    now=dt.datetime(2026, 8, 24, tzinfo=dt.timezone.utc),
+                    debounce_seconds=0,
+                )
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            monitor_errors.append(exc)
+
+    with (
+        mock.patch.object(batch_eval, "refresh_performance_snapshot", lambda _: None),
+        mock.patch.object(
+            batch_eval.frontier_update, "deploy_if_needed", blocking_deploy
+        ),
+        mock.patch.object(
+            batch_eval.sprintctl, "persist_stop_request", lambda *_args, **_kwargs: None
+        ),
+        mock.patch.object(
+            batch_eval.sprintctl,
+            "request_stop",
+            lambda *_args, **_kwargs: {"status": "requested"},
+        ),
+    ):
+        worker = threading.Thread(target=monitor, daemon=True)
+        worker.start()
+        assert deploy_started.wait(timeout=2)
+        began = time.monotonic()
+        stopped = batch_eval.stop_batch(batch_id)
+        stop_elapsed = time.monotonic() - began
+        allow_deploy_to_finish.set()
+        worker.join(timeout=5)
+
+    assert stop_elapsed < 1
+    assert stopped["arms"][0]["status"] == "stopping"
+    assert not worker.is_alive()
+    assert monitor_errors == []
+    merged = batch_eval.read_batch(batch_id)
+    assert merged["arms"][0]["status"] == "stopping"
 
 
 def test_verifier_lane_stall_alert_is_scoped_to_one_trial(

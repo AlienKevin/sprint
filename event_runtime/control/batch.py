@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import copy
+import contextlib
 import datetime as dt
 import fcntl
 import hashlib
@@ -20,7 +22,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 
 MODULE_DIR = Path(__file__).resolve().parent
@@ -60,9 +62,7 @@ WEB = ROOT / "web"
 BATCH_ROOT = SCRIPT_DIR / "batches"
 WARMUP_MANIFEST = SCRIPT_DIR / "modal-image-warmup.json"
 FUNCTIONAL_CANARY_REPORT = SCRIPT_DIR / "training-gpu-canary.json"
-FUNCTIONAL_CANARY_FIXTURE = (
-    PREFLIGHT_DIR / "training_canary" / "train_sprint.py"
-)
+FUNCTIONAL_CANARY_FIXTURE = PREFLIGHT_DIR / "training_canary" / "train_sprint.py"
 BUDGET_CONFIG = MODULE_DIR / "budget.env"
 HARBOR_REVISION = "dafb1387151e1c32702963d44fe6c3cea66cf8cb"
 CODEX_VERSION = "0.149.1"
@@ -187,6 +187,45 @@ def parse_time(value: str) -> dt.datetime:
 
 def atomic_json(path: Path, payload: Any, mode: int = 0o600) -> None:
     frontier_update.atomic_write_json(path, payload, mode=mode)
+
+
+class ReleasableBatchLock:
+    """Exclusive batch-state lease that can yield around external I/O.
+
+    A monitor cycle normally owns ``batch.lock`` while it computes and commits a
+    coherent state transition.  Website publication is different: Vercel can
+    legitimately spend minutes uploading or building.  Keeping the control
+    lease during that wait makes an operator stop queue behind an unrelated
+    website operation.  The monitor persists its state before releasing this
+    lease, then re-acquires and merges the deployment result into whatever the
+    control plane committed in the meantime.
+    """
+
+    def __init__(self, handle: Any):
+        self.handle = handle
+        self.held = False
+
+    def acquire(self) -> None:
+        if not self.held:
+            fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX)
+            self.held = True
+
+    def release(self) -> None:
+        if self.held:
+            fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
+            self.held = False
+
+
+@contextlib.contextmanager
+def releasable_batch_lock(path: Path) -> Iterator[ReleasableBatchLock]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+") as handle:
+        lease = ReleasableBatchLock(handle)
+        lease.acquire()
+        try:
+            yield lease
+        finally:
+            lease.release()
 
 
 def _public_material_state(value: Any) -> Any:
@@ -455,7 +494,10 @@ def matrix(
         spec = specs[family]
         model_owner = str(spec["model"]).split("/", 1)[0]
         provider_endpoint = str(spec.get("provider_endpoint") or "")
-        if model_owner not in {"deepseek", "openai"} or provider_endpoint != model_owner:
+        if (
+            model_owner not in {"deepseek", "openai"}
+            or provider_endpoint != model_owner
+        ):
             raise ValueError(
                 f"{family} must use its model author's official OpenRouter provider"
             )
@@ -2435,11 +2477,64 @@ def mark_deployed_runs(payload: dict[str, Any]) -> list[dict[str, str]]:
     return alerts
 
 
+def deploy_website_outside_batch_lock(
+    payload: dict[str, Any],
+    *,
+    state_path: Path,
+    batch_lock: ReleasableBatchLock,
+    now: dt.datetime,
+    debounce_seconds: int,
+) -> tuple[dict[str, Any], Exception | None, str | None, bool]:
+    """Run Vercel publication without fencing budget or stop control.
+
+    The batch state accumulated so far is committed before the control lock is
+    yielded.  A distinct deployment lease prevents a diagnostic monitor from
+    starting a second Vercel build during that window.  After the external
+    command returns, the control lock is re-acquired and only deployment state
+    is merged into the latest batch record, preserving any concurrent stop or
+    credential-revocation transition.
+    """
+
+    deploy_state = copy.deepcopy(payload.setdefault("deploy", {}))
+    atomic_json(state_path, payload)
+    # The public tree is shared by every run and batch. Reuse the renderer's
+    # global pipeline lease so a Vercel upload sees one coherent tree and two
+    # tracking batches cannot publish concurrently.
+    deploy_lock_path = frontier_update.PIPELINE_LOCK
+    with frontier_update.file_lock(deploy_lock_path, blocking=False) as acquired:
+        if not acquired:
+            return read_batch(payload["batch_id"]), None, None, False
+        error: Exception | None = None
+        error_kind: str | None = None
+        attempted = False
+        batch_lock.release()
+        try:
+            attempted = True
+            error_kind = "performance_export"
+            refresh_performance_snapshot(payload)
+            error_kind = "website_deploy"
+            frontier_update.deploy_if_needed(
+                deploy_state,
+                web=WEB,
+                debounce_seconds=debounce_seconds,
+            )
+            clear_deployment_error(deploy_state)
+        except Exception as exc:  # noqa: BLE001
+            error = exc
+            record_deployment_error(deploy_state, exc, now=now)
+        finally:
+            batch_lock.acquire()
+
+    latest = read_batch(payload["batch_id"])
+    latest["deploy"] = deploy_state
+    return latest, error, error_kind if error else None, attempted
+
+
 def monitor_cycle(
     batch_id: str, *, deploy: bool = True, env_file: Path | None = None
 ) -> dict[str, Any]:
     path = batch_path(batch_id)
-    with frontier_update.file_lock(path.with_suffix(".lock")):
+    with releasable_batch_lock(path.with_suffix(".lock")) as batch_lock:
         payload = read_batch(batch_id)
         now = dt.datetime.now(dt.timezone.utc)
         finalized = 0
@@ -2533,55 +2628,37 @@ def monitor_cycle(
         payload["updated_at"] = utc_now()
         write_public_batch(payload, update_current=deploy)
 
-        performance_ready = True
         if deploy:
             deploy_state = payload.setdefault("deploy", {})
             if deployment_retry_due(deploy_state, now=now):
-                try:
-                    refresh_performance_snapshot(payload)
+                payload, deployment_error, error_kind, attempted = (
+                    deploy_website_outside_batch_lock(
+                        payload,
+                        state_path=path,
+                        batch_lock=batch_lock,
+                        now=now,
+                        debounce_seconds=deployment_debounce_seconds(payload),
+                    )
+                )
+                if attempted and deployment_error is None:
                     resolve_alerts(
                         payload,
                         run_id="batch",
                         kind="performance_export",
                         resolution="subsequent_performance_snapshot_succeeded",
                     )
-                except Exception as exc:
-                    performance_ready = False
-                    cycle_alerts.append(
-                        {
-                            "run_id": "batch",
-                            "kind": "performance_export",
-                            "source": type(exc).__name__,
-                            "count_in_tail": "1",
-                        }
-                    )
-                try:
-                    if not performance_ready:
-                        raise RuntimeError(
-                            "refusing website deployment with a stale performance snapshot"
-                        )
-                    frontier_update.deploy_if_needed(
-                        deploy_state,
-                        web=WEB,
-                        # Once every lane is terminal, publication is the only
-                        # remaining external gate. Do not make an empty or
-                        # no-submission lane wait through the live-update cadence.
-                        debounce_seconds=deployment_debounce_seconds(payload),
-                    )
-                    clear_deployment_error(deploy_state)
                     resolve_alerts(
                         payload,
                         run_id="batch",
                         kind="website_deploy",
                         resolution="subsequent_site_snapshot_succeeded",
                     )
-                except Exception as exc:
-                    record_deployment_error(deploy_state, exc, now=now)
+                elif attempted and deployment_error is not None:
                     cycle_alerts.append(
                         {
                             "run_id": "batch",
-                            "kind": "website_deploy",
-                            "source": type(exc).__name__,
+                            "kind": error_kind or "website_deploy",
+                            "source": type(deployment_error).__name__,
                             "count_in_tail": "1",
                         }
                     )
@@ -2693,20 +2770,21 @@ def monitor_cycle(
             and all_finalized
             and deployment_retry_due(payload.setdefault("deploy", {}), now=now)
         ):
-            try:
-                refresh_performance_snapshot(payload)
-                frontier_update.deploy_if_needed(
-                    payload.setdefault("deploy", {}),
-                    web=WEB,
+            payload, deployment_error, _error_kind, attempted = (
+                deploy_website_outside_batch_lock(
+                    payload,
+                    state_path=path,
+                    batch_lock=batch_lock,
+                    now=now,
                     debounce_seconds=0,
                 )
-            except Exception as exc:  # noqa: BLE001
-                record_deployment_error(payload.setdefault("deploy", {}), exc, now=now)
+            )
+            if attempted and deployment_error is not None:
                 cycle_alerts.append(
                     {
                         "run_id": "batch",
                         "kind": "final_site_deploy",
-                        "source": type(exc).__name__,
+                        "source": type(deployment_error).__name__,
                         "count_in_tail": "1",
                     }
                 )
@@ -2750,55 +2828,76 @@ def monitor_cycle(
 def stop_batch(batch_id: str, *, env_file: Path | None = None) -> dict[str, Any]:
     # Persist every lane's stop intent first. Modal lease fencing can wait on a
     # dispatch lock, so a controller interruption must not leave later arms
-    # running merely because the first arm was slow to stop.
+    # running merely because the first arm was slow to stop. Credential
+    # revocation and stop dispatch also happen before ``batch.lock``: website
+    # publication or another slow observer must never fence the cost-control
+    # path.
     snapshot = read_batch(batch_id)
-    for arm in snapshot["arms"]:
-        if (
-            arm.get("status") != "finalized"
-            and (SCRIPT_DIR / arm["run_id"] / "run.json").is_file()
-        ):
-            sprintctl.persist_stop_request(arm["run_id"], reason="operator_batch_stop")
+    targets = [
+        arm
+        for arm in snapshot["arms"]
+        if arm.get("status") != "finalized"
+        and (SCRIPT_DIR / arm["run_id"] / "run.json").is_file()
+    ]
+    target_ids = {arm["run_id"] for arm in targets}
+    for arm in targets:
+        sprintctl.persist_stop_request(arm["run_id"], reason="operator_batch_stop")
+
+    credential_cleanup: dict[str, Any] | None = None
+    if snapshot.get("credential_status") == "active":
+        credential_env = env_file or Path(snapshot.get("env_file", ROOT / ".env"))
+        try:
+            revoke_batch_credentials(snapshot, credential_env)
+        except (KeyError, OSError, OpenRouterManagementError, ValueError) as exc:
+            snapshot["credential_status"] = "cleanup_error"
+            snapshot["credential_cleanup_errors"] = [f"{type(exc).__name__}: {exc}"]
+        credential_cleanup = {
+            key: copy.deepcopy(snapshot.get(key))
+            for key in (
+                "credential_status",
+                "credentials_revoked_at",
+                "credential_cleanup_errors",
+            )
+            if key in snapshot
+        }
+
+    dispatch_results: dict[str, dict[str, str]] = {}
+    for arm in targets:
+        try:
+            result = sprintctl.request_stop(arm["run_id"], reason="operator_batch_stop")
+            dispatch_results[arm["run_id"]] = {
+                "status": str(result.get("status") or "requested")
+            }
+        except Exception as exc:  # noqa: BLE001
+            # The durable STOP_REQUESTED marker is already authoritative; a
+            # per-run monitor can complete this dispatch even if the immediate
+            # provider call fails.
+            dispatch_results[arm["run_id"]] = {"error": f"{type(exc).__name__}: {exc}"}
 
     path = batch_path(batch_id)
-    # The monitor holds this same lock for its complete read/modify/write cycle.
-    # Re-read only after acquiring it: otherwise a monitor snapshot that began
-    # before this stop could later restore launched arms or active credentials.
+    # Re-read only after acquiring the state lock. The cost-control effects
+    # above are already durable; this short critical section only publishes
+    # their authoritative batch representation.
     with frontier_update.file_lock(path.with_suffix(".lock")):
         payload = read_batch(batch_id)
-        targets: list[dict[str, Any]] = []
         for arm in payload["arms"]:
-            if (
-                arm.get("status") != "finalized"
-                and (SCRIPT_DIR / arm["run_id"] / "run.json").is_file()
-            ):
+            result = dispatch_results.get(arm["run_id"])
+            if result is not None:
                 arm["stop_requested_at"] = arm.get("stop_requested_at") or utc_now()
                 arm["status"] = "stopping"
-                targets.append(arm)
+                if "status" in result:
+                    arm["stop_dispatch_status"] = result["status"]
+                    arm.pop("stop_dispatch_error", None)
+                else:
+                    arm["stop_dispatch_error"] = result["error"]
+            elif arm.get("status") != "finalized" and arm["run_id"] in target_ids:
+                arm["stop_requested_at"] = arm.get("stop_requested_at") or utc_now()
+                arm["status"] = "stopping"
+        if credential_cleanup is not None:
+            for key, value in credential_cleanup.items():
+                payload[key] = value
         payload["updated_at"] = utc_now()
         atomic_json(path, payload)
-
-        if payload.get("credential_status") == "active":
-            credential_env = env_file or Path(payload.get("env_file", ROOT / ".env"))
-            try:
-                revoke_batch_credentials(payload, credential_env)
-            except (KeyError, OSError, OpenRouterManagementError, ValueError) as exc:
-                payload["credential_status"] = "cleanup_error"
-                payload["credential_cleanup_errors"] = [f"{type(exc).__name__}: {exc}"]
-            atomic_json(path, payload)
-
-        for arm in targets:
-            try:
-                result = sprintctl.request_stop(
-                    arm["run_id"], reason="operator_batch_stop"
-                )
-                arm["stop_dispatch_status"] = result.get("status")
-                arm.pop("stop_dispatch_error", None)
-            except Exception as exc:  # noqa: BLE001
-                # The per-run monitor will retry from STOP_REQUESTED. Continue so
-                # one provider/API failure cannot block the remaining arms.
-                arm["stop_dispatch_error"] = f"{type(exc).__name__}: {exc}"
-            payload["updated_at"] = utc_now()
-            atomic_json(path, payload)
         return payload
 
 
