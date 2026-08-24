@@ -468,7 +468,7 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "meta.append(el('b','',`#" in trajectory_app
     assert "fmtClock(step.timestamp)" not in trajectory_app
     assert 'class="right-rail"' not in trajectory_page
-    assert "trajectory.js?v=20260824-6" in trajectory_page
+    assert "trajectory.js?v=20260824-7" in trajectory_page
     assert "let observedVersion = null" in app
     assert "state.timelineUpdatedAt=tIndex.updated_at||null" in app
     assert "Date.parse(snapshotUpdatedAt(batch)||'')" in app
@@ -519,7 +519,7 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert 'id="readout-timeline"' in page
     assert 'id="policy-grid"' not in page
     assert 'id="run-links"' not in page
-    assert '<strong>Effective Speed</strong>' in app
+    assert "<strong>Effective Speed</strong>" in app
     assert "highest Effective Speed" in app
     assert "Math.max(0,...(performance[key]?.points||[])" in app
     assert "cost_auc_mps_at_common_cap" in app

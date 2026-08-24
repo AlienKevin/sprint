@@ -2901,6 +2901,84 @@ while True:
             self.assertTrue(deployed)
             self.assertEqual(len(commands), 2)
 
+    def test_stale_result_changes_do_not_trigger_vercel_deploy(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            web = root / "web"
+            (web / "index.html").parent.mkdir(parents=True)
+            (web / "index.html").write_text("current")
+            (web / ".vercel").mkdir()
+            (web / ".vercel/project.json").write_text(
+                json.dumps(
+                    {
+                        "projectId": frontier_update.PROJECT_ID,
+                        "orgId": frontier_update.ORG_ID,
+                        "projectName": "sprint",
+                    }
+                )
+            )
+            batch = {
+                "batch_id": "current-batch",
+                "arms": [{"run_id": "current-run"}],
+            }
+            batches = web / "data/batches"
+            batches.mkdir(parents=True)
+            (batches / "current.json").write_text(json.dumps(batch))
+            (batches / "current-batch.json").write_text(json.dumps(batch))
+            trajectories = web / "data/trajectories"
+            trajectories.mkdir(parents=True)
+            (trajectories / "index.json").write_text(
+                json.dumps(
+                    {
+                        "runs": [
+                            {
+                                "run_id": "current-run",
+                                "path": "/data/trajectories/current-run.json",
+                            }
+                        ]
+                    }
+                )
+            )
+            (trajectories / "current-run.json").write_text(
+                json.dumps({"run_id": "current-run", "steps": []})
+            )
+
+            state = {"last_deployed_site_hash": "old"}
+            commands: list[list[str]] = []
+
+            def runner(command, _cwd):
+                commands.append(command)
+                if command[1] == "deploy":
+                    return "https://sprint-live-alienkevins-projects.vercel.app"
+                return "Success"
+
+            with mock.patch.object(
+                frontier_update, "PIPELINE_LOCK", root / "ops/pipeline.lock"
+            ):
+                deployed, _ = frontier_update.deploy_if_needed(
+                    state,
+                    web=web,
+                    now=1786224000,
+                    debounce_seconds=0,
+                    runner=runner,
+                )
+                self.assertTrue(deployed)
+                commands.clear()
+
+                stale = trajectories / "old-run.json"
+                stale.write_text(json.dumps({"run_id": "old-run", "steps": [1]}))
+                deployed, message = frontier_update.deploy_if_needed(
+                    state,
+                    web=web,
+                    now=1786224060,
+                    debounce_seconds=0,
+                    runner=runner,
+                )
+
+            self.assertFalse(deployed)
+            self.assertEqual(message, "no site file changes")
+            self.assertEqual(commands, [])
+
     def test_vercel_deploy_reassigns_exact_public_alias(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             web = Path(raw)

@@ -7,7 +7,6 @@ import argparse
 import contextlib
 import dataclasses
 import datetime as dt
-import errno
 import fcntl
 import hashlib
 import importlib.util
@@ -27,6 +26,7 @@ ROOT = Path(__file__).resolve().parents[2]
 WEB_DEFAULT = ROOT / "web"
 sys.path.insert(0, str(ROOT))
 from event_runtime.event import load_event  # noqa: E402
+from event_runtime.export.site_bundle import build_site_bundle  # noqa: E402
 
 EVENT = load_event(repository_root=ROOT)
 EVENT_REPLAY = ROOT / "web" / "renderers" / EVENT.name
@@ -151,42 +151,12 @@ def staged_site_snapshot(web: Path) -> Iterator[Path]:
             shutil.rmtree(snapshot, ignore_errors=True)
             snapshot.mkdir()
             try:
-                for current, directories, files in os.walk(web):
-                    current_path = Path(current)
-                    relative_dir = current_path.relative_to(web)
-                    directories[:] = sorted(
-                        name
-                        for name in directories
-                        if name not in SITE_SNAPSHOT_IGNORED_DIRECTORIES
-                    )
-                    destination_dir = snapshot / relative_dir
-                    destination_dir.mkdir(parents=True, exist_ok=True)
-                    for name in sorted(files):
-                        source = current_path / name
-                        if is_atomic_staging_file(source):
-                            continue
-                        destination = destination_dir / name
-                        if source.is_symlink():
-                            destination.symlink_to(os.readlink(source))
-                        else:
-                            try:
-                                os.link(source, destination)
-                            except OSError as exc:
-                                if exc.errno != errno.EXDEV:
-                                    raise
-                                # Unit tests and callers may place ``web`` on a
-                                # different filesystem from the durable ops
-                                # directory. A byte copy preserves the same
-                                # immutable-snapshot contract in that case.
-                                shutil.copy2(source, destination)
-
-                # Link only the project identity needed by the CLI.  In
-                # particular, do not copy live .vercel/output caches or local
-                # environment files into the deploy input.
-                project_source = web / ".vercel" / "project.json"
-                project_destination = snapshot / ".vercel" / "project.json"
-                project_destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(project_source, project_destination)
+                build_site_bundle(
+                    web,
+                    snapshot,
+                    require_current=False,
+                    include_project_link=True,
+                )
                 break
             except FileNotFoundError:
                 if attempt == 2:
@@ -1068,34 +1038,38 @@ def deploy_if_needed(
     runner: Runner = _default_runner,
 ) -> tuple[bool, str]:
     now = time.time() if now is None else now
-    current_hash = site_tree_hash(web)
-    if current_hash == state.get("last_deployed_site_hash"):
-        state.update(
-            {
-                "pending_site_hash": None,
-                "site_change_first_seen_at": None,
-                "site_status": "noop",
-                "last_site_check_at": utc_now(),
-                "last_deployed_public_artifacts": public_artifact_hashes(web),
-            }
-        )
-        return False, "no site file changes"
-
-    if state.get("pending_site_hash") != current_hash:
-        state["pending_site_hash"] = current_hash
-    if not state.get("site_change_first_seen_at"):
-        state["site_change_first_seen_at"] = dt.datetime.fromtimestamp(
-            now, tz=dt.timezone.utc
-        ).strftime("%Y-%m-%dT%H:%M:%SZ")
-    first = parse_iso(state.get("site_change_first_seen_at")) or now
-    if now - first < debounce_seconds:
-        state["site_status"] = "debouncing"
-        return False, f"deploy debounced for {int(debounce_seconds - (now - first))}s"
-
     with staged_site_snapshot(web) as deployable_web:
+        current_hash = site_tree_hash(deployable_web)
+        current_artifacts = public_artifact_hashes(deployable_web)
+        if current_hash == state.get("last_deployed_site_hash"):
+            state.update(
+                {
+                    "pending_site_hash": None,
+                    "site_change_first_seen_at": None,
+                    "site_status": "noop",
+                    "last_site_check_at": utc_now(),
+                    "last_deployed_public_artifacts": current_artifacts,
+                }
+            )
+            return False, "no site file changes"
+
+        if state.get("pending_site_hash") != current_hash:
+            state["pending_site_hash"] = current_hash
+        if not state.get("site_change_first_seen_at"):
+            state["site_change_first_seen_at"] = dt.datetime.fromtimestamp(
+                now, tz=dt.timezone.utc
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        first = parse_iso(state.get("site_change_first_seen_at")) or now
+        if now - first < debounce_seconds:
+            state["site_status"] = "debouncing"
+            return (
+                False,
+                f"deploy debounced for {int(debounce_seconds - (now - first))}s",
+            )
+
         verify_project_link(deployable_web)
-        deployed_hash = site_tree_hash(deployable_web)
-        deployed_artifacts = public_artifact_hashes(deployable_web)
+        deployed_hash = current_hash
+        deployed_artifacts = current_artifacts
         output = runner(
             [
                 "vercel",
