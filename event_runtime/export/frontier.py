@@ -7,6 +7,7 @@ import argparse
 import contextlib
 import dataclasses
 import datetime as dt
+import errno
 import fcntl
 import hashlib
 import importlib.util
@@ -46,6 +47,7 @@ DEPLOY_DEBOUNCE_SECONDS = 300
 DEPLOY_COMMAND_TIMEOUT_SECONDS = 30 * 60
 CAPTURE_MAX_ATTEMPTS = 3
 PIPELINE_LOCK = ROOT / "runs" / "ops" / ".frontier-pipeline.lock"
+SITE_SNAPSHOT_IGNORED_DIRECTORIES = {".git", ".vercel", "node_modules"}
 
 
 def utc_now() -> str:
@@ -120,6 +122,77 @@ def atomic_copy(source: Path, destination: Path) -> None:
         os.replace(tmp, destination)
     finally:
         tmp.unlink(missing_ok=True)
+
+
+def is_atomic_staging_file(path: Path) -> bool:
+    """Return whether *path* is an unpublished atomic-writer scratch file."""
+    return path.name.startswith(".") and path.name.endswith(".tmp")
+
+
+@contextlib.contextmanager
+def staged_site_snapshot(web: Path) -> Iterator[Path]:
+    """Expose one immutable, deployable view of the live website tree.
+
+    Live telemetry publishers replace their destination files atomically.  A
+    Vercel upload used to traverse that mutable tree directly, so it could
+    enumerate an adjacent ``.*.tmp`` file just before the publisher renamed it
+    and then fail while trying to stat the vanished path.  This snapshot uses
+    hard links on the same filesystem: an atomic replacement of the live name
+    cannot change the inode visible to the upload.  The volatile Vercel build
+    directory and unpublished scratch files are deliberately omitted.
+    """
+    PIPELINE_LOCK.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix=".vercel-site-snapshot-", dir=PIPELINE_LOCK.parent
+    ) as raw:
+        root = Path(raw)
+        snapshot = root / "web"
+        for attempt in range(3):
+            shutil.rmtree(snapshot, ignore_errors=True)
+            snapshot.mkdir()
+            try:
+                for current, directories, files in os.walk(web):
+                    current_path = Path(current)
+                    relative_dir = current_path.relative_to(web)
+                    directories[:] = sorted(
+                        name
+                        for name in directories
+                        if name not in SITE_SNAPSHOT_IGNORED_DIRECTORIES
+                    )
+                    destination_dir = snapshot / relative_dir
+                    destination_dir.mkdir(parents=True, exist_ok=True)
+                    for name in sorted(files):
+                        source = current_path / name
+                        if is_atomic_staging_file(source):
+                            continue
+                        destination = destination_dir / name
+                        if source.is_symlink():
+                            destination.symlink_to(os.readlink(source))
+                        else:
+                            try:
+                                os.link(source, destination)
+                            except OSError as exc:
+                                if exc.errno != errno.EXDEV:
+                                    raise
+                                # Unit tests and callers may place ``web`` on a
+                                # different filesystem from the durable ops
+                                # directory. A byte copy preserves the same
+                                # immutable-snapshot contract in that case.
+                                shutil.copy2(source, destination)
+
+                # Link only the project identity needed by the CLI.  In
+                # particular, do not copy live .vercel/output caches or local
+                # environment files into the deploy input.
+                project_source = web / ".vercel" / "project.json"
+                project_destination = snapshot / ".vercel" / "project.json"
+                project_destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(project_source, project_destination)
+                break
+            except FileNotFoundError:
+                if attempt == 2:
+                    raise
+                time.sleep(0.02 * (attempt + 1))
+        yield snapshot
 
 
 @dataclasses.dataclass(frozen=True)
@@ -333,15 +406,14 @@ def site_tree_hash(web: Path) -> str:
             for path in sorted(item for item in web.rglob("*") if item.is_file()):
                 relative = path.relative_to(web)
                 if any(
-                    part in {".vercel", ".git", "node_modules"}
-                    for part in relative.parts
+                    part in SITE_SNAPSHOT_IGNORED_DIRECTORIES for part in relative.parts
                 ):
                     continue
                 # Atomic publishers stage dot-prefixed ``*.tmp`` files in the
                 # live tree before ``os.replace``.  Those files are neither
                 # public artifacts nor a stable part of a deployable snapshot;
                 # hashing them races their expected disappearance.
-                if path.name.startswith(".") and path.name.endswith(".tmp"):
+                if is_atomic_staging_file(path):
                     continue
                 digest.update(relative.as_posix().encode())
                 digest.update(b"\0")
@@ -1020,41 +1092,46 @@ def deploy_if_needed(
         state["site_status"] = "debouncing"
         return False, f"deploy debounced for {int(debounce_seconds - (now - first))}s"
 
-    verify_project_link(web)
-    output = runner(
-        [
-            "vercel",
-            "deploy",
-            "--prod",
-            "--yes",
-            "--scope",
-            VERCEL_SCOPE,
-        ],
-        web,
-    )
-    urls = re.findall(r"https://[A-Za-z0-9.-]+\.vercel\.app", output)
-    deployment_url = next(
-        (url for url in urls if "-alienkevins-projects.vercel.app" in url),
-        urls[0] if urls else None,
-    )
-    if not deployment_url:
-        raise RuntimeError("Vercel deploy succeeded without a deployment URL")
-    runner(
-        [
-            "vercel",
-            "alias",
-            "set",
-            deployment_url,
-            "g1-sprint.vercel.app",
-            "--scope",
-            VERCEL_SCOPE,
-        ],
-        web,
-    )
+    with staged_site_snapshot(web) as deployable_web:
+        verify_project_link(deployable_web)
+        deployed_hash = site_tree_hash(deployable_web)
+        deployed_artifacts = public_artifact_hashes(deployable_web)
+        output = runner(
+            [
+                "vercel",
+                "deploy",
+                "--prod",
+                "--yes",
+                "--scope",
+                VERCEL_SCOPE,
+            ],
+            deployable_web,
+        )
+        urls = re.findall(r"https://[A-Za-z0-9.-]+\.vercel\.app", output)
+        deployment_url = next(
+            (url for url in urls if "-alienkevins-projects.vercel.app" in url),
+            urls[0] if urls else None,
+        )
+        if not deployment_url:
+            raise RuntimeError("Vercel deploy succeeded without a deployment URL")
+        runner(
+            [
+                "vercel",
+                "alias",
+                "set",
+                deployment_url,
+                "g1-sprint.vercel.app",
+                "--scope",
+                VERCEL_SCOPE,
+            ],
+            deployable_web,
+        )
     state.update(
         {
-            "last_deployed_site_hash": current_hash,
-            "last_deployed_public_artifacts": public_artifact_hashes(web),
+            # These proofs describe the exact immutable tree Vercel received,
+            # even if a live telemetry writer publishes newer data meanwhile.
+            "last_deployed_site_hash": deployed_hash,
+            "last_deployed_public_artifacts": deployed_artifacts,
             "pending_site_hash": None,
             "site_change_first_seen_at": None,
             "site_status": "deployed",

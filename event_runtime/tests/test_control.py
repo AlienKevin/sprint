@@ -2791,6 +2791,82 @@ while True:
             )
             self.assertEqual(state["production_alias"], "https://g1-sprint.vercel.app")
 
+    def test_vercel_deploy_uses_immutable_snapshot_of_live_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            web = root / "web"
+            artifact = web / "data" / "timelines" / "run.json"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text('{"version": "before"}\n')
+            unpublished = artifact.parent / ".run.json.publisher.tmp"
+            unpublished.write_text("partial")
+            (web / ".vercel").mkdir()
+            (web / ".vercel" / "project.json").write_text(
+                json.dumps(
+                    {
+                        "projectId": frontier_update.PROJECT_ID,
+                        "orgId": frontier_update.ORG_ID,
+                        "projectName": "sprint",
+                    }
+                )
+            )
+            (web / ".vercel" / ".env.production.local").write_text(
+                "PRIVATE_VALUE=must-not-be-staged\n"
+            )
+            expected_hash = frontier_update.site_tree_hash(web)
+            expected_artifacts = frontier_update.public_artifact_hashes(web)
+            state = {
+                "last_deployed_site_hash": "old",
+                "pending_site_hash": expected_hash,
+                "site_change_first_seen_at": "2026-08-08T00:00:00Z",
+            }
+            working_directories: list[Path] = []
+
+            def runner(command, cwd):
+                self.assertIsNotNone(cwd)
+                snapshot = Path(cwd)
+                working_directories.append(snapshot)
+                self.assertNotEqual(snapshot, web)
+                self.assertEqual(
+                    (snapshot / "data/timelines/run.json").read_text(),
+                    '{"version": "before"}\n',
+                )
+                self.assertFalse(
+                    (snapshot / "data/timelines/.run.json.publisher.tmp").exists()
+                )
+                self.assertFalse((snapshot / ".vercel/.env.production.local").exists())
+                if command[1] == "deploy":
+                    replacement = artifact.parent / ".replacement.tmp"
+                    replacement.write_text('{"version": "after"}\n')
+                    os.replace(replacement, artifact)
+                    self.assertEqual(
+                        (snapshot / "data/timelines/run.json").read_text(),
+                        '{"version": "before"}\n',
+                    )
+                    return "https://sprint-live-alienkevins-projects.vercel.app"
+                return "Success"
+
+            with mock.patch.object(
+                frontier_update, "PIPELINE_LOCK", root / "ops" / "pipeline.lock"
+            ):
+                deployed, _ = frontier_update.deploy_if_needed(
+                    state,
+                    web=web,
+                    now=1786224000,
+                    debounce_seconds=0,
+                    runner=runner,
+                )
+
+            self.assertTrue(deployed)
+            self.assertEqual(len(working_directories), 2)
+            self.assertEqual(working_directories[0], working_directories[1])
+            self.assertFalse(working_directories[0].exists())
+            self.assertEqual(state["last_deployed_site_hash"], expected_hash)
+            self.assertEqual(
+                state["last_deployed_public_artifacts"], expected_artifacts
+            )
+            self.assertNotEqual(frontier_update.site_tree_hash(web), expected_hash)
+
 
 if __name__ == "__main__":
     unittest.main()
