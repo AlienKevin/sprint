@@ -53,6 +53,11 @@ POLL_SECONDS = 30
 DEFAULT_WAIT_SECONDS = 3 * 60 * 60
 BUDGET_PULSE_MAX_UPSTREAM_AGE_SECONDS = 60.0
 BUDGET_PULSE_MAX_CLOCK_SKEW_SECONDS = 60.0
+# A fresh Modal sandbox starts the ledger proxy/watchdog before Codex, but the
+# first host pulse can race the watchdog's first atomic snapshot.  Represent
+# that bounded interval explicitly; after it expires the same absence is a
+# fail-closed infrastructure error.
+BUDGET_PULSE_STARTUP_GRACE_SECONDS = 60.0
 DURABLE_TRACE_LIVE_SYNC_TIMEOUT_SECONDS = 60
 DURABLE_TRACE_FINAL_SYNC_TIMEOUT_SECONDS = 300
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,80}$")
@@ -1620,8 +1625,7 @@ def run_usage_audit_ready(
             "run usage audit does not use the configured OpenRouter benchmark cost"
         )
     provider_billing_reconciled = bool(
-        openrouter_list_price
-        and audit.get("provider_billing_reconciled") is True
+        openrouter_list_price and audit.get("provider_billing_reconciled") is True
     )
     for index, request in enumerate(requests, start=1):
         if not isinstance(request, dict):
@@ -1722,12 +1726,8 @@ def provider_usage_ledger_settled(
                 and isinstance(
                     summary.get("provider_billed_model_api_usd"), (int, float)
                 )
-                and not isinstance(
-                    summary.get("provider_billed_model_api_usd"), bool
-                )
-                and math.isfinite(
-                    float(summary.get("provider_billed_model_api_usd"))
-                )
+                and not isinstance(summary.get("provider_billed_model_api_usd"), bool)
+                and math.isfinite(float(summary.get("provider_billed_model_api_usd")))
                 and float(summary.get("provider_billed_model_api_usd")) >= 0
                 and isinstance(summary.get("model_api_usd"), (int, float))
                 and not isinstance(summary.get("model_api_usd"), bool)
@@ -1793,9 +1793,7 @@ def final_conditions(
 ) -> tuple[bool, dict[str, bool], list[str]]:
     job, trial = discover_job_and_trial(state_dir, run)
     evaluation_result_policy = run.get("evaluation_result_policy")
-    archival_submissions = (
-        evaluation_result_policy == "all_blind_archival_submissions"
-    )
+    archival_submissions = evaluation_result_policy == "all_blind_archival_submissions"
     all_submissions = evaluation_result_policy in {
         "all_blind_submissions",
         "all_blind_archival_submissions",
@@ -2073,9 +2071,7 @@ def finalize(
             == UNIFIED_TIMELINE_SCHEMA_VERSION
             and (
                 not run.get("provider_usage_ledger_required")
-                or existing.get("conditions", {}).get(
-                    "provider_usage_ledger_settled"
-                )
+                or existing.get("conditions", {}).get("provider_usage_ledger_settled")
                 is True
             )
         ):
@@ -2094,9 +2090,9 @@ def finalize(
     if run.get("usage_audit_required"):
         sync_durable_trace(state_dir, run, force=True)
         reconstruct_codex_usage(state_dir, run)
-    if (
-        provider_usage_required or run.get("usage_audit_required")
-    ) and run.get("unified_timeline_required"):
+    if (provider_usage_required or run.get("usage_audit_required")) and run.get(
+        "unified_timeline_required"
+    ):
         build_unified_timeline(state_dir, run, upload=upload)
     if run.get("modal_billing_required"):
         # Do not declare a provider report complete while accepted verifier
@@ -2350,6 +2346,29 @@ def _budget_pulse_once_unlocked(
     ref = time.time() if now is None else float(now)
     canonical = fetch_budget_watchdog(state_dir, run)
     if not isinstance(canonical, dict) or canonical.get("schema_version") != 2:
+        created_at = parse_iso(run.get("created_at"))
+        startup_age = None if created_at is None else max(0.0, ref - created_at)
+        if (
+            startup_age is not None
+            and startup_age <= BUDGET_PULSE_STARTUP_GRACE_SECONDS
+        ):
+            result = {
+                "schema_version": 1,
+                "run_id": run_id,
+                "updated_at": utc_now(),
+                "status": "watchdog_starting",
+                "startup_age_seconds": round(startup_age, 3),
+                "startup_grace_seconds": BUDGET_PULSE_STARTUP_GRACE_SECONDS,
+                "source": "host_watchdog_startup_gate",
+                "gpu_mirror": "not_started",
+                "agent_mirror": "not_started",
+            }
+            atomic_write_json(
+                state_dir / "telemetry" / "budget-pulse.json",
+                result,
+                mode=0o600,
+            )
+            return result
         raise RuntimeError("budget pulse has no valid in-sandbox watchdog snapshot")
     if canonical.get("run_id") != run_id:
         raise RuntimeError("budget pulse watchdog run ID mismatch")
@@ -2389,9 +2408,7 @@ def _budget_pulse_once_unlocked(
         "interval_seconds": 15,
         "source": pulse_source,
     }
-    atomic_write_json(
-        state_dir / "telemetry" / "agent-cost.json", payload, mode=0o600
-    )
+    atomic_write_json(state_dir / "telemetry" / "agent-cost.json", payload, mode=0o600)
 
     from event_runtime.compute import worker as gpu_worker
 
@@ -2431,9 +2448,7 @@ def _budget_pulse_once_unlocked(
         "gpu_mirror": gpu_mirror.get("gpu_budget_mirror"),
         "agent_mirror": agent_mirror.get("agent_cost_mirror"),
     }
-    atomic_write_json(
-        state_dir / "telemetry" / "budget-pulse.json", result, mode=0o600
-    )
+    atomic_write_json(state_dir / "telemetry" / "budget-pulse.json", result, mode=0o600)
     return result
 
 

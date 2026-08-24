@@ -519,9 +519,7 @@ def _local_provider_billed_cost(run_id: str) -> tuple[float, int, str | None]:
     # metadata.  The proxy's durable summary is the authoritative independent
     # record of completed OpenRouter charges, so it must remain a valid audit
     # source across that replacement and during orderly shutdown.
-    summary_path = (
-        state_dir / "provider-api-usage" / "api-usage" / "summary.json"
-    )
+    summary_path = state_dir / "provider-api-usage" / "api-usage" / "summary.json"
     try:
         summary = json.loads(summary_path.read_text())
         if summary.get("schema_version") != 2 or summary.get("run_id") != run_id:
@@ -541,9 +539,7 @@ def _local_provider_billed_cost(run_id: str) -> tuple[float, int, str | None]:
             and summary_pending >= 0
             and summary_as_of
         ):
-            candidates.append(
-                (summary_cost, summary_pending, str(summary_as_of))
-            )
+            candidates.append((summary_cost, summary_pending, str(summary_as_of)))
 
     if not candidates:
         return 0.0, 0, None
@@ -574,7 +570,10 @@ def _generation_usage_payload(generation: dict[str, Any]) -> dict[str, Any]:
             )
         values.append(int(value))
     input_tokens, cached_tokens, output_tokens = values
-    if min(input_tokens, cached_tokens, output_tokens) < 0 or cached_tokens > input_tokens:
+    if (
+        min(input_tokens, cached_tokens, output_tokens) < 0
+        or cached_tokens > input_tokens
+    ):
         raise OpenRouterManagementError(
             "generation audit had inconsistent native token counts"
         )
@@ -588,9 +587,7 @@ def _generation_usage_payload(generation: dict[str, Any]) -> dict[str, Any]:
         "output_tokens_details": {"reasoning_tokens": 0},
         "total_tokens": input_tokens + output_tokens,
         "cost": float(generation["total_cost"]),
-        "cost_details": {
-            "upstream_inference_cost": float(generation["total_cost"])
-        },
+        "cost_details": {"upstream_inference_cost": float(generation["total_cost"])},
     }
 
 
@@ -680,7 +677,9 @@ def reconcile_openrouter_child_ledger(
     try:
         summary = json.loads(summary_path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
-        raise OpenRouterManagementError("provider ledger summary was unavailable") from exc
+        raise OpenRouterManagementError(
+            "provider ledger summary was unavailable"
+        ) from exc
     if summary.get("schema_version") != 2 or summary.get("run_id") != run_id:
         raise OpenRouterManagementError("provider ledger summary identity mismatch")
     request_paths = sorted(requests_dir.glob("*.json"))
@@ -689,7 +688,9 @@ def reconcile_openrouter_child_ledger(
         try:
             record = json.loads(path.read_text())
         except (OSError, json.JSONDecodeError) as exc:
-            raise OpenRouterManagementError("provider ledger record was invalid") from exc
+            raise OpenRouterManagementError(
+                "provider ledger record was invalid"
+            ) from exc
         if record.get("state") in {"in_flight", "cost_recovery_required"}:
             pending_records.append((path, record))
     if not pending_records:
@@ -699,9 +700,7 @@ def reconcile_openrouter_child_ledger(
     # Named generations must be recovered before deciding whether any
     # generation-less request was billed. The child-key delta after all named
     # charges is the only sound evidence that those unnamed requests cost zero.
-    pending_records.sort(
-        key=lambda item: 0 if item[1].get("generation_id") else 1
-    )
+    pending_records.sort(key=lambda item: 0 if item[1].get("generation_id") else 1)
     replacements: dict[str, dict[str, Any]] = {}
     recovered_provider_total = 0.0
     for path, original in pending_records:
@@ -757,9 +756,9 @@ def reconcile_openrouter_child_ledger(
                     "promotion_discount_fraction": (
                         record.get("promotion_snapshot") or {}
                     ).get("discount_fraction"),
-                    "cost_basis": (
-                        record.get("promotion_snapshot") or {}
-                    ).get("cost_basis", BENCHMARK_COST_BASIS),
+                    "cost_basis": (record.get("promotion_snapshot") or {}).get(
+                        "cost_basis", BENCHMARK_COST_BASIS
+                    ),
                     "provider_cost_basis": PROVIDER_COST_BASIS,
                     "usage": usage,
                     "generation_audit": generation,
@@ -845,13 +844,43 @@ def audit_openrouter_child_usage(
                 arm["run_id"]
             )
             if local_as_of is None:
+                launched_at = arm.get("launched_at")
+                try:
+                    startup_age = (now - parse_time(str(launched_at))).total_seconds()
+                except (TypeError, ValueError):
+                    startup_age = None
+                if (
+                    arm.get("status") in {"launching", "running"}
+                    and startup_age is not None
+                    and 0 <= startup_age < OPENROUTER_USAGE_AUDIT_GRACE_SECONDS
+                ):
+                    audit = arm.setdefault("openrouter_usage_audit", {})
+                    audit.update(
+                        {
+                            "checked_at": utc_now(),
+                            "key_usage_usd": upstream_usage,
+                            "ledger_provider_billed_usd": None,
+                            "unreconciled_usd": upstream_usage,
+                            "pending_request_count": None,
+                            "ledger_as_of": None,
+                            "reconciliation_deferred": (
+                                "trusted_proxy_ledger_starting"
+                            ),
+                            "startup_age_seconds": round(startup_age, 3),
+                        }
+                    )
+                    continue
                 raise OpenRouterManagementError(
                     "trusted proxy usage ledger was unavailable"
                 )
             if not math.isfinite(upstream_usage) or upstream_usage < 0:
                 raise OpenRouterManagementError("API key usage was invalid")
-            if pending > 0 and arm_terminal(arm) and reconcile_openrouter_child_ledger(
-                arm, client, upstream_usage=upstream_usage
+            if (
+                pending > 0
+                and arm_terminal(arm)
+                and reconcile_openrouter_child_ledger(
+                    arm, client, upstream_usage=upstream_usage
+                )
             ):
                 local_usage, pending, local_as_of = _local_provider_billed_cost(
                     arm["run_id"]
@@ -881,6 +910,7 @@ def audit_openrouter_child_usage(
         if delta <= OPENROUTER_USAGE_AUDIT_TOLERANCE_USD:
             audit.pop("mismatch_first_seen_at", None)
             audit.pop("reconciliation_deferred", None)
+            audit.pop("startup_age_seconds", None)
             resolve_alerts(
                 payload,
                 run_id=arm["run_id"],
@@ -902,9 +932,7 @@ def audit_openrouter_child_usage(
         # trusted counter.
         if pending > 0:
             audit.pop("mismatch_first_seen_at", None)
-            audit["reconciliation_deferred"] = (
-                "trusted_proxy_request_in_flight"
-            )
+            audit["reconciliation_deferred"] = "trusted_proxy_request_in_flight"
             continue
         audit.pop("reconciliation_deferred", None)
         first = audit.setdefault("mismatch_first_seen_at", utc_now())
@@ -2568,9 +2596,7 @@ def monitor_cycle(
                     _, finalized_run = sprintctl.load_run(run_id)
                     finalized_current = bool(
                         finalized_marker.get("complete") is True
-                        and finalized_marker.get("integrity", {}).get(
-                            "schema_version"
-                        )
+                        and finalized_marker.get("integrity", {}).get("schema_version")
                         == 1
                         and finalized_marker.get("timeline_schema_version")
                         == sprintctl.UNIFIED_TIMELINE_SCHEMA_VERSION
@@ -2604,16 +2630,12 @@ def monitor_cycle(
             if finalized_current:
                 integrity = finalized_marker.get("integrity", {})
                 arm["integrity"] = integrity
-                arm["benchmark_valid"] = bool(
-                    integrity.get("benchmark_valid") is True
-                )
+                arm["benchmark_valid"] = bool(integrity.get("benchmark_valid") is True)
                 arm["replacement_required"] = bool(
                     integrity.get("replacement_required") is True
                 )
                 arm["status"] = (
-                    "finalized"
-                    if arm["benchmark_valid"]
-                    else "invalid_infrastructure"
+                    "finalized" if arm["benchmark_valid"] else "invalid_infrastructure"
                 )
                 if not arm["benchmark_valid"]:
                     arm["invalidated_reason"] = "invalid_infrastructure"
@@ -2759,9 +2781,7 @@ def stop_batch(batch_id: str, *, env_file: Path | None = None) -> dict[str, Any]
                 revoke_batch_credentials(payload, credential_env)
             except (KeyError, OSError, OpenRouterManagementError, ValueError) as exc:
                 payload["credential_status"] = "cleanup_error"
-                payload["credential_cleanup_errors"] = [
-                    f"{type(exc).__name__}: {exc}"
-                ]
+                payload["credential_cleanup_errors"] = [f"{type(exc).__name__}: {exc}"]
             atomic_json(path, payload)
 
         for arm in targets:

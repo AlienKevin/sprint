@@ -92,7 +92,7 @@ class DurableOpsTests(unittest.TestCase):
             native.chmod(0o755)
             delayed_setsid = fake_bin / "setsid"
             delayed_setsid.write_text(
-                "#!/usr/bin/env bash\nsleep 0.1\nexec /usr/bin/setsid \"$@\"\n"
+                '#!/usr/bin/env bash\nsleep 0.1\nexec /usr/bin/setsid "$@"\n'
             )
             delayed_setsid.chmod(0o755)
             env = os.environ.copy()
@@ -203,9 +203,7 @@ class DurableOpsTests(unittest.TestCase):
                 return {"agent_cost_mirror": "updated"}
 
             with (
-                mock.patch.object(
-                    sprintctl, "load_run", return_value=(state, run)
-                ),
+                mock.patch.object(sprintctl, "load_run", return_value=(state, run)),
                 mock.patch.object(
                     sprintctl, "file_lock", side_effect=serialized_cost_lock
                 ),
@@ -228,9 +226,7 @@ class DurableOpsTests(unittest.TestCase):
                     "mirror_agent_cost",
                     side_effect=mirror_agent,
                 ) as agent_mirror,
-                mock.patch.object(
-                    sprintctl, "enforce_agent_cost_budget"
-                ) as enforce,
+                mock.patch.object(sprintctl, "enforce_agent_cost_budget") as enforce,
             ):
                 payload = sprintctl.budget_pulse_once("pulse-run", now=1010.0)
 
@@ -244,9 +240,7 @@ class DurableOpsTests(unittest.TestCase):
             self.assertEqual(mirrored["as_of"], "1970-01-01T00:16:50Z")
             self.assertEqual(payload["total_usd"], 1.25)
             self.assertEqual(payload["upstream_watchdog_age_seconds"], 10.0)
-            persisted = json.loads(
-                (state / "telemetry/budget-pulse.json").read_text()
-            )
+            persisted = json.loads((state / "telemetry/budget-pulse.json").read_text())
             self.assertEqual(persisted["gpu_mirror"], "updated")
 
     def test_artifact_cost_refresh_releases_lock_before_fallback_mirrors(self) -> None:
@@ -256,7 +250,11 @@ class DurableOpsTests(unittest.TestCase):
             state = Path(raw)
             (state / "telemetry").mkdir()
             run = {"run_id": "serialized-run"}
-            payload = {"schema_version": 2, "run_id": "serialized-run", "total_usd": 2.0}
+            payload = {
+                "schema_version": 2,
+                "run_id": "serialized-run",
+                "total_usd": 2.0,
+            }
             held = False
 
             @contextlib.contextmanager
@@ -333,9 +331,9 @@ class DurableOpsTests(unittest.TestCase):
             agent_mirror.assert_not_called()
             gpu_mirror.assert_not_called()
             self.assertEqual(
-                json.loads(
-                    (state / "telemetry/agent-cost-mirror.json").read_text()
-                )["agent_cost_mirror"],
+                json.loads((state / "telemetry/agent-cost-mirror.json").read_text())[
+                    "agent_cost_mirror"
+                ],
                 "delegated_to_budget_pulse",
             )
 
@@ -378,6 +376,51 @@ class DurableOpsTests(unittest.TestCase):
                 ),
             ):
                 with self.assertRaisesRegex(RuntimeError, "snapshot is stale"):
+                    sprintctl.budget_pulse_once("pulse-run", now=1000.0)
+
+    def test_budget_pulse_reports_bounded_watchdog_startup_without_alert(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            run = {
+                "run_id": "pulse-run",
+                "created_at": "1970-01-01T00:16:30Z",
+            }
+            with (
+                mock.patch.object(sprintctl, "load_run", return_value=(state, run)),
+                mock.patch.object(
+                    sprintctl, "fetch_budget_watchdog", return_value=None
+                ),
+            ):
+                payload = sprintctl.budget_pulse_once("pulse-run", now=1000.0)
+
+            self.assertEqual(payload["status"], "watchdog_starting")
+            self.assertEqual(payload["startup_age_seconds"], 10.0)
+            self.assertEqual(payload["gpu_mirror"], "not_started")
+            self.assertEqual(
+                json.loads((state / "telemetry/budget-pulse.json").read_text()),
+                payload,
+            )
+
+    def test_budget_pulse_fails_closed_when_watchdog_misses_startup_deadline(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            run = {
+                "run_id": "pulse-run",
+                "created_at": "1970-01-01T00:15:00Z",
+            }
+            with (
+                mock.patch.object(sprintctl, "load_run", return_value=(state, run)),
+                mock.patch.object(
+                    sprintctl, "fetch_budget_watchdog", return_value=None
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError, "no valid in-sandbox watchdog"
+                ):
                     sprintctl.budget_pulse_once("pulse-run", now=1000.0)
 
     def test_budget_pulse_advances_host_mirror_during_supervised_retry_gap(
@@ -451,12 +494,8 @@ class DurableOpsTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as raw:
             state = Path(raw)
-            (state / "STOP_ACK.json").write_text(
-                json.dumps({"reason": "agent_exit"})
-            )
-            canonical = {
-                "components": {"model_api": {"pending_request_count": 0}}
-            }
+            (state / "STOP_ACK.json").write_text(json.dumps({"reason": "agent_exit"}))
+            canonical = {"components": {"model_api": {"pending_request_count": 0}}}
             lock_path = state / "supervise.lock"
             fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
             try:
@@ -467,9 +506,7 @@ class DurableOpsTests(unittest.TestCase):
                             state, {}, canonical
                         )
                     )
-                    canonical["components"]["model_api"][
-                        "pending_request_count"
-                    ] = 1
+                    canonical["components"]["model_api"]["pending_request_count"] = 1
                     self.assertFalse(
                         sprintctl._supervised_retry_gap_allows_host_pulse(
                             state, {}, canonical
@@ -562,9 +599,7 @@ class DurableOpsTests(unittest.TestCase):
     def test_recoverable_agent_exit_ack_does_not_close_run_services(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             state = Path(raw)
-            (state / "STOP_ACK.json").write_text(
-                json.dumps({"reason": "agent_exit"})
-            )
+            (state / "STOP_ACK.json").write_text(json.dumps({"reason": "agent_exit"}))
 
             self.assertFalse(sprintctl.terminal_stop_acknowledged(state))
 
@@ -576,9 +611,7 @@ class DurableOpsTests(unittest.TestCase):
     def test_budget_pulse_continues_after_recoverable_agent_exit_ack(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             state = Path(raw)
-            (state / "STOP_ACK.json").write_text(
-                json.dumps({"reason": "agent_exit"})
-            )
+            (state / "STOP_ACK.json").write_text(json.dumps({"reason": "agent_exit"}))
             run = {"run_id": "retry-run"}
 
             @contextlib.contextmanager
@@ -596,7 +629,9 @@ class DurableOpsTests(unittest.TestCase):
                 mock.patch.object(
                     sprintctl, "run_results_finished", return_value=False
                 ),
-                mock.patch.object(sprintctl, "budget_pulse_once", side_effect=pulse) as run_pulse,
+                mock.patch.object(
+                    sprintctl, "budget_pulse_once", side_effect=pulse
+                ) as run_pulse,
                 mock.patch.object(sprintctl.time, "sleep"),
             ):
                 self.assertEqual(sprintctl.budget_pulse_loop("retry-run", 15), 0)
@@ -624,7 +659,9 @@ class DurableOpsTests(unittest.TestCase):
             with (
                 mock.patch.object(sprintctl, "load_run", return_value=(state, run)),
                 mock.patch.object(sprintctl, "file_lock", side_effect=owned_lock),
-                mock.patch.object(sprintctl, "run_results_finished", return_value=False),
+                mock.patch.object(
+                    sprintctl, "run_results_finished", return_value=False
+                ),
                 mock.patch.object(gpu_worker, "dispatch_once", side_effect=dispatch),
                 mock.patch.object(sprintctl.time, "sleep"),
             ):
@@ -675,9 +712,7 @@ class DurableOpsTests(unittest.TestCase):
                 "checked_at_epoch_s": 1000.0,
             }
             local.write_text(json.dumps(canonical))
-            with mock.patch.object(
-                sprintctl, "fetch_remote_json", return_value=None
-            ):
+            with mock.patch.object(sprintctl, "fetch_remote_json", return_value=None):
                 observed = sprintctl.fetch_budget_watchdog(
                     state, {"run_id": "pulse-run"}
                 )
@@ -755,13 +790,9 @@ class DurableOpsTests(unittest.TestCase):
                     return '{"role":"training-gpu"}\n'
                 return None
 
-            with mock.patch.object(
-                sprintctl, "volume_get_text", side_effect=fetch
-            ):
+            with mock.patch.object(sprintctl, "volume_get_text", side_effect=fetch):
                 self.assertFalse(
-                    sprintctl.sync_durable_telemetry(
-                        state, run, max_age_seconds=300
-                    )
+                    sprintctl.sync_durable_telemetry(state, run, max_age_seconds=300)
                 )
 
             telemetry = state / "telemetry"
@@ -769,9 +800,7 @@ class DurableOpsTests(unittest.TestCase):
             stamp = json.loads((telemetry / "durable-sync.json").read_text())
             self.assertFalse(stamp["ok"])
             self.assertIn(f"{prefix}/samples.jsonl", stamp["errors"])
-            self.assertIn(
-                f"{prefix}/gpu-stream/samples.jsonl", stamp["sources"]
-            )
+            self.assertIn(f"{prefix}/gpu-stream/samples.jsonl", stamp["sources"])
 
     def test_final_sync_recovers_per_job_stream_missing_from_merge(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -971,21 +1000,15 @@ class DurableOpsTests(unittest.TestCase):
                 mock.patch.object(sprintctl, "harbor_alive", return_value=False),
                 mock.patch.object(sprintctl, "worker_alive", return_value=False),
             ):
-                _complete, conditions, _details = sprintctl.final_conditions(
-                    state, run
-                )
+                _complete, conditions, _details = sprintctl.final_conditions(state, run)
                 self.assertTrue(conditions["stop_ack"])
 
                 (state / "STOP_REQUESTED.json").write_text("{}\n")
-                _complete, conditions, _details = sprintctl.final_conditions(
-                    state, run
-                )
+                _complete, conditions, _details = sprintctl.final_conditions(state, run)
                 self.assertTrue(conditions["stop_ack"])
 
                 (job / "result.json").write_text("{}\n")
-                _complete, conditions, _details = sprintctl.final_conditions(
-                    state, run
-                )
+                _complete, conditions, _details = sprintctl.final_conditions(state, run)
                 self.assertFalse(conditions["stop_ack"])
 
     def test_finalization_rejects_forwarded_gpu_submission_missing_from_ledger(

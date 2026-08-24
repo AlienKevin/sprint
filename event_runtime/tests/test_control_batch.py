@@ -404,9 +404,7 @@ def test_codex_wrapper_selects_pinned_openai_catalog_slug(
     recorded_args = tmp_path / "args.txt"
     native = tmp_path / "codex-native"
     native.write_text(
-        "#!/usr/bin/env bash\n"
-        f"printf '%s\\n' \"$@\" > {recorded_args!s}\n"
-        "sleep 0.5\n"
+        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > {recorded_args!s}\nsleep 0.5\n"
     )
     native.chmod(0o755)
     apply = tmp_path / "apply-openai.sh"
@@ -656,6 +654,45 @@ def test_child_key_usage_audit_does_not_call_missing_ledger_a_bypass(
     assert "openrouter_usage_audit" not in payload["arms"][0]
 
 
+def test_child_key_usage_audit_defers_missing_ledger_during_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "arms": [
+            {
+                "run_id": "eval-luna-1",
+                "status": "running",
+                "launched_at": "2026-08-23T00:00:00Z",
+                "openrouter_credential": {"key_hash": "hash-1"},
+            }
+        ],
+        "alerts": [],
+    }
+
+    class Client:
+        def key_usage(self, key_hash: str) -> dict[str, float]:
+            assert key_hash == "hash-1"
+            return {"usage": 0.01}
+
+    monkeypatch.setattr(
+        batch_eval,
+        "_local_provider_billed_cost",
+        lambda _run_id: (0.0, 0, None),
+    )
+
+    alerts = batch_eval.audit_openrouter_child_usage(
+        payload,
+        Client(),
+        now=dt.datetime(2026, 8, 23, 0, 1, tzinfo=dt.timezone.utc),
+    )
+
+    assert alerts == []
+    audit = payload["arms"][0]["openrouter_usage_audit"]
+    assert audit["reconciliation_deferred"] == "trusted_proxy_ledger_starting"
+    assert audit["startup_age_seconds"] == 60.0
+    assert audit["key_usage_usd"] == 0.01
+
+
 def test_child_key_usage_audit_defers_while_proxy_request_is_in_flight(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -867,11 +904,14 @@ def test_child_key_usage_audit_resolves_prior_health_alert(
         lambda _run_id: (0.25, 0, "2026-08-23T00:00:00Z"),
     )
 
-    assert batch_eval.audit_openrouter_child_usage(
-        payload,
-        Client(),
-        now=dt.datetime(2026, 8, 23, 1, tzinfo=dt.timezone.utc),
-    ) == []
+    assert (
+        batch_eval.audit_openrouter_child_usage(
+            payload,
+            Client(),
+            now=dt.datetime(2026, 8, 23, 1, tzinfo=dt.timezone.utc),
+        )
+        == []
+    )
     assert payload["alerts"] == []
     assert payload["resolved_alerts"][0]["kind"] == "openrouter_key_usage_audit"
 

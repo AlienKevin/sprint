@@ -146,6 +146,192 @@ def seal_goal_tool_schema(payload: dict[str, Any]) -> None:
                 parameters["required"] = [
                     name for name in required if name != "token_budget"
                 ]
+            # Some routed models will still invent undeclared arguments.  The
+            # response-side guard below is the enforcement boundary, but a
+            # closed object schema prevents compliant providers from emitting
+            # the operator-only field in the first place.
+            parameters["additionalProperties"] = False
+
+
+def sanitize_goal_arguments(arguments: object) -> object:
+    """Strip the operator-only goal token budget from model output."""
+    if not isinstance(arguments, str):
+        return arguments
+    try:
+        payload = json.loads(arguments)
+    except json.JSONDecodeError:
+        return arguments
+    if not isinstance(payload, dict) or "token_budget" not in payload:
+        return arguments
+    payload.pop("token_budget", None)
+    return json.dumps(payload, separators=(",", ":"))
+
+
+def sanitize_goal_tool_calls(payload: object) -> object:
+    """Rewrite complete Responses objects at the trusted proxy boundary."""
+    if isinstance(payload, list):
+        for item in payload:
+            sanitize_goal_tool_calls(item)
+        return payload
+    if not isinstance(payload, dict):
+        return payload
+    if payload.get("type") == "function_call" and payload.get("name") == "create_goal":
+        payload["arguments"] = sanitize_goal_arguments(payload.get("arguments"))
+    for value in payload.values():
+        sanitize_goal_tool_calls(value)
+    return payload
+
+
+class GoalToolStreamSanitizer:
+    """Buffer only ``create_goal`` argument deltas and emit sealed JSON.
+
+    Codex executes tool calls from streamed Responses events.  Editing the
+    advertised schema is therefore insufficient: a model may hallucinate an
+    undeclared ``token_budget`` and Codex's local tool will accept it.  This
+    state machine withholds only that tool's argument deltas until its done
+    event, then emits one sanitized delta plus sanitized terminal events.  All
+    reasoning, text, and unrelated tool events remain fully streaming.
+    """
+
+    def __init__(self) -> None:
+        self._tracked_ids: set[str] = set()
+        self._tracked_indexes: set[int] = set()
+        self._arguments: dict[str, list[str]] = {}
+        self._delta_templates: dict[str, dict[str, Any]] = {}
+        self._emitted: set[str] = set()
+
+    @staticmethod
+    def _event_key(event: dict[str, Any]) -> str | None:
+        item_id = event.get("item_id")
+        if isinstance(item_id, str) and item_id:
+            return f"id:{item_id}"
+        item = event.get("item")
+        if isinstance(item, dict):
+            item_id = item.get("id")
+            if isinstance(item_id, str) and item_id:
+                return f"id:{item_id}"
+        index = event.get("output_index")
+        if isinstance(index, int) and not isinstance(index, bool):
+            return f"index:{index}"
+        return None
+
+    def _is_tracked(self, event: dict[str, Any]) -> bool:
+        item_id = event.get("item_id")
+        index = event.get("output_index")
+        return bool(
+            (isinstance(item_id, str) and item_id in self._tracked_ids)
+            or (
+                isinstance(index, int)
+                and not isinstance(index, bool)
+                and index in self._tracked_indexes
+            )
+        )
+
+    def _track(self, event: dict[str, Any], item: dict[str, Any]) -> None:
+        item_id = item.get("id")
+        if isinstance(item_id, str) and item_id:
+            self._tracked_ids.add(item_id)
+        index = event.get("output_index")
+        if isinstance(index, int) and not isinstance(index, bool):
+            self._tracked_indexes.add(index)
+
+    def rewrite_event(self, event: dict[str, Any]) -> list[dict[str, Any]]:
+        event_type = event.get("type")
+        item = event.get("item")
+        if (
+            event_type == "response.output_item.added"
+            and isinstance(item, dict)
+            and item.get("type") == "function_call"
+            and item.get("name") == "create_goal"
+        ):
+            self._track(event, item)
+            sanitize_goal_tool_calls(event)
+            return [event]
+
+        if event_type == "response.function_call_arguments.delta" and self._is_tracked(
+            event
+        ):
+            key = self._event_key(event)
+            delta = event.get("delta")
+            if key is not None and isinstance(delta, str):
+                self._arguments.setdefault(key, []).append(delta)
+                self._delta_templates[key] = dict(event)
+            return []
+
+        if event_type == "response.function_call_arguments.done" and self._is_tracked(
+            event
+        ):
+            key = self._event_key(event)
+            raw = event.get("arguments")
+            if not isinstance(raw, str) and key is not None:
+                raw = "".join(self._arguments.get(key, []))
+            sealed = sanitize_goal_arguments(raw)
+            event["arguments"] = sealed
+            emitted: list[dict[str, Any]] = []
+            if key is not None and key not in self._emitted and isinstance(sealed, str):
+                delta_event = dict(self._delta_templates.get(key, {}))
+                for key_name in ("item_id", "output_index"):
+                    if key_name not in delta_event and key_name in event:
+                        delta_event[key_name] = event[key_name]
+                delta_event["type"] = "response.function_call_arguments.delta"
+                delta_event["delta"] = sealed
+                delta_event.pop("arguments", None)
+                emitted.append(delta_event)
+                self._emitted.add(key)
+            emitted.append(event)
+            return emitted
+
+        if event_type == "response.output_item.done" and isinstance(item, dict):
+            tracked = self._is_tracked(event) or (
+                item.get("type") == "function_call"
+                and item.get("name") == "create_goal"
+            )
+            if tracked:
+                self._track(event, item)
+                key = self._event_key(event)
+                sealed = sanitize_goal_arguments(item.get("arguments"))
+                item["arguments"] = sealed
+                emitted = []
+                if (
+                    key is not None
+                    and key not in self._emitted
+                    and isinstance(sealed, str)
+                ):
+                    delta_event = {
+                        key_name: event[key_name]
+                        for key_name in ("sequence_number", "output_index")
+                        if key_name in event
+                    }
+                    item_id = item.get("id")
+                    if isinstance(item_id, str):
+                        delta_event["item_id"] = item_id
+                    delta_event.update(
+                        {
+                            "type": "response.function_call_arguments.delta",
+                            "delta": sealed,
+                        }
+                    )
+                    emitted.append(delta_event)
+                    self._emitted.add(key)
+                emitted.append(event)
+                return emitted
+
+        sanitize_goal_tool_calls(event)
+        return [event]
+
+    def rewrite_line(self, line: bytes) -> list[bytes]:
+        if not line.startswith(b"data: ") or line == b"data: [DONE]":
+            return [line]
+        try:
+            event = json.loads(line[6:])
+        except json.JSONDecodeError:
+            return [line]
+        if not isinstance(event, dict):
+            return [line]
+        return [
+            b"data: " + json.dumps(item, separators=(",", ":")).encode()
+            for item in self.rewrite_event(event)
+        ]
 
 
 def pin_provider_route(
@@ -423,40 +609,73 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
             terminal_usage: dict[str, Any] | None = None
             terminal_response: dict[str, Any] = {}
             downstream_open = True
+            is_event_stream = "text/event-stream" in content_type
+            goal_stream = GoalToolStreamSanitizer() if is_event_stream else None
             while True:
                 chunk = upstream.read(64 * 1024)
                 if not chunk:
                     break
-                if downstream_open:
+                if downstream_open and (not record_usage or not is_event_stream):
                     try:
-                        self.wfile.write(chunk)
-                        self.wfile.flush()
+                        # Non-stream ledger responses are buffered below so a
+                        # complete function-call object can be sealed before
+                        # Codex sees it. Unmetered passthroughs remain raw.
+                        if not record_usage:
+                            self.wfile.write(chunk)
+                            self.wfile.flush()
                     except (BrokenPipeError, ConnectionResetError, OSError):
                         downstream_open = False
                 if not record_usage:
                     continue
-                if "text/event-stream" in content_type:
+                if is_event_stream:
                     line_buffer.extend(chunk)
                     while b"\n" in line_buffer:
                         raw_line, _, remainder = line_buffer.partition(b"\n")
                         line_buffer = bytearray(remainder)
                         line = raw_line.rstrip(b"\r")
-                        if not line.startswith(b"data: ") or line == b"data: [DONE]":
-                            continue
-                        try:
-                            event = json.loads(line[6:])
-                        except json.JSONDecodeError:
-                            continue
-                        usage, response = usage_from_event(event)
-                        if usage is not None:
-                            terminal_usage, terminal_response = usage, response
+                        if line.startswith(b"data: ") and line != b"data: [DONE]":
+                            try:
+                                event = json.loads(line[6:])
+                            except json.JSONDecodeError:
+                                event = None
+                            usage, response = usage_from_event(event)
+                            if usage is not None:
+                                terminal_usage, terminal_response = usage, response
+                        rewritten = (
+                            goal_stream.rewrite_line(line) if goal_stream else [line]
+                        )
+                        if downstream_open:
+                            try:
+                                for output_line in rewritten:
+                                    self.wfile.write(output_line + b"\n")
+                                self.wfile.flush()
+                            except (BrokenPipeError, ConnectionResetError, OSError):
+                                downstream_open = False
                 else:
                     response_buffer.extend(chunk)
-            if record_usage and "text/event-stream" not in content_type:
+            if record_usage and is_event_stream and line_buffer and downstream_open:
+                try:
+                    for output_line in goal_stream.rewrite_line(bytes(line_buffer)):
+                        self.wfile.write(output_line)
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    downstream_open = False
+            if record_usage and not is_event_stream:
                 try:
                     event = json.loads(response_buffer)
                 except json.JSONDecodeError:
                     event = None
+                if isinstance(event, dict):
+                    sanitize_goal_tool_calls(event)
+                    response_buffer = bytearray(
+                        json.dumps(event, separators=(",", ":")).encode()
+                    )
+                if downstream_open:
+                    try:
+                        self.wfile.write(response_buffer)
+                        self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        downstream_open = False
                 terminal_usage, terminal_response = usage_from_event(event)
 
             if record_usage:
@@ -890,8 +1109,7 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
                                 "provider_reported_cost_usd": provider_cost,
                                 "undiscounted_cost_usd": list_cost,
                                 "benchmark_cost_usd": benchmark_cost,
-                                "promotion_adjustment_usd": list_cost
-                                - provider_cost,
+                                "promotion_adjustment_usd": list_cost - provider_cost,
                                 "deepseek_peak_adjustment_usd": benchmark_cost
                                 - list_cost,
                                 "benchmark_adjustment_usd": benchmark_cost

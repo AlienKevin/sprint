@@ -132,10 +132,108 @@ def test_proxy_removes_model_controlled_goal_token_budget(tool: dict) -> None:
     schema = goal.get("parameters") or goal["function"]["parameters"]
     assert "token_budget" not in schema["properties"]
     assert "token_budget" not in schema.get("required", [])
-    assert (
-        payload["tools"][1]["parameters"]["properties"]["token_budget"]
-        == {"type": "integer"}
+    assert schema["additionalProperties"] is False
+    assert payload["tools"][1]["parameters"]["properties"]["token_budget"] == {
+        "type": "integer"
+    }
+
+
+def test_proxy_strips_hallucinated_goal_budget_from_streamed_tool_call() -> None:
+    sanitizer = proxy.GoalToolStreamSanitizer()
+    events = [
+        {
+            "type": "response.output_item.added",
+            "sequence_number": 1,
+            "output_index": 0,
+            "item": {
+                "id": "fc_goal",
+                "type": "function_call",
+                "name": "create_goal",
+                "arguments": "",
+            },
+        },
+        {
+            "type": "response.function_call_arguments.delta",
+            "sequence_number": 2,
+            "output_index": 0,
+            "item_id": "fc_goal",
+            "delta": '{"objective":"keep working",',
+        },
+        {
+            "type": "response.function_call_arguments.delta",
+            "sequence_number": 3,
+            "output_index": 0,
+            "item_id": "fc_goal",
+            "delta": '"token_budget":1}',
+        },
+        {
+            "type": "response.function_call_arguments.done",
+            "sequence_number": 4,
+            "output_index": 0,
+            "item_id": "fc_goal",
+            "arguments": '{"objective":"keep working","token_budget":1}',
+        },
+        {
+            "type": "response.output_item.done",
+            "sequence_number": 5,
+            "output_index": 0,
+            "item": {
+                "id": "fc_goal",
+                "type": "function_call",
+                "name": "create_goal",
+                "arguments": '{"objective":"keep working","token_budget":1}',
+            },
+        },
+    ]
+
+    rewritten = []
+    for event in events:
+        rewritten.extend(sanitizer.rewrite_event(event))
+
+    deltas = [
+        event["delta"]
+        for event in rewritten
+        if event.get("type") == "response.function_call_arguments.delta"
+    ]
+    assert deltas == ['{"objective":"keep working"}']
+    terminal_arguments = [
+        event["arguments"]
+        for event in rewritten
+        if event.get("type") == "response.function_call_arguments.done"
+    ]
+    terminal_arguments.extend(
+        event["item"]["arguments"]
+        for event in rewritten
+        if event.get("type") == "response.output_item.done"
     )
+    assert terminal_arguments == [
+        '{"objective":"keep working"}',
+        '{"objective":"keep working"}',
+    ]
+    assert all("token_budget" not in value for value in terminal_arguments)
+
+
+def test_proxy_strips_goal_budget_from_nonstream_response() -> None:
+    payload = {
+        "id": "response-1",
+        "output": [
+            {
+                "type": "function_call",
+                "name": "create_goal",
+                "arguments": '{"objective":"continue","token_budget":1}',
+            },
+            {
+                "type": "function_call",
+                "name": "exec_command",
+                "arguments": '{"token_budget":1}',
+            },
+        ],
+    }
+
+    proxy.sanitize_goal_tool_calls(payload)
+
+    assert payload["output"][0]["arguments"] == '{"objective":"continue"}'
+    assert payload["output"][1]["arguments"] == '{"token_budget":1}'
 
 
 def test_chat_completions_contract_is_sealed_and_usage_is_forced() -> None:
@@ -721,9 +819,7 @@ def test_proxy_health_blocks_startup_while_prior_charge_is_unknown(
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        client = http.client.HTTPConnection(
-            "127.0.0.1", server.server_port, timeout=5
-        )
+        client = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
         client.request("GET", "/healthz")
         response = client.getresponse()
         assert response.status == 503
@@ -737,9 +833,7 @@ def test_proxy_health_blocks_startup_while_prior_charge_is_unknown(
             "cost_recovery_required_count": 1,
         }
 
-        client = http.client.HTTPConnection(
-            "127.0.0.1", server.server_port, timeout=5
-        )
+        client = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
         client.request("GET", "/ledger-status")
         response = client.getresponse()
         assert response.status == 200
@@ -845,9 +939,7 @@ def test_proxy_restart_recovers_exact_generation_before_becoming_ready(
 
 
 def test_codex_wrapper_drains_proxy_and_persists_unrecoverable_stop() -> None:
-    source = (
-        ROOT / "event_runtime/container/sprint-codex-exec-wrapper.sh"
-    ).read_text()
+    source = (ROOT / "event_runtime/container/sprint-codex-exec-wrapper.sh").read_text()
 
     assert 'url = f"{base.scheme}://{base.netloc}/ledger-status"' in source
     assert "OPENROUTER_PROXY_DRAIN_TIMEOUT_SECONDS" in source
