@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="description" content="Inspect agent reasoning, messages, tools, observations, timing, and token usage for every Agents' 100m trial.">
   <title>Agents' 100m · Agent trajectory</title>
-  <link rel="stylesheet" href="/trajectory.css?v=20260824-13">
+  <link rel="stylesheet" href="/trajectory.css?v=20260824-15">
 </head>
 <body>
   <header class="viewer-nav">
@@ -29,30 +29,28 @@
             <span class="model-dot"></span>
             <div><strong id="run-model">—</strong><small id="run-id">—</small></div>
           </div>
-          <p id="utilization-status" class="utilization-status">Loading utilization…</p>
-        </header>
-        <div class="utilization-meta">
-          <label class="run-picker pulse-run-picker"><span>Trial</span><select id="run"><option>Loading trajectories…</option></select></label>
           <dl class="pulse-stats" aria-live="polite">
             <div><dt>Elapsed</dt><dd id="summary-duration">—</dd></div>
             <div><dt>Steps</dt><dd id="summary-steps">—</dd></div>
             <div><dt>Tools</dt><dd id="summary-tools">—</dd></div>
             <div><dt>Cost</dt><dd id="summary-cost">—</dd></div>
           </dl>
-        </div>
+          <p id="utilization-status" class="sr-only" aria-live="polite">Loading utilization…</p>
+        </header>
+        <label class="run-picker" hidden><span>Trial</span><select id="run"><option>Loading trajectories…</option></select></label>
         <div class="utilization-title-row">
           <div><p class="eyebrow">RUN PULSE</p><h2 id="utilization-title">Resources alongside the trace</h2></div>
           <span id="utilization-mode">select to jump</span>
         </div>
         <div id="utilization-stage" class="utilization-stage">
-          <canvas id="utilization-chart" height="126" tabindex="0" role="img" aria-label="Agent CPU and training GPU utilization over the run. Select a point to jump to the nearest agent step."></canvas>
+          <canvas id="utilization-chart" height="126" tabindex="0" role="img" aria-label="Agent CPU, training GPU, tool calls, and resource events over the run. Select a point to jump to the nearest agent step."></canvas>
           <div id="utilization-tip" class="utilization-tip" hidden></div>
+          <button id="utilization-toggle" class="utilization-toggle" type="button" aria-expanded="false" aria-controls="utilization-stage" aria-label="Expand resource details" title="Expand resource details" disabled></button>
         </div>
         <footer class="utilization-footer">
           <span><i class="pulse-dot cpu"></i>CPU</span>
           <span><i class="pulse-dot training"></i>Train GPU</span>
           <span><i class="pulse-dot tools"></i>Tools</span>
-          <button id="utilization-toggle" class="utilization-toggle" type="button" aria-expanded="false" aria-controls="utilization-stage" disabled>Expand details</button>
         </footer>
       </section>
     </aside>
@@ -74,6 +72,6 @@
   </main>
 
   <script src="/trajectory.js?v=20260824-9"></script>
-  <script src="/trajectory-overview.js?v=20260824-4"></script>
+  <script src="/trajectory-overview.js?v=20260824-5"></script>
 </body>
 </html>

@@ -48,7 +48,7 @@
     return `${minutes}m ${String(seconds % 60).padStart(2, '0')}s`;
   };
   const activeLanes = () => state.expanded ? detailedLanes : compactLanes;
-  const chartHeight = () => state.docked ? 94 : state.expanded ? 215 : 126;
+  const chartHeight = () => state.expanded ? 215 : state.docked ? 94 : 126;
   const bounds = () => ({x0: 82, x1: Math.max(100, canvas.clientWidth - 12)});
   const xFor = epoch => {
     const clock = state.timeline.clock;
@@ -151,7 +151,7 @@
     const eventY = laneTop + lanes.length * laneHeight + 8;
     ctx.fillStyle = colors.muted;
     ctx.font = '8px ui-monospace, monospace';
-    ctx.fillText('ACTIVITY', 10, eventY + 11);
+    ctx.fillText('TOOLS + EVENTS', 10, eventY + 11);
     const buckets = state.timeline.tool_call_buckets?.buckets || [];
     const maxTools = Math.max(1, ...buckets.map(bucket => Number(bucket.total) || 0));
     for (const bucket of buckets) {
@@ -315,12 +315,14 @@
   function setExpanded(expanded) {
     state.expanded = expanded;
     toggle.setAttribute('aria-expanded', String(state.expanded));
-    toggle.textContent = state.expanded ? 'Collapse details' : 'Expand details';
+    toggle.setAttribute('aria-label', state.expanded ? 'Collapse resource details' : 'Expand resource details');
+    toggle.title = state.expanded ? 'Collapse resource details' : 'Expand resource details';
     overview.classList.toggle('is-expanded', state.expanded);
+    document.body.classList.toggle('pulse-expanded', state.expanded);
     mode.textContent = state.expanded ? 'full resource detail' : 'select to jump';
     canvas.setAttribute('aria-label', state.expanded
-      ? 'Detailed agent CPU, training GPU, training memory, and tool activity timeline. Select a point to jump to the nearest agent step.'
-      : 'Agent CPU and training GPU utilization over the run. Select a point to jump to the nearest agent step.');
+      ? 'Detailed agent CPU, training GPU, training memory, tool calls, and resource events over the run. Select a point to jump to the nearest agent step.'
+      : 'Agent CPU, training GPU, tool calls, and resource events over the run. Select a point to jump to the nearest agent step.');
     resize();
   }
   function setDocked(docked) {
