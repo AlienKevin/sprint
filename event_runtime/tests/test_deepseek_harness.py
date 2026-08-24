@@ -101,6 +101,18 @@ def test_image_pins_runtime_and_sdk_versions() -> None:
     ).read_text()
     assert "ARG DEEPSEEK_HARNESS_VERSION=0.1.1-rc.2" in dockerfile
     assert '"deepseek-harness-sdk==0.1.1rc1"' in dockerfile
+    manifest = json.loads(
+        (
+            ROOT
+            / "events/g1-100-metres/environment/deepseek-harness-node/package.json"
+        ).read_text()
+    )
+    lock = json.loads(
+        (
+            ROOT
+            / "events/g1-100-metres/environment/deepseek-harness-node/package-lock.json"
+        ).read_text()
+    )
     required = {
         "dsh-sdk-jsonrpc-demo",
         "dsh-sdk-jsonrpc-server",
@@ -114,4 +126,11 @@ def test_image_pins_runtime_and_sdk_versions() -> None:
         "dsh-session-persistence-jsonl",
     }
     for package in required:
-        assert f"@deepseek-ai/{package}@${{DEEPSEEK_HARNESS_VERSION}}" in dockerfile
+        name = f"@deepseek-ai/{package}"
+        assert manifest["dependencies"][name] == "0.1.1-rc.2"
+        assert lock["packages"][f"node_modules/{name}"]["version"] == "0.1.1-rc.2"
+    assert "npm ci --prefix /opt/deepseek-harness" in dockerfile
+    assert "node_modules/.bin/dsh-jsonrpc-agent" in dockerfile
+    assert "/usr/local/bin/dsh-jsonrpc-agent" in dockerfile
+    assert "dsh-agent/package.json' | wc -l)\" = 1" in dockerfile
+    assert "dsh-scope/package.json' | wc -l)\" = 1" in dockerfile

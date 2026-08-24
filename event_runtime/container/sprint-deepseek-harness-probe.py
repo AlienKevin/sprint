@@ -106,9 +106,23 @@ def main() -> int:
                     os.environ.pop("DSH_GOAL_MAX_ROUNDS", None)
                 else:
                     os.environ["DSH_GOAL_MAX_ROUNDS"] = previous_rounds
-        assert result.finish_reason == "completed", result.finish_reason
+        if result.finish_reason != "completed":
+            raise AssertionError(
+                json.dumps(
+                    {
+                        "finish_reason": result.finish_reason,
+                        "final_response": result.final_response,
+                        "events": result.events[-20:],
+                    },
+                    indent=2,
+                    default=str,
+                )
+            )
         assert result.final_response == "smoke-ok", result.final_response
-        assert len(Handler.request_payloads) == 2, len(Handler.request_payloads)
+        # With maxGoalRounds=1, the initial human step is the single allowed
+        # goal round. Goal creation must happen before that request; a second
+        # request would exceed the configured round bound.
+        assert len(Handler.request_payloads) == 1, len(Handler.request_payloads)
         request = Handler.request_payloads[0]
         assert request.get("model") == MODEL
         assert request.get("stream") is True
