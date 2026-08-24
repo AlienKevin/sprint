@@ -252,7 +252,6 @@ SECRET_DIR="/data/sprint-run-secrets/$RUN_ID"
 PASSWORD_FILE="$SECRET_DIR/restic-password"
 ENV_FILE="$SECRET_DIR/harbor.env"
 REMOTE_PASSWORD="/durable/runs/$RUN_ID/secrets/restic-password"
-CPU_LAUNCH_ATTEMPT=1
 
 WARMUP_MANIFEST_PATH="$ROOT/runs/ops/modal-image-warmup.json"
 if [[ -f "$STATE_DIR/run.json" ]]; then
@@ -537,13 +536,12 @@ print(json.dumps(
 PY
 )
 make_keepalive_json() {
-python3 - "$RUN_ID" "$AGENT_KIND" "$REMOTE_PASSWORD" \
-  "$CPU_LAUNCH_ATTEMPT" <<'PY'
+python3 - "$RUN_ID" "$AGENT_KIND" "$REMOTE_PASSWORD" <<'PY'
 import json
 import shlex
 import sys
 
-run_id, agent_kind, password, cpu_attempt = sys.argv[1:]
+run_id, agent_kind, password = sys.argv[1:]
 watcher = [
     "/opt/sprint-snapshot-loop.sh",
     "--run-id", run_id,
@@ -564,8 +562,6 @@ telemetry = (
     "if [ -x /opt/sprint-telemetry.sh ]; then "
     "SPRINT_RUN_ID="
     + shlex.quote(run_id)
-    + " SPRINT_CPU_LAUNCH_ATTEMPT="
-    + shlex.quote(cpu_attempt)
     + " /opt/sprint-telemetry.sh --role cpu-agent --run-id "
     + shlex.quote(run_id)
     + " --out-dir /logs/artifacts/telemetry "
@@ -575,9 +571,7 @@ telemetry = (
 )
 command = (
     telemetry
-    + "export SPRINT_CPU_LAUNCH_ATTEMPT="
-    + shlex.quote(cpu_attempt)
-    + "; if [ -x /opt/sprint-snapshot-loop.sh ]; then exec "
+    + "if [ -x /opt/sprint-snapshot-loop.sh ]; then exec "
     + " ".join(shlex.quote(part) for part in watcher)
     + "; else exec sleep infinity; fi"
 )
@@ -784,7 +778,7 @@ python3 - "$STATE_DIR/run.json" "$RUN_ID" "$APP_NAME" "$TRAINING_APP_NAME" \
   "$STATE_DIR" "$JOBS_ROOT" "$SECRET_DIR" "$MODAL_PROFILE" \
   "$AGENT_KIND" "$MODEL" "$ENDPOINT" "$REASONING_EFFORT" "$CODEX_VERSION" \
   "$SANDBOX_TIMEOUT_SECONDS" "$DEPLOY_DEBOUNCE_SECONDS" "$HARBOR" \
-  "$HARBOR_COMMIT" "$HARBOR_BRANCH" "$CPU_LAUNCH_ATTEMPT" \
+  "$HARBOR_COMMIT" "$HARBOR_BRANCH" \
   "$STANDING_GPU" "$MODEL_API_HOST" \
   "$PROMPT_TEMPLATE" "$WARMUP_MANIFEST_PATH" "$ROOT" "$BATCH_ID" \
   "$SOURCE_ROOT" "$SPRINT_SOURCE_COMMIT" "$TASK" \
@@ -801,7 +795,7 @@ import sys
 
 (path, run_id, app, training_app, verifier_app, volume, state, jobs, secrets, profile, agent_kind, model,
  endpoint, effort, codex_version, sandbox_timeout, debounce, harbor, commit,
- branch, cpu_attempt, standing_gpu_flag,
+ branch, standing_gpu_flag,
  model_api_host, prompt_template, warmup_manifest_path, root, batch_id, source_root,
  sprint_source_commit, rendered_task_root, agent_cost_budget, shutdown_reserve, minimum_reserve,
  pricing_snapshot_json, model_api_cost_basis) = sys.argv[1:]
@@ -1012,13 +1006,7 @@ payload = {
     "scoring_deduplication_key": "task_fingerprint_plus_policy_sha256",
     "evaluation_result_policy": "all_blind_archival_submissions",
     "verifier_cost_attribution": "measurement_overhead_separate_from_agent_cost",
-    "cpu_execution_policy": "single_attempt_no_resume",
-    "cpu_launch_attempt": int(cpu_attempt),
-    "cpu_launch_history": [{
-        "attempt": int(cpu_attempt),
-        "launched_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "jobs_root": jobs,
-    }],
+    "cpu_execution_policy": "single_process_no_resume",
 }
 tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
 tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
@@ -1031,7 +1019,6 @@ SHARED_AGENT_ENV=(
   --ae "SPRINT_GPU_JOBS_ROOT=/durable/runs/$RUN_ID/gpu-jobs"
   --ae "SPRINT_SUBMISSIONS_ROOT=/durable/submissions"
   --ae "SPRINT_SUBMISSION_MIN_INTERVAL_SEC=300"
-  --ae "SPRINT_CPU_LAUNCH_ATTEMPT=$CPU_LAUNCH_ATTEMPT"
   --ae "SPRINT_MODEL=$MODEL"
   --ae "SPRINT_SCORING_QUEUE_KEY=${BATCH_ID:-standalone}"
   --ae "SPRINT_REQUESTED_CPU_CORES=2"

@@ -86,18 +86,12 @@ HEARTBEAT="$STATE_DIR/heartbeat.json"
 STOP_ACK="$RUN_ROOT/STOP_ACK"
 STOP_FILE="$RUNTIME_DIR/sprint-stop"
 STOP_SIGNALLED="$RUNTIME_DIR/sprint-stop-signalled"
-CPU_ATTEMPT="${SPRINT_CPU_LAUNCH_ATTEMPT:-1}"
-if [[ ! "$CPU_ATTEMPT" =~ ^[1-9][0-9]*$ ]]; then
-  echo "SPRINT_CPU_LAUNCH_ATTEMPT must be a positive integer" >&2
-  exit 2
-fi
-ATTEMPT_TAG=$(printf '%03d' "$CPU_ATTEMPT")
 if [[ "$AGENT_KIND" == "claude-code" ]]; then
-  FIRST_SEEN="$STATE_DIR/first-claude-seen.attempt-$ATTEMPT_TAG"
+  FIRST_SEEN="$STATE_DIR/first-claude-seen"
 elif [[ "$AGENT_KIND" == "deepseek-harness" ]]; then
-  FIRST_SEEN="$STATE_DIR/first-deepseek-harness-seen.attempt-$ATTEMPT_TAG"
+  FIRST_SEEN="$STATE_DIR/first-deepseek-harness-seen"
 else
-  FIRST_SEEN="$STATE_DIR/first-codex-seen.attempt-$ATTEMPT_TAG"
+  FIRST_SEEN="$STATE_DIR/first-codex-seen"
 fi
 SNAPSHOT_LOCK="$STATE_DIR/snapshot.lock"
 AGENT_STATE_DIR="$RUNTIME_DIR/sprint-agent"
@@ -491,7 +485,7 @@ mirror_trace_once() {
   "$TRACE_MIRROR_BIN" --once \
     --run-id "$RUN_ID" \
     --agent-kind "$AGENT_KIND" \
-    --cpu-attempt "${SPRINT_CPU_LAUNCH_ATTEMPT:-1}" \
+    --cpu-attempt 1 \
     --codex-home "$CODEX_HOME_DIR" \
     --claude-home "$ROOT_DIR/.claude" \
     --agent-log-dir "$AGENT_LOG_DIR" \
@@ -505,7 +499,7 @@ start_trace_mirror() {
   "$TRACE_MIRROR_BIN" \
     --run-id "$RUN_ID" \
     --agent-kind "$AGENT_KIND" \
-    --cpu-attempt "${SPRINT_CPU_LAUNCH_ATTEMPT:-1}" \
+    --cpu-attempt 1 \
     --codex-home "$CODEX_HOME_DIR" \
     --claude-home "$ROOT_DIR/.claude" \
     --agent-log-dir "$AGENT_LOG_DIR" \

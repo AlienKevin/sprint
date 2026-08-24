@@ -1799,7 +1799,7 @@ while true; do sleep 1; done
             )
             try:
                 first_seen = (
-                    durable / "runs/test-watch/snapshot/first-claude-seen.attempt-001"
+                    durable / "runs/test-watch/snapshot/first-claude-seen"
                 )
                 deadline = time.time() + 15
                 while not first_seen.exists() and time.time() < deadline:
@@ -1986,7 +1986,7 @@ while True:
             )
             try:
                 first_seen = (
-                    durable / "runs/test-codex/snapshot/first-codex-seen.attempt-001"
+                    durable / "runs/test-codex/snapshot/first-codex-seen"
                 )
                 deadline = time.time() + 15
                 while not first_seen.exists() and time.time() < deadline:

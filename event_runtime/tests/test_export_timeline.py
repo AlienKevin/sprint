@@ -86,16 +86,19 @@ def fixture_run(
                 "gpu_type": "A10G",
             },
         },
-        "cpu_launch_history": [
-            {
-                "attempt": 1,
-                "launched_at": "2026-08-07T12:00:01Z",
-                "jobs_root": str(state / "harbor-jobs"),
-            }
-        ],
     }
     state.mkdir(parents=True)
     (state / "run.json").write_text(json.dumps(run))
+    write_jsonl(
+        state / "telemetry" / "cpu_lifecycle.jsonl",
+        [
+            {
+                "event": "cpu_launch_started",
+                "attempt": 1,
+                "at": "2026-08-07T12:00:01Z",
+            },
+        ],
+    )
     telemetry = [
         {
             "epoch_s": 1786104010,
@@ -846,8 +849,7 @@ def test_stop_ack_closes_single_cpu_allocation(
     run = json.loads(run_path.read_text())
     run.update(
         {
-            "cpu_execution_policy": "single_attempt_no_resume",
-            "cpu_launch_attempt": 1,
+            "cpu_execution_policy": "single_process_no_resume",
         }
     )
     run_path.write_text(json.dumps(run))

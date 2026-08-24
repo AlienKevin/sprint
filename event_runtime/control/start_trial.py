@@ -75,7 +75,7 @@ def run_once(run_id: str, launch_argv: list[str]) -> int:
             "attempt": 1,
             "at": started_at,
             "pid": os.getpid(),
-            "execution_policy": "single_attempt_no_resume",
+            "execution_policy": "single_process_no_resume",
         },
     )
 
@@ -121,7 +121,7 @@ def run_once(run_id: str, launch_argv: list[str]) -> int:
         "schema_version": 1,
         "run_id": run_id,
         "attempt": 1,
-        "execution_policy": "single_attempt_no_resume",
+        "execution_policy": "single_process_no_resume",
         "started_at": started_at,
         "finished_at": finished_at,
         "elapsed_seconds": max(0.0, time.time() - started_epoch),
@@ -216,7 +216,7 @@ def main() -> int:
         "log_path": str(log_path),
         "launch_argv": launch_argv,
         "process_manager_restart": "no",
-        "cpu_execution_policy": "single_attempt_no_resume",
+        "cpu_execution_policy": "single_process_no_resume",
         "controller_python": str(controller_python),
         "path": service_path,
         "launch_env_names": launch_envs,

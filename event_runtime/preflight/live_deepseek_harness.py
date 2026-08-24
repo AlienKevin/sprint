@@ -62,7 +62,6 @@ def main() -> int:
         "SPRINT_DURABLE_DIR": "/tmp/durable",
         "SPRINT_RUNTIME_DIR": "/tmp/runtime",
         "SPRINT_AGENT_LOG_DIR": "/tmp/logs/agent",
-        "SPRINT_CPU_LAUNCH_ATTEMPT": "1",
         "SPRINT_OPENROUTER_PROVIDER_ENDPOINT": "deepseek",
         "SPRINT_OPENROUTER_ALLOWED_INFERENCE_PATH": "chat_completions",
         "DSH_GOAL_MAX_ROUNDS": "1",
@@ -89,7 +88,6 @@ def main() -> int:
     )
     run = json.loads(launch_contract.stdout)
     run["standing_gpu_worker"] = False
-    run["cpu_launch_attempt"] = 1
     try:
         sandbox = modal.Sandbox.create(
             "python3",

@@ -6,7 +6,6 @@ AGENT_STATE_DIR="$RUNTIME_DIR/sprint-agent"
 AGENT_LOG_DIR=${SPRINT_AGENT_LOG_DIR:-/logs/agent}
 DURABLE_DIR=${SPRINT_DURABLE_DIR:-/durable}
 RUN_ID=${SPRINT_RUN_ID:-}
-ATTEMPT=${SPRINT_CPU_LAUNCH_ATTEMPT:-1}
 PROXY_BIN=${SPRINT_OPENROUTER_PROXY_BIN:-/opt/sprint-openrouter-ledger-proxy.py}
 PROXY_BASE_URL=${SPRINT_OPENROUTER_PROXY_BASE_URL:-http://127.0.0.1:18080/api/v1}
 UPSTREAM_URL=${SPRINT_OPENROUTER_UPSTREAM_URL:-https://openrouter.ai/api/v1}
@@ -133,7 +132,7 @@ upstream_api_key=$OPENROUTER_API_KEY
   --upstream "$UPSTREAM_URL" \
   --ledger-root "$ledger_root" \
   --run-id "$RUN_ID" \
-  --cpu-attempt "$ATTEMPT" \
+  --cpu-attempt 1 \
   --runtime-dir "$RUNTIME_DIR" \
   --provider-endpoint "$PROVIDER_ENDPOINT" \
   --request-contract-json "$REQUEST_CONTRACT" \

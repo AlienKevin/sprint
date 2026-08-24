@@ -637,7 +637,7 @@ def harbor_final_source(
         source_hash = provenance["source_session_sha256"]
     if session_path is None or provenance_trajectory is None:
         raise SystemExit("Harbor usage audit immutable provenance is missing")
-    attempt = int(run.get("cpu_launch_attempt") or 1)
+    attempt = 1
     session_id = str(audit.get("session_id") or source_hash[:20])
     requests = [
         {
@@ -838,11 +838,7 @@ def main() -> int:
         if provider_cost_source
         else all(source["cost_reconstruction_complete"] for source in sessions)
     )
-    expected_attempts = {
-        int(row["attempt"])
-        for row in run.get("cpu_launch_history") or []
-        if isinstance(row, dict) and row.get("attempt") is not None
-    }
+    expected_attempts = {1}
     captured_attempts = {int(source["cpu_attempt"]) for source in sessions}
     payload = {
         "schema_version": USAGE_AUDIT_SCHEMA_VERSION,

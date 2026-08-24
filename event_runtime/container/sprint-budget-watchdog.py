@@ -906,11 +906,7 @@ def check_once(
             f"shutdown reserve ${reserve:g} is below the ${minimum_reserve:g} "
             f"hard-cap minimum for {canonical_model}"
         )
-    attempt = int(
-        os.environ.get("SPRINT_CPU_LAUNCH_ATTEMPT")
-        or run.get("cpu_launch_attempt")
-        or 1
-    )
+    attempt = 1
     attempt_started_at = ensure_cpu_start(run_root, attempt, ref)
     cpu_seconds = cpu_allocated_seconds(run_root, attempt, ref)
     gpu_seconds = gpu_allocated_seconds(

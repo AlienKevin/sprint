@@ -301,7 +301,7 @@ class TelemetrySamplerTests(unittest.TestCase):
             self.assertEqual(used, 0.2)
             self.assertEqual(percent, 5.0)
 
-    def test_cpu_attempt_is_preserved_in_jsonl_and_csv(self) -> None:
+    def test_cpu_provenance_partition_is_fixed_in_jsonl_and_csv(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             out = Path(raw)
             env = os.environ.copy()
@@ -329,11 +329,11 @@ class TelemetrySamplerTests(unittest.TestCase):
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
             self.assertEqual(
-                json.loads((out / "latest.json").read_text())["cpu_attempt"], 7
+                json.loads((out / "latest.json").read_text())["cpu_attempt"], 1
             )
             with (out / "samples.csv").open(newline="", encoding="utf-8") as handle:
                 row = next(csv.DictReader(handle))
-            self.assertEqual(row["cpu_attempt"], "7")
+            self.assertEqual(row["cpu_attempt"], "1")
 
     def test_no_secret_env_leak_in_outputs(self) -> None:
         secret = "sk-test-secret-value-must-never-appear-123456789"

@@ -804,11 +804,9 @@ def build_sample(
         "role": role,
         "run_id": run_id or None,
         "job_id": None,
-        "cpu_attempt": (
-            int(os.environ["SPRINT_CPU_LAUNCH_ATTEMPT"])
-            if os.environ.get("SPRINT_CPU_LAUNCH_ATTEMPT", "").isdigit()
-            else None
-        ),
+        # Internal provenance partition. It is fixed and is not configurable
+        # or injected into the agent environment.
+        "cpu_attempt": 1,
         "attempt": (
             int(os.environ["SPRINT_GPU_ATTEMPT"])
             if os.environ.get("SPRINT_GPU_ATTEMPT", "").isdigit()
@@ -1127,11 +1125,7 @@ def main() -> int:
             "role": args.role,
             "run_id": args.run_id or None,
             "job_id": args.job_id or None,
-            "cpu_attempt": (
-                int(os.environ["SPRINT_CPU_LAUNCH_ATTEMPT"])
-                if os.environ.get("SPRINT_CPU_LAUNCH_ATTEMPT", "").isdigit()
-                else None
-            ),
+            "cpu_attempt": 1,
             "attempt": (
                 int(os.environ["SPRINT_GPU_ATTEMPT"])
                 if os.environ.get("SPRINT_GPU_ATTEMPT", "").isdigit()

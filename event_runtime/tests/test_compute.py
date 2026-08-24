@@ -2473,7 +2473,7 @@ class AgentCredentialBoundaryTests(unittest.TestCase):
         worker = (ROOT / "event_runtime/compute/worker.py").read_text()
         self.assertIn('"agent_cpu_instances": 1', launcher)
         self.assertIn('"training_max_concurrent_per_run": 1', launcher)
-        self.assertIn("export SPRINT_CPU_LAUNCH_ATTEMPT=", launcher)
+        self.assertNotIn("SPRINT_CPU_LAUNCH_ATTEMPT", launcher)
         self.assertGreaterEqual(
             launcher.count("KEEPALIVE_JSON=$(make_keepalive_json)"), 2
         )
@@ -2542,7 +2542,7 @@ class NetworkIsolationTests(unittest.TestCase):
 
     def test_single_cpu_policy_preserves_network_metadata(self) -> None:
         launcher = (ROOT / "event_runtime/control/launch.sh").read_text()
-        self.assertIn('"cpu_execution_policy": "single_attempt_no_resume"', launcher)
+        self.assertIn('"cpu_execution_policy": "single_process_no_resume"', launcher)
         self.assertIn('"agent_network_policy": "model-api-only"', launcher)
         self.assertIn('"agent_allowed_host": model_api_host', launcher)
         self.assertIn('"gpu_worker_network_policy": "no-network"', launcher)
@@ -3554,7 +3554,7 @@ class LauncherWiringTests(unittest.TestCase):
             )
             self.assertEqual(metadata["process_manager_restart"], "no")
             self.assertEqual(
-                metadata["cpu_execution_policy"], "single_attempt_no_resume"
+                metadata["cpu_execution_policy"], "single_process_no_resume"
             )
 
     def test_goal_templates_are_launchable_and_synced(self) -> None:

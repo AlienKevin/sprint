@@ -10,11 +10,10 @@ sys.path.insert(0, str(ROOT))
 from event_runtime.control.integrity import build_integrity_report  # noqa: E402
 
 
-def run_contract(run_id: str, *, attempt: int = 1) -> dict[str, object]:
+def run_contract(run_id: str) -> dict[str, object]:
     return {
         "run_id": run_id,
-        "cpu_launch_attempt": attempt,
-        "cpu_execution_policy": "single_attempt_no_resume",
+        "cpu_execution_policy": "single_process_no_resume",
     }
 
 
@@ -25,7 +24,7 @@ def write_clean_exit(path: Path, *, code: int = 0, requested: bool = True) -> No
                 "attempt": 1,
                 "raw_exit_code": code,
                 "stop_requested": requested,
-                "execution_policy": "single_attempt_no_resume",
+                "execution_policy": "single_process_no_resume",
             }
         )
     )
@@ -45,10 +44,11 @@ def test_clean_single_attempt_run_is_eligible(tmp_path: Path) -> None:
     assert report["replacement_required"] is False
 
 
-def test_controller_relaunch_and_budget_telemetry_failure_are_invalid(
+def test_wrong_execution_policy_and_budget_telemetry_failure_are_invalid(
     tmp_path: Path,
 ) -> None:
-    run = run_contract("bad-run", attempt=3)
+    run = run_contract("bad-run")
+    run["cpu_execution_policy"] = "restartable"
     (tmp_path / "STOP_ACK.json").write_text(
         json.dumps({"reason": "budget_telemetry_unavailable"})
     )
@@ -60,7 +60,7 @@ def test_controller_relaunch_and_budget_telemetry_failure_are_invalid(
     assert report["benchmark_valid"] is False
     assert report["replacement_required"] is True
     assert {reason["code"] for reason in report["reasons"]} == {
-        "cpu_attempt_contract_violation",
+        "cpu_execution_policy_mismatch",
         "budget_telemetry_unavailable",
     }
 

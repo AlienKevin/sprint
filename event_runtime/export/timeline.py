@@ -175,11 +175,6 @@ def cpu_attempt_for(path: pathlib.Path, state_dir: pathlib.Path) -> int:
 
 def trial_dirs(state_dir: pathlib.Path, run: dict[str, Any]) -> list[pathlib.Path]:
     roots: set[pathlib.Path] = {state_dir / "harbor-jobs"}
-    roots.update(state_dir.glob("cpu-attempts/*/harbor-jobs"))
-    for row in run.get("cpu_launch_history") or []:
-        value = row.get("jobs_root") if isinstance(row, dict) else None
-        if isinstance(value, str):
-            roots.add(pathlib.Path(value))
     trials: set[pathlib.Path] = set()
     run_id = str(run.get("run_id") or state_dir.name)
     for root in roots:
@@ -262,19 +257,19 @@ class Builder:
             kind="run_created",
             source="run.json",
             identity="created",
-            data={"cpu_attempt": 1},
+            data=None,
         )
-        for row in self.run.get("cpu_launch_history") or []:
-            if not isinstance(row, dict):
-                continue
-            attempt = int(row.get("attempt") or 0)
+        # A current run has an authoritative lifecycle file with the exact
+        # allocation boundary. Keep a creation-time fallback for fixtures or
+        # partially copied diagnostic bundles, without modeling retries.
+        if not (self.state_dir / "telemetry" / "cpu_lifecycle.jsonl").is_file():
             self.add_event(
-                epoch_ms=parse_epoch_ms(row.get("launched_at")),
+                epoch_ms=created,
                 category="infrastructure",
-                kind="cpu_allocated" if attempt <= 1 else "cpu_reallocated",
+                kind="cpu_allocated",
                 source="run.json",
-                identity=f"cpu:{attempt}:{row.get('launched_at')}",
-                data={"cpu_attempt": attempt},
+                identity="cpu:created",
+                data={"cpu_attempt": 1},
             )
         for name, kind, key in (
             ("STOP_REQUESTED.json", "stop_requested", "requested_at"),
@@ -294,7 +289,7 @@ class Builder:
                 identity=json.dumps(payload, sort_keys=True),
                 data=(
                     {
-                        "cpu_attempt": int(self.run.get("cpu_launch_attempt") or 1),
+                        "cpu_attempt": 1,
                         "reason": str(payload.get("reason") or ""),
                     }
                     if kind == "stop_acknowledged"
@@ -318,12 +313,12 @@ class Builder:
                     epoch_ms=parse_epoch_ms(row.get("at")),
                     category="infrastructure",
                     kind=(
-                        "cpu_allocation_requested"
+                        "cpu_allocated"
                         if event == "cpu_launch_started"
                         else "cpu_interrupted"
                     ),
                     source=self.relative(path),
-                    identity=f"{row.get('attempt')}:{event}:{row.get('at')}",
+                    identity=f"cpu:{event}:{row.get('at')}",
                     data={
                         "cpu_attempt": row.get("attempt"),
                         "exit_code": row.get("exit_code"),
@@ -2482,12 +2477,12 @@ class Builder:
                 and all(
                     interval["end_epoch_ms"] is not None for interval in cpu_intervals
                 )
-                if self.run.get("cpu_execution_policy") == "single_attempt_no_resume"
+                if self.run.get("cpu_execution_policy") == "single_process_no_resume"
                 else True
             ),
             "cpu_agent_metrics": (
                 bool(cpu_coverage) and all(item["covered"] for item in cpu_coverage)
-                if self.run.get("cpu_execution_policy") == "single_attempt_no_resume"
+                if self.run.get("cpu_execution_policy") == "single_process_no_resume"
                 else self.counts["metric_role:cpu-agent"] > 0
             ),
             "training_gpu_lifecycle": (

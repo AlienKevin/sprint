@@ -753,11 +753,9 @@ def poll_once(run_id: str) -> dict[str, Any]:
             for key, value in gpu_job_metadata(run, container_id).items():
                 sample.setdefault(key, value)
         elif role == "cpu-agent":
-            # A one-shot exec is not a child of the keepalive process and does
-            # not inherit its launch-attempt/request metadata.  The trusted
-            # host knows these values exactly; attach them so coverage is
-            # attributed to the single authoritative CPU allocation.
-            sample["cpu_attempt"] = int(run.get("cpu_launch_attempt") or 1)
+            # Internal provenance partition; one authoritative CPU process is
+            # the only supported execution model.
+            sample["cpu_attempt"] = 1
         _append_jsonl(out_dir / "host-samples.jsonl", sample)
         rows = _flatten_for_csv(sample, container_id=container_id)
         _append_csv(state_csv, rows)

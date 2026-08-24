@@ -52,11 +52,9 @@ def build_integrity_report(
     reasons: list[dict[str, str]] = []
     observations: dict[str, Any] = {}
 
-    cpu_attempts = int(run.get("cpu_launch_attempt") or 1)
-    observations["cpu_launch_attempts"] = cpu_attempts
     execution_policy = str(run.get("cpu_execution_policy") or "")
     observations["cpu_execution_policy"] = execution_policy or None
-    if execution_policy != "single_attempt_no_resume":
+    if execution_policy != "single_process_no_resume":
         reasons.append(
             _reason(
                 "cpu_execution_policy_mismatch",
@@ -64,15 +62,6 @@ def build_integrity_report(
                 "CPU agent is not sealed to one non-resumable execution",
             )
         )
-    if cpu_attempts != 1:
-        reasons.append(
-            _reason(
-                "cpu_attempt_contract_violation",
-                "run.json",
-                f"CPU launch attempt must remain 1, observed {cpu_attempts}",
-            )
-        )
-
     cpu_exit_path = state_dir / "CPU_TRIAL_EXIT.json"
     cpu_exit = _read_json(cpu_exit_path)
     observations["cpu_exit"] = cpu_exit or None

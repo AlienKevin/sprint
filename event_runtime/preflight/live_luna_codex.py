@@ -96,7 +96,6 @@ def main() -> int:
     )
     run = json.loads(launch_contract.stdout)
     run["standing_gpu_worker"] = False
-    run["cpu_launch_attempt"] = 1
     try:
         sandbox = modal.Sandbox.create(
             "python3",

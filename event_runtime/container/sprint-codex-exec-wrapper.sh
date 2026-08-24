@@ -126,7 +126,6 @@ start_openrouter_proxy() {
     exit 1
   }
   local ledger_root="$DURABLE_DIR/runs/$RUN_ID/api-usage"
-  local attempt=${SPRINT_CPU_LAUNCH_ATTEMPT:-1}
   local -a route_args=()
   if [[ -n "$OPENROUTER_PROVIDER_ENDPOINT" ]]; then
     route_args+=(--provider-endpoint "$OPENROUTER_PROVIDER_ENDPOINT")
@@ -142,7 +141,7 @@ start_openrouter_proxy() {
     --upstream "$OPENROUTER_UPSTREAM_URL" \
     --ledger-root "$ledger_root" \
     --run-id "$RUN_ID" \
-    --cpu-attempt "$attempt" \
+    --cpu-attempt 1 \
     --runtime-dir "$RUNTIME_DIR" \
     --upstream-api-key-stdin \
     "${route_args[@]}" \
