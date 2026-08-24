@@ -503,7 +503,7 @@ def test_openrouter_watchdog_bootstraps_without_agent_scoped_api_key(
     assert payload["components"]["model_api"]["cost_usd"] == 0.75
 
 
-def test_openrouter_watchdog_fails_closed_on_unrecoverable_charge_without_key(
+def test_openrouter_watchdog_allows_live_proxy_to_recover_charge_without_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     durable = tmp_path / "durable"
@@ -513,12 +513,14 @@ def test_openrouter_watchdog_fails_closed_on_unrecoverable_charge_without_key(
         "unit",
         api_cost_source="openrouter_reported_per_request",
     )
-    record = root / "api-usage/requests/request.json"
+    request_id = "f" * 32
+    record = root / f"api-usage/requests/{request_id}.json"
     record.parent.mkdir(parents=True)
     record.write_text(
         json.dumps(
-            {
-                "run_id": "unit",
+                {
+                    "ledger_request_id": request_id,
+                    "run_id": "unit",
                 "state": "cost_recovery_required",
                 "generation_id": "gen-recover",
                 "provider_reported_cost_usd": None,
@@ -535,21 +537,23 @@ def test_openrouter_watchdog_fails_closed_on_unrecoverable_charge_without_key(
     (process.parent / "openrouter-proxy.pid").write_text(f"{os.getpid()}\n")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
-    with pytest.raises(
-        watchdog.BudgetTelemetryError,
-        match="requires controller credentials",
-    ):
-        watchdog.check_once(
-            run_id="unit",
-            durable_dir=durable,
-            runtime_dir=runtime,
-            codex_home=tmp_path / "codex",
-            pricing_path=PRICING,
-            now=1_000,
-        )
+    payload = watchdog.check_once(
+        run_id="unit",
+        durable_dir=durable,
+        runtime_dir=runtime,
+        codex_home=tmp_path / "codex",
+        pricing_path=PRICING,
+        now=1_000,
+    )
+
+    assert payload["status"] == "within_budget"
+    assert payload["pending_request_count"] == 1
+    assert payload["components"]["model_api"]["telemetry_state"] == (
+        "awaiting_proxy_recovery"
+    )
 
 
-def test_openrouter_watchdog_allows_only_bounded_pre_agent_proxy_recovery(
+def test_openrouter_watchdog_fails_closed_when_recovery_proxy_disappears(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     durable = tmp_path / "durable"
@@ -600,6 +604,7 @@ def test_openrouter_watchdog_allows_only_bounded_pre_agent_proxy_recovery(
     )
     assert not (root / "BUDGET_STOP_REQUESTED.json").exists()
 
+    proxy_pid.write_text("999999999\n")
     with pytest.raises(
         watchdog.BudgetTelemetryError,
         match="requires controller credentials",

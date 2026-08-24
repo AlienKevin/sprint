@@ -477,29 +477,23 @@ def _recorded_process_alive(path: Path) -> bool:
 def allow_proxy_recovery_without_controller_key(
     runtime_dir: Path, *, attempt_started_at: float, now: float
 ) -> bool:
-    """Permit only a bounded, pre-agent proxy reconciliation window.
+    """Permit the live credentialed proxy to reconcile an exact charge.
 
     The proxy retains the sealed per-trial key while Codex never receives it.
-    On a resumed CPU attempt, the proxy may need a few seconds to turn an
-    interrupted generation ID into an exact OpenRouter charge. During that
-    window no model request can start because proxy health remains non-ready.
-    The watchdog may therefore account the known lower bound without declaring
-    telemetry failure. Once Codex is live, the proxy dies, or the bounded
-    window expires, uncertainty fails closed as usual.
+    It holds the serial billing lock while recovering an interrupted stream and
+    has its own hard recovery deadline.  During that interval no later model
+    request can start, so the independent watchdog may retain the known lower
+    bound without killing a healthy run.  If the proxy dies, its process check
+    fails closed immediately; startup without a live proxy remains bounded.
     """
-    if any(
-        _recorded_process_alive(runtime_dir / "sprint-agent" / name)
-        for name in ("codex-process", "agent-process")
-    ):
-        return False
-    elapsed = now - attempt_started_at
-    if not math.isfinite(elapsed) or elapsed < 0:
-        return False
     proxy_alive = _recorded_process_alive(
         runtime_dir / "sprint-agent/openrouter-proxy.pid"
     )
     if proxy_alive:
-        return elapsed <= OPENROUTER_PROXY_RECOVERY_GRACE_SECONDS
+        return True
+    elapsed = now - attempt_started_at
+    if not math.isfinite(elapsed) or elapsed < 0:
+        return False
     return elapsed <= OPENROUTER_PROXY_STARTUP_GRACE_SECONDS
 
 

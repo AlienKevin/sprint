@@ -24,7 +24,7 @@ RESOLVED_MODEL = "openai/gpt-5.6-luna-20260709"
 CONTRACT = {
     "max_output_tokens": 128_000,
     "model": MODEL,
-    "reasoning": {"effort": "max"},
+    "reasoning": {"effort": "max", "summary": "auto"},
     "service_tier": "default",
 }
 
@@ -133,6 +133,23 @@ def main() -> int:
                 f"stderr={stderr[-2000:]} stdout={stdout[-4000:]} "
                 f"proxy log: {proxy_log[-4000:]}"
             )
+        trace_probe = sandbox.exec(
+            "python3",
+            "-c",
+            "import json,pathlib; paths=list(pathlib.Path('/tmp/codex-home/sessions').rglob('*.jsonl')); "
+            "assert paths; rows=[]; "
+            "exec(\"for p in paths:\\n for line in p.read_text().splitlines():\\n  try: rows.append(json.loads(line))\\n  except json.JSONDecodeError: pass\"); "
+            "items=[r.get('payload') for r in rows if r.get('type') == 'response_item']; "
+            "summaries=[]; "
+            "exec(\"for item in items:\\n if isinstance(item,dict) and item.get('type') == 'reasoning':\\n  for part in item.get('summary') or []:\\n   text=part.get('text') if isinstance(part,dict) else part\\n   if isinstance(text,str) and text.strip(): summaries.append(text)\"); "
+            "print(json.dumps({'summary_count':len(summaries),'summary_chars':sum(map(len,summaries))}))",
+            timeout=30,
+        )
+        trace_raw = trace_probe.stdout.read() or ""
+        trace_probe.wait()
+        if trace_probe.returncode != 0:
+            raise RuntimeError("could not inspect the Luna reasoning summary trace")
+        trace_reasoning = json.loads(trace_raw.strip().splitlines()[-1])
         inspect = sandbox.exec(
             "python3",
             "-c",
@@ -165,6 +182,7 @@ def main() -> int:
             "all_requests_complete": summary.get("completed_request_count")
             == len(records),
             "no_pending_request": summary.get("pending_request_count") == 0,
+            "reasoning_summary_preserved": trace_reasoning["summary_count"] > 0,
         }
         if not all(checks.values()):
             raise RuntimeError(f"live smoke checks failed: {checks}")
@@ -189,6 +207,8 @@ def main() -> int:
             "reasoning_tokens": (usage.get("output_tokens_details") or {}).get(
                 "reasoning_tokens"
             ),
+            "reasoning_summary_count": trace_reasoning["summary_count"],
+            "reasoning_summary_chars": trace_reasoning["summary_chars"],
         }
         atomic_json(args.report, report)
         print(json.dumps(report, indent=2, sort_keys=True))

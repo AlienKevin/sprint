@@ -16,6 +16,7 @@ import secrets
 import ssl
 import sys
 import threading
+import time
 from typing import Any
 import urllib.error
 import urllib.parse
@@ -59,6 +60,8 @@ HOP_BY_HOP = {
 # run's dollar cap.  A finite timeout here converts a healthy long request into
 # an unpriced interrupted generation, which must fail closed.
 UPSTREAM_SOCKET_TIMEOUT_SECONDS: float | None = None
+OPENROUTER_GENERATION_RECOVERY_TIMEOUT_SECONDS = 30.0
+OPENROUTER_GENERATION_RECOVERY_POLL_SECONDS = 0.25
 
 
 def valid_ledger_request_id(value: object) -> bool:
@@ -186,6 +189,36 @@ def sanitize_goal_tool_calls(payload: object) -> object:
         payload["arguments"] = sanitize_goal_arguments(payload.get("arguments"))
     for value in payload.values():
         sanitize_goal_tool_calls(value)
+    return payload
+
+
+def expose_deepseek_reasoning_content(payload: object) -> object:
+    """Alias OpenRouter's normalized reasoning field for DeepSeek Harness.
+
+    OpenRouter normalizes Chat Completions reasoning text to ``reasoning`` (and
+    ``reasoning_details``), while the official DeepSeek harness adapter reads
+    the native DeepSeek field ``reasoning_content``.  Preserve OpenRouter's
+    canonical fields and add the native alias at the trusted compatibility
+    boundary so the pinned official harness records and carries reasoning
+    across tool-call turns exactly as it does against DeepSeek's native API.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    choices = payload.get("choices")
+    if not isinstance(choices, list):
+        return payload
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        for field in ("delta", "message"):
+            model_output = choice.get(field)
+            if not isinstance(model_output, dict):
+                continue
+            if "reasoning_content" in model_output:
+                continue
+            reasoning = model_output.get("reasoning")
+            if isinstance(reasoning, str):
+                model_output["reasoning_content"] = reasoning
     return payload
 
 
@@ -695,6 +728,14 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                                 event = json.loads(line[6:])
                             except json.JSONDecodeError:
                                 event = None
+                            if (
+                                isinstance(event, dict)
+                                and self.ledger_server.provider_endpoint == "deepseek"
+                            ):
+                                expose_deepseek_reasoning_content(event)
+                                line = b"data: " + json.dumps(
+                                    event, separators=(",", ":")
+                                ).encode()
                             usage, response = usage_from_event(event)
                             if usage is not None:
                                 terminal_usage, terminal_response = usage, response
@@ -723,6 +764,8 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                 except json.JSONDecodeError:
                     event = None
                 if isinstance(event, dict):
+                    if self.ledger_server.provider_endpoint == "deepseek":
+                        expose_deepseek_reasoning_content(event)
                     sanitize_goal_tool_calls(event)
                     response_buffer = bytearray(
                         json.dumps(event, separators=(",", ":")).encode()
@@ -834,6 +877,18 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                     self.ledger_server.complete_request(request_id, 0.0, 0.0)
                 else:
                     self.ledger_server.require_cost_recovery(request_id)
+                    if not self.ledger_server.recover_request_until(
+                        request_id,
+                        timeout_seconds=OPENROUTER_GENERATION_RECOVERY_TIMEOUT_SECONDS,
+                    ):
+                        self.ledger_server.write_stop(
+                            {
+                                "schema_version": 2,
+                                "run_id": self.ledger_server.run_id,
+                                "reason": "budget_telemetry_unavailable",
+                                "status": "fail_closed",
+                            }
+                        )
                 if valid_cost:
                     try:
                         _allowed, snapshot = self.ledger_server.budget_snapshot()
@@ -1385,6 +1440,47 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
         self.in_flight_request_ids.remove(request_id)
         self.cost_recovery_required_request_ids.add(request_id)
         self.write_summary()
+
+    def recover_request_until(
+        self, request_id: str, *, timeout_seconds: float
+    ) -> bool:
+        """Resolve a named OpenRouter charge before releasing the API turn.
+
+        OpenRouter can occasionally close a successful stream before its final
+        usage event reaches the client, while the generation audit becomes
+        available a moment later.  The proxy retains the sealed per-trial key,
+        so it is the only component that can safely recover that exact charge.
+        Keep the billing lock and downstream turn open while polling; no later
+        model request can overtake an unknown charge.
+        """
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise ValueError("invalid OpenRouter recovery timeout")
+        deadline = time.monotonic() + timeout_seconds
+        while request_id in self.cost_recovery_required_request_ids:
+            before = (
+                self.api_cost_usd,
+                self.provider_billed_api_cost_usd,
+                self.completed_request_count,
+                tuple(self.token_usage.items()),
+                frozenset(self.cost_recovery_required_request_ids),
+            )
+            self._reconcile_pending_requests(include_in_flight=False)
+            after = (
+                self.api_cost_usd,
+                self.provider_billed_api_cost_usd,
+                self.completed_request_count,
+                tuple(self.token_usage.items()),
+                frozenset(self.cost_recovery_required_request_ids),
+            )
+            if after != before:
+                self.write_summary()
+            if request_id not in self.cost_recovery_required_request_ids:
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(OPENROUTER_GENERATION_RECOVERY_POLL_SECONDS, remaining))
+        return True
 
     def budget_snapshot(self) -> tuple[bool, dict[str, Any]]:
         """Return whether another paid request may start under the run cap."""

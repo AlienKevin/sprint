@@ -172,6 +172,20 @@ def main() -> int:
                 f"live probe exited {process.returncode}: {(stderr or stdout)[-4000:]}"
             )
 
+        trace_probe = sandbox.exec(
+            "python3",
+            "-c",
+            "import pathlib; text=pathlib.Path('/tmp/logs/agent/deepseek-harness-events.jsonl').read_text(); "
+            "count=text.count('reasoning-delta') + text.count('\\\"type\\\":\\\"reasoning\\\"'); "
+            "print(count)",
+            timeout=30,
+        )
+        trace_raw = trace_probe.stdout.read() or ""
+        trace_probe.wait()
+        if trace_probe.returncode != 0:
+            raise RuntimeError("could not inspect the DeepSeek reasoning trace")
+        reasoning_event_count = int(trace_raw.strip().splitlines()[-1])
+
         inspect = sandbox.exec(
             "python3",
             "-c",
@@ -211,6 +225,7 @@ def main() -> int:
             "no_pending_request": summary.get("pending_request_count") == 0,
             "benchmark_not_below_charge": float(record["benchmark_cost_usd"])
             >= float(record["provider_reported_cost_usd"]),
+            "full_reasoning_preserved": reasoning_event_count > 0,
         }
         if not all(checks.values()):
             raise RuntimeError(f"live smoke checks failed: {checks}")
@@ -235,6 +250,7 @@ def main() -> int:
             "reasoning_tokens": (usage.get("completion_tokens_details") or {}).get(
                 "reasoning_tokens"
             ),
+            "reasoning_event_count": reasoning_event_count,
         }
         atomic_json(args.report, report)
         print(json.dumps(report, indent=2, sort_keys=True))

@@ -1608,7 +1608,7 @@ class DurableOpsTests(unittest.TestCase):
             {
                 "model": "openai/gpt-5.6-luna",
                 "max_output_tokens": 128_000,
-                "reasoning": {"effort": "max"},
+                "reasoning": {"effort": "max", "summary": "auto"},
                 "service_tier": "default",
             },
         )

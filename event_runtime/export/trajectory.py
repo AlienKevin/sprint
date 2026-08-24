@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 SCHEMA_VERSION = 1
-DEEPSEEK_ATIF_TRANSFORM_VERSION = 2
+DEEPSEEK_ATIF_TRANSFORM_VERSION = 3
 PUBLIC_RUN_LIMIT = 6
 MAX_PUBLIC_STRING_CHARS = 200_000
 
@@ -212,6 +212,15 @@ def _deepseek_atif(
                     if isinstance(block, dict) and block.get("type") == "text"
                 ]
             )
+            reasoning = _content_text(
+                [
+                    block
+                    for block in blocks
+                    if isinstance(block, dict) and block.get("type") == "reasoning"
+                ]
+            )
+            if reasoning:
+                step["reasoning_content"] = reasoning
             if message:
                 step["message"] = message
             if tool_calls:
@@ -363,17 +372,17 @@ def _source_fingerprint(
     return digest.hexdigest()
 
 
-def _redact_string(value: str) -> str:
+def _redact_string(value: str, *, max_chars: int | None = MAX_PUBLIC_STRING_CHARS) -> str:
     text = _ANSI_RE.sub("", value).replace("\x00", "")
     for pattern in _SECRET_PATTERNS:
         if pattern.groups:
             text = pattern.sub(lambda match: f"{match.group(1)}[REDACTED]", text)
         else:
             text = pattern.sub("[REDACTED]", text)
-    if len(text) > MAX_PUBLIC_STRING_CHARS:
-        omitted = len(text) - MAX_PUBLIC_STRING_CHARS
+    if max_chars is not None and len(text) > max_chars:
+        omitted = len(text) - max_chars
         text = (
-            text[:MAX_PUBLIC_STRING_CHARS]
+            text[:max_chars]
             + f"\n\n[TRUNCATED {omitted:,} CHARACTERS FOR THE PUBLIC VIEWER]"
         )
     return text
@@ -483,6 +492,14 @@ def _public_step(
         public["model_name"] = _redact_string(step["model_name"])
     if isinstance(message, str) and message:
         public["message"] = _redact_string(message)
+    reasoning_content = step.get("reasoning_content")
+    if isinstance(reasoning_content, str) and reasoning_content:
+        # Reasoning is a primary benchmark artifact, not a preview. Preserve it
+        # in full while applying the same credential redaction as every other
+        # public trajectory field.
+        public["reasoning_content"] = _redact_string(
+            reasoning_content, max_chars=None
+        )
     if tool_calls:
         public["tool_calls"] = tool_calls
     if results:

@@ -305,6 +305,47 @@ def test_chat_completions_contract_is_sealed_and_usage_is_forced() -> None:
     assert payload["reasoning_effort"] == "max"
 
 
+def test_deepseek_reasoning_is_aliased_to_native_harness_field() -> None:
+    payload = {
+        "choices": [
+            {
+                "delta": {
+                    "reasoning": "inspect the task",
+                    "reasoning_details": [
+                        {"type": "reasoning.text", "text": "inspect the task"}
+                    ],
+                }
+            }
+        ]
+    }
+
+    proxy.expose_deepseek_reasoning_content(payload)
+
+    delta = payload["choices"][0]["delta"]
+    assert delta["reasoning"] == "inspect the task"
+    assert delta["reasoning_content"] == "inspect the task"
+    assert delta["reasoning_details"] == [
+        {"type": "reasoning.text", "text": "inspect the task"}
+    ]
+
+
+def test_deepseek_native_reasoning_content_is_not_overwritten() -> None:
+    payload = {
+        "choices": [
+            {
+                "message": {
+                    "reasoning": "normalized",
+                    "reasoning_content": "native",
+                }
+            }
+        ]
+    }
+
+    proxy.expose_deepseek_reasoning_content(payload)
+
+    assert payload["choices"][0]["message"]["reasoning_content"] == "native"
+
+
 def test_proxy_sanitizes_binary_terminal_text_before_provider_request() -> None:
     body, payload = proxy.pin_provider_route(
         json.dumps(
@@ -349,7 +390,7 @@ def test_responses_contract_seals_luna_benchmark_parameters() -> None:
         request_contract={
             "model": "openai/gpt-5.6-luna",
             "max_output_tokens": 128_000,
-            "reasoning": {"effort": "max"},
+            "reasoning": {"effort": "max", "summary": "auto"},
             "service_tier": "default",
         },
     )
@@ -360,7 +401,7 @@ def test_responses_contract_seals_luna_benchmark_parameters() -> None:
     assert payload["temperature"] == 0.2
     assert payload["top_p"] == 0.2
     assert payload["max_output_tokens"] == 128_000
-    assert payload["reasoning"] == {"effort": "max"}
+    assert payload["reasoning"] == {"effort": "max", "summary": "auto"}
     assert payload["service_tier"] == "default"
 
 
@@ -1076,6 +1117,61 @@ def test_proxy_maintains_constant_size_exact_cost_summary(tmp_path: Path) -> Non
         server.server_close()
 
 
+def test_proxy_waits_for_exact_generation_recovery_before_releasing_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_root = tmp_path / "runs/run-1"
+    write_run_contract(run_root)
+    server = proxy.LedgerProxyServer(
+        ("127.0.0.1", 0),
+        upstream="https://openrouter.ai/api/v1",
+        ledger_root=run_root / "api-usage",
+        run_id="run-1",
+        cpu_attempt=1,
+        runtime_dir=tmp_path / "runtime",
+    )
+    server.cost_recovery_required_request_ids.add(REQUEST_1)
+    calls = 0
+
+    def recover(*, include_in_flight: bool) -> None:
+        nonlocal calls
+        assert include_in_flight is False
+        calls += 1
+        if calls == 2:
+            server.cost_recovery_required_request_ids.remove(REQUEST_1)
+
+    monkeypatch.setattr(server, "_reconcile_pending_requests", recover)
+    monkeypatch.setattr(proxy.time, "sleep", lambda _seconds: None)
+    try:
+        assert server.recover_request_until(REQUEST_1, timeout_seconds=1.0) is True
+        assert calls == 2
+    finally:
+        server.server_close()
+
+
+def test_proxy_generation_recovery_has_hard_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_root = tmp_path / "runs/run-1"
+    write_run_contract(run_root)
+    server = proxy.LedgerProxyServer(
+        ("127.0.0.1", 0),
+        upstream="https://openrouter.ai/api/v1",
+        ledger_root=run_root / "api-usage",
+        run_id="run-1",
+        cpu_attempt=1,
+        runtime_dir=tmp_path / "runtime",
+    )
+    server.cost_recovery_required_request_ids.add(REQUEST_1)
+    monotonic = iter((0.0, 2.0))
+    monkeypatch.setattr(server, "_reconcile_pending_requests", lambda **_: None)
+    monkeypatch.setattr(proxy.time, "monotonic", lambda: next(monotonic))
+    try:
+        assert server.recover_request_until(REQUEST_1, timeout_seconds=1.0) is False
+    finally:
+        server.server_close()
+
+
 def test_streaming_chat_completions_is_sealed_metered_and_peak_normalized(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1114,7 +1210,20 @@ def test_streaming_chat_completions_is_sealed_metered_and_peak_normalized(
             event = {
                 "id": "gen-chat",
                 "model": "deepseek/deepseek-v4-flash-vision-exp",
-                "choices": [{"delta": {}, "finish_reason": "stop"}],
+                "choices": [
+                    {
+                        "delta": {
+                            "reasoning": "inspect the task",
+                            "reasoning_details": [
+                                {
+                                    "type": "reasoning.text",
+                                    "text": "inspect the task",
+                                }
+                            ],
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
                 "usage": {
                     "prompt_tokens": 1_000,
                     "prompt_tokens_details": {"cached_tokens": 800},
@@ -1205,7 +1314,13 @@ def test_streaming_chat_completions_is_sealed_metered_and_peak_normalized(
         )
         response = client.getresponse()
         assert response.status == 200
-        assert b"gen-chat" in response.read()
+        response_body = response.read()
+        assert b"gen-chat" in response_body
+        streamed = json.loads(response_body.split(b"\n", 1)[0][6:])
+        delta = streamed["choices"][0]["delta"]
+        assert delta["reasoning"] == "inspect the task"
+        assert delta["reasoning_content"] == "inspect the task"
+        assert delta["reasoning_details"][0]["text"] == "inspect the task"
         client.close()
 
         client = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)

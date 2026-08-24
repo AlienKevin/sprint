@@ -82,6 +82,7 @@ def write_fixture(state: Path) -> None:
                 "timestamp": f"2026-08-23T08:0{attempt}:03Z",
                 "source": "agent",
                 "model_name": "test-model",
+                "reasoning_content": "I should inspect before acting.",
                 "message": "Inspecting the workspace.",
                 "tool_calls": [
                     {
@@ -134,6 +135,7 @@ def test_build_public_trajectory_redacts_and_preserves_attempts(tmp_path: Path) 
     assert payload["steps"][0]["attempt_step_id"] == 2
     assert payload["steps"][1]["public_step_id"] == 2
     agent_step = payload["steps"][1]
+    assert agent_step["reasoning_content"] == "I should inspect before acting."
     assert agent_step["tool_calls"][0]["arguments"]["api_key"] == "[REDACTED]"
     assert agent_step["tool_calls"][0]["tool_call_id"] != "raw-call-id"
     assert agent_step["observation"]["results"][0]["source_call_id"] == agent_step["tool_calls"][0]["tool_call_id"]
@@ -203,6 +205,10 @@ def test_build_public_trajectory_from_deepseek_harness_events(tmp_path: Path) ->
                 "step": 1,
                 "message": {
                     "content": [
+                        {
+                            "type": "reasoning",
+                            "text": "I should inspect the policy contract first.",
+                        },
                         {"type": "text", "text": "Inspecting."},
                         {
                             "type": "tool-call",
@@ -261,6 +267,9 @@ def test_build_public_trajectory_from_deepseek_harness_events(tmp_path: Path) ->
     assert payload["steps"][0]["source"] == "user"
     assert payload["steps"][0]["message"] == "build fastest"
     agent = payload["steps"][1]
+    assert agent["reasoning_content"] == (
+        "I should inspect the policy contract first."
+    )
     assert agent["message"] == "Inspecting."
     assert agent["metrics"] == {
         "prompt_tokens": 10,
