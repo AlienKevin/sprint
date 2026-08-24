@@ -47,7 +47,7 @@ from event_runtime.export.timeline import (  # noqa: E402
 
 OPS_ROOT = ROOT / "runs" / "ops"
 FRONTIER_SCRIPT = ROOT / "event_runtime/export/frontier.py"
-RECONSTRUCT_CODEX_USAGE_SCRIPT = ROOT / "event_runtime/cost/model_usage.py"
+RECONSTRUCT_MODEL_USAGE_SCRIPT = ROOT / "event_runtime/cost/model_usage.py"
 UV = Path("/home/ubuntu/.local/bin/uv")
 POLL_SECONDS = 30
 DEFAULT_WAIT_SECONDS = 3 * 60 * 60
@@ -698,11 +698,15 @@ def build_unified_timeline(
     return payload
 
 
-def reconstruct_codex_usage(state_dir: Path, run: dict[str, Any]) -> bool:
+def reconstruct_model_usage(state_dir: Path, run: dict[str, Any]) -> bool:
     """Materialize ATIF and cost ledgers from immutable per-attempt chunks."""
     chunks = state_dir / "durable-trace" / "raw"
     if not chunks.is_dir() or not any(
-        chunks.glob("cpu-attempt-*/codex/*/chunks/*.jsonl")
+        chunks.glob(pattern)
+        for pattern in (
+            "cpu-attempt-*/codex/*/chunks/*.jsonl",
+            "cpu-attempt-*/deepseek-harness/*/chunks/*.jsonl",
+        )
     ):
         return False
     result = run_command(
@@ -715,7 +719,7 @@ def reconstruct_codex_usage(state_dir: Path, run: dict[str, Any]) -> bool:
             "--extra",
             "modal",
             "python",
-            str(RECONSTRUCT_CODEX_USAGE_SCRIPT),
+            str(RECONSTRUCT_MODEL_USAGE_SCRIPT),
             "--state-dir",
             str(state_dir),
         ],
@@ -1510,7 +1514,7 @@ def monitor_once(
                 if run.get("provider_usage_ledger_required"):
                     sync_durable_api_usage(state_dir, run)
                 if run.get("usage_audit_required"):
-                    reconstruct_codex_usage(state_dir, run)
+                    reconstruct_model_usage(state_dir, run)
                 timeline = build_unified_timeline(state_dir, run, upload=upload)
                 refresh_agent_cost_snapshot(run_id, state_dir, run, timeline)
             except Exception as exc:  # noqa: BLE001
@@ -2243,7 +2247,7 @@ def _finalize_owned(
         sync_durable_api_usage(state_dir, run, force=True)
     if run.get("usage_audit_required"):
         sync_durable_trace(state_dir, run, force=True)
-        reconstruct_codex_usage(state_dir, run)
+        reconstruct_model_usage(state_dir, run)
     if (provider_usage_required or run.get("usage_audit_required")) and run.get(
         "unified_timeline_required"
     ):

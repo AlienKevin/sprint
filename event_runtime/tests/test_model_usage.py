@@ -118,6 +118,127 @@ def write_zero_request_session(state: Path, attempt: int, session_id: str) -> No
     chunk.write_text("".join(json.dumps(row) + "\n" for row in rows))
 
 
+def write_deepseek_harness_session(state: Path, attempt: int) -> None:
+    chunk = (
+        state
+        / "durable-trace"
+        / "raw"
+        / f"cpu-attempt-{attempt:03d}"
+        / "deepseek-harness"
+        / f"harness-source-{attempt}"
+        / "chunks"
+        / "0000000000000000-0000000000001000-test.jsonl"
+    )
+    chunk.parent.mkdir(parents=True)
+    rows = [
+        {
+            "schema_version": 1,
+            "method": "session.event",
+            "payload": {
+                "event": {
+                    "seq": 1,
+                    "type": "user/message",
+                    "time": 1_787_571_739_098,
+                    "data": {"content": [{"type": "text", "text": "task"}]},
+                }
+            },
+        },
+        {
+            "schema_version": 1,
+            "method": "session.event",
+            "payload": {
+                "event": {
+                    "seq": 2,
+                    "type": "assistant/message",
+                    "time": 1_787_571_740_098,
+                    "data": {
+                        "message": {
+                            "content": [{"type": "text", "text": "working"}],
+                            "source": {"model": "deepseek-v4-flash-vision-exp"},
+                        },
+                        "usage": {
+                            "inputTokens": 200,
+                            "cacheReadTokens": 800,
+                            "outputTokens": 100,
+                        },
+                    },
+                }
+            },
+        },
+    ]
+    chunk.write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+
+def test_reconstructs_deepseek_harness_trace_with_provider_billing(
+    tmp_path: Path,
+) -> None:
+    run = {
+        "run_id": "deepseek-harness-fixture",
+        "model": "deepseek/deepseek-v4-flash-vision-exp",
+        "resolved_model_version": "DeepSeek-V4-Flash-Vision-Exp",
+        "reasoning_effort": "max",
+        "cpu_launch_history": [{"attempt": 1}],
+        "budget_enforcement": {
+            "api_cost_source": "openrouter_reported_per_request",
+            "api_budget_cost_basis": "openrouter_list_price_with_deepseek_peak_floor",
+        },
+    }
+    (tmp_path / "run.json").write_text(json.dumps(run))
+    write_deepseek_harness_session(tmp_path, 1)
+    record = tmp_path / "provider-api-usage/api-usage/requests/request.json"
+    record.parent.mkdir(parents=True)
+    record.write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "run_id": run["run_id"],
+                "cpu_attempt": 1,
+                "ledger_request_id": "ledger-deepseek-1",
+                "generation_id": "generation-deepseek-1",
+                "requested_at": "2026-08-24T04:20:44Z",
+                "completed_at": "2026-08-24T04:20:45Z",
+                "state": "complete",
+                "requested_model": run["model"],
+                "response_model": run["model"],
+                "provider_reported_cost_usd": 0.1,
+                "undiscounted_cost_usd": 0.2,
+                "benchmark_cost_usd": 0.3,
+                "cost_basis": "openrouter_list_price_with_deepseek_peak_floor",
+                "promotion_snapshot": {"discount_fraction": 0.5},
+                "usage": {
+                    "input_tokens": 1000,
+                    "input_tokens_details": {
+                        "cached_tokens": 800,
+                        "cache_write_tokens": 0,
+                    },
+                    "output_tokens": 100,
+                    "output_tokens_details": {"reasoning_tokens": 50},
+                    "total_tokens": 1100,
+                },
+            }
+        )
+    )
+
+    subprocess.run(
+        [sys.executable, str(SCRIPT), "--state-dir", str(tmp_path)],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    audit = json.loads((tmp_path / "usage/run-usage-audit.json").read_text())
+    assert audit["source"] == "durable_agent_session_chunks"
+    assert audit["captured_cpu_attempts"] == [1]
+    assert audit["attempt_coverage_complete"] is True
+    assert audit["request_count"] == 1
+    assert audit["calculated_api_usage_usd"] == 0.3
+    assert audit["requests"][0]["provider_only_usage"] is True
+    assert audit["source_sessions"][0]["agent_kind"] == "deepseek-harness"
+    assert audit["source_sessions"][0]["trajectory_sha256"]
+    assert sprintctl.run_usage_audit_ready(tmp_path, run) == (True, [])
+
+
 def test_reconstructs_all_cpu_attempts_and_aggregates_cost(tmp_path: Path) -> None:
     run = {
         "run_id": "restart-cost-fixture",
@@ -267,9 +388,7 @@ def test_deepseek_peak_benchmark_cost_overrides_endpoint_list_cost() -> None:
     assert request["deepseek_peak_adjustment_usd"] == 0.1
     assert request["benchmark_adjustment_usd"] == pytest.approx(0.2)
     assert request["promotion_savings_usd"] == pytest.approx(0.2)
-    assert request["cost_basis"] == (
-        "openrouter_list_price_with_deepseek_peak_floor"
-    )
+    assert request["cost_basis"] == ("openrouter_list_price_with_deepseek_peak_floor")
 
 
 def test_recovered_openrouter_cost_is_bound_in_serial_request_order(
@@ -398,9 +517,7 @@ def test_openrouter_run_audit_uses_reconciled_provider_cost_over_session_cost(
         "cpu_launch_history": [{"attempt": 1}],
         "budget_enforcement": {
             "api_cost_source": "openrouter_reported_per_request",
-            "api_budget_cost_basis": (
-                "openrouter_list_price_before_endpoint_discount"
-            ),
+            "api_budget_cost_basis": ("openrouter_list_price_before_endpoint_discount"),
         },
     }
     (tmp_path / "run.json").write_text(json.dumps(run))

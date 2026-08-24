@@ -146,7 +146,9 @@ def _deepseek_events(chunk_paths: list[Path]) -> list[dict[str, Any]]:
     return [events[key] for key in sorted(events)] + unsequenced
 
 
-def _deepseek_atif(events: list[dict[str, Any]], *, model: str | None) -> dict[str, Any]:
+def _deepseek_atif(
+    events: list[dict[str, Any]], *, model: str | None
+) -> dict[str, Any]:
     """Convert high-level DeepSeek Harness events to the ATIF subset we publish."""
     steps: list[dict[str, Any]] = []
     calls: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
@@ -204,7 +206,11 @@ def _deepseek_atif(events: list[dict[str, Any]], *, model: str | None) -> dict[s
                 "model_name": source_model or model,
             }
             message = _content_text(
-                [block for block in blocks if isinstance(block, dict) and block.get("type") == "text"]
+                [
+                    block
+                    for block in blocks
+                    if isinstance(block, dict) and block.get("type") == "text"
+                ]
             )
             if message:
                 step["message"] = message
@@ -217,7 +223,10 @@ def _deepseek_atif(events: list[dict[str, Any]], *, model: str | None) -> dict[s
             metrics = {
                 "prompt_tokens": sum(
                     value
-                    for value in (usage.get("inputTokens"), usage.get("cacheReadTokens"))
+                    for value in (
+                        usage.get("inputTokens"),
+                        usage.get("cacheReadTokens"),
+                    )
                     if isinstance(value, (int, float)) and not isinstance(value, bool)
                 ),
                 "cached_tokens": usage.get("cacheReadTokens"),
@@ -237,7 +246,11 @@ def _deepseek_atif(events: list[dict[str, Any]], *, model: str | None) -> dict[s
         if kind == "tool/call":
             call_id = data.get("callId")
             harness_step = data.get("step")
-            step = assistant_steps.get(harness_step) if isinstance(harness_step, int) else None
+            step = (
+                assistant_steps.get(harness_step)
+                if isinstance(harness_step, int)
+                else None
+            )
             if not isinstance(call_id, str) or step is None or call_id in calls:
                 continue
             call = {
@@ -270,6 +283,13 @@ def _deepseek_atif(events: list[dict[str, Any]], *, model: str | None) -> dict[s
     return {"schema_version": "1.0", "steps": steps}
 
 
+def deepseek_harness_trajectory(
+    chunk_paths: list[Path], *, model: str | None
+) -> dict[str, Any]:
+    """Build deterministic ATIF directly from immutable harness chunks."""
+    return _deepseek_atif(_deepseek_events(chunk_paths), model=model)
+
+
 def _materialize_deepseek_trajectories(state_dir: Path) -> list[tuple[int, Path]]:
     grouped: dict[tuple[int, str], list[Path]] = {}
     for path in sorted(
@@ -277,7 +297,9 @@ def _materialize_deepseek_trajectories(state_dir: Path) -> list[tuple[int, Path]
             "durable-trace/raw/cpu-attempt-*/deepseek-harness/*/chunks/*.jsonl"
         )
     ):
-        grouped.setdefault((_attempt_number(path), path.parent.parent.name), []).append(path)
+        grouped.setdefault((_attempt_number(path), path.parent.parent.name), []).append(
+            path
+        )
     run = _read_json(state_dir / "run.json")
     materialized: list[tuple[int, Path]] = []
     for (attempt, source), chunk_paths in grouped.items():
@@ -302,9 +324,7 @@ def _materialize_deepseek_trajectories(state_dir: Path) -> list[tuple[int, Path]
         ).hexdigest()
         previous = _read_json(target)
         if previous.get("deepseek_source_fingerprint") != fingerprint:
-            payload = _deepseek_atif(
-                _deepseek_events(chunk_paths), model=run.get("model")
-            )
+            payload = deepseek_harness_trajectory(chunk_paths, model=run.get("model"))
             payload["deepseek_source_fingerprint"] = fingerprint
             _atomic_json(target, payload)
         materialized.append((attempt, target))
@@ -405,7 +425,9 @@ def _call_id(run_id: str, raw: Any) -> str | None:
     return hashlib.sha256(f"{run_id}\0{raw}".encode()).hexdigest()[:14]
 
 
-def _public_step(run_id: str, attempt: int, step: dict[str, Any]) -> dict[str, Any] | None:
+def _public_step(
+    run_id: str, attempt: int, step: dict[str, Any]
+) -> dict[str, Any] | None:
     source = str(step.get("source") or "agent")
     message = step.get("message")
     if source == "system" or (source == "user" and not _public_user_message(message)):
@@ -485,8 +507,7 @@ def _timestamp_ms(value: Any) -> int | None:
         return None
     try:
         return int(
-            dt.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
-            * 1000
+            dt.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1000
         )
     except ValueError:
         return None
@@ -541,8 +562,7 @@ def build_public_trajectory(state_dir: Path, *, web_dir: Path) -> dict[str, Any]
                 .get("cpu_metric_coverage", {})
                 .get("attempts", [])
             )
-            if isinstance(item, dict)
-            and isinstance(item.get("cpu_attempt"), int)
+            if isinstance(item, dict) and isinstance(item.get("cpu_attempt"), int)
         }
         for attempt, path in sources:
             trajectory = _read_json(path)
@@ -600,7 +620,9 @@ def build_public_trajectory(state_dir: Path, *, web_dir: Path) -> dict[str, Any]
                 "attempt_count": len(attempts),
                 "step_count": len(steps),
                 "message_count": sum(bool(item.get("message")) for item in steps),
-                "tool_call_count": sum(len(item.get("tool_calls") or []) for item in steps),
+                "tool_call_count": sum(
+                    len(item.get("tool_calls") or []) for item in steps
+                ),
                 "duration_ms": end_ms - start_ms
                 if start_ms is not None and end_ms is not None
                 else None,

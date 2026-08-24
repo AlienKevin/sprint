@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rebuild per-attempt ATIF and one run-level usage ledger from durable Codex logs."""
+"""Rebuild per-attempt ATIF and one run-level usage ledger from durable logs."""
 
 from __future__ import annotations
 
@@ -10,15 +10,22 @@ import json
 import math
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
-from harbor.agents.installed.codex import Codex
-from harbor.agents.installed.codex_cost import (
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from harbor.agents.installed.codex import Codex  # noqa: E402
+from harbor.agents.installed.codex_cost import (  # noqa: E402
     USAGE_AUDIT_SCHEMA_VERSION,
     pricing_snapshot_for_request,
 )
-from harbor.utils.trajectory_utils import format_trajectory_json
+from harbor.utils.trajectory_utils import format_trajectory_json  # noqa: E402
+
+from event_runtime.export.trajectory import deepseek_harness_trajectory  # noqa: E402
 
 
 ATTEMPT_RE = re.compile(r"cpu-attempt-(\d+)")
@@ -193,31 +200,32 @@ def recover_harbor_provenance(
     return recovered
 
 
-def source_groups(state_dir: Path) -> list[tuple[int, str, list[Path]]]:
-    groups: dict[tuple[int, str], list[Path]] = {}
+def source_groups(state_dir: Path) -> list[tuple[int, str, str, list[Path]]]:
+    groups: dict[tuple[int, str, str], list[Path]] = {}
     roots = [state_dir / "durable-trace" / "raw", state_dir / "trace" / "raw"]
     roots.extend(state_dir.glob("recovery/*/*/trace/raw"))
     for root in roots:
-        for chunks in root.glob("cpu-attempt-*/codex/*/chunks"):
-            match = ATTEMPT_RE.fullmatch(chunks.parents[2].name)
-            if not match:
-                continue
-            attempt = int(match.group(1))
-            source_id = chunks.parent.name
-            files = sorted(chunks.glob("*.jsonl"))
-            if not files:
-                continue
-            key = (attempt, source_id)
-            existing = groups.get(key)
-            if existing is None or sum(path.stat().st_size for path in files) > sum(
-                path.stat().st_size for path in existing
-            ):
-                # Recovery snapshots may contain an older prefix of the same
-                # immutable stream. Use the most complete copy.
-                groups[key] = files
+        for agent_kind in ("codex", "deepseek-harness"):
+            for chunks in root.glob(f"cpu-attempt-*/{agent_kind}/*/chunks"):
+                match = ATTEMPT_RE.fullmatch(chunks.parents[2].name)
+                if not match:
+                    continue
+                attempt = int(match.group(1))
+                source_id = chunks.parent.name
+                files = sorted(chunks.glob("*.jsonl"))
+                if not files:
+                    continue
+                key = (attempt, agent_kind, source_id)
+                existing = groups.get(key)
+                if existing is None or sum(path.stat().st_size for path in files) > sum(
+                    path.stat().st_size for path in existing
+                ):
+                    # Recovery snapshots may contain an older prefix of the same
+                    # immutable stream. Use the most complete copy.
+                    groups[key] = files
     return [
-        (attempt, source_id, groups[(attempt, source_id)])
-        for attempt, source_id in sorted(groups)
+        (attempt, agent_kind, source_id, groups[(attempt, agent_kind, source_id)])
+        for attempt, agent_kind, source_id in sorted(groups)
     ]
 
 
@@ -293,7 +301,7 @@ def _provider_usage_signature(record: dict[str, Any]) -> tuple[int, ...] | None:
     )
 
 
-def _codex_usage_signature(request: dict[str, Any]) -> tuple[int, ...]:
+def _agent_usage_signature(request: dict[str, Any]) -> tuple[int, ...]:
     return tuple(
         int(request.get(field) or 0)
         for field in (
@@ -310,7 +318,8 @@ def _codex_usage_signature(request: dict[str, Any]) -> tuple[int, ...]:
 def apply_provider_reported_costs(
     requests: list[dict[str, Any]], records: list[dict[str, Any]]
 ) -> None:
-    """Bind every Codex usage event to exactly one OpenRouter charge."""
+    """Bind every local usage event to exactly one OpenRouter charge."""
+
     def bind(request: dict[str, Any], record: dict[str, Any]) -> None:
         provider_cost = float(record["provider_reported_cost_usd"])
         cost = float(
@@ -360,7 +369,7 @@ def apply_provider_reported_costs(
     remaining = list(records)
     for request in requests:
         attempt = int(request.get("cpu_attempt") or 0)
-        signature = _codex_usage_signature(request)
+        signature = _agent_usage_signature(request)
         match_index = next(
             (
                 index
@@ -388,7 +397,7 @@ def apply_provider_reported_costs(
             )
         if match_index is None:
             raise SystemExit(
-                "Codex usage has no matching OpenRouter per-request cost: "
+                "agent usage has no matching OpenRouter per-request cost: "
                 f"attempt={attempt} usage={signature}"
             )
         record = remaining.pop(match_index)
@@ -437,6 +446,7 @@ def reconstruct_group(
     state_dir: Path,
     run: dict[str, Any],
     attempt: int,
+    agent_kind: str,
     source_id: str,
     chunks: list[Path],
 ) -> dict[str, Any]:
@@ -448,28 +458,41 @@ def reconstruct_group(
     session_path = sessions / "rollout.jsonl"
     atomic_text(session_path, combined.decode("utf-8", errors="replace"))
 
-    kwargs: dict[str, Any] = {
-        "logs_dir": out,
-        "model_name": str(run["model"]),
-        "reasoning_effort": str(run["reasoning_effort"]),
-    }
-    if str(run["model"]).split("/", 1)[-1] in {
-        "gpt-5.6-sol",
-        "gpt-5.6-terra",
-        "gpt-5.6-luna",
-    }:
-        kwargs["service_tier"] = "default"
-    agent = Codex(**kwargs)
-    trajectory = agent._convert_events_to_trajectory(sessions)
-    audit = getattr(agent, "_last_usage_audit", None)
-    if trajectory is not None:
-        trajectory_path = out / "trajectory.json"
-        atomic_text(trajectory_path, format_trajectory_json(trajectory.to_json_dict()))
-    else:
-        trajectory_path = None
+    audit: dict[str, Any] | None = None
+    trajectory_path = out / "trajectory.json"
+    if agent_kind == "codex":
+        kwargs: dict[str, Any] = {
+            "logs_dir": out,
+            "model_name": str(run["model"]),
+            "reasoning_effort": str(run["reasoning_effort"]),
+        }
+        if str(run["model"]).split("/", 1)[-1] in {
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+        }:
+            kwargs["service_tier"] = "default"
+        agent = Codex(**kwargs)
+        trajectory = agent._convert_events_to_trajectory(sessions)
+        audit = getattr(agent, "_last_usage_audit", None)
+        if trajectory is not None:
+            atomic_text(
+                trajectory_path, format_trajectory_json(trajectory.to_json_dict())
+            )
+        else:
+            trajectory_path = None
+    elif agent_kind == "deepseek-harness":
+        payload = deepseek_harness_trajectory(chunks, model=str(run["model"]))
+        atomic_text(
+            trajectory_path,
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        )
+    else:  # pragma: no cover - source_groups is the closed allowlist.
+        raise SystemExit(f"unsupported durable agent trace: {agent_kind}")
 
     source = {
         "cpu_attempt": attempt,
+        "agent_kind": agent_kind,
         "source_id": source_id,
         "combined_session_sha256": hashlib.sha256(combined).hexdigest(),
         "chunks": [
@@ -489,13 +512,17 @@ def reconstruct_group(
     if not isinstance(audit, dict):
         source.update(
             {
-                "session_id": None,
+                "session_id": source_id,
                 "request_count": 0,
                 "cost_reconstruction_complete": True,
                 "calculated_api_usage_usd": 0.0,
                 "requests": [],
                 "pricing_snapshots": [],
-                "note": "no completed model request was present",
+                "note": (
+                    "request usage is reconciled from the provider ledger"
+                    if agent_kind == "deepseek-harness"
+                    else "no completed model request was present"
+                ),
             }
         )
         return source
@@ -708,7 +735,7 @@ def prefer_complete_session(
     common = set(previous_requests) & set(candidate_requests)
     if any(previous_requests[key] != candidate_requests[key] for key in common):
         raise SystemExit(
-            f"conflicting request records for Codex session {candidate.get('session_id')}"
+            f"conflicting request records for agent session {candidate.get('session_id')}"
         )
     previous_ids = set(previous_requests)
     candidate_ids = set(candidate_requests)
@@ -717,7 +744,7 @@ def prefer_complete_session(
     if candidate_ids <= previous_ids:
         return previous
     raise SystemExit(
-        f"incomparable request ledgers for Codex session {candidate.get('session_id')}"
+        f"incomparable request ledgers for agent session {candidate.get('session_id')}"
     )
 
 
@@ -739,16 +766,17 @@ def main() -> int:
             state_dir=state_dir,
             run=run,
             attempt=attempt,
+            agent_kind=agent_kind,
             source_id=source_id,
             chunks=chunks,
         )
-        for attempt, source_id, chunks in groups
+        for attempt, agent_kind, source_id, chunks in groups
     ]
     final_source = harbor_final_source(state_dir=state_dir, run=run)
     if final_source is not None:
         sources.append(final_source)
     if not sources:
-        raise SystemExit("no durable or Harbor Codex session is available")
+        raise SystemExit("no durable agent or Harbor session is available")
     unique_sessions: dict[str, dict[str, Any]] = {}
     anonymous = []
     for source in sources:
@@ -806,7 +834,7 @@ def main() -> int:
         "model": run["model"],
         "resolved_model_version": run.get("resolved_model_version"),
         "reasoning_effort": run["reasoning_effort"],
-        "source": "durable_codex_session_chunks",
+        "source": "durable_agent_session_chunks",
         "source_sessions": [
             {
                 key: value
