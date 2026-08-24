@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import subprocess
 import time
 from typing import Any
 
@@ -69,6 +70,31 @@ def main() -> int:
         "SPRINT_CODEX_OPENAI_MODEL_ID": "gpt-5.6-luna",
         "SPRINT_CODEX_OPENAI_MODEL_LOCK": "/opt/sprint-codex-luna-model-lock.json",
     }
+    launch_contract = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "event_runtime/control/launch.sh"),
+            "--dry-run",
+            "--run-id",
+            run_id,
+            "--agent-kind",
+            "codex",
+            "--model",
+            MODEL,
+            "--endpoint",
+            "https://openrouter.ai/api/v1",
+            "--reasoning-effort",
+            "max",
+        ],
+        env=os.environ.copy(),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=True,
+    )
+    run = json.loads(launch_contract.stdout)
+    run["standing_gpu_worker"] = False
+    run["cpu_launch_attempt"] = 1
     try:
         sandbox = modal.Sandbox.create(
             "python3",
@@ -92,26 +118,22 @@ def main() -> int:
             + "/state /tmp/runtime /tmp/logs/agent; "
             + "python3 -c "
             + shlex.quote(
-                "import json,pathlib; "
-                "pathlib.Path('/tmp/durable/runs/"
+                "import json,pathlib; p=pathlib.Path('/tmp/durable/runs/"
                 + run_id
-                + "/state/run.json').write_text(json.dumps({"
-                + repr("run_id")
-                + ":"
-                + repr(run_id)
-                + ","
-                + repr("model")
-                + ":"
-                + repr(MODEL)
-                + ","
-                + repr("agent_cost_budget_usd")
-                + ":10.0}))"
+                + "/state/run.json'); p.parent.mkdir(parents=True, exist_ok=True); "
+                + "p.write_text(json.dumps("
+                + repr(run)
+                + "))"
             )
             + "; "
             + "/opt/sprint-codex-exec-wrapper.sh \"$(command -v codex)\" "
             + "exec --dangerously-bypass-approvals-and-sandbox "
             + "--skip-git-repo-check --model gpt-5.6-luna --json -- "
-            + shlex.quote("Reply exactly LIVE-SMOKE-OK. Do not call a tool.")
+            + shlex.quote(
+                "Without calling a tool, solve this internally: find the least "
+                "positive integer n such that n modulo 7 is 3 and n modulo 11 "
+                "is 5. Your final response must include LIVE-SMOKE-OK."
+            )
             + " </dev/null",
             env=env,
             timeout=720,
