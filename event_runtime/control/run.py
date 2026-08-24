@@ -65,6 +65,9 @@ BUDGET_PULSE_MAX_CLOCK_SKEW_SECONDS = 60.0
 BUDGET_PULSE_STARTUP_GRACE_SECONDS = 60.0
 DURABLE_TRACE_LIVE_SYNC_TIMEOUT_SECONDS = 60
 DURABLE_TRACE_FINAL_SYNC_TIMEOUT_SECONDS = 300
+AGENT_STOP_GRACE_SECONDS = 15.0
+AGENT_STOP_FORCE_WAIT_SECONDS = 30.0
+AGENT_STOP_POLL_SECONDS = 1.0
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,80}$")
 Uploader = Callable[[Path, str], None]
 
@@ -876,7 +879,51 @@ def persist_stop_request(
     return state_dir, run, payload
 
 
-def request_stop(run_id: str, *, reason: str = "operator_stop") -> dict[str, Any]:
+def agent_container_running(run: dict[str, Any], container_id: str) -> bool:
+    """Query Modal authoritatively instead of treating signal delivery as exit."""
+    app_id = run.get("app_id")
+    if not isinstance(app_id, str) or not app_id.startswith("ap-"):
+        return False
+    return container_id in containers_for_app(run, app_id)
+
+
+def terminate_agent_container(run: dict[str, Any], container_id: str) -> None:
+    """Force-close an agent sandbox after its bounded graceful-stop window."""
+    run_command(
+        modal_command("container", "stop", "--yes", container_id),
+        run=run,
+        timeout=60,
+    )
+
+
+def persist_host_stop_ack(
+    state_dir: Path,
+    run: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    forced: bool,
+) -> dict[str, Any]:
+    """Seal host-observed CPU termination after Modal no longer lists it."""
+    ack = {
+        "schema_version": 1,
+        "run_id": run["run_id"],
+        "reason": str(payload.get("reason") or "operator_stop"),
+        "requested_at": payload.get("requested_at"),
+        "acknowledged_at": utc_now(),
+        "source": "host_modal_container_audit",
+        "container_id": payload.get("container_id"),
+        "forced": forced,
+    }
+    atomic_write_json(state_dir / "STOP_ACK.json", ack, mode=0o600)
+    return ack
+
+
+def request_stop(
+    run_id: str,
+    *,
+    reason: str = "operator_stop",
+    wait_for_termination: bool = False,
+) -> dict[str, Any]:
     state_dir, run, payload = persist_stop_request(run_id, reason=reason)
     kind = agent_kind(run)
     marker = state_dir / "STOP_REQUESTED.json"
@@ -885,8 +932,11 @@ def request_stop(run_id: str, *, reason: str = "operator_stop") -> dict[str, Any
     # Sandbox.create call can hold that lock for minutes; waiting for it first
     # would let API and CPU spend continue past the durable budget marker.
     agent_stop_error = None
+    container: str | None = None
+    container_discovery_succeeded = False
     try:
         container = discover_agent_container(state_dir, run)
+        container_discovery_succeeded = True
         if container:
             exec_container(
                 run,
@@ -918,11 +968,90 @@ def request_stop(run_id: str, *, reason: str = "operator_stop") -> dict[str, Any
         ack = fetch_remote_json(state_dir, run, "STOP_ACK", "STOP_ACK.json")
     except Exception:  # noqa: BLE001
         ack = None
-    if ack and str(ack.get("reason") or "") == "operator_stop":
+    expected_reason = str(payload.get("reason") or reason)
+    if ack and str(ack.get("reason") or "") == expected_reason:
         return {
             "status": "acknowledged",
             "agent_kind": kind,
             "ack": ack,
+            "agent_stop_error": agent_stop_error,
+            "gpu_workers_stopped": gpu_stopped,
+            "gpu_stop_error": gpu_stop_error,
+        }
+
+    requested_epoch = parse_iso(str(payload.get("requested_at") or ""))
+    request_age = (
+        0.0 if requested_epoch is None else max(0.0, time.time() - requested_epoch)
+    )
+    should_wait = wait_for_termination or request_age >= AGENT_STOP_GRACE_SECONDS
+    if should_wait and container_discovery_succeeded:
+        if container is None:
+            ack = persist_host_stop_ack(
+                state_dir, run, payload, forced=False
+            )
+            return {
+                "status": "acknowledged",
+                "agent_kind": kind,
+                "ack": ack,
+                "agent_stop_error": agent_stop_error,
+                "gpu_workers_stopped": gpu_stopped,
+                "gpu_stop_error": gpu_stop_error,
+            }
+
+        grace_deadline = time.monotonic() + max(
+            0.0, AGENT_STOP_GRACE_SECONDS - request_age
+        )
+        while time.monotonic() < grace_deadline:
+            if not agent_container_running(run, container):
+                ack = persist_host_stop_ack(
+                    state_dir, run, payload, forced=False
+                )
+                return {
+                    "status": "acknowledged",
+                    "agent_kind": kind,
+                    "ack": ack,
+                    "agent_stop_error": agent_stop_error,
+                    "gpu_workers_stopped": gpu_stopped,
+                    "gpu_stop_error": gpu_stop_error,
+                }
+            time.sleep(AGENT_STOP_POLL_SECONDS)
+
+        forced_error = None
+        try:
+            terminate_agent_container(run, container)
+            force_deadline = time.monotonic() + AGENT_STOP_FORCE_WAIT_SECONDS
+            while agent_container_running(run, container):
+                if time.monotonic() >= force_deadline:
+                    raise TimeoutError(
+                        f"Modal container {container} remained active after force-stop"
+                    )
+                time.sleep(AGENT_STOP_POLL_SECONDS)
+            ack = persist_host_stop_ack(state_dir, run, payload, forced=True)
+            return {
+                "status": "acknowledged",
+                "agent_kind": kind,
+                "ack": ack,
+                "agent_stop_error": agent_stop_error,
+                "gpu_workers_stopped": gpu_stopped,
+                "gpu_stop_error": gpu_stop_error,
+            }
+        except Exception as exc:  # noqa: BLE001
+            forced_error = f"{type(exc).__name__}: {exc}"
+        return {
+            "status": "teardown_failed",
+            "agent_kind": kind,
+            **payload,
+            "agent_stop_error": agent_stop_error,
+            "forced_stop_error": forced_error,
+            "gpu_workers_stopped": gpu_stopped,
+            "gpu_stop_error": gpu_stop_error,
+        }
+
+    if wait_for_termination and not container_discovery_succeeded:
+        return {
+            "status": "teardown_failed",
+            "agent_kind": kind,
+            **payload,
             "agent_stop_error": agent_stop_error,
             "gpu_workers_stopped": gpu_stopped,
             "gpu_stop_error": gpu_stop_error,

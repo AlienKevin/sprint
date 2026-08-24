@@ -2439,6 +2439,44 @@ while True:
             self.assertEqual(events, ["cpu-signalled", "gpu-cleanup", "ack-fetched"])
             self.assertEqual(result["status"], "requested")
 
+    def test_waiting_stop_force_closes_cpu_and_persists_matching_ack(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state_dir = Path(raw)
+            run = {
+                "run_id": "test-force-stop",
+                "agent_kind": "codex",
+                "agent_container_id": "ta-test",
+                "app_id": "ap-test",
+            }
+            with (
+                mock.patch.object(sprintctl, "load_run", return_value=(state_dir, run)),
+                mock.patch.object(sprintctl, "fetch_remote_json", return_value=None),
+                mock.patch.object(
+                    sprintctl, "discover_agent_container", return_value="ta-test"
+                ),
+                mock.patch.object(sprintctl, "exec_container"),
+                mock.patch.object(
+                    sprintctl, "AGENT_STOP_GRACE_SECONDS", 0.0
+                ),
+                mock.patch.object(
+                    sprintctl, "containers_for_app", return_value=[]
+                ),
+                mock.patch.object(sprintctl, "terminate_agent_container") as terminate,
+                mock.patch("event_runtime.compute.worker.stop_all", return_value=[]),
+            ):
+                result = sprintctl.request_stop(
+                    "test-force-stop",
+                    reason="operator_batch_stop",
+                    wait_for_termination=True,
+                )
+
+            self.assertEqual(result["status"], "acknowledged")
+            self.assertEqual(result["ack"]["reason"], "operator_batch_stop")
+            self.assertTrue(result["ack"]["forced"])
+            terminate.assert_called_once_with(run, "ta-test")
+            stored = json.loads((state_dir / "STOP_ACK.json").read_text())
+            self.assertEqual(stored, result["ack"])
+
     def test_monitor_reapplies_stop_requested_before_sandbox_existed(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             state_dir = Path(raw)

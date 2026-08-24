@@ -242,13 +242,13 @@ def _public_material_state(value: Any) -> Any:
     return value
 
 
-def atomic_public_json(path: Path, payload: Any) -> bool:
+def atomic_public_json(path: Path, payload: Any, *, force: bool = False) -> bool:
     """Write a public snapshot only when user-visible state has changed."""
     try:
         previous = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
         previous = None
-    if previous is not None and _public_material_state(
+    if not force and previous is not None and _public_material_state(
         previous
     ) == _public_material_state(payload):
         return False
@@ -608,8 +608,14 @@ def apply_batch_stop_transition(
         if "status" in result:
             arm["stop_dispatch_status"] = str(result["status"])
             arm.pop("stop_dispatch_error", None)
+            if result["status"] == "acknowledged":
+                arm["status"] = "stopped"
+                arm["stopped_at"] = arm.get("stopped_at") or utc_now()
+            elif result["status"] == "teardown_failed":
+                arm["status"] = "stop_failed"
         elif "error" in result:
             arm["stop_dispatch_error"] = str(result["error"])
+            arm["status"] = "stop_failed"
 
     credential_cleanup = transition.get("credential_cleanup")
     if isinstance(credential_cleanup, dict):
@@ -619,6 +625,17 @@ def apply_batch_stop_transition(
         "requested_at": requested_at,
         "journaled_at": transition.get("journaled_at"),
     }
+    teardown_error = transition.get("teardown_error")
+    if isinstance(teardown_error, dict):
+        payload["teardown_error"] = copy.deepcopy(teardown_error)
+        payload["status"] = "stop_failed"
+    elif target_ids and all(
+        arm.get("status") in {"stopped", "finalized", "invalid_infrastructure"}
+        for arm in payload.get("arms", [])
+        if str(arm.get("run_id") or "") in target_ids
+    ):
+        payload.pop("teardown_error", None)
+        payload["status"] = "stopped"
     payload["updated_at"] = utc_now()
     return payload
 
@@ -2206,7 +2223,7 @@ def arm_terminal(arm: dict[str, Any]) -> bool:
 
 
 def public_batch(payload: dict[str, Any]) -> dict[str, Any]:
-    return {
+    public = {
         "schema_version": 1,
         "batch_id": payload["batch_id"],
         "updated_at": payload.get("updated_at"),
@@ -2245,6 +2262,9 @@ def public_batch(payload: dict[str, Any]) -> dict[str, Any]:
         ],
         "alerts": payload.get("alerts", [])[-100:],
     }
+    if isinstance(payload.get("teardown_error"), dict):
+        public["teardown_error"] = payload["teardown_error"]
+    return public
 
 
 def public_tracking_batch(payload: dict[str, Any]) -> dict[str, Any]:
@@ -2347,15 +2367,21 @@ def public_tracking_batch(payload: dict[str, Any]) -> dict[str, Any]:
     return current
 
 
-def write_public_batch(payload: dict[str, Any], *, update_current: bool = True) -> Path:
+def write_public_batch(
+    payload: dict[str, Any],
+    *,
+    update_current: bool = True,
+    force: bool = False,
+) -> Path:
     """Publish the batch record and, for its owning monitor, the active pointer."""
     public = public_batch(payload)
     public_path = WEB / "data" / "batches" / f"{payload['batch_id']}.json"
-    atomic_public_json(public_path, public)
+    atomic_public_json(public_path, public, force=force)
     if update_current:
         atomic_public_json(
             WEB / "data" / "batches" / "current.json",
             public_tracking_batch(payload),
+            force=force,
         )
     return public_path
 
@@ -2595,6 +2621,11 @@ def deploy_website_outside_batch_lock(
         batch_lock.release()
         try:
             attempted = True
+            # Normal monitor cycles suppress observer-only timestamp rewrites
+            # so the deploy debounce can mature. Once this process owns the
+            # deployment lease, refresh both batch snapshots exactly once so
+            # the uploaded overview is from the same cycle as the trajectories.
+            write_public_batch(payload, update_current=True, force=True)
             error_kind = "performance_export"
             refresh_performance_snapshot(payload)
             error_kind = "website_deploy"
@@ -3001,10 +3032,20 @@ def stop_batch(batch_id: str, *, env_file: Path | None = None) -> dict[str, Any]
     def dispatch_stop(arm: dict[str, Any]) -> tuple[str, dict[str, str]]:
         run_id = str(arm["run_id"])
         try:
-            result = sprintctl.request_stop(run_id, reason="operator_batch_stop")
-            return run_id, {
-                "status": str(result.get("status") or "requested")
-            }
+            result = sprintctl.request_stop(
+                run_id,
+                reason="operator_batch_stop",
+                wait_for_termination=True,
+            )
+            status = str(result.get("status") or "teardown_failed")
+            output = {"status": status}
+            if status != "acknowledged":
+                output["error"] = str(
+                    result.get("forced_stop_error")
+                    or result.get("agent_stop_error")
+                    or "CPU resource termination was not acknowledged"
+                )
+            return run_id, output
         except Exception as exc:  # noqa: BLE001
             # The durable STOP_REQUESTED marker is already authoritative; a
             # per-run monitor can complete this dispatch even if the immediate
@@ -3028,6 +3069,16 @@ def stop_batch(batch_id: str, *, env_file: Path | None = None) -> dict[str, Any]
         "dispatch_results": dispatch_results,
         "credential_cleanup": credential_cleanup or {},
     }
+    failures = {
+        run_id: result
+        for run_id, result in dispatch_results.items()
+        if result.get("status") != "acknowledged"
+    }
+    if failures:
+        transition["teardown_error"] = {
+            "message": "one or more trial resources did not terminate",
+            "runs": failures,
+        }
     # Replace the intent journal with the completed teardown phase. The merge
     # remains non-blocking; a monitor that owns batch.lock consumes it first on
     # its next cycle.
@@ -3168,7 +3219,7 @@ def main() -> int:
     else:
         output = read_batch(args.batch_id)
     print(json.dumps(public_command_output(args.command, output), indent=2))
-    return 0
+    return 1 if args.command == "stop" and output.get("teardown_error") else 0
 
 
 if __name__ == "__main__":

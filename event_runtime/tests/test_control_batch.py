@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import datetime as dt
 import hashlib
 import importlib.util
@@ -2070,15 +2071,16 @@ def test_batch_stop_persists_all_intents_before_slow_dispatch(
         events.append(f"persist:{run_id}")
         return tmp_path, {}, {}
 
-    def dispatch(run_id: str, *, reason: str):
+    def dispatch(run_id: str, *, reason: str, wait_for_termination: bool):
         assert persisted == ["run-1", "run-2", "run-3"]
         assert "intent:published" in events
         assert "credentials:revoked" in events
+        assert wait_for_termination is True
         dispatched.append(run_id)
         events.append(f"dispatch:{run_id}")
         if run_id == "run-1":
             raise RuntimeError("provider unavailable")
-        return {"status": "requested"}
+        return {"status": "acknowledged"}
 
     def revoke(payload: dict[str, object], env_file: Path):
         assert env_file == tmp_path / ".env"
@@ -2112,15 +2114,21 @@ def test_batch_stop_persists_all_intents_before_slow_dispatch(
         result = batch_eval.stop_batch(batch_id, env_file=tmp_path / ".env")
 
     assert set(dispatched) == {"run-1", "run-2", "run-3"}
-    assert all(arm["status"] == "stopping" for arm in result["arms"])
+    assert [arm["status"] for arm in result["arms"]] == [
+        "stop_failed",
+        "stopped",
+        "stopped",
+    ]
     assert result["arms"][0]["stop_dispatch_error"].startswith("RuntimeError:")
-    assert result["arms"][1]["stop_dispatch_status"] == "requested"
+    assert result["arms"][1]["stop_dispatch_status"] == "acknowledged"
+    assert result["status"] == "stop_failed"
+    assert result["teardown_error"]["runs"]["run-1"]
     assert result["credential_status"] == "revoked"
     stored = json.loads(batch_eval.batch_path(batch_id).read_text())
     assert [arm["status"] for arm in stored["arms"]] == [
-        "stopping",
-        "stopping",
-        "stopping",
+        "stop_failed",
+        "stopped",
+        "stopped",
     ]
     assert events[-1] == "lock:exited"
 
@@ -2147,10 +2155,11 @@ def test_batch_stop_dispatches_lanes_concurrently(
     )
     rendezvous = threading.Barrier(len(arms))
 
-    def dispatch(_run_id: str, *, reason: str):
+    def dispatch(_run_id: str, *, reason: str, wait_for_termination: bool):
         assert reason == "operator_batch_stop"
+        assert wait_for_termination is True
         rendezvous.wait(timeout=2)
-        return {"status": "requested"}
+        return {"status": "acknowledged"}
 
     with (
         mock.patch.object(
@@ -2160,7 +2169,11 @@ def test_batch_stop_dispatches_lanes_concurrently(
     ):
         result = batch_eval.stop_batch(batch_id)
 
-    assert all(arm["stop_dispatch_status"] == "requested" for arm in result["arms"])
+    assert all(
+        arm["stop_dispatch_status"] == "acknowledged" for arm in result["arms"]
+    )
+    assert all(arm["status"] == "stopped" for arm in result["arms"])
+    assert result["status"] == "stopped"
 
 
 def test_batch_stop_journals_transition_when_monitor_holds_state_lock(
@@ -2196,13 +2209,13 @@ def test_batch_stop_journals_transition_when_monitor_holds_state_lock(
         mock.patch.object(
             batch_eval.sprintctl,
             "request_stop",
-            lambda *_args, **_kwargs: {"status": "requested"},
+            lambda *_args, **_kwargs: {"status": "acknowledged"},
         ),
         mock.patch.object(batch_eval.frontier_update, "file_lock", busy_lock),
     ):
         projected = batch_eval.stop_batch(batch_id)
 
-    assert projected["arms"][0]["status"] == "stopping"
+    assert projected["arms"][0]["status"] == "stopped"
     assert batch_eval.batch_stop_marker_path(batch_id).is_file()
     # The monitor-owned batch document is untouched until it can consume the
     # journal, so the stop path cannot clobber a concurrent monitor commit.
@@ -2210,10 +2223,10 @@ def test_batch_stop_journals_transition_when_monitor_holds_state_lock(
 
     stored = batch_eval.read_batch(batch_id)
     consumed = batch_eval.consume_batch_stop_transition(batch_id, stored)
-    assert consumed["arms"][0]["status"] == "stopping"
-    assert consumed["arms"][0]["stop_dispatch_status"] == "requested"
+    assert consumed["arms"][0]["status"] == "stopped"
+    assert consumed["arms"][0]["stop_dispatch_status"] == "acknowledged"
     assert not batch_eval.batch_stop_marker_path(batch_id).exists()
-    assert batch_eval.read_batch(batch_id)["arms"][0]["status"] == "stopping"
+    assert batch_eval.read_batch(batch_id)["arms"][0]["status"] == "stopped"
 
 
 def test_website_deploy_yields_batch_control_lock(
@@ -2228,13 +2241,24 @@ def test_website_deploy_yields_batch_control_lock(
     state_path = batch_eval.batch_path(batch_id)
     payload = {
         "batch_id": batch_id,
+        "updated_at": "2026-08-24T00:20:00Z",
         "arms": [],
         "alerts": [],
         "deploy": {"last_deployed_site_hash": "old"},
         "credential_status": "active",
         "status": "running",
+        "reasoning_effort": "max",
+        "codex_version": "0.149.1",
+        "run_hours": None,
     }
     batch_eval.atomic_json(state_path, payload)
+    stale = copy.deepcopy(payload)
+    stale["updated_at"] = "2026-08-24T00:00:00Z"
+    batch_eval.write_public_batch(stale)
+    # Observer-only monitor cycles intentionally do not rewrite these files.
+    batch_eval.write_public_batch(payload)
+    current_path = tmp_path / "web/data/batches/current.json"
+    assert json.loads(current_path.read_text())["updated_at"] == stale["updated_at"]
     events: list[str] = []
 
     class Lease:
@@ -2267,6 +2291,7 @@ def test_website_deploy_yields_batch_control_lock(
 
     def deploy(state: dict[str, object], **_kwargs) -> tuple[bool, str]:
         assert not lease.held
+        assert json.loads(current_path.read_text())["updated_at"] == payload["updated_at"]
         events.append("vercel")
         concurrent = json.loads(state_path.read_text())
         concurrent["credential_status"] = "revoked"
@@ -2327,6 +2352,10 @@ def test_hung_website_deploy_does_not_block_operator_stop(
         state_path,
         {
             "batch_id": batch_id,
+            "status": "running",
+            "reasoning_effort": "max",
+            "codex_version": "0.149.1",
+            "run_hours": None,
             "arms": [{"run_id": run_id, "status": "running"}],
             "alerts": [],
             "credential_status": "revoked",
@@ -2369,7 +2398,7 @@ def test_hung_website_deploy_does_not_block_operator_stop(
         mock.patch.object(
             batch_eval.sprintctl,
             "request_stop",
-            lambda *_args, **_kwargs: {"status": "requested"},
+            lambda *_args, **_kwargs: {"status": "acknowledged"},
         ),
     ):
         worker = threading.Thread(target=monitor, daemon=True)
@@ -2382,11 +2411,11 @@ def test_hung_website_deploy_does_not_block_operator_stop(
         worker.join(timeout=5)
 
     assert stop_elapsed < 1
-    assert stopped["arms"][0]["status"] == "stopping"
+    assert stopped["arms"][0]["status"] == "stopped"
     assert not worker.is_alive()
     assert monitor_errors == []
     merged = batch_eval.read_batch(batch_id)
-    assert merged["arms"][0]["status"] == "stopping"
+    assert merged["arms"][0]["status"] == "stopped"
 
 
 def test_verifier_lane_stall_alert_is_scoped_to_one_trial(
