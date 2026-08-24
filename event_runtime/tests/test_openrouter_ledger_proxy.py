@@ -346,6 +346,43 @@ def test_generic_proxy_preserves_requested_parallel_tool_calls() -> None:
     assert payload["parallel_tool_calls"] is True
 
 
+def test_official_openai_route_removes_unsupported_codex_verbosity_hint() -> None:
+    _body, payload = proxy.pin_provider_route(
+        json.dumps(
+            {
+                "model": "openai/gpt-5.6-luna",
+                "input": "hello",
+                "text": {"verbosity": "low"},
+            }
+        ).encode(),
+        provider_endpoint="openai",
+        quantization=None,
+    )
+
+    assert "text" not in payload
+
+
+def test_proxy_preserves_text_configuration_outside_narrow_openai_shim() -> None:
+    rich_text = {"verbosity": "low", "format": {"type": "text"}}
+    for provider_endpoint, text in (
+        ("example", {"verbosity": "low"}),
+        ("openai", rich_text),
+    ):
+        _body, payload = proxy.pin_provider_route(
+            json.dumps(
+                {
+                    "model": "example/model",
+                    "input": "hello",
+                    "text": text,
+                }
+            ).encode(),
+            provider_endpoint=provider_endpoint,
+            quantization=None,
+        )
+
+        assert payload["text"] == text
+
+
 def test_endpoint_promotion_is_reversed_without_changing_cache_skus() -> None:
     # Exercise the pure parser used by the live fetcher. Cache-read pricing is
     # deliberately irrelevant here: the endpoint promotion is a single factor

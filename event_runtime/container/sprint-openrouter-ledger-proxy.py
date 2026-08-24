@@ -374,6 +374,21 @@ def pin_provider_route(
     # keeps this compatibility rule generic across routed models.
     if payload.get("parallel_tool_calls") is False:
         payload.pop("parallel_tool_calls")
+    # Codex 0.149.1 emits ``text.verbosity`` for every Responses turn.  The
+    # pinned OpenRouter ``openai`` endpoint currently rejects that transport
+    # field under ``require_parameters=true`` even though the same request is
+    # accepted when it is omitted.  Verbosity is only a presentation hint; it
+    # does not select the model, reasoning effort, token ceiling, tools, or
+    # sampling contract.  Remove only this known hint and only for the official
+    # OpenAI route, while preserving future text configuration with additional
+    # semantics and every non-OpenAI provider payload.
+    text_config = payload.get("text")
+    if (
+        provider_endpoint == "openai"
+        and isinstance(text_config, dict)
+        and set(text_config) == {"verbosity"}
+    ):
+        payload.pop("text")
     seal_goal_tool_schema(payload)
     return json.dumps(payload, separators=(",", ":")).encode(), payload
 
