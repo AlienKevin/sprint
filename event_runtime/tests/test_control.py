@@ -1219,12 +1219,17 @@ class DurableOpsTests(unittest.TestCase):
             )
             run = {
                 "run_id": "natural-run",
+                "batch_id": "natural-batch",
                 "state_dir": str(state),
                 "jobs_root": str(state / "jobs"),
                 "job_path": str(job),
                 "trial_path": str(trial),
                 "evaluation_result_policy": "all_blind_archival_submissions",
             }
+            # Website/replay projection state is explicitly outside the
+            # benchmark finalization contract, even when corrupt or absent.
+            (state / "frontier-state.json").write_text("not json\n")
+            (state / "BATCH_SITE_DEPLOYED.json").write_text("not json\n")
             with (
                 mock.patch.object(sprintctl, "update_run_fields"),
                 mock.patch.object(sprintctl, "harbor_alive", return_value=False),
@@ -1232,6 +1237,8 @@ class DurableOpsTests(unittest.TestCase):
             ):
                 _complete, conditions, _details = sprintctl.final_conditions(state, run)
                 self.assertTrue(conditions["stop_ack"])
+                self.assertNotIn("site_current", conditions)
+                self.assertNotIn("batch_site_deployed", conditions)
 
                 (state / "STOP_REQUESTED.json").write_text("{}\n")
                 _complete, conditions, _details = sprintctl.final_conditions(state, run)
@@ -2463,12 +2470,8 @@ while True:
                     sprintctl, "discover_agent_container", return_value="ta-test"
                 ),
                 mock.patch.object(sprintctl, "exec_container"),
-                mock.patch.object(
-                    sprintctl, "AGENT_STOP_GRACE_SECONDS", 0.0
-                ),
-                mock.patch.object(
-                    sprintctl, "containers_for_app", return_value=[]
-                ),
+                mock.patch.object(sprintctl, "AGENT_STOP_GRACE_SECONDS", 0.0),
+                mock.patch.object(sprintctl, "containers_for_app", return_value=[]),
                 mock.patch.object(sprintctl, "terminate_agent_container") as terminate,
                 mock.patch("event_runtime.compute.worker.stop_all", return_value=[]),
             ):

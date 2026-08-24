@@ -63,6 +63,12 @@ UPSTREAM_SOCKET_TIMEOUT_SECONDS: float | None = None
 OPENROUTER_GENERATION_RECOVERY_TIMEOUT_SECONDS = 120.0
 OPENROUTER_GENERATION_RECOVERY_POLL_SECONDS = 0.25
 
+# Benchmark runs are deliberately unattended.  UI-only tools that can ask an
+# operator to make a choice are therefore not part of the evaluation contract,
+# even if the installed client happens to advertise them.  Enforce that at the
+# trusted network boundary rather than relying on prompt compliance.
+UNATTENDED_DISABLED_TOOLS = frozenset({"request_user_input"})
+
 
 def valid_ledger_request_id(value: object) -> bool:
     return (
@@ -191,6 +197,41 @@ def seal_goal_tool_schema(payload: dict[str, Any]) -> None:
             # closed object schema prevents compliant providers from emitting
             # the operator-only field in the first place.
             parameters["additionalProperties"] = False
+
+
+def tool_name(tool: object) -> str | None:
+    """Return a Responses/Chat Completions function-tool name."""
+
+    if not isinstance(tool, dict):
+        return None
+    name = tool.get("name")
+    if isinstance(name, str):
+        return name
+    function = tool.get("function")
+    if isinstance(function, dict) and isinstance(function.get("name"), str):
+        return function["name"]
+    return None
+
+
+def remove_unattended_tools(payload: dict[str, Any]) -> None:
+    """Remove operator-interaction tools from an unattended benchmark turn.
+
+    Goal mode persists the objective but does not itself alter Codex's tool
+    catalog.  A model can therefore attempt ``request_user_input`` despite an
+    explicit instruction to continue autonomously.  Removing that function
+    from every routed request makes the unattended contract deterministic for
+    all models and harnesses.
+    """
+
+    tools = payload.get("tools")
+    if isinstance(tools, list):
+        payload["tools"] = [
+            tool for tool in tools if tool_name(tool) not in UNATTENDED_DISABLED_TOOLS
+        ]
+
+    tool_choice = payload.get("tool_choice")
+    if tool_name(tool_choice) in UNATTENDED_DISABLED_TOOLS:
+        payload.pop("tool_choice", None)
 
 
 def sanitize_goal_arguments(arguments: object) -> object:
@@ -460,6 +501,7 @@ def pin_provider_route(
         and set(text_config) == {"verbosity"}
     ):
         payload.pop("text")
+    remove_unattended_tools(payload)
     seal_goal_tool_schema(payload)
     return json.dumps(payload, separators=(",", ":")).encode(), payload
 
@@ -763,9 +805,10 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                                 and self.ledger_server.provider_endpoint == "deepseek"
                             ):
                                 expose_deepseek_reasoning_content(event)
-                                line = b"data: " + json.dumps(
-                                    event, separators=(",", ":")
-                                ).encode()
+                                line = (
+                                    b"data: "
+                                    + json.dumps(event, separators=(",", ":")).encode()
+                                )
                             usage, response = usage_from_event(event)
                             if usage is not None:
                                 terminal_usage, terminal_response = usage, response
@@ -1294,12 +1337,9 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
                         provider_cost = float(candidate)
                         recovered_usage = generation_usage_payload(recovered)
                         try:
-                            if (
-                                (record.get("promotion_snapshot") or {}).get(
-                                    "cost_basis"
-                                )
-                                != self.model_api_cost_basis
-                            ):
+                            if (record.get("promotion_snapshot") or {}).get(
+                                "cost_basis"
+                            ) != self.model_api_cost_basis:
                                 raise ValueError(
                                     "recovered request cost basis mismatch"
                                 )
@@ -1450,9 +1490,7 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
         usage: object = None,
     ) -> None:
         provider_cost = cost if provider_cost is None else provider_cost
-        normalized_usage = (
-            normalize_token_usage(usage) if usage is not None else None
-        )
+        normalized_usage = normalize_token_usage(usage) if usage is not None else None
         if (
             not math.isfinite(cost)
             or cost < 0
@@ -1478,9 +1516,7 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
         self.cost_recovery_required_request_ids.add(request_id)
         self.write_summary()
 
-    def recover_request_until(
-        self, request_id: str, *, timeout_seconds: float
-    ) -> bool:
+    def recover_request_until(self, request_id: str, *, timeout_seconds: float) -> bool:
         """Resolve a named OpenRouter charge before releasing the API turn.
 
         OpenRouter can occasionally close a successful stream before its final

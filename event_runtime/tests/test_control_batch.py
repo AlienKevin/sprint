@@ -112,13 +112,13 @@ def test_batch_matrix_is_exact_six_arm_max_effort_contract() -> None:
 def test_one_shot_batch_monitor_does_not_claim_lifetime_owner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    calls: list[tuple[str, bool, Path]] = []
+    calls: list[tuple[str, Path]] = []
     env_file = tmp_path / ".env"
     monkeypatch.setattr(
         batch_eval,
         "monitor_cycle",
-        lambda batch_id, *, deploy, env_file: (
-            calls.append((batch_id, deploy, env_file))
+        lambda batch_id, *, env_file: (
+            calls.append((batch_id, env_file))
             or {"batch_id": batch_id, "status": "running"}
         ),
     )
@@ -131,11 +131,11 @@ def test_one_shot_batch_monitor_does_not_claim_lifetime_owner(
     )
 
     result = batch_eval.run_monitor_command(
-        "eval", deploy=False, env_file=env_file, loop=False, poll_seconds=10
+        "eval", env_file=env_file, loop=False, poll_seconds=10
     )
 
     assert result == {"batch_id": "eval", "status": "running"}
-    assert calls == [("eval", False, env_file)]
+    assert calls == [("eval", env_file)]
 
 
 def test_duplicate_batch_monitor_exits_without_running_a_cycle(
@@ -159,7 +159,7 @@ def test_duplicate_batch_monitor_exits_without_running_a_cycle(
     )
 
     result = batch_eval.run_monitor_command(
-        "eval", deploy=True, env_file=tmp_path / ".env", loop=True, poll_seconds=10
+        "eval", env_file=tmp_path / ".env", loop=True, poll_seconds=10
     )
 
     assert result["batch_id"] == "eval"
@@ -195,12 +195,9 @@ def test_batch_monitor_holds_owner_until_terminal_cycle(
         finally:
             owner_open = False
 
-    def terminal_cycle(
-        batch_id: str, *, deploy: bool, env_file: Path
-    ) -> dict[str, object]:
+    def terminal_cycle(batch_id: str, *, env_file: Path) -> dict[str, object]:
         observed_owner.append(owner_open)
         assert batch_id == "eval"
-        assert deploy is True
         assert env_file == tmp_path / ".env"
         return {"batch_id": batch_id, "status": "complete"}
 
@@ -215,7 +212,7 @@ def test_batch_monitor_holds_owner_until_terminal_cycle(
     )
 
     result = batch_eval.run_monitor_command(
-        "eval", deploy=True, env_file=tmp_path / ".env", loop=True, poll_seconds=10
+        "eval", env_file=tmp_path / ".env", loop=True, poll_seconds=10
     )
 
     assert result == {"batch_id": "eval", "status": "complete"}
@@ -366,7 +363,7 @@ def test_single_family_replacement_uses_coexisting_comparison_snapshot(
     ]
 
 
-def test_final_site_gate_ignores_unrelated_run_changes(
+def test_deployed_projection_check_ignores_unrelated_run_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     web = tmp_path / "web"
@@ -384,22 +381,20 @@ def test_final_site_gate_ignores_unrelated_run_changes(
     payload = {
         "batch_id": batch_id,
         "arms": [{"run_id": run_id}],
-        "deploy": {
-            "site_status": "deployed",
-            "last_deployed_public_artifacts": frontier_update.public_artifact_hashes(
-                web
-            ),
-        },
     }
-    assert batch_eval.deployed_batch_current(payload)
+    publication = {
+        "site_status": "deployed",
+        "last_deployed_public_artifacts": frontier_update.public_artifact_hashes(web),
+    }
+    assert batch_eval.deployed_batch_current(payload, publication)
     unrelated.write_text("changed elsewhere\n")
-    assert batch_eval.deployed_batch_current(payload)
+    assert batch_eval.deployed_batch_current(payload, publication)
     performance.write_text("changed performance\n")
-    assert not batch_eval.deployed_batch_current(payload)
+    assert not batch_eval.deployed_batch_current(payload, publication)
     performance.write_text("current.json\n")
-    assert batch_eval.deployed_batch_current(payload)
+    assert batch_eval.deployed_batch_current(payload, publication)
     timeline.write_text("changed in this run\n")
-    assert not batch_eval.deployed_batch_current(payload)
+    assert not batch_eval.deployed_batch_current(payload, publication)
 
 
 def test_batch_matrix_can_launch_three_deepseek_trials_only() -> None:
@@ -2190,9 +2185,7 @@ def test_batch_stop_dispatches_lanes_concurrently(
     ):
         result = batch_eval.stop_batch(batch_id)
 
-    assert all(
-        arm["stop_dispatch_status"] == "acknowledged" for arm in result["arms"]
-    )
+    assert all(arm["stop_dispatch_status"] == "acknowledged" for arm in result["arms"])
     assert all(arm["status"] == "stopped" for arm in result["arms"])
     assert result["status"] == "stopped"
 
@@ -2250,7 +2243,7 @@ def test_batch_stop_journals_transition_when_monitor_holds_state_lock(
     assert batch_eval.read_batch(batch_id)["arms"][0]["status"] == "stopped"
 
 
-def test_website_deploy_yields_batch_control_lock(
+def test_website_projection_never_mutates_batch_control_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     batch_id = "deploy-unlocked"
@@ -2265,7 +2258,6 @@ def test_website_deploy_yields_batch_control_lock(
         "updated_at": "2026-08-24T00:20:00Z",
         "arms": [],
         "alerts": [],
-        "deploy": {"last_deployed_site_hash": "old"},
         "credential_status": "active",
         "status": "running",
         "reasoning_effort": "max",
@@ -2282,21 +2274,6 @@ def test_website_deploy_yields_batch_control_lock(
     assert json.loads(current_path.read_text())["updated_at"] == stale["updated_at"]
     events: list[str] = []
 
-    class Lease:
-        held = True
-
-        def release(self) -> None:
-            assert self.held
-            self.held = False
-            events.append("batch:released")
-
-        def acquire(self) -> None:
-            assert not self.held
-            self.held = True
-            events.append("batch:acquired")
-
-    lease = Lease()
-
     @contextlib.contextmanager
     def deployment_lock(path: Path, *, blocking: bool = True):
         assert path == tmp_path / "pipeline.lock"
@@ -2307,12 +2284,12 @@ def test_website_deploy_yields_batch_control_lock(
 
     def refresh(current: dict[str, object]) -> None:
         assert current["batch_id"] == batch_id
-        assert not lease.held
         events.append("performance")
 
     def deploy(state: dict[str, object], **_kwargs) -> tuple[bool, str]:
-        assert not lease.held
-        assert json.loads(current_path.read_text())["updated_at"] == payload["updated_at"]
+        assert (
+            json.loads(current_path.read_text())["updated_at"] == payload["updated_at"]
+        )
         events.append("vercel")
         concurrent = json.loads(state_path.read_text())
         concurrent["credential_status"] = "revoked"
@@ -2327,29 +2304,27 @@ def test_website_deploy_yields_batch_control_lock(
         mock.patch.object(batch_eval, "refresh_performance_snapshot", refresh),
         mock.patch.object(batch_eval.frontier_update, "deploy_if_needed", deploy),
     ):
-        updated, error, error_kind, attempted = (
-            batch_eval.deploy_website_outside_batch_lock(
-                payload,
-                state_path=state_path,
-                batch_lock=lease,
-                now=dt.datetime(2026, 8, 24, tzinfo=dt.timezone.utc),
-                debounce_seconds=1200,
-            )
+        publication = {"batch_id": batch_id, "last_deployed_site_hash": "old"}
+        error, error_kind, attempted = batch_eval.deploy_website_projection(
+            payload,
+            publication,
+            now=dt.datetime(2026, 8, 24, tzinfo=dt.timezone.utc),
+            debounce_seconds=1200,
         )
 
     assert attempted is True
     assert error is None
     assert error_kind is None
-    assert lease.held is True
-    assert updated["deploy"]["site_status"] == "deployed"
+    assert publication["site_status"] == "deployed"
+    # A concurrent experiment transition survives untouched because the
+    # publisher has no write path to batch.json.
+    updated = batch_eval.read_batch(batch_id)
     assert updated["credential_status"] == "revoked"
     assert updated["status"] == "stopping"
     assert events == [
         "deploy-lock:entered",
-        "batch:released",
         "performance",
         "vercel",
-        "batch:acquired",
         "deploy-lock:exited",
     ]
 
@@ -2380,7 +2355,6 @@ def test_hung_website_deploy_does_not_block_operator_stop(
             "arms": [{"run_id": run_id, "status": "running"}],
             "alerts": [],
             "credential_status": "revoked",
-            "deploy": {"last_deployed_site_hash": "old"},
         },
     )
     deploy_started = threading.Event()
@@ -2394,17 +2368,13 @@ def test_hung_website_deploy_does_not_block_operator_stop(
 
     def monitor() -> None:
         try:
-            with batch_eval.releasable_batch_lock(
-                state_path.with_suffix(".lock")
-            ) as lease:
-                payload = batch_eval.read_batch(batch_id)
-                batch_eval.deploy_website_outside_batch_lock(
-                    payload,
-                    state_path=state_path,
-                    batch_lock=lease,
-                    now=dt.datetime(2026, 8, 24, tzinfo=dt.timezone.utc),
-                    debounce_seconds=0,
-                )
+            payload = batch_eval.read_batch(batch_id)
+            batch_eval.deploy_website_projection(
+                payload,
+                {"batch_id": batch_id},
+                now=dt.datetime(2026, 8, 24, tzinfo=dt.timezone.utc),
+                debounce_seconds=0,
+            )
         except BaseException as exc:  # pragma: no cover - surfaced below
             monitor_errors.append(exc)
 
@@ -2437,6 +2407,94 @@ def test_hung_website_deploy_does_not_block_operator_stop(
     assert monitor_errors == []
     merged = batch_eval.read_batch(batch_id)
     assert merged["arms"][0]["status"] == "stopped"
+
+
+def test_hung_publisher_does_not_delay_health_monitor_cycles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    batch_id = "publish-health"
+    run_id = "publish-health-luna-1"
+    monkeypatch.setattr(batch_eval, "BATCH_ROOT", tmp_path / "batches")
+    monkeypatch.setattr(batch_eval, "SCRIPT_DIR", tmp_path / "ops")
+    monkeypatch.setattr(batch_eval, "WEB", tmp_path / "web")
+    monkeypatch.setattr(
+        batch_eval.frontier_update, "PIPELINE_LOCK", tmp_path / "pipeline.lock"
+    )
+    run_dir = batch_eval.SCRIPT_DIR / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.json").write_text("{}\n")
+    batch_eval.atomic_json(
+        batch_eval.batch_path(batch_id),
+        {
+            "batch_id": batch_id,
+            "status": "running",
+            "reasoning_effort": "max",
+            "codex_version": "0.149.1",
+            "run_hours": None,
+            "arms": [{"run_id": run_id, "family": "luna", "status": "running"}],
+            "alerts": [],
+            "credential_status": "revoked",
+        },
+    )
+    deploy_started = threading.Event()
+    allow_deploy_to_finish = threading.Event()
+    publisher_errors: list[BaseException] = []
+
+    def blocking_deploy(state: dict[str, object], **_kwargs: object):
+        deploy_started.set()
+        assert allow_deploy_to_finish.wait(timeout=5)
+        state["site_status"] = "deployed"
+        return True, "https://deployment.example"
+
+    def publisher() -> None:
+        try:
+            batch_eval.publish_cycle(batch_id)
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            publisher_errors.append(exc)
+
+    with (
+        mock.patch.object(batch_eval, "refresh_performance_snapshot", lambda _: None),
+        mock.patch.object(
+            batch_eval.frontier_update, "deploy_if_needed", blocking_deploy
+        ),
+        mock.patch.object(
+            batch_eval, "mark_deployed_runs", lambda _payload, _publication: []
+        ),
+        mock.patch.object(
+            batch_eval,
+            "deployed_batch_current",
+            lambda _payload, _publication: False,
+        ),
+        mock.patch.object(
+            batch_eval,
+            "live_run_monitor_status",
+            lambda _run_id: {
+                "harbor_alive": True,
+                "ledger": {},
+                "snapshot_heartbeat_ok": True,
+            },
+        ),
+        mock.patch.object(batch_eval, "log_alerts", lambda _run_id: []),
+        mock.patch.object(
+            batch_eval, "verifier_lane_stall_alerts", lambda *_args, **_kwargs: []
+        ),
+        mock.patch.object(
+            batch_eval, "continuous_ledger_error_alerts", lambda _payload: []
+        ),
+    ):
+        worker = threading.Thread(target=publisher, daemon=True)
+        worker.start()
+        assert deploy_started.wait(timeout=2)
+        began = time.monotonic()
+        health = batch_eval.monitor_cycle(batch_id)
+        health_elapsed = time.monotonic() - began
+        allow_deploy_to_finish.set()
+        worker.join(timeout=5)
+
+    assert health_elapsed < 1
+    assert health["arms"][0]["last_monitor_at"]
+    assert not worker.is_alive()
+    assert publisher_errors == []
 
 
 def test_verifier_lane_stall_alert_is_scoped_to_one_trial(
@@ -2966,7 +3024,7 @@ def test_run_checked_bounds_stalled_commands() -> None:
         )
 
 
-def test_batch_monitor_service_carries_absolute_uv_vercel_and_modal_profile(
+def test_batch_control_services_separate_health_monitor_from_publisher(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     commands: list[list[str]] = []
@@ -2980,18 +3038,85 @@ def test_batch_monitor_service_carries_absolute_uv_vercel_and_modal_profile(
         lambda command, **_kwargs: commands.append(command) or "ok",
     )
     monkeypatch.setattr(batch_eval.subprocess, "run", lambda *args, **kwargs: None)
-    batch_eval.start_monitor_service("eval", tmp_path / ".env", "profile-a")
-    unit_path = config_home / "systemd/user/sprint-batch-eval-monitor.service"
-    unit = unit_path.read_text()
-    assert 'Environment="UV=/home/ubuntu/.local/bin/uv"' in unit
-    assert 'Environment="MODAL_PROFILE=profile-a"' in unit
-    assert "/tools" in unit
-    assert str(batch_eval.HARBOR_PYTHON.parent) in unit
-    assert str(batch_eval.HARBOR_PYTHON) in unit
-    assert f"WorkingDirectory={batch_eval.ROOT}" in unit
-    assert "Restart=on-failure" in unit
-    assert "WantedBy=default.target" in unit
-    assert "must-not-appear-in-unit" not in unit
+    batch_eval.start_batch_control_services("eval", tmp_path / ".env", "profile-a")
+    unit_dir = config_home / "systemd/user"
+    monitor = (unit_dir / "sprint-batch-eval-monitor.service").read_text()
+    publisher = (unit_dir / "sprint-batch-eval-publisher.service").read_text()
+    timer = (unit_dir / "sprint-batch-eval-publisher.timer").read_text()
+    for unit in (monitor, publisher):
+        assert 'Environment="UV=/home/ubuntu/.local/bin/uv"' in unit
+        assert 'Environment="MODAL_PROFILE=profile-a"' in unit
+        assert "/tools" in unit
+        assert str(batch_eval.HARBOR_PYTHON.parent) in unit
+        assert str(batch_eval.HARBOR_PYTHON) in unit
+        assert f"WorkingDirectory={batch_eval.ROOT}" in unit
+        assert "must-not-appear-in-unit" not in unit
+    assert '"monitor"' in monitor
+    assert '"--loop"' in monitor
+    assert '"publish"' not in monitor
+    assert "Restart=on-failure" in monitor
+    assert "WantedBy=default.target" in monitor
+    assert '"publish"' in publisher
+    assert '"--loop"' not in publisher
+    assert "Type=oneshot" in publisher
+    assert "TimeoutStartSec=35min" in publisher
+    assert "KillMode=control-group" in publisher
+    assert "Unit=sprint-batch-eval-publisher.service" in timer
+    assert f"OnUnitInactiveSec={batch_eval.LIVE_SITE_DEPLOY_SECONDS}s" in timer
+    assert "Persistent=true" in timer
+    assert commands == [
+        ["systemctl", "--user", "daemon-reload"],
+        [
+            "systemctl",
+            "--user",
+            "enable",
+            "sprint-batch-eval-monitor.service",
+        ],
+        [
+            "systemctl",
+            "--user",
+            "restart",
+            "sprint-batch-eval-monitor.service",
+        ],
+        ["systemctl", "--user", "daemon-reload"],
+        [
+            "systemctl",
+            "--user",
+            "enable",
+            "sprint-batch-eval-publisher.timer",
+        ],
+        [
+            "systemctl",
+            "--user",
+            "restart",
+            "sprint-batch-eval-publisher.timer",
+        ],
+        [
+            "systemctl",
+            "--user",
+            "start",
+            "--no-block",
+            "sprint-batch-eval-publisher.service",
+        ],
+    ]
+
+
+def test_missing_vercel_never_rolls_back_health_supervision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands: list[list[str]] = []
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setattr(batch_eval, "BATCH_ROOT", tmp_path / "batches")
+    monkeypatch.setattr(batch_eval.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        batch_eval,
+        "run_checked",
+        lambda command, **_kwargs: commands.append(command) or "ok",
+    )
+    monkeypatch.setattr(batch_eval.subprocess, "run", lambda *args, **kwargs: None)
+
+    batch_eval.start_batch_control_services("eval", tmp_path / ".env", "profile-a")
+
     assert commands == [
         ["systemctl", "--user", "daemon-reload"],
         [
@@ -3007,6 +3132,9 @@ def test_batch_monitor_service_carries_absolute_uv_vercel_and_modal_profile(
             "sprint-batch-eval-monitor.service",
         ],
     ]
+    publication = batch_eval.read_publication("eval")
+    assert publication["site_status"] == "setup_error"
+    assert publication["setup_error"]["type"] == "RuntimeError"
 
 
 def test_batch_monitor_reads_live_lane_status_without_duplicate_poll(
@@ -3136,9 +3264,113 @@ def test_batch_monitor_recovers_status_when_run_state_appears(
     )
     monkeypatch.setattr(batch_eval, "mark_deployed_runs", lambda _payload: [])
 
-    result = batch_eval.monitor_cycle(batch_id, deploy=False)
+    result = batch_eval.monitor_cycle(batch_id)
 
     assert result["arms"][0]["status"] == "running"
+
+
+def test_stopped_batch_is_terminal_for_health_monitor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    batch_id = "stopped-batch"
+    monkeypatch.setattr(batch_eval, "BATCH_ROOT", tmp_path / "batches")
+    batch_eval.atomic_json(
+        batch_eval.batch_path(batch_id),
+        {
+            "batch_id": batch_id,
+            "status": "stopped",
+            "arms": [{"run_id": "stopped-luna-1", "status": "stopped"}],
+            "alerts": [],
+        },
+    )
+    monkeypatch.setattr(
+        batch_eval,
+        "audit_openrouter_child_usage",
+        lambda *_args, **_kwargs: pytest.fail("stopped batch audited provider usage"),
+    )
+    monkeypatch.setattr(
+        batch_eval,
+        "live_run_monitor_status",
+        lambda *_args, **_kwargs: pytest.fail("stopped batch polled a run"),
+    )
+
+    result = batch_eval.monitor_cycle(batch_id)
+
+    assert result["status"] == "stopped"
+    assert result["arms"][0]["status"] == "stopped"
+
+
+def test_health_monitor_completes_without_any_site_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    batch_id = "finalizing"
+    run_id = "finalizing-luna-1"
+    ops = tmp_path / "ops"
+    run_dir = ops / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.json").write_text("{}\n")
+    (run_dir / "FINALIZED.json").write_text(
+        json.dumps(
+            {
+                "complete": True,
+                "integrity": {"schema_version": 1, "benchmark_valid": True},
+                "timeline_schema_version": batch_eval.sprintctl.UNIFIED_TIMELINE_SCHEMA_VERSION,
+                "conditions": {"provider_usage_ledger_settled": True},
+            }
+        )
+        + "\n"
+    )
+    monkeypatch.setattr(batch_eval, "SCRIPT_DIR", ops)
+    monkeypatch.setattr(batch_eval, "BATCH_ROOT", ops / "batches")
+    monkeypatch.setattr(batch_eval, "WEB", tmp_path / "web")
+    batch_eval.atomic_json(
+        batch_eval.batch_path(batch_id),
+        {
+            "batch_id": batch_id,
+            "status": "running",
+            "reasoning_effort": "max",
+            "codex_version": "0.149.1",
+            "run_hours": None,
+            "arms": [{"run_id": run_id, "family": "luna", "status": "running"}],
+            "alerts": [],
+            "credential_status": "cleanup_error",
+            "credential_cleanup_errors": ["transient management API failure"],
+        },
+    )
+    monkeypatch.setattr(
+        batch_eval,
+        "live_run_monitor_status",
+        lambda _run_id: {"harbor_alive": False, "ledger": {}, "stop_ack": {}},
+    )
+    monkeypatch.setattr(batch_eval, "log_alerts", lambda _run_id: [])
+    monkeypatch.setattr(
+        batch_eval, "verifier_lane_stall_alerts", lambda *_args, **_kwargs: []
+    )
+    monkeypatch.setattr(
+        batch_eval, "continuous_ledger_error_alerts", lambda _payload: []
+    )
+    monkeypatch.setattr(
+        batch_eval.sprintctl,
+        "load_run",
+        lambda _run_id: (run_dir, {"provider_usage_ledger_required": False}),
+    )
+    cleanup_attempts: list[Path] = []
+
+    def revoke(payload: dict[str, object], env_file: Path) -> list[str]:
+        cleanup_attempts.append(env_file)
+        payload["credential_status"] = "revoked"
+        payload["credential_cleanup_errors"] = []
+        return []
+
+    monkeypatch.setattr(batch_eval, "revoke_batch_credentials", revoke)
+    result = batch_eval.monitor_cycle(batch_id)
+
+    assert result["status"] == "complete"
+    assert result["arms"][0]["status"] == "finalized"
+    assert "deploy" not in result
+    assert not batch_eval.publication_path(batch_id).exists()
+    assert result["credential_status"] == "revoked"
+    assert cleanup_attempts == [batch_eval.ROOT / ".env"]
 
 
 def test_resolved_website_alert_leaves_active_list_but_preserves_history() -> None:
@@ -3299,7 +3531,7 @@ def test_partial_batch_launch_is_safely_rolled_back(
     assert preflight_calls[0]["probe_training_fleet"] is True
 
 
-def test_deployment_marker_is_durable_idempotent_and_gates_finalization(
+def test_deployment_marker_is_durable_idempotent_publication_provenance(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     web = tmp_path / "web"
@@ -3341,40 +3573,33 @@ def test_deployment_marker_is_durable_idempotent_and_gates_finalization(
     artifact_hashes = frontier_update.public_artifact_hashes(web)
     payload = {
         "batch_id": "eval",
-        "deploy": {
-            "site_status": "deployed",
-            "last_deployed_site_hash": site_hash,
-            "last_deployed_public_artifacts": artifact_hashes,
-            "last_deployed_at": "2026-08-08T00:00:00Z",
-        },
         "arms": [{"run_id": run_id}],
     }
-    assert batch_eval.mark_deployed_runs(payload) == []
+    publication = {
+        "site_status": "deployed",
+        "last_deployed_site_hash": site_hash,
+        "last_deployed_public_artifacts": artifact_hashes,
+        "last_deployed_at": "2026-08-08T00:00:00Z",
+    }
+    assert batch_eval.mark_deployed_runs(payload, publication) == []
     assert uploads == [
         f"runs/{run_id}/state/deployment-provenance/"
         f"{frontier_update.sha256_file(policy_index)}.json",
         f"runs/{run_id}/state/BATCH_SITE_DEPLOYED.json",
     ]
-    assert batch_eval.mark_deployed_runs(payload) == []
+    assert batch_eval.mark_deployed_runs(payload, publication) == []
     assert len(uploads) == 2
 
-    run = {
-        "run_id": run_id,
-        "batch_id": "eval",
-        "site_dir": str(web),
-    }
-    assert batch_eval.sprintctl.batch_site_deployed_ready(state_dir, run)
+    marker = json.loads((state_dir / "BATCH_SITE_DEPLOYED.json").read_text())
+    snapshot = state_dir / marker["public_artifact_snapshot_path"]
+    assert frontier_update.sha256_file(snapshot) == marker["public_artifact_sha256"]
     policy_index.write_text('{"policies":[{"new":true}]}\n')
-    assert batch_eval.sprintctl.batch_site_deployed_ready(state_dir, run)
-    snapshot = (
-        state_dir
-        / json.loads((state_dir / "BATCH_SITE_DEPLOYED.json").read_text())[
-            "public_artifact_snapshot_path"
-        ]
-    )
+    # The immutable snapshot records what reached production; it is observer
+    # provenance and no longer gates benchmark finalization.
+    assert frontier_update.sha256_file(snapshot) == marker["public_artifact_sha256"]
     snapshot.chmod(0o600)
     snapshot.write_text("tampered\n")
-    assert not batch_eval.sprintctl.batch_site_deployed_ready(state_dir, run)
+    assert frontier_update.sha256_file(snapshot) != marker["public_artifact_sha256"]
 
 
 def test_deployment_marker_uses_timeline_when_run_has_no_submissions(
@@ -3406,26 +3631,22 @@ def test_deployment_marker_uses_timeline_when_run_has_no_submissions(
     )
     payload = {
         "batch_id": "eval",
-        "deploy": {
-            "site_status": "deployed",
-            "last_deployed_site_hash": frontier_update.site_tree_hash(web),
-            "last_deployed_public_artifacts": frontier_update.public_artifact_hashes(
-                web
-            ),
-            "last_deployed_at": "2026-08-09T00:00:00Z",
-        },
         "arms": [{"run_id": run_id}],
     }
+    publication = {
+        "site_status": "deployed",
+        "last_deployed_site_hash": frontier_update.site_tree_hash(web),
+        "last_deployed_public_artifacts": frontier_update.public_artifact_hashes(web),
+        "last_deployed_at": "2026-08-09T00:00:00Z",
+    }
 
-    assert batch_eval.mark_deployed_runs(payload) == []
+    assert batch_eval.mark_deployed_runs(payload, publication) == []
     marker = json.loads((state_dir / "BATCH_SITE_DEPLOYED.json").read_text())
     assert marker["schema_version"] == 2
     assert marker["public_artifact_path"] == f"data/timelines/{run_id}.json"
-    run = {"run_id": run_id, "batch_id": "eval", "site_dir": str(web)}
-    assert batch_eval.sprintctl.batch_site_deployed_ready(state_dir, run)
     timeline.write_text('{"coverage":{"ready":false}}\n')
-    assert batch_eval.sprintctl.batch_site_deployed_ready(state_dir, run)
     snapshot = state_dir / marker["public_artifact_snapshot_path"]
+    assert frontier_update.sha256_file(snapshot) == marker["public_artifact_sha256"]
     snapshot.chmod(0o600)
     snapshot.write_text("tampered\n")
-    assert not batch_eval.sprintctl.batch_site_deployed_ready(state_dir, run)
+    assert frontier_update.sha256_file(snapshot) != marker["public_artifact_sha256"]

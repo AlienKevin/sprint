@@ -32,11 +32,7 @@ def write_run_contract(
     model: str = "vendor/model",
     budget: float = 10.0,
 ) -> None:
-    basis = (
-        DEEPSEEK_PEAK_BASIS
-        if model.startswith("deepseek/")
-        else UNDISCOUNTED_BASIS
-    )
+    basis = DEEPSEEK_PEAK_BASIS if model.startswith("deepseek/") else UNDISCOUNTED_BASIS
     state = run_root / "state"
     state.mkdir(parents=True, exist_ok=True)
     (state / "run.json").write_text(
@@ -214,6 +210,48 @@ def test_proxy_removes_model_controlled_goal_token_budget(tool: dict) -> None:
     assert payload["tools"][1]["parameters"]["properties"]["token_budget"] == {
         "type": "integer"
     }
+
+
+@pytest.mark.parametrize(
+    ("blocked_tool", "blocked_choice"),
+    [
+        (
+            {"type": "function", "name": "request_user_input"},
+            {"type": "function", "name": "request_user_input"},
+        ),
+        (
+            {
+                "type": "function",
+                "function": {"name": "request_user_input"},
+            },
+            {
+                "type": "function",
+                "function": {"name": "request_user_input"},
+            },
+        ),
+    ],
+)
+def test_proxy_removes_operator_input_tool_from_unattended_runs(
+    blocked_tool: dict, blocked_choice: dict
+) -> None:
+    _body, payload = proxy.pin_provider_route(
+        json.dumps(
+            {
+                "model": "example/model",
+                "input": "keep working autonomously",
+                "tools": [
+                    blocked_tool,
+                    {"type": "function", "name": "exec_command"},
+                ],
+                "tool_choice": blocked_choice,
+            }
+        ).encode(),
+        provider_endpoint="example",
+        quantization=None,
+    )
+
+    assert [proxy.tool_name(tool) for tool in payload["tools"]] == ["exec_command"]
+    assert "tool_choice" not in payload
 
 
 def test_proxy_strips_hallucinated_goal_budget_from_streamed_tool_call() -> None:
@@ -414,9 +452,7 @@ def test_proxy_sanitizes_binary_terminal_text_before_provider_request() -> None:
     content = payload["messages"][0]["content"]
     assert content == "restic:\ufffd\\x00\\x1b[31m\ufffd"
     assert not any(0xD800 <= ord(character) <= 0xDFFF for character in content)
-    assert all(
-        ord(character) >= 0x20 or character in "\t\n\r" for character in content
-    )
+    assert all(ord(character) >= 0x20 or character in "\t\n\r" for character in content)
 
 
 def test_responses_contract_seals_luna_benchmark_parameters() -> None:

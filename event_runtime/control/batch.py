@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import copy
-import contextlib
 import datetime as dt
 import fcntl
 import hashlib
@@ -23,7 +22,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 
 MODULE_DIR = Path(__file__).resolve().parent
@@ -147,6 +146,9 @@ VERIFIER_LANE_STALL_SECONDS = 20 * 60
 # below the 100/day Hobby allowance for warmups/manual releases. The final
 # completed site still bypasses this delay below.
 LIVE_SITE_DEPLOY_SECONDS = 20 * 60
+BATCH_MONITOR_TERMINAL_STATUSES = frozenset(
+    {"complete", "complete_with_invalid_trials", "stopped"}
+)
 PROVIDER_DISCOVERY_ATTEMPTS = 3
 PROVIDER_DISCOVERY_RETRY_SECONDS = 1.0
 PROVIDER_INFERENCE_ATTEMPTS = 10
@@ -189,45 +191,6 @@ def atomic_json(path: Path, payload: Any, mode: int = 0o600) -> None:
     frontier_update.atomic_write_json(path, payload, mode=mode)
 
 
-class ReleasableBatchLock:
-    """Exclusive batch-state lease that can yield around external I/O.
-
-    A monitor cycle normally owns ``batch.lock`` while it computes and commits a
-    coherent state transition.  Website publication is different: Vercel can
-    legitimately spend minutes uploading or building.  Keeping the control
-    lease during that wait makes an operator stop queue behind an unrelated
-    website operation.  The monitor persists its state before releasing this
-    lease, then re-acquires and merges the deployment result into whatever the
-    control plane committed in the meantime.
-    """
-
-    def __init__(self, handle: Any):
-        self.handle = handle
-        self.held = False
-
-    def acquire(self) -> None:
-        if not self.held:
-            fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX)
-            self.held = True
-
-    def release(self) -> None:
-        if self.held:
-            fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
-            self.held = False
-
-
-@contextlib.contextmanager
-def releasable_batch_lock(path: Path) -> Iterator[ReleasableBatchLock]:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+") as handle:
-        lease = ReleasableBatchLock(handle)
-        lease.acquire()
-        try:
-            yield lease
-        finally:
-            lease.release()
-
-
 def _public_material_state(value: Any) -> Any:
     """Remove observer-only clocks before deciding whether to republish."""
     if isinstance(value, dict):
@@ -247,9 +210,11 @@ def atomic_public_json(path: Path, payload: Any, *, force: bool = False) -> bool
         previous = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
         previous = None
-    if not force and previous is not None and _public_material_state(
-        previous
-    ) == _public_material_state(payload):
+    if (
+        not force
+        and previous is not None
+        and _public_material_state(previous) == _public_material_state(payload)
+    ):
         return False
     atomic_json(path, payload, mode=0o644)
     return True
@@ -552,6 +517,38 @@ def batch_path(batch_id: str) -> Path:
     return batch_dir(batch_id) / "batch.json"
 
 
+def publication_path(batch_id: str) -> Path:
+    """Return the independent website-projection state for a batch."""
+
+    return batch_dir(batch_id) / "publication.json"
+
+
+def read_publication(batch_id: str) -> dict[str, Any]:
+    """Read publication state without consulting or mutating experiment state."""
+
+    path = publication_path(batch_id)
+    try:
+        payload = json.loads(path.read_text())
+    except FileNotFoundError:
+        return {
+            "schema_version": 1,
+            "batch_id": batch_id,
+            "site_status": "pending",
+        }
+    if not isinstance(payload, dict) or payload.get("batch_id") != batch_id:
+        raise ValueError("publication state has mismatched batch ID")
+    return payload
+
+
+def write_publication(batch_id: str, payload: dict[str, Any]) -> None:
+    """Persist observer-only publication state under its own lock domain."""
+
+    if payload.get("batch_id") != batch_id:
+        raise ValueError("publication state has mismatched batch ID")
+    payload["updated_at"] = utc_now()
+    atomic_json(publication_path(batch_id), payload)
+
+
 def credential_journal_path(batch_id: str) -> Path:
     return batch_dir(batch_id) / "openrouter-credentials.json"
 
@@ -650,7 +647,9 @@ def consume_batch_stop_transition(
     except FileNotFoundError:
         return payload
     except (OSError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"invalid operator-stop journal for {batch_id}: {exc}") from exc
+        raise RuntimeError(
+            f"invalid operator-stop journal for {batch_id}: {exc}"
+        ) from exc
     if not isinstance(transition, dict) or transition.get("batch_id") != batch_id:
         raise RuntimeError(f"operator-stop journal has mismatched batch ID: {batch_id}")
     apply_batch_stop_transition(payload, transition)
@@ -748,9 +747,7 @@ def _rebuild_provider_summary(
             and not isinstance(benchmark_cost, bool)
         ):
             if record.get("cost_basis") != expected_cost_basis:
-                raise OpenRouterManagementError(
-                    "provider ledger cost basis mismatch"
-                )
+                raise OpenRouterManagementError("provider ledger cost basis mismatch")
             provider_value = float(provider_cost)
             benchmark_value = float(benchmark_cost)
             if (
@@ -894,9 +891,7 @@ def reconcile_openrouter_child_ledger(
                 (record.get("promotion_snapshot") or {}).get("cost_basis") or ""
             )
             if snapshot_cost_basis != expected_cost_basis:
-                raise OpenRouterManagementError(
-                    "generation audit cost basis mismatch"
-                )
+                raise OpenRouterManagementError("generation audit cost basis mismatch")
             record.update(
                 {
                     "state": "recovered_complete",
@@ -1458,6 +1453,7 @@ def preflight(
     coexist_batch_ids: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     checks: dict[str, Any] = {}
+    publication_checks: dict[str, Any] = {}
     provider_probes: dict[str, Any] = {}
     provider_errors: dict[str, str] = {}
     openrouter_credit_snapshot: dict[str, Any] | None = None
@@ -1533,7 +1529,10 @@ def preflight(
         == 0
     )
     checks["functional_gpu_canary"] = functional_gpu_canary_ready()
-    checks["vercel_project_link"] = vercel_project_link_ready()
+    # Website publication is an observer, never an experiment prerequisite.
+    # Keep its diagnostics visible without allowing missing Vercel tooling or
+    # credentials to block budget supervision or launch.
+    publication_checks["vercel_project_link"] = vercel_project_link_ready()
     checks["controller_runtime"] = (
         HARBOR_PYTHON.is_file()
         and os.access(HARBOR_PYTHON, os.X_OK)
@@ -1584,15 +1583,23 @@ def preflight(
         )
     else:
         checks["no_live_sprint_resources"] = False
-    checks["vercel_auth"] = (
-        subprocess.run(
-            ["vercel", "whoami"],
-            cwd=WEB,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        ).returncode
-        == 0
-    )
+    vercel = shutil.which("vercel")
+    publication_checks["vercel_cli"] = vercel is not None
+    publication_checks["vercel_auth"] = False
+    if vercel:
+        try:
+            publication_checks["vercel_auth"] = (
+                subprocess.run(
+                    [vercel, "whoami"],
+                    cwd=WEB,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=10,
+                ).returncode
+                == 0
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
     selected_openai_families = tuple(
         family for family in families if family in OPENAI_FAMILY_SPECS
     )
@@ -1794,6 +1801,8 @@ def preflight(
         "coexist_batch_ids": list(coexist_batch_ids),
         "env_file": str(env_file),
         "checks": checks,
+        "publication_checks": publication_checks,
+        "publication_ready": all(bool(value) for value in publication_checks.values()),
         "provider_probes": provider_probes,
         "provider_errors": provider_errors,
         "openrouter_credit_snapshot": openrouter_credit_snapshot,
@@ -1803,31 +1812,144 @@ def preflight(
     }
 
 
-def start_monitor_service(batch_id: str, env_file: Path, modal_profile: str) -> None:
-    vercel = shutil.which("vercel")
-    if not vercel:
-        raise RuntimeError("vercel CLI is not available for the batch monitor")
-    service_path = os.pathsep.join(
-        dict.fromkeys(
-            [
-                str(HARBOR_PYTHON.parent),
-                str(UV.resolve().parent),
-                str(Path(vercel).resolve().parent),
-                *os.environ.get("PATH", "").split(os.pathsep),
-            ]
-        )
-    )
-    unit = f"sprint-batch-{batch_id}-monitor"
-    unit_name = f"{unit}.service"
-    config_home = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
-    unit_path = config_home / "systemd" / "user" / unit_name
+def _systemd_quote(value: str | Path) -> str:
+    raw = str(value)
+    if "\n" in raw or "\r" in raw:
+        raise ValueError("systemd unit values cannot contain newlines")
+    escaped = raw.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
+    return f'"{escaped}"'
 
-    def quote(value: str | Path) -> str:
-        raw = str(value)
-        if "\n" in raw or "\r" in raw:
-            raise ValueError("systemd unit values cannot contain newlines")
-        escaped = raw.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
-        return f'"{escaped}"'
+
+def batch_control_units(batch_id: str) -> dict[str, str]:
+    prefix = f"sprint-batch-{batch_id}"
+    return {
+        "monitor": f"{prefix}-monitor.service",
+        "publisher": f"{prefix}-publisher.service",
+        "publisher_timer": f"{prefix}-publisher.timer",
+    }
+
+
+def batch_control_unit_dir() -> Path:
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
+    return config_home / "systemd" / "user"
+
+
+def disable_batch_publication_timer(batch_id: str) -> None:
+    """Disable future publisher activations without stopping the caller."""
+
+    units = batch_control_units(batch_id)
+    unit_dir = batch_control_unit_dir()
+    if not any((unit_dir / name).is_file() for name in units.values()):
+        return
+    subprocess.run(
+        ["systemctl", "--user", "disable", units["publisher_timer"]],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    subprocess.run(
+        [
+            "systemctl",
+            "--user",
+            "stop",
+            "--no-block",
+            units["publisher_timer"],
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+
+
+def quiesce_batch_publisher(batch_id: str) -> None:
+    """Prevent new publications and cancel an in-flight deploy asynchronously."""
+
+    units = batch_control_units(batch_id)
+    unit_dir = batch_control_unit_dir()
+    if not any((unit_dir / name).is_file() for name in units.values()):
+        return
+    disable_batch_publication_timer(batch_id)
+    subprocess.run(
+        ["systemctl", "--user", "stop", "--no-block", units["publisher"]],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+
+
+def request_batch_publication(batch_id: str) -> None:
+    """Queue the independent one-shot publisher without waiting for it."""
+
+    units = batch_control_units(batch_id)
+    unit_path = batch_control_unit_dir() / units["publisher"]
+    if not unit_path.is_file():
+        return
+    subprocess.run(
+        ["systemctl", "--user", "start", "--no-block", units["publisher"]],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+
+
+def retire_batch_control_services(batch_id: str) -> None:
+    """Disable all boot activation and request non-blocking service shutdown."""
+
+    units = batch_control_units(batch_id)
+    unit_dir = batch_control_unit_dir()
+    if not any((unit_dir / name).is_file() for name in units.values()):
+        return
+    subprocess.run(
+        [
+            "systemctl",
+            "--user",
+            "disable",
+            units["monitor"],
+            units["publisher_timer"],
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    subprocess.run(
+        [
+            "systemctl",
+            "--user",
+            "stop",
+            "--no-block",
+            units["publisher_timer"],
+            units["publisher"],
+            units["monitor"],
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+
+
+def start_batch_control_services(
+    batch_id: str, env_file: Path, modal_profile: str
+) -> None:
+    """Start independent health supervision and website publication services.
+
+    The monitor is deliberately incapable of reaching the Vercel deployment
+    path. Website builds have their own one-shot service and timer, so a slow
+    upload/build can never delay budget, heartbeat, verifier, or stop audits.
+    """
+
+    vercel = shutil.which("vercel")
+    path_entries = [
+        str(HARBOR_PYTHON.parent),
+        str(UV.resolve().parent),
+    ]
+    if vercel:
+        path_entries.append(str(Path(vercel).resolve().parent))
+    path_entries.extend(os.environ.get("PATH", "").split(os.pathsep))
+    service_path = os.pathsep.join(
+        entry for entry in dict.fromkeys(path_entries) if entry
+    )
+    units = batch_control_units(batch_id)
+    unit_dir = batch_control_unit_dir()
 
     monitor_command = [
         HARBOR_PYTHON,
@@ -1841,7 +1963,18 @@ def start_monitor_service(batch_id: str, env_file: Path, modal_profile: str) -> 
         modal_profile,
         "--loop",
     ]
-    unit_text = "\n".join(
+    publisher_command = [
+        HARBOR_PYTHON,
+        Path(__file__).resolve(),
+        "publish",
+        "--batch-id",
+        batch_id,
+        "--env-file",
+        env_file.resolve(),
+        "--modal-profile",
+        modal_profile,
+    ]
+    monitor_unit_text = "\n".join(
         [
             "[Unit]",
             f"Description=Sprint batch monitor for {batch_id}",
@@ -1851,10 +1984,10 @@ def start_monitor_service(batch_id: str, env_file: Path, modal_profile: str) -> 
             "[Service]",
             "Type=simple",
             f"WorkingDirectory={ROOT}",
-            f"Environment={quote(f'PATH={service_path}')}",
-            f"Environment={quote(f'UV={UV.resolve()}')}",
-            f"Environment={quote(f'MODAL_PROFILE={modal_profile}')}",
-            "ExecStart=" + " ".join(quote(item) for item in monitor_command),
+            f"Environment={_systemd_quote(f'PATH={service_path}')}",
+            f"Environment={_systemd_quote(f'UV={UV.resolve()}')}",
+            f"Environment={_systemd_quote(f'MODAL_PROFILE={modal_profile}')}",
+            "ExecStart=" + " ".join(_systemd_quote(item) for item in monitor_command),
             "Restart=on-failure",
             "RestartSec=30",
             "",
@@ -1863,16 +1996,101 @@ def start_monitor_service(batch_id: str, env_file: Path, modal_profile: str) -> 
             "",
         ]
     )
+    publisher_unit_text = "\n".join(
+        [
+            "[Unit]",
+            f"Description=Sprint website publisher for {batch_id}",
+            "Wants=network-online.target",
+            "After=network-online.target",
+            "",
+            "[Service]",
+            "Type=oneshot",
+            f"WorkingDirectory={ROOT}",
+            f"Environment={_systemd_quote(f'PATH={service_path}')}",
+            f"Environment={_systemd_quote(f'UV={UV.resolve()}')}",
+            f"Environment={_systemd_quote(f'MODAL_PROFILE={modal_profile}')}",
+            "ExecStart=" + " ".join(_systemd_quote(item) for item in publisher_command),
+            # frontier.py bounds each Vercel CLI call at 30 minutes. Leave a
+            # small service-level margin while still guaranteeing cleanup.
+            "TimeoutStartSec=35min",
+            "TimeoutStopSec=10s",
+            "KillMode=control-group",
+            "",
+        ]
+    )
+    publisher_timer_text = "\n".join(
+        [
+            "[Unit]",
+            f"Description=Periodic Sprint website publication for {batch_id}",
+            "",
+            "[Timer]",
+            f"Unit={units['publisher']}",
+            f"OnUnitInactiveSec={LIVE_SITE_DEPLOY_SECONDS}s",
+            "AccuracySec=5s",
+            "Persistent=true",
+            "",
+            "[Install]",
+            "WantedBy=timers.target",
+            "",
+        ]
+    )
     subprocess.run(
-        ["systemctl", "--user", "stop", unit_name],
+        [
+            "systemctl",
+            "--user",
+            "stop",
+            "--no-block",
+            units["publisher_timer"],
+            units["publisher"],
+            units["monitor"],
+        ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         check=False,
     )
-    frontier_update.atomic_write_text(unit_path, unit_text, mode=0o600)
+    # Health supervision is required and starts first. A failure here is an
+    # experiment launch failure because there would be no batch-level recovery
+    # owner. Publication setup below is intentionally best effort.
+    frontier_update.atomic_write_text(
+        unit_dir / units["monitor"], monitor_unit_text, mode=0o600
+    )
     run_checked(["systemctl", "--user", "daemon-reload"])
-    run_checked(["systemctl", "--user", "enable", unit_name])
-    run_checked(["systemctl", "--user", "restart", unit_name])
+    run_checked(["systemctl", "--user", "enable", units["monitor"]])
+    run_checked(["systemctl", "--user", "restart", units["monitor"]])
+
+    try:
+        if not vercel:
+            raise RuntimeError("vercel CLI is not available for the batch publisher")
+        frontier_update.atomic_write_text(
+            unit_dir / units["publisher"], publisher_unit_text, mode=0o600
+        )
+        frontier_update.atomic_write_text(
+            unit_dir / units["publisher_timer"], publisher_timer_text, mode=0o600
+        )
+        run_checked(["systemctl", "--user", "daemon-reload"])
+        run_checked(["systemctl", "--user", "enable", units["publisher_timer"]])
+        publication = read_publication(batch_id)
+        publication["site_status"] = "queued"
+        publication.pop("setup_error", None)
+        write_publication(batch_id, publication)
+        run_checked(["systemctl", "--user", "restart", units["publisher_timer"]])
+        run_checked(["systemctl", "--user", "start", "--no-block", units["publisher"]])
+    except Exception as exc:  # noqa: BLE001 - observer must not abort launch
+        quiesce_batch_publisher(batch_id)
+        publication = {
+            "schema_version": 1,
+            "batch_id": batch_id,
+            "site_status": "setup_error",
+            "setup_error": {
+                "at": utc_now(),
+                "type": type(exc).__name__,
+                "message": " ".join(str(exc).split())[-2000:],
+            },
+        }
+        try:
+            write_publication(batch_id, publication)
+        except Exception:  # noqa: BLE001 - observer storage is also non-critical
+            pass
 
 
 def launch(
@@ -1919,7 +2137,6 @@ def launch(
             families=families,
         ),
         "alerts": [],
-        "deploy": {},
         "status": "launching",
     }
     atomic_json(batch_path(batch_id), payload)
@@ -2029,8 +2246,9 @@ def launch(
     payload["launched_at"] = utc_now()
     atomic_json(batch_path(batch_id), payload)
     try:
-        start_monitor_service(batch_id, env_file, modal_profile)
+        start_batch_control_services(batch_id, env_file, modal_profile)
     except Exception:
+        retire_batch_control_services(batch_id)
         for started_arm in launched:
             try:
                 sprintctl.request_stop(
@@ -2449,11 +2667,12 @@ def deployment_debounce_seconds(payload: dict[str, Any]) -> int:
     )
 
 
-def deployed_batch_current(payload: dict[str, Any]) -> bool:
+def deployed_batch_current(
+    payload: dict[str, Any], publication: dict[str, Any]
+) -> bool:
     """Check only this batch's public files against the deployed manifest."""
-    deploy_state = payload.get("deploy") or {}
-    manifest = deploy_state.get("last_deployed_public_artifacts")
-    if deploy_state.get("site_status") not in {"deployed", "noop"} or not isinstance(
+    manifest = publication.get("last_deployed_public_artifacts")
+    if publication.get("site_status") not in {"deployed", "noop"} or not isinstance(
         manifest, dict
     ):
         return False
@@ -2516,12 +2735,13 @@ def _frontier_ready_for_publish(state: dict[str, Any]) -> bool:
     )
 
 
-def mark_deployed_runs(payload: dict[str, Any]) -> list[dict[str, str]]:
+def mark_deployed_runs(
+    payload: dict[str, Any], publication: dict[str, Any]
+) -> list[dict[str, str]]:
     """Persist durable proof that each run's current public artifact was deployed."""
     alerts: list[dict[str, str]] = []
-    deploy_state = payload.get("deploy") or {}
-    deployed_artifacts = deploy_state.get("last_deployed_public_artifacts")
-    if deploy_state.get("site_status") not in {"deployed", "noop"} or not isinstance(
+    deployed_artifacts = publication.get("last_deployed_public_artifacts")
+    if publication.get("site_status") not in {"deployed", "noop"} or not isinstance(
         deployed_artifacts, dict
     ):
         return alerts
@@ -2551,8 +2771,8 @@ def mark_deployed_runs(payload: dict[str, Any]) -> list[dict[str, str]]:
                 "schema_version": 2,
                 "run_id": arm["run_id"],
                 "batch_id": payload["batch_id"],
-                "deployed_at": deploy_state.get("last_deployed_at") or utc_now(),
-                "deployment_site_sha256": deploy_state["last_deployed_site_hash"],
+                "deployed_at": publication.get("last_deployed_at") or utc_now(),
+                "deployment_site_sha256": publication["last_deployed_site_hash"],
                 "public_artifact_path": relative_artifact,
                 "public_artifact_sha256": deployed_hash,
                 "public_artifact_snapshot_path": str(
@@ -2609,75 +2829,66 @@ def mark_deployed_runs(payload: dict[str, Any]) -> list[dict[str, str]]:
     return alerts
 
 
-def deploy_website_outside_batch_lock(
+def deploy_website_projection(
     payload: dict[str, Any],
+    publication: dict[str, Any],
     *,
-    state_path: Path,
-    batch_lock: ReleasableBatchLock,
     now: dt.datetime,
     debounce_seconds: int,
-) -> tuple[dict[str, Any], Exception | None, str | None, bool]:
-    """Run Vercel publication without fencing budget or stop control.
+) -> tuple[Exception | None, str | None, bool]:
+    """Render/deploy an observer snapshot under publication-only leases.
 
-    The batch state accumulated so far is committed before the control lock is
-    yielded.  A distinct deployment lease prevents a diagnostic monitor from
-    starting a second Vercel build during that window.  After the external
-    command returns, the control lock is re-acquired and only deployment state
-    is merged into the latest batch record, preserving any concurrent stop or
-    credential-revocation transition.
+    This function never acquires ``batch.lock`` and never writes ``batch.json``.
+    The experiment controller can therefore audit cost, stop sandboxes, and
+    revoke credentials while Vercel is slow or unavailable indefinitely.
     """
 
-    deploy_state = copy.deepcopy(payload.setdefault("deploy", {}))
-    atomic_json(state_path, payload)
     # The public tree is shared by every run and batch. Reuse the renderer's
     # global pipeline lease so a Vercel upload sees one coherent tree and two
     # tracking batches cannot publish concurrently.
     deploy_lock_path = frontier_update.PIPELINE_LOCK
     with frontier_update.file_lock(deploy_lock_path, blocking=False) as acquired:
         if not acquired:
-            return read_batch(payload["batch_id"]), None, None, False
+            return None, None, False
         error: Exception | None = None
         error_kind: str | None = None
         attempted = False
-        batch_lock.release()
         try:
             attempted = True
-            # Normal monitor cycles suppress observer-only timestamp rewrites
-            # so the deploy debounce can mature. Once this process owns the
-            # deployment lease, refresh both batch snapshots exactly once so
-            # the uploaded overview is from the same cycle as the trajectories.
             write_public_batch(payload, update_current=True, force=True)
             error_kind = "performance_export"
             refresh_performance_snapshot(payload)
             error_kind = "website_deploy"
             frontier_update.deploy_if_needed(
-                deploy_state,
+                publication,
                 web=WEB,
                 debounce_seconds=debounce_seconds,
             )
-            clear_deployment_error(deploy_state)
+            clear_deployment_error(publication)
         except Exception as exc:  # noqa: BLE001
             error = exc
-            record_deployment_error(deploy_state, exc, now=now)
-        finally:
-            batch_lock.acquire()
+            record_deployment_error(publication, exc, now=now)
 
-    latest = read_batch(payload["batch_id"])
-    latest["deploy"] = deploy_state
-    return latest, error, error_kind if error else None, attempted
+    return error, error_kind if error else None, attempted
 
 
-def monitor_cycle(
-    batch_id: str, *, deploy: bool = True, env_file: Path | None = None
-) -> dict[str, Any]:
+def monitor_cycle(batch_id: str, *, env_file: Path | None = None) -> dict[str, Any]:
     path = batch_path(batch_id)
-    with releasable_batch_lock(path.with_suffix(".lock")) as batch_lock:
+    with frontier_update.file_lock(path.with_suffix(".lock")) as acquired:
+        if not acquired:  # blocking acquisition is expected to always succeed
+            raise RuntimeError("batch monitor could not acquire control lock")
         payload = read_batch(batch_id)
         # An operator stop has already fenced every run and revoked its child
         # credentials before this journal is written.  Consume it immediately,
         # before any provider audit, volume read, finalization, or deployment
         # can block this monitor cycle.
         payload = consume_batch_stop_transition(batch_id, payload)
+        # Operator-stopped batches are control-plane terminal even though their
+        # interrupted arms are intentionally not benchmark-finalized. Without
+        # this fence, aggregation below rewrites `stopped` back to `running`.
+        if payload.get("status") == "stopped" or payload.get("operator_stop"):
+            atomic_json(path, payload)
+            return payload
         now = dt.datetime.now(dt.timezone.utc)
         finalized = 0
         cycle_alerts: list[dict[str, str]] = []
@@ -2780,43 +2991,6 @@ def monitor_cycle(
                 payload.setdefault("alerts", []).append(alert)
                 known.add(key)
         payload["updated_at"] = utc_now()
-        write_public_batch(payload, update_current=deploy)
-
-        if deploy:
-            deploy_state = payload.setdefault("deploy", {})
-            if deployment_retry_due(deploy_state, now=now):
-                payload, deployment_error, error_kind, attempted = (
-                    deploy_website_outside_batch_lock(
-                        payload,
-                        state_path=path,
-                        batch_lock=batch_lock,
-                        now=now,
-                        debounce_seconds=deployment_debounce_seconds(payload),
-                    )
-                )
-                if attempted and deployment_error is None:
-                    resolve_alerts(
-                        payload,
-                        run_id="batch",
-                        kind="performance_export",
-                        resolution="subsequent_performance_snapshot_succeeded",
-                    )
-                    resolve_alerts(
-                        payload,
-                        run_id="batch",
-                        kind="website_deploy",
-                        resolution="subsequent_site_snapshot_succeeded",
-                    )
-                elif attempted and deployment_error is not None:
-                    cycle_alerts.append(
-                        {
-                            "run_id": "batch",
-                            "kind": error_kind or "website_deploy",
-                            "source": type(deployment_error).__name__,
-                            "count_in_tail": "1",
-                        }
-                    )
-        cycle_alerts.extend(mark_deployed_runs(payload))
 
         for arm in payload["arms"]:
             run_id = arm["run_id"]
@@ -2918,45 +3092,33 @@ def monitor_cycle(
             else "running"
         )
         payload["updated_at"] = utc_now()
-        write_public_batch(payload, update_current=deploy)
-        if (
-            deploy
-            and all_finalized
-            and deployment_retry_due(payload.setdefault("deploy", {}), now=now)
-        ):
-            payload, deployment_error, _error_kind, attempted = (
-                deploy_website_outside_batch_lock(
-                    payload,
-                    state_path=path,
-                    batch_lock=batch_lock,
-                    now=now,
-                    debounce_seconds=0,
-                )
-            )
-            if attempted and deployment_error is not None:
-                cycle_alerts.append(
-                    {
-                        "run_id": "batch",
-                        "kind": "final_site_deploy",
-                        "source": type(deployment_error).__name__,
-                        "count_in_tail": "1",
-                    }
-                )
-        deployed_current = not deploy or deployed_batch_current(payload)
-        if all_finalized and not deployed_current:
-            payload["status"] = "finalizing_site"
-            payload["updated_at"] = utc_now()
-            write_public_batch(payload, update_current=deploy)
-        if (
-            all_finalized
-            and deployed_current
-            and payload.get("credential_status") == "active"
-        ):
+        if all_finalized and payload.get("credential_status") in {
+            "active",
+            "revoking",
+            "cleanup_error",
+        }:
             credential_env = env_file or Path(payload.get("env_file", ROOT / ".env"))
             try:
-                revoke_batch_credentials(payload, credential_env)
+                cleanup_errors = revoke_batch_credentials(payload, credential_env)
+                if cleanup_errors:
+                    cycle_alerts.append(
+                        {
+                            "run_id": "batch",
+                            "kind": "openrouter_credential_cleanup",
+                            "source": "management_api",
+                            "count_in_tail": str(len(cleanup_errors)),
+                        }
+                    )
+                else:
+                    resolve_alerts(
+                        payload,
+                        run_id="batch",
+                        kind="openrouter_credential_cleanup",
+                        resolution="all isolated trial credentials were revoked",
+                    )
             except (KeyError, OSError, OpenRouterManagementError, ValueError) as exc:
                 payload["credential_status"] = "cleanup_error"
+                payload["credential_cleanup_errors"] = [f"{type(exc).__name__}: {exc}"]
                 cycle_alerts.append(
                     {
                         "run_id": "batch",
@@ -2977,6 +3139,126 @@ def monitor_cycle(
                 known.add(key)
         atomic_json(path, payload)
         return payload
+
+
+def publish_cycle(batch_id: str, *, env_file: Path | None = None) -> dict[str, Any]:
+    """Render/deploy a read-only projection of durable experiment state.
+
+    Publication owns ``publication.json`` and the web tree only. It neither
+    acquires the experiment lock nor writes ``batch.json``; failures here are
+    therefore incapable of delaying budget enforcement, finalization, or
+    credential cleanup.
+    """
+
+    del env_file  # publication has no access to experiment/provider secrets
+    payload = read_batch(batch_id)
+    lock_path = publication_path(batch_id).with_suffix(".lock")
+    with frontier_update.file_lock(lock_path, blocking=False) as acquired:
+        publication = read_publication(batch_id)
+        if not acquired:
+            result = copy.deepcopy(payload)
+            result["publication"] = publication
+            result["publication_busy"] = True
+            return result
+
+        if (
+            payload.get("status") == "stopped"
+            or payload.get("operator_stop")
+            or batch_stop_marker_path(batch_id).is_file()
+        ):
+            publication["site_status"] = "stopped"
+            publication["experiment_status"] = "stopped"
+            write_publication(batch_id, publication)
+            result = copy.deepcopy(payload)
+            result["publication"] = publication
+            return result
+
+        now = dt.datetime.now(dt.timezone.utc)
+        cycle_alerts: list[dict[str, str]] = []
+        all_finalized = bool(payload.get("arms")) and all(
+            arm.get("status") in {"finalized", "invalid_infrastructure"}
+            for arm in payload["arms"]
+        )
+        if deployment_retry_due(publication, now=now):
+            for arm in payload.get("arms", []):
+                run_id = arm.get("run_id")
+                if not isinstance(run_id, str):
+                    continue
+                try:
+                    sprintctl.refresh_public_projection(run_id, upload=True)
+                    resolve_alerts(
+                        publication,
+                        run_id=run_id,
+                        kind="site_projection",
+                        resolution="subsequent public projection refresh succeeded",
+                    )
+                except Exception as exc:  # noqa: BLE001 - observer-only path
+                    cycle_alerts.append(
+                        {
+                            "run_id": run_id,
+                            "kind": "site_projection",
+                            "source": type(exc).__name__,
+                            "count_in_tail": "1",
+                        }
+                    )
+            deployment_error, error_kind, attempted = deploy_website_projection(
+                payload,
+                publication,
+                now=now,
+                debounce_seconds=deployment_debounce_seconds(payload),
+            )
+            if attempted and deployment_error is None:
+                for kind, resolution in (
+                    (
+                        "performance_export",
+                        "subsequent performance snapshot succeeded",
+                    ),
+                    ("website_deploy", "subsequent site snapshot succeeded"),
+                    (
+                        "final_site_deploy",
+                        "subsequent final site deployment succeeded",
+                    ),
+                ):
+                    resolve_alerts(
+                        publication,
+                        run_id="batch",
+                        kind=kind,
+                        resolution=resolution,
+                    )
+            elif attempted and deployment_error is not None:
+                cycle_alerts.append(
+                    {
+                        "run_id": "batch",
+                        "kind": (
+                            "final_site_deploy"
+                            if all_finalized and error_kind == "website_deploy"
+                            else error_kind or "website_deploy"
+                        ),
+                        "source": type(deployment_error).__name__,
+                        "count_in_tail": "1",
+                    }
+                )
+
+        cycle_alerts.extend(mark_deployed_runs(payload, publication))
+        deployed_current = deployed_batch_current(payload, publication)
+        publication["deployed_current"] = deployed_current
+        publication["experiment_status"] = payload.get("status")
+        publication["source_batch_updated_at"] = payload.get("updated_at")
+        known = {
+            (item.get("run_id"), item.get("kind"), item.get("source"))
+            for item in publication.get("alerts", [])
+        }
+        for alert in cycle_alerts:
+            key = (alert.get("run_id"), alert.get("kind"), alert.get("source"))
+            if key not in known:
+                alert["first_seen_at"] = utc_now()
+                publication.setdefault("alerts", []).append(alert)
+                known.add(key)
+        write_publication(batch_id, publication)
+
+        result = copy.deepcopy(payload)
+        result["publication"] = publication
+        return result
 
 
 def stop_batch(batch_id: str, *, env_file: Path | None = None) -> dict[str, Any]:
@@ -3031,6 +3313,9 @@ def stop_batch(batch_id: str, *, env_file: Path | None = None) -> dict[str, Any]
         },
     }
     publish_transition(intent)
+    # Website publication is irrelevant to resource teardown. Cancel it
+    # asynchronously before provider revocation or Modal stop dispatch.
+    quiesce_batch_publisher(batch_id)
 
     credential_cleanup: dict[str, Any] | None = None
     if snapshot.get("credential_status") == "active":
@@ -3103,13 +3388,15 @@ def stop_batch(batch_id: str, *, env_file: Path | None = None) -> dict[str, Any]
     # Replace the intent journal with the completed teardown phase. The merge
     # remains non-blocking; a monitor that owns batch.lock consumes it first on
     # its next cycle.
-    return publish_transition(transition)
+    result = publish_transition(transition)
+    if result.get("status") == "stopped":
+        retire_batch_control_services(batch_id)
+    return result
 
 
 def run_monitor_command(
     batch_id: str,
     *,
-    deploy: bool,
     env_file: Path,
     loop: bool,
     poll_seconds: int,
@@ -3129,7 +3416,7 @@ def run_monitor_command(
     authority without entering a restart storm.
     """
     if not loop:
-        return monitor_cycle(batch_id, deploy=deploy, env_file=env_file)
+        return monitor_cycle(batch_id, env_file=env_file)
 
     owner_path = batch_dir(batch_id) / "monitor-owner.lock"
     with frontier_update.file_lock(owner_path, blocking=False) as acquired:
@@ -3141,16 +3428,25 @@ def run_monitor_command(
                 "updated_at": utc_now(),
             }
         while True:
-            output = monitor_cycle(batch_id, deploy=deploy, env_file=env_file)
+            output = monitor_cycle(batch_id, env_file=env_file)
             print(json.dumps(public_batch(output), indent=2), flush=True)
-            if output.get("status") in {"complete", "complete_with_invalid_trials"}:
+            if output.get("status") in BATCH_MONITOR_TERMINAL_STATUSES:
+                request_batch_publication(batch_id)
+            credential_cleanup_complete = output.get("credential_status") in {
+                None,
+                "revoked",
+            }
+            if (
+                output.get("status") in BATCH_MONITOR_TERMINAL_STATUSES
+                and credential_cleanup_complete
+            ):
                 # The unit is enabled so an interrupted active batch resumes
                 # after a host reboot. Once terminal, remove that boot-time
                 # activation link before exiting; otherwise every historical
                 # batch monitor is resurrected on the next login/reboot.
-                unit_name = f"sprint-batch-{batch_id}-monitor.service"
+                units = batch_control_units(batch_id)
                 subprocess.run(
-                    ["systemctl", "--user", "disable", unit_name],
+                    ["systemctl", "--user", "disable", units["monitor"]],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     check=False,
@@ -3159,10 +3455,26 @@ def run_monitor_command(
             time.sleep(max(10, poll_seconds))
 
 
+def run_publish_command(batch_id: str, *, env_file: Path) -> dict[str, Any]:
+    """Run one publication cycle outside the continuous health daemon."""
+
+    current = read_batch(batch_id)
+    if current.get("status") == "stopped":
+        quiesce_batch_publisher(batch_id)
+        return current
+    output = publish_cycle(batch_id, env_file=env_file)
+    if (
+        output.get("status") in BATCH_MONITOR_TERMINAL_STATUSES
+        and (output.get("publication") or {}).get("deployed_current") is True
+    ):
+        disable_batch_publication_timer(batch_id)
+    return output
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     sub = result.add_subparsers(dest="command", required=True)
-    for name in ("preflight", "launch", "monitor", "status", "stop"):
+    for name in ("preflight", "launch", "monitor", "publish", "status", "stop"):
         command = sub.add_parser(name)
         command.add_argument("--batch-id", required=True)
         command.add_argument("--env-file", type=Path, default=ROOT / ".env")
@@ -3193,7 +3505,6 @@ def parser() -> argparse.ArgumentParser:
         if name == "monitor":
             command.add_argument("--loop", action="store_true")
             command.add_argument("--poll-seconds", type=int, default=POLL_SECONDS)
-            command.add_argument("--no-deploy", action="store_true")
     return result
 
 
@@ -3230,10 +3541,14 @@ def main() -> int:
     elif args.command == "monitor":
         output = run_monitor_command(
             args.batch_id,
-            deploy=not args.no_deploy,
             env_file=args.env_file.resolve(),
             loop=args.loop,
             poll_seconds=args.poll_seconds,
+        )
+    elif args.command == "publish":
+        output = run_publish_command(
+            args.batch_id,
+            env_file=args.env_file.resolve(),
         )
     elif args.command == "stop":
         output = stop_batch(args.batch_id, env_file=args.env_file.resolve())

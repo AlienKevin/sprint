@@ -986,9 +986,7 @@ def request_stop(
     should_wait = wait_for_termination or request_age >= AGENT_STOP_GRACE_SECONDS
     if should_wait and container_discovery_succeeded:
         if container is None:
-            ack = persist_host_stop_ack(
-                state_dir, run, payload, forced=False
-            )
+            ack = persist_host_stop_ack(state_dir, run, payload, forced=False)
             return {
                 "status": "acknowledged",
                 "agent_kind": kind,
@@ -1003,9 +1001,7 @@ def request_stop(
         )
         while time.monotonic() < grace_deadline:
             if not agent_container_running(run, container):
-                ack = persist_host_stop_ack(
-                    state_dir, run, payload, forced=False
-                )
+                ack = persist_host_stop_ack(state_dir, run, payload, forced=False)
                 return {
                     "status": "acknowledged",
                     "agent_kind": kind,
@@ -1043,9 +1039,7 @@ def request_stop(
             # converting that benign race into a false teardown failure.
             try:
                 if not agent_container_running(run, container):
-                    ack = persist_host_stop_ack(
-                        state_dir, run, payload, forced=True
-                    )
+                    ack = persist_host_stop_ack(state_dir, run, payload, forced=True)
                     return {
                         "status": "acknowledged",
                         "agent_kind": kind,
@@ -1630,7 +1624,6 @@ def monitor_once(
     *,
     upload: bool = True,
     include_remote: bool = True,
-    launch_worker: bool = True,
 ) -> dict[str, Any]:
     state_dir, run = load_run(run_id)
     Path("/data/.keepalive").touch()
@@ -1698,24 +1691,45 @@ def monitor_once(
                 refresh_agent_cost_snapshot(run_id, state_dir, run, timeline)
             except Exception as exc:  # noqa: BLE001
                 record_controller_error(run_id, exc)
-        frontier_path = state_dir / "frontier-state.json"
-        if not worker_alive(state_dir):
-            sync_frontier_artifacts(state_dir, run, upload=upload)
-            scan_frontier(
-                job=job,
-                trial=trial,
-                state_path=frontier_path,
-                web=Path(str(run.get("site_dir", WEB_DEFAULT))),
-            )
-            if upload:
-                volume_upload(
-                    run,
-                    frontier_path,
-                    f"runs/{run_id}/state/frontier-state.json",
-                )
-            if launch_worker:
-                maybe_start_frontier_worker(state_dir, run, job, trial)
     return status_snapshot(state_dir, run, include_remote=include_remote)
+
+
+def refresh_public_projection(
+    run_id: str, *, upload: bool = True, launch_worker: bool = True
+) -> dict[str, Any]:
+    """Refresh replay/site artifacts outside the experiment monitor.
+
+    This observer path may be slow or fail indefinitely without affecting GPU
+    dispatch, telemetry, budget enforcement, stop handling, or finalization.
+    """
+
+    state_dir, run = load_run(run_id)
+    job, trial = discover_job_and_trial(state_dir, run)
+    if not job or not trial:
+        return {"run_id": run_id, "status": "waiting_for_harbor_artifacts"}
+    frontier_path = state_dir / "frontier-state.json"
+    if not worker_alive(state_dir):
+        sync_frontier_artifacts(state_dir, run, upload=upload)
+        state = scan_frontier(
+            job=job,
+            trial=trial,
+            state_path=frontier_path,
+            web=Path(str(run.get("site_dir", WEB_DEFAULT))),
+        )
+        if upload:
+            volume_upload(
+                run,
+                frontier_path,
+                f"runs/{run_id}/state/frontier-state.json",
+            )
+        if launch_worker:
+            maybe_start_frontier_worker(state_dir, run, job, trial)
+        return state
+    try:
+        state = json.loads(frontier_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        state = {}
+    return state
 
 
 def unified_timeline_ready(payload: dict[str, Any], run_id: str) -> bool:
@@ -2067,43 +2081,6 @@ def final_policy_frozen_ready(trial: Path) -> bool:
         return False
 
 
-def batch_site_deployed_ready(state_dir: Path, run: dict[str, Any]) -> bool:
-    """Require proof that this run's latest public artifact reached production."""
-    batch_id = run.get("batch_id")
-    if not batch_id:
-        return True
-    marker_path = state_dir / "BATCH_SITE_DEPLOYED.json"
-    allowed = {
-        f"data/policies/{run['run_id']}.json",
-        f"data/timelines/{run['run_id']}.json",
-    }
-    try:
-        marker = json.loads(marker_path.read_text())
-        relative = marker.get("public_artifact_path")
-        if relative not in allowed:
-            return False
-        snapshot_relative = marker.get("public_artifact_snapshot_path")
-        if not isinstance(snapshot_relative, str) or not snapshot_relative.startswith(
-            "deployment-provenance/"
-        ):
-            return False
-        snapshot = (state_dir / snapshot_relative).resolve()
-        snapshot.relative_to(state_dir.resolve())
-        artifact_hash = marker.get("public_artifact_sha256")
-        return bool(
-            marker.get("schema_version") == 2
-            and marker.get("run_id") == run.get("run_id")
-            and marker.get("batch_id") == batch_id
-            and marker.get("production_alias") == "https://g1-sprint.vercel.app"
-            and isinstance(artifact_hash, str)
-            and len(artifact_hash) == 64
-            and snapshot.is_file()
-            and artifact_hash == sha256_file(snapshot)
-        )
-    except (OSError, ValueError, json.JSONDecodeError):
-        return False
-
-
 def final_conditions(
     state_dir: Path, run: dict[str, Any]
 ) -> tuple[bool, dict[str, bool], list[str]]:
@@ -2137,7 +2114,6 @@ def final_conditions(
         "artifact_manifest": False,
         "finished_at": False,
         "harbor_exited": not harbor_alive(run),
-        "site_current": False,
     }
     if all_submissions:
         conditions["continuous_result_set"] = False
@@ -2150,8 +2126,6 @@ def final_conditions(
         conditions["usage_audit_complete"] = False
     if run.get("primary_score_policy") == "frozen_final_artifact":
         conditions["final_policy_frozen"] = False
-    if run.get("batch_id"):
-        conditions["batch_site_deployed"] = False
     details: list[str] = []
     if not job or not trial:
         return False, conditions, ["job or trial path is not available"]
@@ -2296,32 +2270,6 @@ def final_conditions(
             required_indices.add(index)
     conditions["attempt_archives"] = required_indices <= archived_indices
 
-    frontier_path = state_dir / "frontier-state.json"
-    try:
-        frontier = json.loads(frontier_path.read_text())
-    except (OSError, json.JSONDecodeError):
-        frontier = {}
-    pending = any(
-        item.get("status") in {"queued", "running"}
-        for item in frontier.get("capture_queue", [])
-    )
-    captures = frontier.get("captures", {})
-    frontier_candidates = frontier.get("frontier_candidates", [])
-    active_captured = all(
-        candidate.get("policy_hash")
-        and captures.get(candidate["policy_hash"], {}).get("valid")
-        for candidate in frontier_candidates
-    )
-    conditions["site_current"] = bool(
-        frontier.get("ledger_hash") == ledger.digest
-        and not pending
-        and not frontier.get("pending_site_hash")
-        and frontier.get("site_status") in {"noop", "deployed"}
-        and active_captured
-        and not worker_alive(state_dir)
-    )
-    if run.get("batch_id"):
-        conditions["batch_site_deployed"] = batch_site_deployed_ready(state_dir, run)
     if run.get("unified_timeline_required"):
         timeline_path = state_dir / "telemetry" / "unified-timeline.json"
         try:
@@ -2397,7 +2345,6 @@ def _finalize_owned(
         run_id,
         upload=upload,
         include_remote=include_remote,
-        launch_worker=not terminal_before_refresh,
     )
     # Final reconciliation is intentionally expensive: it recursively imports
     # the immutable trace and every provider request record.  It must never run
