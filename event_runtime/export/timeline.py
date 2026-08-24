@@ -1426,8 +1426,7 @@ class Builder:
                 ),
                 "promotion_snapshot": record.get("promotion_snapshot"),
                 "provider_cost_basis": record.get("provider_cost_basis"),
-                "calculated_cost_basis": record.get("cost_basis")
-                or "openrouter_list_price_with_deepseek_peak_floor",
+                "calculated_cost_basis": record.get("cost_basis"),
                 "cost_reconstruction_status": "complete",
             }
             self.add_event(

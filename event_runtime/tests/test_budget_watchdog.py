@@ -18,6 +18,8 @@ spec = importlib.util.spec_from_file_location("sprint_budget_watchdog", SCRIPT)
 assert spec and spec.loader
 watchdog = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(watchdog)
+UNDISCOUNTED_BASIS = "openrouter_list_price_before_endpoint_discount"
+DEEPSEEK_PEAK_BASIS = "openrouter_list_price_with_deepseek_peak_floor"
 
 
 def write_run(
@@ -29,6 +31,7 @@ def write_run(
     service_tier: str | None = None,
     reserve: float | None = None,
     api_cost_source: str | None = None,
+    api_cost_basis: str = DEEPSEEK_PEAK_BASIS,
     agent_kind: str = "codex",
 ) -> Path:
     root = durable / "runs" / run_id
@@ -47,6 +50,7 @@ def write_run(
                 "agent_cost_budget_usd": budget,
                 "cpu_launch_attempt": 1,
                 "budget_enforcement": {
+                    "api_budget_cost_basis": api_cost_basis,
                     **(
                         {"api_cost_source": api_cost_source}
                         if api_cost_source is not None
@@ -69,13 +73,15 @@ def write_openrouter_cost(
     path.write_text(
         json.dumps(
             {
-                "schema_version": 2 if undiscounted_cost is not None else 1,
+                "schema_version": 3,
                 "ledger_request_id": "request",
                 "run_id": "unit",
                 "cpu_attempt": 1,
                 "state": "complete",
                 "generation_id": "gen-test",
                 "provider_reported_cost_usd": cost,
+                "benchmark_cost_usd": undiscounted_cost or cost,
+                "cost_basis": DEEPSEEK_PEAK_BASIS,
                 **(
                     {
                         "undiscounted_cost_usd": undiscounted_cost,
@@ -516,6 +522,10 @@ def test_openrouter_watchdog_fails_closed_on_unrecoverable_charge_without_key(
                 "state": "cost_recovery_required",
                 "generation_id": "gen-recover",
                 "provider_reported_cost_usd": None,
+                "promotion_snapshot": {
+                    "discount_fraction": 0,
+                    "cost_basis": UNDISCOUNTED_BASIS,
+                },
             }
         )
     )
@@ -560,6 +570,10 @@ def test_openrouter_watchdog_allows_only_bounded_pre_agent_proxy_recovery(
                 "state": "cost_recovery_required",
                 "generation_id": "gen-recover",
                 "provider_reported_cost_usd": None,
+                "promotion_snapshot": {
+                    "discount_fraction": 0,
+                    "cost_basis": UNDISCOUNTED_BASIS,
+                },
             }
         )
     )
@@ -677,6 +691,10 @@ def test_interrupted_openrouter_stream_recovers_exact_generation_cost(
                 "state": "cost_recovery_required",
                 "generation_id": "gen-recover",
                 "provider_reported_cost_usd": None,
+                "promotion_snapshot": {
+                    "discount_fraction": 0,
+                    "cost_basis": UNDISCOUNTED_BASIS,
+                },
             }
         )
     )
@@ -690,7 +708,10 @@ def test_interrupted_openrouter_stream_recovers_exact_generation_cost(
     )
 
     cost, provider_cost, complete, pending = watchdog.openrouter_api_cost(
-        root, run_id="unit", api_key="test-key"
+        root,
+        run_id="unit",
+        expected_cost_basis=UNDISCOUNTED_BASIS,
+        api_key="test-key",
     )
 
     assert (cost, provider_cost, complete, pending) == (0.456, 0.456, 1, 0)
@@ -715,7 +736,10 @@ def test_interrupted_discounted_stream_recovers_undiscounted_budget_cost(
                 "generation_id": "gen-discounted",
                 "provider_reported_cost_usd": None,
                 "undiscounted_cost_usd": None,
-                "promotion_snapshot": {"discount_fraction": 0.5},
+                "promotion_snapshot": {
+                    "discount_fraction": 0.5,
+                    "cost_basis": UNDISCOUNTED_BASIS,
+                },
             }
         )
     )
@@ -729,7 +753,10 @@ def test_interrupted_discounted_stream_recovers_undiscounted_budget_cost(
     )
 
     cost, provider_cost, complete, pending = watchdog.openrouter_api_cost(
-        root, run_id="unit", api_key="test-key"
+        root,
+        run_id="unit",
+        expected_cost_basis=UNDISCOUNTED_BASIS,
+        api_key="test-key",
     )
 
     assert (cost, provider_cost, complete, pending) == (0.8, 0.4, 1, 0)
@@ -779,7 +806,10 @@ def test_interrupted_deepseek_stream_recovers_peak_normalized_budget_cost(
     )
 
     cost, provider_cost, complete, pending = watchdog.openrouter_api_cost(
-        root, run_id="unit", api_key="test-key"
+        root,
+        run_id="unit",
+        expected_cost_basis=DEEPSEEK_PEAK_BASIS,
+        api_key="test-key",
     )
 
     assert (cost, provider_cost, complete, pending) == pytest.approx(
@@ -806,6 +836,10 @@ def test_openrouter_recovery_reads_only_named_pending_request(
                 "state": "cost_recovery_required",
                 "generation_id": "gen-recover",
                 "provider_reported_cost_usd": None,
+                "promotion_snapshot": {
+                    "discount_fraction": 0,
+                    "cost_basis": UNDISCOUNTED_BASIS,
+                },
             }
         )
     )
@@ -816,6 +850,7 @@ def test_openrouter_recovery_reads_only_named_pending_request(
                 "schema_version": 3,
                 "run_id": "unit",
                 "model_api_usd": 1.25,
+                "model_api_cost_basis": UNDISCOUNTED_BASIS,
                 "completed_request_count": 2_000,
                 "pending_request_count": 1,
                 "in_flight_request_count": 0,
@@ -839,7 +874,10 @@ def test_openrouter_recovery_reads_only_named_pending_request(
     )
 
     cost, provider_cost, complete, pending = watchdog.openrouter_api_cost(
-        root, run_id="unit", api_key="test-key"
+        root,
+        run_id="unit",
+        expected_cost_basis=UNDISCOUNTED_BASIS,
+        api_key="test-key",
     )
     assert cost == pytest.approx(1.706)
     assert provider_cost == pytest.approx(1.706)
@@ -874,6 +912,7 @@ def test_openrouter_watchdog_uses_exact_rollup_without_rescanning_shards(
                 "run_id": "unit",
                 "updated_at": "2026-08-19T00:00:00Z",
                 "model_api_usd": 1.25,
+                "model_api_cost_basis": UNDISCOUNTED_BASIS,
                 "completed_request_count": 2_000,
                 "pending_request_count": 0,
                 "in_flight_request_count": 0,
@@ -886,12 +925,51 @@ def test_openrouter_watchdog_uses_exact_rollup_without_rescanning_shards(
         + "\n"
     )
 
-    assert watchdog.openrouter_api_cost(root, run_id="unit", api_key=None) == (
+    assert watchdog.openrouter_api_cost(
+        root,
+        run_id="unit",
+        expected_cost_basis=UNDISCOUNTED_BASIS,
+        api_key=None,
+    ) == (
         1.25,
         1.25,
         2_000,
         0,
     )
+
+
+def test_openrouter_watchdog_rejects_mislabeled_cost_rollup(tmp_path: Path) -> None:
+    root = tmp_path / "run"
+    usage = root / "api-usage"
+    usage.mkdir(parents=True)
+    (usage / "summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "run_id": "unit",
+                "model_api_usd": 1.25,
+                "model_api_cost_basis": DEEPSEEK_PEAK_BASIS,
+                "completed_request_count": 1,
+                "pending_request_count": 0,
+                "in_flight_request_count": 0,
+                "cost_recovery_required_count": 0,
+                "in_flight_request_ids": [],
+                "cost_recovery_required_request_ids": [],
+                "token_usage": empty_token_usage(),
+            }
+        )
+    )
+
+    with pytest.raises(
+        watchdog.BudgetTelemetryError,
+        match="cost basis mismatch",
+    ):
+        watchdog.openrouter_api_cost(
+            root,
+            run_id="unit",
+            expected_cost_basis=UNDISCOUNTED_BASIS,
+            api_key=None,
+        )
 
 
 def test_live_watchdog_stops_before_cap_using_shutdown_reserve(

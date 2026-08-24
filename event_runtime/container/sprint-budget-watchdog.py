@@ -3,9 +3,10 @@
 
 The controller also reconstructs the authoritative cost ledger.  This smaller
 ledger deliberately runs in the CPU sandbox so a controller outage cannot
-remove the circuit breaker. OpenRouter runs consume the proxy's request-time
-benchmark cost (undiscounted endpoint list price with an official DeepSeek
-peak-price floor); other supported routes use the pinned pricing module.
+remove the circuit breaker. OpenRouter runs consume the proxy's pinned
+request-time benchmark cost basis: DeepSeek applies its official peak-price
+floor while other models use the undiscounted endpoint list price. Other
+supported routes use the pinned pricing module.
 Modal uses the pinned tariff. One durable stop marker is visible to every
 sandbox.
 """
@@ -29,7 +30,6 @@ import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sprint_openrouter_pricing import (  # noqa: E402
-    BENCHMARK_COST_BASIS,
     PROVIDER_COST_BASIS,
     UNDISCOUNTED_COST_BASIS,
     OpenRouterPricingError,
@@ -124,7 +124,11 @@ def _record_costs(record: dict[str, Any]) -> tuple[float, float] | None:
 
 
 def _recover_record_cost(
-    record: dict[str, Any], charged: float, usage: object = None
+    record: dict[str, Any],
+    charged: float,
+    usage: object = None,
+    *,
+    expected_cost_basis: str,
 ) -> tuple[float, float]:
     try:
         list_cost = undiscounted_cost_usd(
@@ -152,6 +156,8 @@ def _recover_record_cost(
     record["cost_basis"] = (record.get("promotion_snapshot") or {}).get(
         "cost_basis", UNDISCOUNTED_COST_BASIS
     )
+    if record["cost_basis"] != expected_cost_basis:
+        raise BudgetTelemetryError("OpenRouter request cost basis mismatch")
     record["provider_cost_basis"] = PROVIDER_COST_BASIS
     return benchmark, charged
 
@@ -160,6 +166,7 @@ def openrouter_api_cost(
     run_root: Path,
     *,
     run_id: str,
+    expected_cost_basis: str,
     api_key: str | None,
     allow_unrecovered: bool = False,
 ) -> tuple[float, float, int, int]:
@@ -173,6 +180,10 @@ def openrouter_api_cost(
             if schema != 3 or summary.get("run_id") != run_id:
                 raise BudgetTelemetryError(
                     "OpenRouter ledger summary identity mismatch"
+                )
+            if summary.get("model_api_cost_basis") != expected_cost_basis:
+                raise BudgetTelemetryError(
+                    "OpenRouter ledger summary cost basis mismatch"
                 )
             total = float(summary["model_api_usd"])
             provider_total = float(summary.get("provider_billed_model_api_usd", total))
@@ -246,6 +257,10 @@ def openrouter_api_cost(
                         )
                     existing = _record_costs(record)
                     if existing is not None:
+                        if record.get("cost_basis") != expected_cost_basis:
+                            raise BudgetTelemetryError(
+                                "OpenRouter request cost basis mismatch"
+                            )
                         recovered_cost, recovered_provider_cost = existing
                         recovered_usage = record.get("usage")
                     else:
@@ -266,7 +281,10 @@ def openrouter_api_cost(
                             remaining_recovery_ids.add(request_id)
                             continue
                         recovered_cost, recovered_provider_cost = _recover_record_cost(
-                            record, float(candidate), recovered
+                            record,
+                            float(candidate),
+                            recovered,
+                            expected_cost_basis=expected_cost_basis,
                         )
                         recovered_usage = generation_usage_payload(recovered)
                         record.update(
@@ -297,7 +315,7 @@ def openrouter_api_cost(
                         "model_api_usd": total,
                         "provider_billed_model_api_usd": provider_total,
                         "promotion_savings_usd": total - provider_total,
-                        "model_api_cost_basis": BENCHMARK_COST_BASIS,
+                        "model_api_cost_basis": expected_cost_basis,
                         "provider_billed_cost_basis": PROVIDER_COST_BASIS,
                         "completed_request_count": completed,
                         "token_usage": token_usage,
@@ -334,6 +352,10 @@ def openrouter_api_cost(
             raise BudgetTelemetryError(f"OpenRouter ledger identity mismatch: {path}")
         existing = _record_costs(record)
         if existing is not None:
+            if record.get("cost_basis") != expected_cost_basis:
+                raise BudgetTelemetryError(
+                    "OpenRouter request cost basis mismatch"
+                )
             benchmark_cost, provider_cost = existing
             total += benchmark_cost
             provider_total += provider_cost
@@ -365,7 +387,10 @@ def openrouter_api_cost(
             and float(recovered_cost) >= 0
         ):
             benchmark_cost, provider_cost = _recover_record_cost(
-                record, float(recovered_cost), recovered
+                record,
+                float(recovered_cost),
+                recovered,
+                expected_cost_basis=expected_cost_basis,
             )
             recovered_usage = generation_usage_payload(recovered)
             record.update(
@@ -409,7 +434,7 @@ def openrouter_api_cost(
             "model_api_usd": total,
             "provider_billed_model_api_usd": provider_total,
             "promotion_savings_usd": total - provider_total,
-            "model_api_cost_basis": BENCHMARK_COST_BASIS,
+            "model_api_cost_basis": expected_cost_basis,
             "provider_billed_cost_basis": PROVIDER_COST_BASIS,
             "completed_request_count": completed,
             "token_usage": token_usage,
@@ -923,6 +948,7 @@ def check_once(
             openrouter_api_cost(
                 run_root,
                 run_id=run_id,
+                expected_cost_basis=str(enforcement["api_budget_cost_basis"]),
                 api_key=api_key,
                 allow_unrecovered=awaiting_proxy_recovery,
             )
@@ -1016,7 +1042,7 @@ def check_once(
                 "request_count": requests,
                 "pending_request_count": pending_requests,
                 "cost_source": (
-                    BENCHMARK_COST_BASIS
+                    str(enforcement["api_budget_cost_basis"])
                     if enforcement.get("api_cost_source")
                     == "openrouter_reported_per_request"
                     else enforcement.get("api_cost_source", "token_rate_reconstruction")

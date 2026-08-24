@@ -1037,6 +1037,29 @@ def request_stop(
             }
         except Exception as exc:  # noqa: BLE001
             forced_error = f"{type(exc).__name__}: {exc}"
+            # Modal may finish graceful termination between the last poll and
+            # the force-stop RPC. Its CLI then reports "not found" even though
+            # the required postcondition is already true. Re-audit instead of
+            # converting that benign race into a false teardown failure.
+            try:
+                if not agent_container_running(run, container):
+                    ack = persist_host_stop_ack(
+                        state_dir, run, payload, forced=True
+                    )
+                    return {
+                        "status": "acknowledged",
+                        "agent_kind": kind,
+                        "ack": ack,
+                        "agent_stop_error": agent_stop_error,
+                        "forced_stop_warning": forced_error,
+                        "gpu_workers_stopped": gpu_stopped,
+                        "gpu_stop_error": gpu_stop_error,
+                    }
+            except Exception as audit_exc:  # noqa: BLE001
+                forced_error += (
+                    "; postcondition audit failed: "
+                    f"{type(audit_exc).__name__}: {audit_exc}"
+                )
         return {
             "status": "teardown_failed",
             "agent_kind": kind,

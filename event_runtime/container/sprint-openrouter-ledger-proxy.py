@@ -25,9 +25,9 @@ from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sprint_openrouter_pricing import (  # noqa: E402
-    BENCHMARK_COST_BASIS,
     PROVIDER_COST_BASIS,
     OpenRouterPricingError,
+    benchmark_cost_basis_for_model,
     benchmark_cost_usd,
     capture_endpoint_discount_snapshot,
     undiscounted_cost_usd,
@@ -754,6 +754,11 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                         self.ledger_server.canonical_model,
                         self.ledger_server.resolved_model,
                     }
+                    if (
+                        promotion_snapshot.get("cost_basis")
+                        != self.ledger_server.model_api_cost_basis
+                    ):
+                        raise ValueError("request pricing cost basis mismatch")
                     list_cost = undiscounted_cost_usd(cost, promotion_snapshot)
                     benchmark_cost = benchmark_cost_usd(
                         cost, promotion_snapshot, terminal_usage
@@ -797,6 +802,8 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                             "promotion_adjustment_usd": 0.0,
                             "deepseek_peak_adjustment_usd": 0.0,
                             "benchmark_adjustment_usd": 0.0,
+                            "cost_basis": self.ledger_server.model_api_cost_basis,
+                            "provider_cost_basis": PROVIDER_COST_BASIS,
                         }
                     )
                 else:
@@ -952,6 +959,20 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
             raise ValueError("run identity mismatch")
         self.canonical_model = str(run.get("model") or "")
         self.resolved_model = str(run.get("resolved_model_version") or "")
+        self.model_api_cost_basis = str(
+            (run.get("budget_enforcement") or {}).get("api_budget_cost_basis") or ""
+        )
+        snapshot_basis = str(
+            (run.get("api_pricing_snapshot") or {}).get("cost_basis") or ""
+        )
+        if not self.model_api_cost_basis or (
+            snapshot_basis and snapshot_basis != self.model_api_cost_basis
+        ):
+            raise ValueError("run and pricing snapshot cost basis mismatch")
+        if self.model_api_cost_basis != benchmark_cost_basis_for_model(
+            self.canonical_model
+        ):
+            raise ValueError("run model and cost basis mismatch")
         self.requests_dir = ledger_root / "requests"
         self.runtime_dir = runtime_dir
         self.billing_lock = threading.Lock()
@@ -984,6 +1005,8 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
         schema = summary.get("schema_version")
         if schema != 3 or summary.get("run_id") != self.run_id:
             raise ValueError("ledger summary identity mismatch")
+        if summary.get("model_api_cost_basis") != self.model_api_cost_basis:
+            raise ValueError("ledger summary cost basis mismatch")
         total = float(summary["model_api_usd"])
         provider_total = float(summary.get("provider_billed_model_api_usd", total))
         completed = int(summary["completed_request_count"])
@@ -1049,6 +1072,8 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
             if isinstance(provider_cost, (int, float)) and not isinstance(
                 provider_cost, bool
             ):
+                if record.get("cost_basis") != self.model_api_cost_basis:
+                    raise ValueError("ledger record cost basis mismatch")
                 provider_value = float(provider_cost)
                 cost = record.get(
                     "benchmark_cost_usd",
@@ -1106,6 +1131,8 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
                         "provider_reported_cost_usd": 0.0,
                         "undiscounted_cost_usd": 0.0,
                         "benchmark_cost_usd": 0.0,
+                        "cost_basis": self.model_api_cost_basis,
+                        "provider_cost_basis": PROVIDER_COST_BASIS,
                         "recovered_after_proxy_restart": True,
                     },
                 )
@@ -1122,6 +1149,8 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
                 and math.isfinite(float(cost))
                 and float(cost) >= 0
             ):
+                if record.get("cost_basis") != self.model_api_cost_basis:
+                    raise ValueError("pending ledger cost basis mismatch")
                 self.in_flight_request_ids.remove(request_id)
                 self.completed_request_count += 1
                 provider_cost = float(cost)
@@ -1173,6 +1202,15 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
                         provider_cost = float(candidate)
                         recovered_usage = generation_usage_payload(recovered)
                         try:
+                            if (
+                                (record.get("promotion_snapshot") or {}).get(
+                                    "cost_basis"
+                                )
+                                != self.model_api_cost_basis
+                            ):
+                                raise ValueError(
+                                    "recovered request cost basis mismatch"
+                                )
                             list_cost = undiscounted_cost_usd(
                                 provider_cost, record.get("promotion_snapshot")
                             )
@@ -1200,9 +1238,7 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
                                 "promotion_discount_fraction": (
                                     record.get("promotion_snapshot") or {}
                                 ).get("discount_fraction"),
-                                "cost_basis": (
-                                    record.get("promotion_snapshot") or {}
-                                ).get("cost_basis", BENCHMARK_COST_BASIS),
+                                "cost_basis": self.model_api_cost_basis,
                                 "provider_cost_basis": PROVIDER_COST_BASIS,
                                 "generation_audit": recovered,
                                 "usage": recovered_usage,
@@ -1217,6 +1253,8 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
                 and math.isfinite(float(cost))
                 and float(cost) >= 0
             ):
+                if record.get("cost_basis") != self.model_api_cost_basis:
+                    raise ValueError("recovered ledger cost basis mismatch")
                 self.cost_recovery_required_request_ids.remove(request_id)
                 self.completed_request_count += 1
                 provider_cost = float(cost)
@@ -1286,7 +1324,7 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
                 "promotion_savings_usd": (
                     self.api_cost_usd - self.provider_billed_api_cost_usd
                 ),
-                "model_api_cost_basis": BENCHMARK_COST_BASIS,
+                "model_api_cost_basis": self.model_api_cost_basis,
                 "provider_billed_cost_basis": PROVIDER_COST_BASIS,
                 "completed_request_count": self.completed_request_count,
                 "token_usage": self.token_usage,

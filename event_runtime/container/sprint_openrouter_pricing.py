@@ -61,6 +61,15 @@ class OpenRouterPricingError(RuntimeError):
     """Live endpoint metadata cannot produce one auditable list-price factor."""
 
 
+def benchmark_cost_basis_for_model(model: str) -> str:
+    """Return the canonical benchmark basis for one pinned OpenRouter model."""
+    return (
+        BENCHMARK_COST_BASIS
+        if model in DEEPSEEK_PEAK_PRICING
+        else UNDISCOUNTED_COST_BASIS
+    )
+
+
 def _utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -174,9 +183,7 @@ def parse_endpoint_discount_snapshot(
         "discount_fraction": discount,
         "gross_up_multiplier": 1.0 / (1.0 - discount),
         "deepseek_peak_pricing_usd_per_token": peak_pricing,
-        "cost_basis": (
-            BENCHMARK_COST_BASIS if peak_pricing else UNDISCOUNTED_COST_BASIS
-        ),
+        "cost_basis": benchmark_cost_basis_for_model(model),
     }
 
 

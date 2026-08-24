@@ -625,6 +625,25 @@ PY
   export SPRINT_DEEPSEEK_PRICING_SNAPSHOT="$DEEPSEEK_PRICING_SNAPSHOT_JSON"
 fi
 
+MODEL_API_COST_BASIS=$(python3 - \
+  "$ROOT/event_runtime/container/sprint_openrouter_pricing.py" \
+  "$MODEL" "$MODEL_API_HOST" <<'PY'
+import importlib.util
+import sys
+
+path, model, host = sys.argv[1:]
+if host != "openrouter.ai":
+    print("published_standard_list_price")
+    raise SystemExit
+spec = importlib.util.spec_from_file_location("sprint_openrouter_pricing", path)
+if spec is None or spec.loader is None:
+    raise SystemExit("cannot load canonical OpenRouter pricing policy")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+print(module.benchmark_cost_basis_for_model(model))
+PY
+)
+
 VOLUMES_JSON=$(python3 - "$VOLUME_NAME" <<'PY'
 import json
 import sys
@@ -715,7 +734,7 @@ print_config() {
     "$SANDBOX_TIMEOUT_SECONDS" "$MODEL_API_HOST" "$MODAL_PROFILE" "$HARBOR" "$HARBOR_COMMIT" \
   "$HARBOR_BRANCH" "$VOLUMES_JSON" "$KEEPALIVE_JSON" "$AGENT_COST_BUDGET_USD" \
   "$AGENT_COST_SHUTDOWN_RESERVE_USD" "$MINIMUM_SAFE_SHUTDOWN_RESERVE_USD" \
-  "$DEEPSEEK_PRICING_SNAPSHOT_JSON" <<'PY'
+  "$DEEPSEEK_PRICING_SNAPSHOT_JSON" "$MODEL_API_COST_BASIS" <<'PY'
 import json
 import os
 import sys
@@ -723,7 +742,7 @@ import sys
 (run_id, app, training_app, verifier_app, volume, state, jobs, agent_kind, model, endpoint, effort,
  codex_version, auth_name, sandbox_timeout, model_api_host, profile, harbor, commit, branch,
  volumes, keepalive, agent_cost_budget, shutdown_reserve, minimum_reserve,
- pricing_snapshot_json) = sys.argv[1:]
+ pricing_snapshot_json, model_api_cost_basis) = sys.argv[1:]
 pricing_snapshot = json.loads(pricing_snapshot_json) if pricing_snapshot_json else None
 provider_endpoint = os.environ.get("SPRINT_OPENROUTER_PROVIDER_ENDPOINT")
 quantization = os.environ.get("SPRINT_OPENROUTER_QUANTIZATION")
@@ -779,11 +798,7 @@ payload = {
             if model_api_host == "openrouter.ai"
             else "token_rate_reconstruction"
         ),
-        "api_budget_cost_basis": (
-            "openrouter_list_price_with_deepseek_peak_floor"
-            if model_api_host == "openrouter.ai"
-            else "published_standard_list_price"
-        ),
+        "api_budget_cost_basis": model_api_cost_basis,
         "shutdown_reserve_usd": float(shutdown_reserve),
         "minimum_safe_shutdown_reserve_usd": float(minimum_reserve),
         "durable_stop_marker": "BUDGET_STOP_REQUESTED.json",
@@ -960,7 +975,7 @@ python3 - "$STATE_DIR/run.json" "$RUN_ID" "$APP_NAME" "$TRAINING_APP_NAME" \
   "$SOURCE_ROOT" "$SPRINT_SOURCE_COMMIT" "$TASK" \
   "$AGENT_COST_BUDGET_USD" "$AGENT_COST_SHUTDOWN_RESERVE_USD" \
   "$MINIMUM_SAFE_SHUTDOWN_RESERVE_USD" \
-  "$DEEPSEEK_PRICING_SNAPSHOT_JSON" <<'PY'
+  "$DEEPSEEK_PRICING_SNAPSHOT_JSON" "$MODEL_API_COST_BASIS" <<'PY'
 import datetime
 import fcntl
 import hashlib
@@ -974,7 +989,7 @@ import sys
  branch, resuming, cpu_attempt, supervised, standing_gpu_flag,
  model_api_host, prompt_template, warmup_manifest_path, root, batch_id, source_root,
  sprint_source_commit, rendered_task_root, agent_cost_budget, shutdown_reserve, minimum_reserve,
- pricing_snapshot_json) = sys.argv[1:]
+ pricing_snapshot_json, model_api_cost_basis) = sys.argv[1:]
 standing_gpu = standing_gpu_flag == "1"
 pricing_snapshot = json.loads(pricing_snapshot_json) if pricing_snapshot_json else None
 provider_endpoint = os.environ.get("SPRINT_OPENROUTER_PROVIDER_ENDPOINT")
@@ -1062,11 +1077,7 @@ base = {
             if model_api_host == "openrouter.ai"
             else "token_rate_reconstruction"
         ),
-        "api_budget_cost_basis": (
-            "openrouter_list_price_with_deepseek_peak_floor"
-            if model_api_host == "openrouter.ai"
-            else "published_standard_list_price"
-        ),
+        "api_budget_cost_basis": model_api_cost_basis,
         "shutdown_reserve_usd": float(shutdown_reserve),
         "minimum_safe_shutdown_reserve_usd": float(minimum_reserve),
         "durable_stop_marker": "BUDGET_STOP_REQUESTED.json",

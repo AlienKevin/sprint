@@ -21,6 +21,35 @@ spec.loader.exec_module(proxy)
 REQUEST_1 = "a" * 32
 REQUEST_2 = "b" * 32
 PENDING_REQUEST = "c" * 32
+UNDISCOUNTED_BASIS = "openrouter_list_price_before_endpoint_discount"
+DEEPSEEK_PEAK_BASIS = "openrouter_list_price_with_deepseek_peak_floor"
+
+
+def write_run_contract(
+    run_root: Path,
+    *,
+    run_id: str = "run-1",
+    model: str = "vendor/model",
+    budget: float = 10.0,
+) -> None:
+    basis = (
+        DEEPSEEK_PEAK_BASIS
+        if model.startswith("deepseek/")
+        else UNDISCOUNTED_BASIS
+    )
+    state = run_root / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "run.json").write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "model": model,
+                "agent_cost_budget_usd": budget,
+                "api_pricing_snapshot": {"cost_basis": basis},
+                "budget_enforcement": {"api_budget_cost_basis": basis},
+            }
+        )
+    )
 
 
 def test_proxy_does_not_timeout_long_reasoning_requests() -> None:
@@ -518,7 +547,7 @@ def test_deepseek_off_peak_charge_is_normalized_to_official_peak_rates() -> None
     # 200 cache misses at $0.44/M + 800 hits at $0.014/M +
     # 100 output at $1.32/M.
     peak_cost = 0.0002312
-    assert parsed["cost_basis"] == proxy.BENCHMARK_COST_BASIS
+    assert parsed["cost_basis"] == DEEPSEEK_PEAK_BASIS
     assert proxy.benchmark_cost_usd(peak_cost / 2, parsed, usage) == pytest.approx(
         peak_cost
     )
@@ -642,10 +671,7 @@ def test_proxy_refuses_any_non_openrouter_upstream(
 
 
 def test_proxy_rejects_unknown_request_contract_fields(tmp_path: Path) -> None:
-    (tmp_path / "state").mkdir()
-    (tmp_path / "state/run.json").write_text(
-        json.dumps({"run_id": "run-1", "model": "vendor/model"})
-    )
+    write_run_contract(tmp_path)
     with pytest.raises(ValueError, match="invalid request contract fields"):
         proxy.LedgerProxyServer(
             ("127.0.0.1", 0),
@@ -659,10 +685,7 @@ def test_proxy_rejects_unknown_request_contract_fields(tmp_path: Path) -> None:
 
 
 def test_responses_only_proxy_rejects_chat_and_other_post_paths(tmp_path: Path) -> None:
-    (tmp_path / "state").mkdir()
-    (tmp_path / "state/run.json").write_text(
-        json.dumps({"run_id": "run-1", "model": "openai/gpt-5.6-luna"})
-    )
+    write_run_contract(tmp_path, model="openai/gpt-5.6-luna")
     server = proxy.LedgerProxyServer(
         ("127.0.0.1", 0),
         upstream="https://openrouter.ai/api/v1",
@@ -689,15 +712,29 @@ def test_responses_only_proxy_rejects_chat_and_other_post_paths(tmp_path: Path) 
         thread.join(timeout=5)
 
 
+def test_proxy_rejects_run_model_cost_basis_mismatch(tmp_path: Path) -> None:
+    write_run_contract(tmp_path, model="openai/gpt-5.6-luna")
+    run_path = tmp_path / "state/run.json"
+    run = json.loads(run_path.read_text())
+    run["budget_enforcement"]["api_budget_cost_basis"] = DEEPSEEK_PEAK_BASIS
+    run["api_pricing_snapshot"]["cost_basis"] = DEEPSEEK_PEAK_BASIS
+    run_path.write_text(json.dumps(run))
+
+    with pytest.raises(ValueError, match="model and cost basis mismatch"):
+        proxy.LedgerProxyServer(
+            ("127.0.0.1", 0),
+            upstream="https://openrouter.ai/api/v1",
+            ledger_root=tmp_path / "api-usage",
+            run_id="run-1",
+            cpu_attempt=1,
+        )
+
+
 def test_generic_openrouter_budget_gate_blocks_a_second_paid_request(
     tmp_path: Path,
 ) -> None:
     run_root = tmp_path / "runs/run-1"
-    state = run_root / "state"
-    state.mkdir(parents=True)
-    (state / "run.json").write_text(
-        json.dumps({"run_id": "run-1", "agent_cost_budget_usd": 10.0})
-    )
+    write_run_contract(run_root)
     watchdog = run_root / "budget/watchdog.json"
     watchdog.parent.mkdir(parents=True)
     watchdog.write_text(
@@ -722,6 +759,8 @@ def test_generic_openrouter_budget_gate_blocks_a_second_paid_request(
                 "run_id": "run-1",
                 "state": "complete",
                 "provider_reported_cost_usd": 9.95,
+                "benchmark_cost_usd": 9.95,
+                "cost_basis": UNDISCOUNTED_BASIS,
             }
         )
     )
@@ -754,11 +793,7 @@ def test_generic_openrouter_budget_gate_blocks_a_second_paid_request(
 
 def test_live_proxy_observes_watchdog_recovered_pending_cost(tmp_path: Path) -> None:
     run_root = tmp_path / "runs/run-1"
-    state = run_root / "state"
-    state.mkdir(parents=True)
-    (state / "run.json").write_text(
-        json.dumps({"run_id": "run-1", "agent_cost_budget_usd": 10.0})
-    )
+    write_run_contract(run_root)
     record = run_root / f"api-usage/requests/{PENDING_REQUEST}.json"
     record.parent.mkdir(parents=True)
     record.write_text(
@@ -777,6 +812,7 @@ def test_live_proxy_observes_watchdog_recovered_pending_cost(tmp_path: Path) -> 
                 "schema_version": 3,
                 "run_id": "run-1",
                 "model_api_usd": 1.0,
+                "model_api_cost_basis": UNDISCOUNTED_BASIS,
                 "completed_request_count": 10,
                 "pending_request_count": 1,
                 "in_flight_request_count": 0,
@@ -801,6 +837,8 @@ def test_live_proxy_observes_watchdog_recovered_pending_cost(tmp_path: Path) -> 
             {
                 "state": "recovered_complete",
                 "provider_reported_cost_usd": 0.5,
+                "benchmark_cost_usd": 0.5,
+                "cost_basis": UNDISCOUNTED_BASIS,
             }
         )
         record.write_text(json.dumps(recovered))
@@ -818,11 +856,7 @@ def test_generic_openrouter_budget_gate_fails_closed_on_unknown_prior_charge(
     tmp_path: Path,
 ) -> None:
     run_root = tmp_path / "runs/run-1"
-    state = run_root / "state"
-    state.mkdir(parents=True)
-    (state / "run.json").write_text(
-        json.dumps({"run_id": "run-1", "agent_cost_budget_usd": 10.0})
-    )
+    write_run_contract(run_root)
     record = run_root / f"api-usage/requests/{REQUEST_1}.json"
     record.parent.mkdir(parents=True)
     record.write_text(
@@ -857,11 +891,7 @@ def test_proxy_health_blocks_startup_while_prior_charge_is_unknown(
     tmp_path: Path,
 ) -> None:
     run_root = tmp_path / "runs/run-1"
-    state = run_root / "state"
-    state.mkdir(parents=True)
-    (state / "run.json").write_text(
-        json.dumps({"run_id": "run-1", "agent_cost_budget_usd": 10.0})
-    )
+    write_run_contract(run_root)
     record = run_root / f"api-usage/requests/{PENDING_REQUEST}.json"
     record.parent.mkdir(parents=True)
     record.write_text(
@@ -915,18 +945,8 @@ def test_proxy_restart_recovers_exact_generation_before_becoming_ready(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     run_root = tmp_path / "runs/run-1"
-    state = run_root / "state"
-    state.mkdir(parents=True)
     model = "deepseek/deepseek-v4-flash-vision-exp"
-    (state / "run.json").write_text(
-        json.dumps(
-            {
-                "run_id": "run-1",
-                "model": model,
-                "agent_cost_budget_usd": 10.0,
-            }
-        )
-    )
+    write_run_contract(run_root, model=model)
     pricing = {
         "uncached_input": 0.44 / 1_000_000,
         "cached_input": 0.014 / 1_000_000,
@@ -959,6 +979,7 @@ def test_proxy_restart_recovers_exact_generation_before_becoming_ready(
                 "schema_version": 3,
                 "run_id": "run-1",
                 "model_api_usd": 1.0,
+                "model_api_cost_basis": DEEPSEEK_PEAK_BASIS,
                 "provider_billed_model_api_usd": 0.75,
                 "completed_request_count": 4,
                 "pending_request_count": 1,
@@ -1026,11 +1047,7 @@ def test_codex_wrapper_drains_proxy_and_persists_unrecoverable_stop() -> None:
 
 def test_proxy_maintains_constant_size_exact_cost_summary(tmp_path: Path) -> None:
     run_root = tmp_path / "runs/run-1"
-    state = run_root / "state"
-    state.mkdir(parents=True)
-    (state / "run.json").write_text(
-        json.dumps({"run_id": "run-1", "agent_cost_budget_usd": 10.0})
-    )
+    write_run_contract(run_root)
     server = proxy.LedgerProxyServer(
         ("127.0.0.1", 0),
         upstream="https://openrouter.ai/api/v1",
@@ -1063,16 +1080,10 @@ def test_streaming_chat_completions_is_sealed_metered_and_peak_normalized(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     run_root = tmp_path / "runs/run-1"
-    state = run_root / "state"
-    state.mkdir(parents=True)
-    (state / "run.json").write_text(
-        json.dumps(
-            {
-                "run_id": "run-1",
-                "model": "deepseek/deepseek-v4-flash-vision-exp",
-                "agent_cost_budget_usd": 0.0002,
-            }
-        )
+    write_run_contract(
+        run_root,
+        model="deepseek/deepseek-v4-flash-vision-exp",
+        budget=0.0002,
     )
     promotion = proxy.sys.modules[
         "sprint_openrouter_pricing"
@@ -1257,11 +1268,7 @@ def test_proxy_restart_trusts_completed_rollup_without_scanning_history(
     tmp_path: Path,
 ) -> None:
     run_root = tmp_path / "runs/run-1"
-    state = run_root / "state"
-    state.mkdir(parents=True)
-    (state / "run.json").write_text(
-        json.dumps({"run_id": "run-1", "agent_cost_budget_usd": 10.0})
-    )
+    write_run_contract(run_root)
     requests = run_root / "api-usage/requests"
     requests.mkdir(parents=True)
     (requests / "historical.json").write_text("{not-json}\n")
@@ -1271,6 +1278,7 @@ def test_proxy_restart_trusts_completed_rollup_without_scanning_history(
                 "schema_version": 3,
                 "run_id": "run-1",
                 "model_api_usd": 1.5,
+                "model_api_cost_basis": UNDISCOUNTED_BASIS,
                 "completed_request_count": 2_000,
                 "pending_request_count": 0,
                 "in_flight_request_count": 0,
@@ -1299,11 +1307,7 @@ def test_proxy_restart_trusts_completed_rollup_without_scanning_history(
 
 def test_proxy_restart_reconciles_only_named_pending_request(tmp_path: Path) -> None:
     run_root = tmp_path / "runs/run-1"
-    state = run_root / "state"
-    state.mkdir(parents=True)
-    (state / "run.json").write_text(
-        json.dumps({"run_id": "run-1", "agent_cost_budget_usd": 10.0})
-    )
+    write_run_contract(run_root)
     requests = run_root / "api-usage/requests"
     requests.mkdir(parents=True)
     (requests / "historical.json").write_text("{not-json}\n")
@@ -1314,6 +1318,8 @@ def test_proxy_restart_reconciles_only_named_pending_request(tmp_path: Path) -> 
                 "run_id": "run-1",
                 "state": "complete",
                 "provider_reported_cost_usd": 0.25,
+                "benchmark_cost_usd": 0.25,
+                "cost_basis": UNDISCOUNTED_BASIS,
             }
         )
         + "\n"
@@ -1324,6 +1330,7 @@ def test_proxy_restart_reconciles_only_named_pending_request(tmp_path: Path) -> 
                 "schema_version": 3,
                 "run_id": "run-1",
                 "model_api_usd": 1.0,
+                "model_api_cost_basis": UNDISCOUNTED_BASIS,
                 "completed_request_count": 100,
                 "pending_request_count": 1,
                 "in_flight_request_count": 1,

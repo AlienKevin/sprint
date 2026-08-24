@@ -935,6 +935,7 @@ def test_controller_recovers_generation_and_uploads_summary_last(
         "state": "complete",
         "provider_reported_cost_usd": 0.1,
         "benchmark_cost_usd": 0.1,
+        "cost_basis": "openrouter_list_price_before_endpoint_discount",
     }
     pending = {
         "schema_version": 3,
@@ -986,7 +987,17 @@ def test_controller_recovers_generation_and_uploads_summary_last(
     monkeypatch.setattr(
         batch_eval.sprintctl,
         "load_run",
-        lambda _run_id: (tmp_path / run_id, {"volume_name": "volume"}),
+        lambda _run_id: (
+            tmp_path / run_id,
+            {
+                "volume_name": "volume",
+                "budget_enforcement": {
+                    "api_budget_cost_basis": (
+                        "openrouter_list_price_before_endpoint_discount"
+                    )
+                },
+            },
+        ),
     )
     monkeypatch.setattr(
         batch_eval.sprintctl,
@@ -1052,7 +1063,17 @@ def test_controller_marks_generationless_zero_delta_unbilled(
     monkeypatch.setattr(
         batch_eval.sprintctl,
         "load_run",
-        lambda _run_id: (tmp_path / run_id, {"volume_name": "volume"}),
+        lambda _run_id: (
+            tmp_path / run_id,
+            {
+                "volume_name": "volume",
+                "budget_enforcement": {
+                    "api_budget_cost_basis": (
+                        "openrouter_list_price_with_deepseek_peak_floor"
+                    )
+                },
+            },
+        ),
     )
     monkeypatch.setattr(
         batch_eval.sprintctl, "volume_upload", lambda *_args, **_kwargs: None

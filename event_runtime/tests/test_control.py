@@ -1505,6 +1505,10 @@ class DurableOpsTests(unittest.TestCase):
             config["budget_enforcement"]["api_cost_source"],
             "openrouter_reported_per_request",
         )
+        self.assertEqual(
+            config["budget_enforcement"]["api_budget_cost_basis"],
+            "openrouter_list_price_before_endpoint_discount",
+        )
 
     def test_dry_run_accepts_one_global_budget_override(self) -> None:
         run_id = f"dry-{uuid.uuid4().hex[:12]}"
@@ -1611,6 +1615,10 @@ class DurableOpsTests(unittest.TestCase):
         self.assertEqual(
             config["budget_enforcement"]["api_cost_source"],
             "openrouter_reported_per_request",
+        )
+        self.assertEqual(
+            config["budget_enforcement"]["api_budget_cost_basis"],
+            "openrouter_list_price_before_endpoint_discount",
         )
         self.assertEqual(config["agent_cost_budget_usd"], 10.0)
         self.assertEqual(config["budget_enforcement"]["shutdown_reserve_usd"], 0.0)
@@ -2476,6 +2484,42 @@ while True:
             terminate.assert_called_once_with(run, "ta-test")
             stored = json.loads((state_dir / "STOP_ACK.json").read_text())
             self.assertEqual(stored, result["ack"])
+
+    def test_force_stop_not_found_race_reaudits_terminal_postcondition(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state_dir = Path(raw)
+            run = {
+                "run_id": "test-force-stop-race",
+                "agent_kind": "codex",
+                "agent_container_id": "ta-race",
+                "app_id": "ap-race",
+            }
+            with (
+                mock.patch.object(sprintctl, "load_run", return_value=(state_dir, run)),
+                mock.patch.object(sprintctl, "fetch_remote_json", return_value=None),
+                mock.patch.object(
+                    sprintctl, "discover_agent_container", return_value="ta-race"
+                ),
+                mock.patch.object(sprintctl, "exec_container"),
+                mock.patch.object(sprintctl, "AGENT_STOP_GRACE_SECONDS", 0.0),
+                mock.patch.object(sprintctl, "containers_for_app", return_value=[]),
+                mock.patch.object(
+                    sprintctl,
+                    "terminate_agent_container",
+                    side_effect=subprocess.CalledProcessError(1, ["modal", "stop"]),
+                ),
+                mock.patch("event_runtime.compute.worker.stop_all", return_value=[]),
+            ):
+                result = sprintctl.request_stop(
+                    "test-force-stop-race",
+                    reason="operator_batch_stop",
+                    wait_for_termination=True,
+                )
+
+            self.assertEqual(result["status"], "acknowledged")
+            self.assertTrue(result["ack"]["forced"])
+            self.assertIn("CalledProcessError", result["forced_stop_warning"])
+            self.assertTrue((state_dir / "STOP_ACK.json").is_file())
 
     def test_monitor_reapplies_stop_requested_before_sandbox_existed(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

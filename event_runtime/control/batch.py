@@ -44,7 +44,6 @@ from event_runtime.control.openrouter_credentials import (  # noqa: E402
     revoke_trial_credentials,
 )
 from event_runtime.container.sprint_openrouter_pricing import (  # noqa: E402
-    BENCHMARK_COST_BASIS,
     PROVIDER_COST_BASIS,
     OpenRouterPricingError,
     benchmark_cost_usd,
@@ -718,6 +717,12 @@ def _rebuild_provider_summary(
     request_paths: list[Path],
     replacements: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
+    _, run = sprintctl.load_run(run_id)
+    expected_cost_basis = str(
+        (run.get("budget_enforcement") or {}).get("api_budget_cost_basis") or ""
+    )
+    if not expected_cost_basis:
+        raise OpenRouterManagementError("run has no benchmark cost basis")
     benchmark_total = 0.0
     provider_total = 0.0
     completed = 0
@@ -742,6 +747,10 @@ def _rebuild_provider_summary(
             and isinstance(benchmark_cost, (int, float))
             and not isinstance(benchmark_cost, bool)
         ):
+            if record.get("cost_basis") != expected_cost_basis:
+                raise OpenRouterManagementError(
+                    "provider ledger cost basis mismatch"
+                )
             provider_value = float(provider_cost)
             benchmark_value = float(benchmark_cost)
             if (
@@ -776,7 +785,7 @@ def _rebuild_provider_summary(
         "model_api_usd": benchmark_total,
         "provider_billed_model_api_usd": provider_total,
         "promotion_savings_usd": benchmark_total - provider_total,
-        "model_api_cost_basis": BENCHMARK_COST_BASIS,
+        "model_api_cost_basis": expected_cost_basis,
         "provider_billed_cost_basis": PROVIDER_COST_BASIS,
         "completed_request_count": completed,
         "token_usage": token_usage,
@@ -802,6 +811,12 @@ def reconcile_openrouter_child_ledger(
     after both durable uploads succeed.
     """
     run_id = str(arm["run_id"])
+    _, run = sprintctl.load_run(run_id)
+    expected_cost_basis = str(
+        (run.get("budget_enforcement") or {}).get("api_budget_cost_basis") or ""
+    )
+    if not expected_cost_basis:
+        raise OpenRouterManagementError("run has no benchmark cost basis")
     state_dir = SCRIPT_DIR / run_id
     ledger_dir = state_dir / "provider-api-usage" / "api-usage"
     summary_path = ledger_dir / "summary.json"
@@ -875,6 +890,13 @@ def reconcile_openrouter_child_ledger(
                 raise OpenRouterManagementError(
                     "generation audit pricing reconstruction failed"
                 ) from exc
+            snapshot_cost_basis = str(
+                (record.get("promotion_snapshot") or {}).get("cost_basis") or ""
+            )
+            if snapshot_cost_basis != expected_cost_basis:
+                raise OpenRouterManagementError(
+                    "generation audit cost basis mismatch"
+                )
             record.update(
                 {
                     "state": "recovered_complete",
@@ -893,9 +915,7 @@ def reconcile_openrouter_child_ledger(
                     "promotion_discount_fraction": (
                         record.get("promotion_snapshot") or {}
                     ).get("discount_fraction"),
-                    "cost_basis": (record.get("promotion_snapshot") or {}).get(
-                        "cost_basis", BENCHMARK_COST_BASIS
-                    ),
+                    "cost_basis": expected_cost_basis,
                     "provider_cost_basis": PROVIDER_COST_BASIS,
                     "usage": usage,
                     "generation_audit": generation,
@@ -918,6 +938,7 @@ def reconcile_openrouter_child_ledger(
                     "promotion_adjustment_usd": 0.0,
                     "deepseek_peak_adjustment_usd": 0.0,
                     "benchmark_adjustment_usd": 0.0,
+                    "cost_basis": expected_cost_basis,
                     "provider_cost_basis": PROVIDER_COST_BASIS,
                     "reconciled_from_child_key_total": True,
                     "recovered_after_controller_shutdown": True,
