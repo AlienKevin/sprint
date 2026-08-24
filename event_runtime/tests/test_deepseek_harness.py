@@ -82,6 +82,12 @@ def test_wrapper_seals_route_and_wire_parameters() -> None:
     assert "PROVIDER_ENDPOINT:-deepseek" in wrapper
     assert '--provider-endpoint "$PROVIDER_ENDPOINT"' in wrapper
     assert '--request-contract-json "$REQUEST_CONTRACT"' in wrapper
+    assert '--upstream-api-key-stdin' in wrapper
+    assert 'unset OPENROUTER_API_KEY' in wrapper
+    assert 'export OPENROUTER_API_KEY=sprint-local-proxy-token' in wrapper
+    assert 'PROXY_PROCESS_FILE="$AGENT_STATE_DIR/openrouter-proxy.pid"' in wrapper
+    assert 'pending_request_count' in wrapper
+    assert 'fail_closed_proxy_recovery' in wrapper
     assert "DeepSeek Harness native goal bootstrap is missing" in wrapper
     assert 'session_root="$DURABLE_DIR/runs/$RUN_ID/deepseek-harness/sessions"' in wrapper
     assert 'session_id="$RUN_ID"' in wrapper

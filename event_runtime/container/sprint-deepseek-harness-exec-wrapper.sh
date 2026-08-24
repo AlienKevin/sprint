@@ -14,8 +14,11 @@ PROVIDER_ENDPOINT=${SPRINT_OPENROUTER_PROVIDER_ENDPOINT:-deepseek}
 RUNNER=${SPRINT_DEEPSEEK_HARNESS_RUNNER:-/opt/sprint-deepseek-harness-runner.py}
 MODEL=${SPRINT_MODEL:-deepseek/deepseek-v4-flash-vision-exp}
 PROCESS_FILE="$AGENT_STATE_DIR/agent-process"
+PROXY_PROCESS_FILE="$AGENT_STATE_DIR/openrouter-proxy.pid"
 EXPECTED_INTERRUPT="$AGENT_STATE_DIR/expected-interrupt"
 STOP_ACK_TIMEOUT_SECONDS=${SPRINT_STOP_ACK_TIMEOUT_SECONDS:-600}
+PROXY_DRAIN_TIMEOUT_SECONDS=${SPRINT_OPENROUTER_PROXY_DRAIN_TIMEOUT_SECONDS:-900}
+PROXY_RECOVERY_TIMEOUT_SECONDS=${SPRINT_OPENROUTER_PROXY_RECOVERY_TIMEOUT_SECONDS:-300}
 
 EXPECTED_MODEL=deepseek/deepseek-v4-flash-vision-exp
 REQUEST_CONTRACT='{"model":"deepseek/deepseek-v4-flash-vision-exp","stream":true,"temperature":1.0,"top_p":0.95,"max_tokens":384000,"reasoning_effort":"max"}'
@@ -45,21 +48,87 @@ REQUEST_CONTRACT='{"model":"deepseek/deepseek-v4-flash-vision-exp","stream":true
   echo "SPRINT_STOP_ACK_TIMEOUT_SECONDS must be a positive integer" >&2
   exit 2
 }
+for timeout_name in PROXY_DRAIN_TIMEOUT_SECONDS PROXY_RECOVERY_TIMEOUT_SECONDS; do
+  [[ "${!timeout_name}" =~ ^[1-9][0-9]*$ ]] || {
+    echo "$timeout_name must be a positive integer" >&2
+    exit 2
+  }
+done
 
 umask 077
 mkdir -p "$AGENT_STATE_DIR" "$AGENT_LOG_DIR"
 rm -f "$EXPECTED_INTERRUPT"
 
 proxy_pid=""
+proxy_drain_on_exit=1
+fail_closed_proxy_recovery() {
+  python3 - "$DURABLE_DIR" "$RUN_ID" "$RUNTIME_DIR" <<'PY'
+import datetime as dt
+import json
+import os
+from pathlib import Path
+import sys
+
+durable_dir, run_id, runtime_dir = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
+payload = {
+    "schema_version": 2,
+    "run_id": run_id,
+    "reason": "budget_telemetry_unavailable",
+    "status": "fail_closed",
+    "detail": "OpenRouter request charge did not reconcile before proxy shutdown",
+    "requested_at": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+}
+marker = durable_dir / "runs" / run_id / "BUDGET_STOP_REQUESTED.json"
+items = []
+if not marker.exists():
+    items.append((marker, json.dumps(payload, indent=2, sort_keys=True) + "\n"))
+items.append((runtime_dir / "sprint-stop", "budget_telemetry_unavailable\n"))
+for path, content in items:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(content)
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
+PY
+}
 stop_proxy() {
   [[ -n "$proxy_pid" ]] || return 0
+  if ((proxy_drain_on_exit)); then
+    deadline=$((SECONDS + PROXY_DRAIN_TIMEOUT_SECONDS))
+    status=1
+    while kill -0 "$proxy_pid" 2>/dev/null && ((SECONDS < deadline)); do
+      if python3 - "$PROXY_BASE_URL" <<'PY' >/dev/null 2>&1
+import json
+import sys
+import urllib.request
+from urllib.parse import urlsplit
+
+base = urlsplit(sys.argv[1])
+with urllib.request.urlopen(
+    f"{base.scheme}://{base.netloc}/ledger-status", timeout=7
+) as response:
+    payload = json.load(response)
+raise SystemExit(0 if payload.get("pending_request_count") == 0 else 2)
+PY
+      then
+        status=0
+        break
+      fi
+      sleep 0.25
+    done
+    if ((status != 0)) && kill -0 "$proxy_pid" 2>/dev/null; then
+      fail_closed_proxy_recovery
+    fi
+  fi
   kill "$proxy_pid" 2>/dev/null || true
   wait "$proxy_pid" 2>/dev/null || true
+  rm -f "$PROXY_PROCESS_FILE"
   proxy_pid=""
 }
 trap stop_proxy EXIT
 
 ledger_root="$DURABLE_DIR/runs/$RUN_ID/api-usage"
+upstream_api_key=$OPENROUTER_API_KEY
 "$PROXY_BIN" \
   --upstream "$UPSTREAM_URL" \
   --ledger-root "$ledger_root" \
@@ -68,8 +137,18 @@ ledger_root="$DURABLE_DIR/runs/$RUN_ID/api-usage"
   --runtime-dir "$RUNTIME_DIR" \
   --provider-endpoint "$PROVIDER_ENDPOINT" \
   --request-contract-json "$REQUEST_CONTRACT" \
+  --upstream-api-key-stdin \
+  <<<"$upstream_api_key" \
   >>"$AGENT_LOG_DIR/openrouter-ledger-proxy.log" 2>&1 &
 proxy_pid=$!
+upstream_api_key=""
+unset OPENROUTER_API_KEY
+# DeepSeek Harness requires an API-key-shaped value for its local client.  The
+# trusted proxy ignores this token and owns the only usable per-trial key.
+export OPENROUTER_API_KEY=sprint-local-proxy-token
+proxy_process_tmp="$PROXY_PROCESS_FILE.$$"
+printf '%s\n' "$proxy_pid" >"$proxy_process_tmp"
+mv "$proxy_process_tmp" "$PROXY_PROCESS_FILE"
 
 ready=0
 for _ in $(seq 1 600); do
@@ -89,7 +168,12 @@ PY
   fi
   sleep 0.1
 done
-((ready == 1)) || { echo "OpenRouter ledger proxy failed to start" >&2; exit 1; }
+if ((ready != 1)); then
+  proxy_drain_on_exit=0
+  fail_closed_proxy_recovery
+  echo "OpenRouter ledger proxy failed to start" >&2
+  exit 1
+fi
 
 session_root="$DURABLE_DIR/runs/$RUN_ID/deepseek-harness/sessions"
 events="$AGENT_LOG_DIR/deepseek-harness-events.jsonl"

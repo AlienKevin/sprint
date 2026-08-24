@@ -27,6 +27,7 @@ def write_run(
     service_tier: str | None = None,
     reserve: float | None = None,
     api_cost_source: str | None = None,
+    agent_kind: str = "codex",
 ) -> Path:
     root = durable / "runs" / run_id
     state = root / "state"
@@ -35,7 +36,7 @@ def write_run(
         json.dumps(
             {
                 "run_id": run_id,
-                "agent_kind": "codex",
+                "agent_kind": agent_kind,
                 "model": model,
                 "service_tier": service_tier,
                 "reasoning_effort": "high",
@@ -625,6 +626,39 @@ def test_live_watchdog_fails_closed_if_codex_outlives_cost_proxy(
             pricing_path=PRICING,
             now=1_000,
         )
+
+
+def test_openrouter_watchdog_supports_deepseek_harness_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    durable = tmp_path / "durable"
+    runtime = tmp_path / "run"
+    root = write_run(
+        durable,
+        "unit",
+        model="deepseek/deepseek-v4-flash-vision-exp",
+        api_cost_source="openrouter_reported_per_request",
+        agent_kind="deepseek-harness",
+    )
+    write_openrouter_cost(root, cost=0.25)
+    process = runtime / "sprint-agent/agent-process"
+    process.parent.mkdir(parents=True)
+    process.write_text(f"{os.getpid()} {os.getpid()} 1\n")
+    (process.parent / "openrouter-proxy.pid").write_text(f"{os.getpid()}\n")
+    monkeypatch.setenv("OPENAI_API_KEY", "sprint-local-proxy-token")
+    watchdog.ensure_cpu_start(root, 1, 1_000)
+
+    payload = watchdog.check_once(
+        run_id="unit",
+        durable_dir=durable,
+        runtime_dir=runtime,
+        codex_home=tmp_path / "codex",
+        pricing_path=PRICING,
+        now=1_000,
+    )
+
+    assert payload["status"] == "within_budget"
+    assert payload["components"]["model_api"]["cost_usd"] == 0.25
 
 
 def test_interrupted_openrouter_stream_recovers_exact_generation_cost(

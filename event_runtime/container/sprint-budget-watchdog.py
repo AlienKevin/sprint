@@ -403,8 +403,11 @@ def openrouter_api_cost(
 
 
 def require_live_openrouter_proxy(runtime_dir: Path) -> None:
-    process_path = runtime_dir / "sprint-agent" / "codex-process"
-    if not process_path.is_file():
+    process_paths = (
+        runtime_dir / "sprint-agent" / "codex-process",
+        runtime_dir / "sprint-agent" / "agent-process",
+    )
+    if not any(path.is_file() for path in process_paths):
         return
     proxy_path = runtime_dir / "sprint-agent" / "openrouter-proxy.pid"
     try:
@@ -412,7 +415,7 @@ def require_live_openrouter_proxy(runtime_dir: Path) -> None:
         os.kill(proxy_pid, 0)
     except (OSError, ValueError) as exc:
         raise BudgetTelemetryError(
-            "Codex is running without its OpenRouter cost ledger proxy"
+            "agent is running without its OpenRouter cost ledger proxy"
         ) from exc
 
 
@@ -438,7 +441,10 @@ def allow_proxy_recovery_without_controller_key(
     telemetry failure. Once Codex is live, the proxy dies, or the bounded
     window expires, uncertainty fails closed as usual.
     """
-    if _recorded_process_alive(runtime_dir / "sprint-agent/codex-process"):
+    if any(
+        _recorded_process_alive(runtime_dir / "sprint-agent" / name)
+        for name in ("codex-process", "agent-process")
+    ):
         return False
     elapsed = now - attempt_started_at
     if not math.isfinite(elapsed) or elapsed < 0:
@@ -873,7 +879,7 @@ def check_once(
         standing=bool(run.get("standing_gpu_worker")),
         cpu_seconds=cpu_seconds,
     )
-    if run.get("agent_kind") != "codex" or not run.get("usage_audit_required"):
+    if not run.get("usage_audit_required"):
         raise BudgetTelemetryError("live API pricing is unsupported for this run")
     if enforcement.get("api_cost_source") == "openrouter_reported_per_request":
         require_live_openrouter_proxy(runtime_dir)
@@ -901,6 +907,8 @@ def check_once(
             )
         )
     else:
+        if run.get("agent_kind") != "codex":
+            raise BudgetTelemetryError("live API pricing is unsupported for this run")
         pricing = load_pricing_module(pricing_path)
         api_kwargs = {
             "default_model": str(run.get("model") or ""),
