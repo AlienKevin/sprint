@@ -223,7 +223,7 @@ def record_heartbeat_observation(
 
 def read_live_agent_cancel_requests(run: dict[str, Any]) -> list[dict[str, Any]]:
     """Read cancellation requests through the CPU sandbox control channel."""
-    script = r'''
+    script = r"""
 import json, pathlib, re, sys
 root = pathlib.Path(sys.argv[1]) / "cancel"
 limit = int(sys.argv[2])
@@ -241,7 +241,7 @@ for path in sorted(root.glob("*.json")):
     if isinstance(row, dict):
         rows.append(row)
 print(json.dumps(rows, separators=(",", ":")))
-'''.strip()
+""".strip()
     process = _cpu_agent_sandbox(run).exec(
         "python3",
         "-c",
@@ -276,14 +276,43 @@ print(json.dumps(rows, separators=(",", ":")))
     return requests
 
 
-def read_durable_agent_cancel_requests(run: dict[str, Any]) -> list[dict[str, Any]]:
+def read_durable_agent_cancel_requests(
+    run: dict[str, Any],
+    *,
+    indexed: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """Read the committed Volume copy used for controller-restart recovery."""
     if not str(run.get("volume_name") or "").strip():
         return []
     prefix = f"{jobs_prefix(str(run['run_id']))}/cancel"
     requests: list[dict[str, Any]] = []
-    for name in volume_ls_json_names(run, prefix)[:AGENT_GPU_CONTROL_MAX_REQUESTS]:
-        job_id = Path(name).stem
+    if indexed is None:
+        indexed = indexed_agent_jobs(run)
+    if indexed is not None or run.get("gpu_job_index_required"):
+        embedded_requests = [
+            detail.get("cancel_request")
+            for _job_id, detail in sorted((indexed or {}).items())
+            if detail.get("cancel_state") == "requested"
+        ]
+        for request in embedded_requests[:AGENT_GPU_CONTROL_MAX_REQUESTS]:
+            if not isinstance(request, dict):
+                continue
+            job_id = str(request.get("job_id") or "")
+            request_id = str(request.get("request_id") or "")
+            if (
+                str(request.get("run_id") or "") == str(run["run_id"])
+                and re.fullmatch(r"[A-Za-z0-9_-]+", job_id)
+                and re.fullmatch(r"[0-9a-f]{32}", request_id)
+                and request.get("reason") == "agent_cancelled"
+            ):
+                requests.append(dict(request))
+        return requests
+    job_ids = [
+        Path(name).stem
+        for name in volume_ls_json_names(run, prefix)
+        if name.endswith(".json")
+    ]
+    for job_id in job_ids[:AGENT_GPU_CONTROL_MAX_REQUESTS]:
         if not re.fullmatch(r"[A-Za-z0-9_-]+", job_id):
             continue
         raw = sprintctl.volume_get_text(run, f"{prefix}/{job_id}.json")
@@ -317,7 +346,7 @@ def read_worker_submission_outbox(
     sandbox_id = str(job.get("sandbox_id") or "")
     if not sandbox_id.startswith("sb-"):
         return []
-    script = r'''
+    script = r"""
 import base64, gzip, hashlib, json, pathlib, sys
 root = pathlib.Path(sys.argv[1])
 limit = int(sys.argv[2])
@@ -349,7 +378,7 @@ for receipt_path in sorted((root / "receipts").glob("*.json")):
         "policy_base64": base64.b64encode(data).decode("ascii"),
     })
 sys.stdout.buffer.write(gzip.compress(json.dumps(rows, separators=(",", ":")).encode()))
-'''.strip()
+""".strip()
     sandbox = modal.Sandbox.from_id(sandbox_id)
     process = sandbox.exec(
         "python3",
@@ -410,9 +439,7 @@ def read_durable_submission_outbox(
         if not GPU_SUBMISSION_ID_RE.fullmatch(submission_id):
             continue
         try:
-            existing = json.loads(
-                (state_root / f"{submission_id}.json").read_text()
-            )
+            existing = json.loads((state_root / f"{submission_id}.json").read_text())
         except (OSError, json.JSONDecodeError):
             existing = {}
         if existing.get("state") == "forwarded":
@@ -514,7 +541,7 @@ def submit_worker_policy_to_cpu_agent(
             separators=(",", ":"),
         ).encode()
     )
-    script = r'''
+    script = r"""
 import base64, gzip, json, os, pathlib, subprocess, sys
 payload = json.loads(gzip.decompress(sys.stdin.buffer.read(int(sys.argv[1]))))
 root = pathlib.Path("/run/sprint-submission-bridge/incoming")
@@ -536,7 +563,7 @@ try:
                       "stderr": result.stderr}, separators=(",", ":")))
 finally:
     target.unlink(missing_ok=True)
-'''.strip()
+""".strip()
     sandbox = _cpu_agent_sandbox(run)
     process = sandbox.exec(
         "python3", "-c", script, str(len(envelope)), text=False, timeout=90
@@ -564,7 +591,7 @@ def acknowledge_worker_submission(
     encoded = base64.b64encode(
         (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode()
     ).decode("ascii")
-    script = r'''
+    script = r"""
 import base64, os, pathlib, sys
 root = pathlib.Path(sys.argv[1])
 submission_id = sys.argv[2]
@@ -574,7 +601,7 @@ temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
 temporary.write_bytes(base64.b64decode(sys.argv[3]))
 os.replace(temporary, target)
 (root / "outbox" / f"{submission_id}.pt").unlink(missing_ok=True)
-'''.strip()
+""".strip()
     process = modal.Sandbox.from_id(sandbox_id).exec(
         "python3",
         "-c",
@@ -646,9 +673,7 @@ def drain_worker_submission_outbox(
             sprintctl.atomic_write_json(record_path, record, mode=0o600)
         if record.get("policy_sha256") != receipt.get("policy_sha256"):
             counts["error"] += 1
-            record.update(
-                {"state": "error", "error": "request id policy hash changed"}
-            )
+            record.update({"state": "error", "error": "request id policy hash changed"})
             sprintctl.atomic_write_json(record_path, record, mode=0o600)
             continue
         if record.get("state") == "forwarded":
@@ -680,9 +705,7 @@ def drain_worker_submission_outbox(
             )
             sprintctl.atomic_write_json(record_path, record, mode=0o600)
             continue
-        raw_returncode = (
-            result.get("returncode") if isinstance(result, dict) else None
-        )
+        raw_returncode = result.get("returncode") if isinstance(result, dict) else None
         if isinstance(raw_returncode, bool) or not isinstance(raw_returncode, int):
             counts["retry_wait"] += 1
             record.update(
@@ -1163,9 +1186,8 @@ print("STALE_IGNORED" if stale else "UPDATED")
             # stopped, and treating normal verifier teardown as a pulse outage
             # creates a false controller alert.
             message = str(exc).lower()
-            terminal_exec_race = (
-                "cannot execute in container" in message
-                and ("state stopped" in message or "state terminated" in message)
+            terminal_exec_race = "cannot execute in container" in message and (
+                "state stopped" in message or "state terminated" in message
             )
             if terminal_exec_race:
                 finished.append(sandbox_id)
@@ -1199,9 +1221,7 @@ def fresh_dispatch_budget_snapshot(
     """
 
     try:
-        payload = json.loads(
-            (state_dir / "telemetry" / "agent-cost.json").read_text()
-        )
+        payload = json.loads((state_dir / "telemetry" / "agent-cost.json").read_text())
         checked_at = float(payload["checked_at_epoch_s"])
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
         return None
@@ -1400,6 +1420,40 @@ def retry_terminal_policy_mirror(
 
 def jobs_prefix(run_id: str) -> str:
     return f"runs/{run_id}/gpu-jobs"
+
+
+def load_agent_job_index(run: dict[str, Any]) -> dict[str, Any] | None:
+    """Load the agent-published exact-name GPU control-plane index."""
+    if not str(run.get("volume_name") or "").strip():
+        return None
+    remote = f"{jobs_prefix(str(run['run_id']))}/index.json"
+    raw = sprintctl.volume_get_text(run, remote, timeout_seconds=15)
+    if raw is None:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("agent GPU dispatch index is not valid JSON") from exc
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version") != 1
+        or payload.get("run_id") != str(run["run_id"])
+        or not isinstance(payload.get("jobs"), dict)
+    ):
+        raise RuntimeError("agent GPU dispatch index identity/schema mismatch")
+    for job_id, detail in payload["jobs"].items():
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", str(job_id)) or not isinstance(
+            detail, dict
+        ):
+            raise RuntimeError("agent GPU dispatch index contains an invalid job")
+    return payload
+
+
+def indexed_agent_jobs(run: dict[str, Any]) -> dict[str, dict[str, Any]] | None:
+    payload = load_agent_job_index(run)
+    if payload is None:
+        return None
+    return {str(key): dict(value) for key, value in payload["jobs"].items()}
 
 
 def host_job_path(run: dict[str, Any], job_id: str) -> Path | None:
@@ -1649,7 +1703,12 @@ def normalize_job_command(job: dict[str, Any]) -> dict[str, Any]:
     return job
 
 
-def load_job(run: dict[str, Any], job_id: str) -> dict[str, Any] | None:
+def load_job(
+    run: dict[str, Any],
+    job_id: str,
+    *,
+    indexed: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
     """Load the canonical host record or an unclaimed enqueue snapshot.
 
     Once claimed, the host registry wins over every agent-visible mirror, so a
@@ -1666,6 +1725,20 @@ def load_job(run: dict[str, Any], job_id: str) -> dict[str, Any] | None:
     local = load_host_job(run, job_id)
     if local is not None:
         return local
+    if indexed is None:
+        indexed = indexed_agent_jobs(run)
+    if indexed is not None:
+        embedded = indexed.get(job_id, {}).get("job")
+        if embedded is not None:
+            if (
+                not isinstance(embedded, dict)
+                or embedded.get("job_id") != job_id
+                or embedded.get("run_id") != str(run["run_id"])
+            ):
+                raise RuntimeError("agent GPU dispatch index job identity mismatch")
+            return dict(embedded)
+    if run.get("gpu_job_index_required"):
+        return None
     prefix = jobs_prefix(str(run["run_id"]))
     text = sprintctl.volume_get_text(run, f"{prefix}/queue/{job_id}.json")
     if text is None:
@@ -1676,6 +1749,17 @@ def load_job(run: dict[str, Any], job_id: str) -> dict[str, Any] | None:
         return json.loads(text)
     except json.JSONDecodeError:
         return None
+
+
+def load_job_from_index_snapshot(
+    run: dict[str, Any],
+    job_id: str,
+    indexed: dict[str, dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    """Use one tick snapshot while preserving the legacy call contract."""
+    if indexed is None:
+        return load_job(run, job_id)
+    return load_job(run, job_id, indexed=indexed)
 
 
 def load_remote_json(run: dict[str, Any], remote_path: str) -> dict[str, Any] | None:
@@ -1828,7 +1912,7 @@ def exec_on_standing(run: dict[str, Any], job: dict[str, Any]) -> str:
         "-c",
         "deadline=$((SECONDS + 120)); "
         f"while [ ! -s {shlex.quote(GPU_BUDGET_MIRROR_PATH)} ]; do "
-        "if [ \"$SECONDS\" -ge \"$deadline\" ]; then "
+        'if [ "$SECONDS" -ge "$deadline" ]; then '
         "echo 'trusted GPU budget mirror unavailable' >&2; exit 78; fi; "
         "sleep 1; done; exec python3 /opt/sprint-gpu-worker-run.py "
         + shlex.quote(str(run["run_id"]))
@@ -1870,10 +1954,9 @@ def spawn_gpu_sandbox(run: dict[str, Any], job: dict[str, Any]) -> str:
     command = (
         "deadline=$((SECONDS + 120)); "
         f"while [ ! -s {shlex.quote(GPU_BUDGET_MIRROR_PATH)} ]; do "
-        "if [ \"$SECONDS\" -ge \"$deadline\" ]; then "
+        'if [ "$SECONDS" -ge "$deadline" ]; then '
         "echo 'trusted GPU budget mirror unavailable' >&2; exit 78; fi; "
-        "sleep 1; done; exec "
-        + worker_command
+        "sleep 1; done; exec " + worker_command
     )
     sandbox = modal.Sandbox.create(
         "bash",
@@ -1975,9 +2058,7 @@ def read_modal_sandbox_output(sandbox_id: str) -> tuple[str, str]:
     return str(sandbox.stdout.read() or ""), str(sandbox.stderr.read() or "")
 
 
-def read_modal_sandbox_live_output(
-    run: dict[str, Any], sandbox_id: str
-) -> str:
+def read_modal_sandbox_live_output(run: dict[str, Any], sandbox_id: str) -> str:
     """Read a bounded, non-blocking tail from a running Modal Sandbox."""
     result = sprintctl.run_command(
         sprintctl.modal_command(
@@ -2030,9 +2111,7 @@ def refresh_live_provider_logs(
             "live_provider_logs_error": payload["provider_live_logs_error"],
         }
 
-    encoded = ("== Modal live log tail ==\n" + text).encode(
-        "utf-8", errors="replace"
-    )
+    encoded = ("== Modal live log tail ==\n" + text).encode("utf-8", errors="replace")
     payload.pop("provider_live_logs_error", None)
     payload.update(
         {
@@ -2791,6 +2870,13 @@ def reconcile_terminal_attempt_before_stop(
 
 def list_pending_job_ids(run: dict[str, Any]) -> list[str]:
     prefix = jobs_prefix(str(run["run_id"]))
+    indexed = indexed_agent_jobs(run)
+    if indexed is not None or run.get("gpu_job_index_required"):
+        return sorted(
+            job_id
+            for job_id, detail in (indexed or {}).items()
+            if detail.get("cancel_state") != "cancelled_before_dispatch"
+        )
     return [
         Path(name).stem
         for name in volume_ls_json_names(run, f"{prefix}/queue")
@@ -2798,7 +2884,11 @@ def list_pending_job_ids(run: dict[str, Any]) -> list[str]:
     ]
 
 
-def list_agent_cancelled_job_ids(run: dict[str, Any]) -> list[str]:
+def list_agent_cancelled_job_ids(
+    run: dict[str, Any],
+    *,
+    indexed: dict[str, dict[str, Any]] | None = None,
+) -> list[str]:
     """Return jobs explicitly hidden by an agent before host dispatch.
 
     The agent-facing queue is intentionally writable.  Some agents cancel a
@@ -2809,6 +2899,14 @@ def list_agent_cancelled_job_ids(run: dict[str, Any]) -> list[str]:
     """
     if not str(run.get("volume_name") or "").strip():
         return []
+    if indexed is None:
+        indexed = indexed_agent_jobs(run)
+    if indexed is not None or run.get("gpu_job_index_required"):
+        return sorted(
+            job_id
+            for job_id, detail in (indexed or {}).items()
+            if detail.get("cancel_state") == "cancelled_before_dispatch"
+        )
     prefix = jobs_prefix(str(run["run_id"]))
     cancelled: set[str] = set()
     pattern = re.compile(r"^\.cancelled-([A-Za-z0-9_-]+)\.json$")
@@ -2820,10 +2918,14 @@ def list_agent_cancelled_job_ids(run: dict[str, Any]) -> list[str]:
     return sorted(cancelled)
 
 
-def reconcile_agent_cancelled_jobs(run: dict[str, Any]) -> list[dict[str, Any]]:
+def reconcile_agent_cancelled_jobs(
+    run: dict[str, Any],
+    *,
+    indexed: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """Fence undispatched host records whose agent delivery was cancelled."""
     reconciled: list[dict[str, Any]] = []
-    for job_id in list_agent_cancelled_job_ids(run):
+    for job_id in list_agent_cancelled_job_ids(run, indexed=indexed):
         job = load_host_job(run, job_id)
         if not job:
             continue
@@ -2856,7 +2958,11 @@ def reconcile_agent_cancelled_jobs(run: dict[str, Any]) -> list[dict[str, Any]]:
     return reconciled
 
 
-def reconcile_live_agent_cancel_requests(run: dict[str, Any]) -> list[dict[str, Any]]:
+def reconcile_live_agent_cancel_requests(
+    run: dict[str, Any],
+    *,
+    indexed: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """Persist, execute, and acknowledge live agent cancellation requests.
 
     This is called while the dispatch lock is held. The durable host event is
@@ -2870,7 +2976,7 @@ def reconcile_live_agent_cancel_requests(run: dict[str, Any]) -> list[dict[str, 
     reconciled: list[dict[str, Any]] = []
     by_request_id = {
         str(item["request_id"]): item
-        for item in read_durable_agent_cancel_requests(run)
+        for item in read_durable_agent_cancel_requests(run, indexed=indexed)
     }
     try:
         for item in read_live_agent_cancel_requests(run):
@@ -2948,11 +3054,24 @@ def reconcile_live_agent_cancel_requests(run: dict[str, Any]) -> list[dict[str, 
     return reconciled
 
 
-def list_job_ids(run: dict[str, Any]) -> list[str]:
+def list_job_ids(
+    run: dict[str, Any],
+    *,
+    indexed: dict[str, dict[str, Any]] | None = None,
+) -> list[str]:
     prefix = jobs_prefix(str(run["run_id"]))
     names = {f"{job_id}.json" for job_id in list_host_job_ids(run)}
-    names.update(volume_ls_json_names(run, f"{prefix}/queue"))
-    names.update(volume_ls_json_names(run, f"{prefix}/status"))
+    if indexed is None:
+        indexed = indexed_agent_jobs(run)
+    if indexed is not None or run.get("gpu_job_index_required"):
+        names.update(
+            f"{job_id}.json"
+            for job_id, detail in (indexed or {}).items()
+            if detail.get("cancel_state") != "cancelled_before_dispatch"
+        )
+    else:
+        names.update(volume_ls_json_names(run, f"{prefix}/queue"))
+        names.update(volume_ls_json_names(run, f"{prefix}/status"))
     return sorted(
         Path(name).stem
         for name in names
@@ -2960,17 +3079,25 @@ def list_job_ids(run: dict[str, Any]) -> list[str]:
     )
 
 
-def active_training_job_ids(run: dict[str, Any]) -> list[str]:
+def active_training_job_ids(
+    run: dict[str, Any],
+    *,
+    indexed: dict[str, dict[str, Any]] | None = None,
+) -> list[str]:
     """Return logical jobs that currently own the run's training GPU slot."""
     active: list[str] = []
-    for job_id in list_job_ids(run):
-        job = load_job(run, job_id)
+    for job_id in list_job_ids(run, indexed=indexed):
+        job = load_job_from_index_snapshot(run, job_id, indexed)
         if job and str(job.get("status") or "") in gpu_claim.OWNED:
             active.append(job_id)
     return active
 
 
-def cleanup_orphaned_training_sandboxes(run: dict[str, Any]) -> list[dict[str, Any]]:
+def cleanup_orphaned_training_sandboxes(
+    run: dict[str, Any],
+    *,
+    indexed: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """Terminate live training sandboxes absent from every host job record.
 
     This is a provider-specific safety net behind the provider-neutral job
@@ -2983,8 +3110,8 @@ def cleanup_orphaned_training_sandboxes(run: dict[str, Any]) -> list[dict[str, A
     if not app_name:
         return []
     expected: set[str] = set()
-    for job_id in list_job_ids(run):
-        job = load_job(run, job_id)
+    for job_id in list_job_ids(run, indexed=indexed):
+        job = load_job_from_index_snapshot(run, job_id, indexed)
         if not job:
             continue
         for key in ("sandbox_id", "last_sandbox_id"):
@@ -3170,10 +3297,15 @@ def terminate_job(run: dict[str, Any], job_id: str) -> dict[str, Any]:
         return _terminate_job_locked(run, job_id, reason="manual_gpu_terminate")
 
 
-def _candidate_job_ids(run: dict[str, Any], *, now: float | None = None) -> list[str]:
+def _candidate_job_ids(
+    run: dict[str, Any],
+    *,
+    now: float | None = None,
+    indexed: dict[str, dict[str, Any]] | None = None,
+) -> list[str]:
     out: list[tuple[float, str]] = []
-    for job_id in list_job_ids(run):
-        job = load_job(run, job_id)
+    for job_id in list_job_ids(run, indexed=indexed):
+        job = load_job_from_index_snapshot(run, job_id, indexed)
         if not job:
             continue
         if (
@@ -3186,9 +3318,13 @@ def _candidate_job_ids(run: dict[str, Any], *, now: float | None = None) -> list
                 created = 0.0
             if created <= 0:
                 try:
-                    created = datetime.fromisoformat(
-                        str(job.get("created_at") or "").replace("Z", "+00:00")
-                    ).astimezone(timezone.utc).timestamp()
+                    created = (
+                        datetime.fromisoformat(
+                            str(job.get("created_at") or "").replace("Z", "+00:00")
+                        )
+                        .astimezone(timezone.utc)
+                        .timestamp()
+                    )
                 except (TypeError, ValueError):
                     created = 0.0
             out.append((created, job_id))
@@ -3253,9 +3389,18 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
             )
             return result
 
-        actions.extend(cleanup_orphaned_training_sandboxes(run))
+        # One exact-file snapshot is shared by every reconciliation phase in
+        # this dispatch tick.  Without this, cancellation, orphan, and queue
+        # checks each re-read the same index independently.
+        indexed = indexed_agent_jobs(run)
+        if indexed is None and run.get("gpu_job_index_required"):
+            indexed = {}
+
+        actions.extend(cleanup_orphaned_training_sandboxes(run, indexed=indexed))
         try:
-            reconciled.extend(reconcile_live_agent_cancel_requests(run))
+            reconciled.extend(
+                reconcile_live_agent_cancel_requests(run, indexed=indexed)
+            )
         except (RuntimeError, ValueError, json.JSONDecodeError) as exc:
             # CPU sandboxes may be between supervised attempts. The request is
             # retained in the durable fallback and will be retried; GPU
@@ -3266,10 +3411,10 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
                     "error": f"{type(exc).__name__}: {exc}",
                 }
             )
-        reconciled.extend(reconcile_agent_cancelled_jobs(run))
+        reconciled.extend(reconcile_agent_cancelled_jobs(run, indexed=indexed))
         now = time.time()
-        for job_id in list_job_ids(run):
-            job = load_job(run, job_id)
+        for job_id in list_job_ids(run, indexed=indexed):
+            job = load_job_from_index_snapshot(run, job_id, indexed)
             if not job:
                 continue
             progress = job.get("progress")
@@ -3319,24 +3464,24 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
                 }
             )
 
-        pending = _candidate_job_ids(run, now=now)
+        pending = _candidate_job_ids(run, now=now, indexed=indexed)
         # A preempted logical job owns this run's single training slot through
         # its short retry backoff.  Otherwise a newly submitted job can jump
         # ahead during that window and turn transparent recovery into an
         # unbounded wait behind unrelated work from the same agent.
         retry_reservations: list[str] = []
-        for job_id in list_job_ids(run):
-            job = load_job(run, job_id)
+        for job_id in list_job_ids(run, indexed=indexed):
+            job = load_job_from_index_snapshot(run, job_id, indexed)
             if job and str(job.get("status") or "") == "retry_wait":
                 retry_reservations.append(job_id)
         if retry_reservations:
             reserved = set(retry_reservations)
             pending = [job_id for job_id in pending if job_id in reserved]
-        active = active_training_job_ids(run)
+        active = active_training_job_ids(run, indexed=indexed)
         for job_id in pending:
             if len(active) >= MAX_ACTIVE_TRAINING_JOBS_PER_RUN:
                 break
-            job = load_job(run, job_id)
+            job = load_job_from_index_snapshot(run, job_id, indexed)
             if not job:
                 continue
             claim_id = uuid.uuid4().hex[:16]

@@ -8,6 +8,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import uuid
@@ -64,6 +65,161 @@ def row(index: int, name: str, best: float | None) -> dict:
 
 
 class DurableOpsTests(unittest.TestCase):
+    def test_modal_volume_list_commands_are_serialized_across_lane_threads(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            active = 0
+            max_active = 0
+            guard = threading.Lock()
+
+            def fake_run(*_args: object, **_kwargs: object):
+                nonlocal active, max_active
+                with guard:
+                    active += 1
+                    max_active = max(max_active, active)
+                time.sleep(0.01)
+                with guard:
+                    active -= 1
+                return subprocess.CompletedProcess([], 0, "[]", "")
+
+            errors: list[Exception] = []
+
+            def invoke(index: int) -> None:
+                try:
+                    sprintctl.run_command(
+                        sprintctl.modal_command(
+                            "volume", "ls", "--json", f"volume-{index}", "/queue"
+                        ),
+                        run={"run_id": f"run-{index}"},
+                        check=False,
+                    )
+                except Exception as exc:  # pragma: no cover - assertion aid
+                    errors.append(exc)
+
+            with (
+                mock.patch.object(
+                    sprintctl, "MODAL_VOLUME_LIST_LOCK", root / "volume.lock"
+                ),
+                mock.patch.object(
+                    sprintctl, "MODAL_VOLUME_LIST_STATE", root / "volume-state.json"
+                ),
+                mock.patch.object(sprintctl, "MODAL_VOLUME_LIST_MIN_GAP_SECONDS", 0.0),
+                mock.patch.object(sprintctl.subprocess, "run", side_effect=fake_run),
+            ):
+                threads = [threading.Thread(target=invoke, args=(i,)) for i in range(6)]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join()
+
+            self.assertEqual(errors, [])
+            self.assertEqual(max_active, 1)
+
+    def test_modal_volume_rate_limit_sets_shared_cooldown_and_retries(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            responses = [
+                subprocess.CompletedProcess(
+                    [], 1, "", "VolumeListFiles rate limit exceeded. Please retry."
+                ),
+                subprocess.CompletedProcess([], 0, "[]", ""),
+            ]
+            with (
+                mock.patch.object(
+                    sprintctl, "MODAL_VOLUME_LIST_LOCK", root / "volume.lock"
+                ),
+                mock.patch.object(
+                    sprintctl, "MODAL_VOLUME_LIST_STATE", root / "volume-state.json"
+                ),
+                mock.patch.object(sprintctl, "MODAL_VOLUME_LIST_MIN_GAP_SECONDS", 0.0),
+                mock.patch.object(
+                    sprintctl, "MODAL_VOLUME_LIST_BACKOFF_MAX_SECONDS", 0.0
+                ),
+                mock.patch.object(
+                    sprintctl.subprocess, "run", side_effect=responses
+                ) as runner,
+            ):
+                result = sprintctl.run_command(
+                    sprintctl.modal_command(
+                        "volume", "get", "volume", "remote", "local"
+                    ),
+                    run={"run_id": "rate-run"},
+                    check=False,
+                )
+
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(runner.call_count, 2)
+            state = json.loads((root / "volume-state.json").read_text())
+            self.assertFalse(state["rate_limited"])
+            self.assertEqual(state["attempt"], 2)
+
+    def test_live_finalize_defers_recursive_reconciliation(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            run = {"run_id": "live-run", "agent_kind": "codex"}
+            with (
+                mock.patch.object(sprintctl, "load_run", return_value=(state, run)),
+                mock.patch.object(
+                    sprintctl, "run_services_should_exit", return_value=False
+                ),
+                mock.patch.object(sprintctl, "monitor_once") as monitor,
+                mock.patch.object(sprintctl, "sync_durable_api_usage") as api_sync,
+                mock.patch.object(sprintctl, "sync_durable_trace") as trace_sync,
+                mock.patch.object(sprintctl, "sync_durable_telemetry") as telemetry,
+            ):
+                complete, payload = sprintctl.finalize("live-run")
+
+            self.assertFalse(complete)
+            self.assertFalse(payload["conditions"]["run_terminal"])
+            monitor.assert_called_once()
+            api_sync.assert_not_called()
+            trace_sync.assert_not_called()
+            telemetry.assert_not_called()
+
+    def test_live_api_usage_sync_reads_only_exact_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            run = {"run_id": "usage-run", "volume_name": "usage-volume"}
+            summary = '{"schema_version":2,"run_id":"usage-run"}\n'
+            with mock.patch.object(
+                sprintctl, "volume_get_text", return_value=summary
+            ) as reader:
+                self.assertTrue(sprintctl.sync_durable_api_usage(state, run))
+
+            reader.assert_called_once_with(
+                run,
+                "runs/usage-run/api-usage/summary.json",
+                timeout_seconds=30,
+            )
+            self.assertEqual(
+                (state / "provider-api-usage/api-usage/summary.json").read_text(),
+                summary,
+            )
+            stamp = json.loads((state / "provider-api-usage-sync.json").read_text())
+            self.assertEqual(stamp["mode"], "summary-live")
+
+    def test_exact_volume_read_bypasses_modal_volume_get_cli(self) -> None:
+        run = {"run_id": "exact-run", "volume_name": "exact-volume"}
+        with mock.patch.object(
+            sprintctl,
+            "run_command",
+            return_value=subprocess.CompletedProcess([], 0, "x", ""),
+        ) as command:
+            self.assertEqual(sprintctl.volume_get_text(run, "known/file.json"), "x")
+        argv = command.call_args.args[0]
+        self.assertEqual(
+            argv,
+            [
+                sys.executable,
+                "-m",
+                "event_runtime.control.volume_read",
+                "exact-volume",
+                "known/file.json",
+            ],
+        )
+
     def test_codex_wrapper_waits_for_delayed_setsid(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -133,9 +289,9 @@ class DurableOpsTests(unittest.TestCase):
                 self.assertFalse(blocking)
                 yield True
 
-            def observe_monitor(_run_id: str) -> dict:
+            def observe_finalize(_run_id: str) -> tuple[bool, dict]:
                 observed.append((state / "monitor.pid").read_text().strip())
-                return {"run_id": "monitor-run", "agent_kind": "codex"}
+                return True, {"run_id": "monitor-run", "agent_kind": "codex"}
 
             with (
                 mock.patch.object(
@@ -147,10 +303,7 @@ class DurableOpsTests(unittest.TestCase):
                     ),
                 ),
                 mock.patch.object(sprintctl, "file_lock", side_effect=owned_lock),
-                mock.patch.object(
-                    sprintctl, "monitor_once", side_effect=observe_monitor
-                ),
-                mock.patch.object(sprintctl, "finalize", return_value=(True, {})),
+                mock.patch.object(sprintctl, "finalize", side_effect=observe_finalize),
             ):
                 self.assertEqual(sprintctl.monitor_loop("monitor-run", 10), 0)
 
@@ -1068,6 +1221,9 @@ class DurableOpsTests(unittest.TestCase):
             with (
                 mock.patch.object(sprintctl, "load_run", return_value=(state_dir, run)),
                 mock.patch.object(sprintctl, "monitor_once") as monitor,
+                mock.patch.object(
+                    sprintctl, "run_services_should_exit", return_value=True
+                ),
                 mock.patch.object(
                     sprintctl,
                     "final_conditions",
@@ -2143,6 +2299,9 @@ while True:
             with (
                 mock.patch.object(sprintctl, "load_run", return_value=(state_dir, run)),
                 mock.patch.object(sprintctl, "monitor_once") as monitor,
+                mock.patch.object(
+                    sprintctl, "run_services_should_exit", return_value=True
+                ),
                 mock.patch.object(
                     sprintctl,
                     "final_conditions",

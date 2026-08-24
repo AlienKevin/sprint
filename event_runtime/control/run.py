@@ -51,6 +51,11 @@ RECONSTRUCT_CODEX_USAGE_SCRIPT = ROOT / "event_runtime/cost/model_usage.py"
 UV = Path("/home/ubuntu/.local/bin/uv")
 POLL_SECONDS = 30
 DEFAULT_WAIT_SECONDS = 3 * 60 * 60
+MODAL_VOLUME_LIST_MIN_GAP_SECONDS = 1.0
+MODAL_VOLUME_LIST_MAX_ATTEMPTS = 5
+MODAL_VOLUME_LIST_BACKOFF_MAX_SECONDS = 30.0
+MODAL_VOLUME_LIST_LOCK = OPS_ROOT / ".modal-volume-list.lock"
+MODAL_VOLUME_LIST_STATE = OPS_ROOT / ".modal-volume-list-state.json"
 BUDGET_PULSE_MAX_UPSTREAM_AGE_SECONDS = 60.0
 BUDGET_PULSE_MAX_CLOCK_SKEW_SECONDS = 60.0
 # A fresh Modal sandbox starts the ledger proxy/watchdog before Codex, but the
@@ -125,8 +130,16 @@ def run_command(
     check: bool = True,
     timeout: int = 60,
 ) -> subprocess.CompletedProcess[str]:
+    argv = list(command)
+    if _modal_volume_list_operation(argv):
+        return run_modal_volume_list_command(
+            argv,
+            run=run,
+            check=check,
+            timeout=timeout,
+        )
     return subprocess.run(
-        list(command),
+        argv,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -134,6 +147,107 @@ def run_command(
         check=check,
         timeout=timeout,
     )
+
+
+def _modal_volume_list_operation(command: Sequence[str]) -> str | None:
+    """Return the Modal operation when it consumes VolumeListFiles quota."""
+    argv = [str(item) for item in command]
+    for index in range(len(argv) - 2):
+        if argv[index : index + 2] == ["modal", "volume"]:
+            operation = argv[index + 2]
+            return operation if operation in {"get", "ls"} else None
+    return None
+
+
+def _modal_volume_rate_limited(result: subprocess.CompletedProcess[str]) -> bool:
+    detail = f"{result.stdout or ''}\n{result.stderr or ''}".lower()
+    return "volumelistfiles rate limit exceeded" in detail or (
+        "rate limit" in detail and "volume" in detail
+    )
+
+
+def _modal_volume_list_state() -> dict[str, Any]:
+    try:
+        payload = json.loads(MODAL_VOLUME_LIST_STATE.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def run_modal_volume_list_command(
+    command: Sequence[str],
+    *,
+    run: dict[str, Any] | None,
+    check: bool,
+    timeout: int,
+) -> subprocess.CompletedProcess[str]:
+    """Serialize/persistently pace list-based Modal Volume operations.
+
+    Six independent lane services share one Modal account-wide
+    ``VolumeListFiles`` quota.  A host lock prevents synchronized polling
+    bursts, while the persisted cooldown makes every process honor a rate-limit
+    response observed by any other process.  Exact-file reads bypass this path.
+    """
+    argv = list(command)
+    operation = _modal_volume_list_operation(argv) or "unknown"
+    result: subprocess.CompletedProcess[str] | None = None
+    for attempt in range(1, MODAL_VOLUME_LIST_MAX_ATTEMPTS + 1):
+        with file_lock(MODAL_VOLUME_LIST_LOCK):
+            state = _modal_volume_list_state()
+            now = time.time()
+            not_before = max(
+                float(state.get("last_finished_at_epoch_s") or 0)
+                + MODAL_VOLUME_LIST_MIN_GAP_SECONDS,
+                float(state.get("not_before_epoch_s") or 0),
+            )
+            if not_before > now:
+                time.sleep(not_before - now)
+            started_at = time.time()
+            result = subprocess.run(
+                argv,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=command_env(run or {}),
+                check=False,
+                timeout=timeout,
+            )
+            finished_at = time.time()
+            limited = result.returncode != 0 and _modal_volume_rate_limited(result)
+            cooldown = (
+                min(
+                    MODAL_VOLUME_LIST_BACKOFF_MAX_SECONDS,
+                    float(2 ** max(0, attempt)),
+                )
+                if limited
+                else 0.0
+            )
+            atomic_write_json(
+                MODAL_VOLUME_LIST_STATE,
+                {
+                    "schema_version": 1,
+                    "operation": operation,
+                    "run_id": (run or {}).get("run_id"),
+                    "attempt": attempt,
+                    "started_at_epoch_s": started_at,
+                    "last_finished_at_epoch_s": finished_at,
+                    "not_before_epoch_s": finished_at + cooldown,
+                    "rate_limited": limited,
+                    "returncode": result.returncode,
+                },
+                mode=0o600,
+            )
+        if not limited:
+            break
+    assert result is not None
+    if check and result.returncode != 0:
+        raise subprocess.CalledProcessError(
+            result.returncode,
+            argv,
+            output=result.stdout,
+            stderr=result.stderr,
+        )
+    return result
 
 
 def modal_command(*args: str) -> list[str]:
@@ -242,30 +356,24 @@ def volume_get_text(
     *,
     timeout_seconds: int = 60,
 ) -> str | None:
+    # The stock ``modal volume get`` CLI calls VolumeListFiles even for an
+    # exact filename. Use the exact-file RPC helper so budget/heartbeat/index
+    # polling cannot starve the shared directory-list control plane.
     result = run_command(
-        modal_command(
-            "volume",
-            "get",
+        [
+            sys.executable,
+            "-m",
+            "event_runtime.control.volume_read",
             str(run["volume_name"]),
             remote_path,
-            "-",
-        ),
+        ],
         run=run,
         check=False,
         timeout=timeout_seconds,
     )
     if result.returncode != 0:
         return None
-    text = result.stdout or ""
-    # Modal CLI appends a success banner after writing to stdout ("-").
-    marker = "\n✓ Finished downloading files to local!"
-    if marker in text:
-        text = text.split(marker, 1)[0]
-    elif text.rstrip().endswith("✓ Finished downloading files to local!"):
-        text = text.rstrip()[: -len("✓ Finished downloading files to local!")].rstrip(
-            "\n"
-        )
-    return text
+    return result.stdout or ""
 
 
 def volume_upload(run: dict[str, Any], source: Path, remote_path: str) -> None:
@@ -371,31 +479,56 @@ def sync_durable_api_usage(
         return bool(previous.get("ok"))
     destination = state_dir / "provider-api-usage"
     destination.mkdir(parents=True, exist_ok=True)
-    result = run_command(
-        modal_command(
-            "volume",
-            "get",
-            "--force",
-            str(run["volume_name"]),
-            f"runs/{run['run_id']}/api-usage",
-            str(destination),
-        ),
-        run=run,
-        check=False,
-        timeout=300,
-    )
+    error: str | None = None
+    if force:
+        # Final reconciliation needs every immutable request record. This is a
+        # deliberately rare recursive directory download and therefore passes
+        # through the host-wide VolumeListFiles coordinator.
+        result = run_command(
+            modal_command(
+                "volume",
+                "get",
+                "--force",
+                str(run["volume_name"]),
+                f"runs/{run['run_id']}/api-usage",
+                str(destination),
+            ),
+            run=run,
+            check=False,
+            timeout=300,
+        )
+        ok = result.returncode == 0
+        if not ok:
+            error = (result.stderr or result.stdout)[-1000:]
+        mode = "full-final"
+    else:
+        # Live cost/token rendering only needs the cumulative proxy summary.
+        # Pulling the whole requests directory once per minute caused a
+        # recursive VolumeListFiles scan in every lane.
+        remote = f"runs/{run['run_id']}/api-usage/summary.json"
+        try:
+            text = volume_get_text(run, remote, timeout_seconds=30)
+        except subprocess.TimeoutExpired as exc:
+            text = None
+            error = f"TimeoutExpired after 30s: {exc}"
+        ok = text is not None
+        if ok:
+            local = destination / "api-usage" / "summary.json"
+            atomic_write_text(local, text, mode=0o600)
+        elif error is None:
+            error = "exact provider summary is not available yet"
+        mode = "summary-live"
     payload = {
         "schema_version": 1,
         "run_id": run["run_id"],
         "synced_at": utc_now(),
         "synced_at_epoch_s": now,
-        "ok": result.returncode == 0,
-        "error": (
-            None if result.returncode == 0 else (result.stderr or result.stdout)[-1000:]
-        ),
+        "mode": mode,
+        "ok": ok,
+        "error": error,
     }
     atomic_write_json(stamp, payload, mode=0o600)
-    return result.returncode == 0
+    return ok
 
 
 def sync_durable_telemetry(
@@ -2076,13 +2209,34 @@ def finalize(
             )
         ):
             return True, existing
+    terminal_before_refresh = run_services_should_exit(state_dir, run)
     monitor_once(
         run_id,
         upload=upload,
         include_remote=include_remote,
-        launch_worker=False,
+        launch_worker=not terminal_before_refresh,
     )
-    if terminal_stop_acknowledged(state_dir):
+    # Final reconciliation is intentionally expensive: it recursively imports
+    # the immutable trace and every provider request record.  It must never run
+    # on each live monitor tick.  The previous behavior doubled monitor work
+    # and forced six lanes through at least twelve recursive VolumeListFiles
+    # scans per minute before any GPU queue polling was counted.
+    if not (terminal_before_refresh or run_services_should_exit(state_dir, run)):
+        return False, {
+            "schema_version": 1,
+            "timeline_schema_version": UNIFIED_TIMELINE_SCHEMA_VERSION,
+            "run_id": run_id,
+            "agent_kind": agent_kind(run),
+            "complete": False,
+            "conditions": {"run_terminal": False},
+            "details": ["run is still active; final reconciliation deferred"],
+            "checked_at": utc_now(),
+        }
+    # Natural completion and an explicit budget/operator stop both close the
+    # allocation window. Recover per-job streams in either case; otherwise a
+    # naturally completing lane can finalize from a stale five-minute live
+    # telemetry snapshot.
+    if run.get("unified_timeline_required"):
         sync_durable_telemetry(state_dir, run, force=True)
     provider_usage_required = bool(run.get("provider_usage_ledger_required"))
     if provider_usage_required:
@@ -2192,7 +2346,6 @@ def wait_for_run(run_id: str, timeout_seconds: int, poll_seconds: int) -> int:
         while True:
             try:
                 if owns_monitor:
-                    monitor_once(run_id)
                     complete, payload = finalize(run_id)
                 else:
                     final_path = state_dir / "FINALIZED.json"
@@ -2240,8 +2393,15 @@ def monitor_loop(run_id: str, poll_seconds: int) -> int:
         try:
             while True:
                 try:
-                    status = monitor_once(run_id)
-                    complete, _ = finalize(run_id)
+                    complete, finalization = finalize(run_id)
+                    status_path = state_dir / "status.json"
+                    if status_path.is_file():
+                        try:
+                            status = json.loads(status_path.read_text())
+                        except (OSError, json.JSONDecodeError):
+                            status = finalization
+                    else:
+                        status = finalization
                 except Exception as exc:  # noqa: BLE001
                     record_controller_error(run_id, exc)
                     status = {
@@ -2510,7 +2670,13 @@ def run_services_should_exit(state_dir: Path, run: dict[str, Any]) -> bool:
     # the supervisor still owns the lane and may relaunch the next attempt.
     if _supervisor_lock_held(state_dir):
         return False
-    return run_results_finished(state_dir, run)
+    try:
+        return run_results_finished(state_dir, run)
+    except KeyError:
+        # A legacy/incomplete terminal record may predate the durable jobs-root
+        # fields. It cannot authorize new work once no supervisor owns the
+        # lane, so final reconciliation is the conservative fail-closed path.
+        return True
 
 
 def budget_pulse_loop(run_id: str, poll_seconds: int) -> int:

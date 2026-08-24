@@ -59,6 +59,12 @@ def test_resume_volume_guard_uses_untruncated_modal_json() -> None:
     assert 'modal volume list 2>/dev/null | grep -qF "$VOLUME_NAME"' not in launcher
 
 
+def test_launcher_requires_exact_gpu_job_index_and_paces_dispatch() -> None:
+    launcher = (ROOT / "event_runtime/control/launch.sh").read_text()
+    assert '"gpu_job_index_required": True' in launcher
+    assert 'gpu-dispatch-loop --run-id "$RUN_ID" --poll-seconds 10' in launcher
+
+
 def test_batch_matrix_is_exact_six_arm_max_effort_contract() -> None:
     rows = batch_eval.matrix("eval-20260808")
     assert len(rows) == 6
@@ -70,9 +76,7 @@ def test_batch_matrix_is_exact_six_arm_max_effort_contract() -> None:
     assert {row["agent_kind"] for row in rows if row["family"] == "deepseek"} == {
         "deepseek-harness"
     }
-    assert {row["agent_kind"] for row in rows if row["family"] == "luna"} == {
-        "codex"
-    }
+    assert {row["agent_kind"] for row in rows if row["family"] == "luna"} == {"codex"}
     assert {row["goal_mode"] for row in rows} == {
         "codex_session_goal",
         "deepseek_native_goal",
@@ -284,9 +288,7 @@ def test_batch_matrix_can_launch_three_deepseek_trials_only() -> None:
     assert {row["provider"] for row in rows} == {"DeepSeek"}
     assert {row["provider_endpoint"] for row in rows} == {"deepseek"}
     assert {row["quantization"] for row in rows} == {"unknown"}
-    assert {Path(row["wrapper"]).name for row in rows} == {
-        "deepseek_harness.sh"
-    }
+    assert {Path(row["wrapper"]).name for row in rows} == {"deepseek_harness.sh"}
     assert {row["agent_kind"] for row in rows} == {"deepseek-harness"}
     assert {row["goal_mode"] for row in rows} == {"deepseek_native_goal"}
 

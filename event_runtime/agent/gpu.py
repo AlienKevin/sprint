@@ -18,6 +18,7 @@ starts an A10G sandbox with the same image + volume.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -40,6 +41,7 @@ AGENT_WORKSPACE_ROOT = Path("/app")
 TERMINAL_STATUSES = frozenset({"succeeded", "failed", "terminated"})
 MAX_OUTPUT_ARTIFACTS = 8
 MIRRORED_POLICY_SUFFIXES = frozenset({".pt", ".pth"})
+DISPATCH_INDEX_SCHEMA_VERSION = 1
 
 
 def utc_now() -> str:
@@ -86,6 +88,66 @@ def atomic_write_json(path: Path, payload: dict) -> None:
     tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
     os.chmod(tmp, 0o600)
     os.replace(tmp, path)
+
+
+def update_dispatch_index(
+    root: Path,
+    run_id: str,
+    job_id: str,
+    *,
+    job: dict | None = None,
+    cancel_state: str | None = None,
+    cancel_request: dict | None = None,
+) -> None:
+    """Publish exact-name job discovery without directory polling.
+
+    The host reads ``index.json`` with Modal's exact-file RPC.  Keeping the
+    immutable queue/status documents remains useful for recovery, but they no
+    longer have to be enumerated every five seconds.  The local lock also
+    preserves concurrent tool submissions from the same agent sandbox.
+    """
+    lock = root / ".dispatch-index.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    with lock.open("a+") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        path = root / "index.json"
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            payload = {}
+        if (
+            not isinstance(payload, dict)
+            or payload.get("schema_version") != DISPATCH_INDEX_SCHEMA_VERSION
+            or payload.get("run_id") != run_id
+        ):
+            payload = {
+                "schema_version": DISPATCH_INDEX_SCHEMA_VERSION,
+                "run_id": run_id,
+                "generation": 0,
+                "jobs": {},
+            }
+        jobs = payload.setdefault("jobs", {})
+        if not isinstance(jobs, dict):
+            jobs = {}
+            payload["jobs"] = jobs
+        previous = jobs.get(job_id)
+        entry = dict(previous) if isinstance(previous, dict) else {}
+        entry.setdefault("submitted_at", utc_now())
+        entry.setdefault("submitted_at_epoch_s", time.time())
+        if job is not None:
+            entry["job"] = job
+        if cancel_state is not None:
+            entry["cancel_state"] = cancel_state
+            entry["cancel_updated_at"] = utc_now()
+            entry["cancel_updated_at_epoch_s"] = time.time()
+        if cancel_request is not None:
+            entry["cancel_request"] = cancel_request
+        jobs[job_id] = entry
+        payload["generation"] = int(payload.get("generation") or 0) + 1
+        payload["updated_at"] = utc_now()
+        payload["updated_at_epoch_s"] = time.time()
+        atomic_write_json(path, payload)
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def flush_durable(root: Path) -> None:
@@ -395,7 +457,10 @@ def cmd_submit(args: argparse.Namespace) -> int:
         # drains immutable archive requests over the sandbox control channel.
         "submission_bridge_enabled": True,
     }
-    # Queue entry (claimed by host dispatcher) + status mirror for the agent.
+    # The exact-name index carries the complete immutable enqueue transaction.
+    # Queue/status remain compatibility mirrors, but a crash between separate
+    # filesystem writes cannot hide an accepted job from the host.
+    update_dispatch_index(root, run_id, job_id, job=job)
     atomic_write_json(root / "queue" / f"{job_id}.json", job)
     atomic_write_json(root / "status" / f"{job_id}.json", job)
     # Timeline: waiting for host to allocate a GPU worker.
@@ -602,7 +667,9 @@ def cmd_get(args: argparse.Namespace) -> int:
     try:
         source.relative_to(AGENT_MIRROR_ROOT / "artifacts" / job_id)
     except ValueError as exc:
-        raise SystemExit("GPU policy mirror path is outside the trusted job scope") from exc
+        raise SystemExit(
+            "GPU policy mirror path is outside the trusted job scope"
+        ) from exc
     if not source.is_file():
         raise SystemExit(f"mirrored policy is not available yet: {source}")
     expected_size = int(payload.get("agent_policy_size_bytes") or 0)
@@ -645,12 +712,17 @@ def cmd_cancel(args: argparse.Namespace) -> int:
         # the authoritative low-latency delivery path.
         atomic_write_json(AGENT_CONTROL_ROOT / "cancel" / f"{job_id}.json", request)
         atomic_write_json(root / "cancel" / f"{job_id}.json", request)
+        update_dispatch_index(
+            root,
+            run_id_from_env(root),
+            job_id,
+            cancel_state="requested",
+            cancel_request=request,
+        )
         flush_durable(root)
         print(json.dumps(request, indent=2, sort_keys=True))
         return 0
-    if status not in {"pending", "retry_wait", "claiming"} or payload.get(
-        "sandbox_id"
-    ):
+    if status not in {"pending", "retry_wait", "claiming"} or payload.get("sandbox_id"):
         raise SystemExit(
             f"job {job_id} is {status or 'unknown'} and cannot be cancelled"
         )
@@ -666,6 +738,12 @@ def cmd_cancel(args: argparse.Namespace) -> int:
         marker = directory / f".cancelled-{job_id}.json"
         atomic_write_json(marker, cancelled)
         visible.unlink(missing_ok=True)
+    update_dispatch_index(
+        root,
+        run_id_from_env(root),
+        job_id,
+        cancel_state="cancelled_before_dispatch",
+    )
     flush_durable(root)
     print(json.dumps(cancelled, indent=2, sort_keys=True))
     return 0

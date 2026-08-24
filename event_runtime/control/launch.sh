@@ -1102,6 +1102,9 @@ base = {
     # Agent sandbox is CPU-only (task.toml gpus=0); host monitor dispatches
     # preemptible A10G workers for event-gpu jobs on the same volume.
     "cpu_agent_gpu_worker": True,
+    # New runs publish one exact-name index for job/cancellation discovery.
+    # This avoids account-wide Modal VolumeListFiles polling by every lane.
+    "gpu_job_index_required": True,
     "standing_gpu_worker": standing_gpu,
     "agent_cpu_instances": 1,
     "training_max_concurrent_per_run": 1,
@@ -1275,6 +1278,7 @@ if resuming == "1":
         "agent_allowed_host": model_api_host,
         "gpu_worker_network_policy": "no-network",
         "verifier_network_policy": "no-network",
+        "gpu_job_index_required": True,
         "openrouter_route": base["openrouter_route"],
         "modal_billing_required": True,
         "cgroup_telemetry_required": True,
@@ -1508,7 +1512,7 @@ if ((START_MONITOR)); then
   start_controller_worker \
     gpu-dispatch "$STATE_DIR/gpu-dispatch-loop.log" \
     "$STATE_DIR/gpu-dispatch-loop.pid" \
-    gpu-dispatch-loop --run-id "$RUN_ID" --poll-seconds 5
+    gpu-dispatch-loop --run-id "$RUN_ID" --poll-seconds 10
 fi
 
 printf '%s\n' "$$" >"$STATE_DIR/harbor.pid"

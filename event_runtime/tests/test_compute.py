@@ -80,7 +80,6 @@ class ClaimSelectionTests(unittest.TestCase):
             "skip",
         )
 
-
     def test_retry_wait_claimable_when_due(self) -> None:
         job = {"job_id": "a", "status": "retry_wait", "retry_not_before_epoch_s": 10}
         self.assertEqual(
@@ -240,7 +239,9 @@ class ClaimSelectionTests(unittest.TestCase):
             self.assertEqual(
                 pinned["work_archive_sha256"], hashlib.sha256(archive_bytes).hexdigest()
             )
-            self.assertEqual([call.args[0] for call in sleep.call_args_list], [1.0, 2.0])
+            self.assertEqual(
+                [call.args[0] for call in sleep.call_args_list], [1.0, 2.0]
+            )
 
     def test_retry_rejects_corrupt_host_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -737,9 +738,7 @@ class ClaimSelectionTests(unittest.TestCase):
         assert isinstance(args, tuple)
         self.assertEqual(args[0:2], ("python3", "-c"))
         self.assertEqual(args[3], gpu_worker.GPU_BUDGET_MIRROR_PATH)
-        self.assertEqual(
-            json.loads(gpu_worker.base64.b64decode(args[4])), payload
-        )
+        self.assertEqual(json.loads(gpu_worker.base64.b64decode(args[4])), payload)
         self.assertEqual(detail["gpu_budget_mirror"], "updated")
         self.assertEqual(detail["updated_sandbox_ids"], ["sb-gpu"])
         self.assertEqual(detail["finished_sandbox_ids"], [])
@@ -868,9 +867,7 @@ class ClaimSelectionTests(unittest.TestCase):
                 mock.patch.object(
                     gpu_worker.modal.Sandbox, "from_id", return_value=Sandbox()
                 ),
-                mock.patch.object(
-                    gpu_worker, "GPU_BUDGET_MIRROR_PATH", str(target)
-                ),
+                mock.patch.object(gpu_worker, "GPU_BUDGET_MIRROR_PATH", str(target)),
             ):
                 detail = gpu_worker.mirror_gpu_budget(
                     {"run_id": "run-1"},
@@ -921,7 +918,7 @@ class ClaimSelectionTests(unittest.TestCase):
         class Sandbox:
             def exec(self, *_args: str, **_kwargs: object) -> object:
                 raise RuntimeError(
-                    'executing processes for container: cannot execute in '
+                    "executing processes for container: cannot execute in "
                     'container "ta-gpu" in state stopped'
                 )
 
@@ -982,9 +979,7 @@ class ClaimSelectionTests(unittest.TestCase):
             )
 
             self.assertIsNone(
-                gpu_worker.fresh_dispatch_budget_snapshot(
-                    state_dir, "run-1", now=161.0
-                )
+                gpu_worker.fresh_dispatch_budget_snapshot(state_dir, "run-1", now=161.0)
             )
 
     def test_fetches_only_reported_scoped_policy_for_agent_mirror(self) -> None:
@@ -1582,6 +1577,114 @@ class HostJobRegistryTests(unittest.TestCase):
             with mock.patch.object(gpu_worker, "volume_ls_json_names", return_value=[]):
                 self.assertEqual(gpu_worker.list_job_ids(run), ["job-1"])
 
+    def test_exact_job_index_replaces_queue_and_status_directory_scans(self) -> None:
+        run = {
+            "run_id": "run-1",
+            "volume_name": "run-volume",
+            "gpu_job_index_required": True,
+        }
+        index = json.dumps(
+            {
+                "schema_version": 1,
+                "run_id": "run-1",
+                "jobs": {
+                    "queued": {},
+                    "cancelled": {"cancel_state": "cancelled_before_dispatch"},
+                },
+            }
+        )
+        with (
+            mock.patch.object(
+                gpu_worker.sprintctl, "volume_get_text", return_value=index
+            ) as reader,
+            mock.patch.object(gpu_worker, "list_host_job_ids", return_value=["hosted"]),
+            mock.patch.object(
+                gpu_worker,
+                "volume_ls_json_names",
+                side_effect=AssertionError("indexed runs must not list directories"),
+            ),
+        ):
+            self.assertEqual(gpu_worker.list_job_ids(run), ["hosted", "queued"])
+            self.assertEqual(gpu_worker.list_pending_job_ids(run), ["queued"])
+            self.assertEqual(
+                gpu_worker.list_agent_cancelled_job_ids(run), ["cancelled"]
+            )
+
+        self.assertEqual(reader.call_count, 3)
+        self.assertTrue(
+            all(
+                call.args[1].endswith("/gpu-jobs/index.json")
+                for call in reader.call_args_list
+            )
+        )
+
+    def test_index_embeds_atomic_unclaimed_job_and_cancel_request(self) -> None:
+        request = {
+            "schema_version": 1,
+            "request_id": "a" * 32,
+            "run_id": "run-1",
+            "job_id": "queued",
+            "reason": "agent_cancelled",
+        }
+        job = {
+            "schema_version": 3,
+            "run_id": "run-1",
+            "job_id": "queued",
+            "status": "pending",
+        }
+        index = json.dumps(
+            {
+                "schema_version": 1,
+                "run_id": "run-1",
+                "jobs": {
+                    "queued": {
+                        "job": job,
+                        "cancel_state": "requested",
+                        "cancel_request": request,
+                    }
+                },
+            }
+        )
+        run = {
+            "run_id": "run-1",
+            "volume_name": "run-volume",
+            "gpu_job_index_required": True,
+        }
+        with mock.patch.object(
+            gpu_worker.sprintctl, "volume_get_text", return_value=index
+        ) as reader:
+            self.assertEqual(gpu_worker.load_job(run, "queued"), job)
+            self.assertEqual(
+                gpu_worker.read_durable_agent_cancel_requests(run), [request]
+            )
+        self.assertEqual(reader.call_count, 2)
+        self.assertTrue(
+            all(
+                call.args[1].endswith("/gpu-jobs/index.json")
+                for call in reader.call_args_list
+            )
+        )
+
+    def test_required_index_missing_is_empty_without_legacy_scan(self) -> None:
+        run = {
+            "run_id": "run-1",
+            "volume_name": "run-volume",
+            "gpu_job_index_required": True,
+        }
+        with (
+            mock.patch.object(
+                gpu_worker.sprintctl, "volume_get_text", return_value=None
+            ),
+            mock.patch.object(gpu_worker, "list_host_job_ids", return_value=[]),
+            mock.patch.object(
+                gpu_worker,
+                "volume_ls_json_names",
+                side_effect=AssertionError("missing required index must not fall back"),
+            ),
+        ):
+            self.assertEqual(gpu_worker.list_job_ids(run), [])
+            self.assertEqual(gpu_worker.list_pending_job_ids(run), [])
+
 
 class LeaseLivenessTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -1907,7 +2010,9 @@ class SuperviseTests(unittest.TestCase):
         self.assertGreaterEqual(first, 0)
         self.assertLessEqual(first, 30)
 
-    def test_rate_limit_result_hidden_by_successful_harbor_exit_is_retryable(self) -> None:
+    def test_rate_limit_result_hidden_by_successful_harbor_exit_is_retryable(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as raw:
             state = Path(raw)
             jobs = state / "attempt-1"
@@ -1925,11 +2030,7 @@ class SuperviseTests(unittest.TestCase):
             )
             (state / "run.json").write_text(
                 json.dumps(
-                    {
-                        "cpu_launch_history": [
-                            {"attempt": 1, "jobs_root": str(jobs)}
-                        ]
-                    }
+                    {"cpu_launch_history": [{"attempt": 1, "jobs_root": str(jobs)}]}
                 )
             )
 
@@ -2139,6 +2240,46 @@ class TryClaimPersistenceTests(unittest.TestCase):
 
 
 class GpuConcurrencyLimitTests(unittest.TestCase):
+    def test_six_idle_indexed_lanes_do_one_exact_index_read_and_no_lists(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+
+            def load_run(run_id: str):
+                state = root / run_id
+                state.mkdir()
+                return state, {
+                    "run_id": run_id,
+                    "state_dir": str(state),
+                    "volume_name": f"volume-{run_id}",
+                    "cpu_agent_gpu_worker": True,
+                    "gpu_job_index_required": True,
+                }
+
+            with (
+                mock.patch.object(
+                    gpu_worker.sprintctl, "load_run", side_effect=load_run
+                ),
+                mock.patch.object(
+                    gpu_worker, "indexed_agent_jobs", return_value={}
+                ) as index_read,
+                mock.patch.object(
+                    gpu_worker,
+                    "volume_ls_json_names",
+                    side_effect=AssertionError(
+                        "indexed fleet must not list directories"
+                    ),
+                ),
+                mock.patch.object(
+                    gpu_worker, "reconcile_live_agent_cancel_requests", return_value=[]
+                ),
+            ):
+                results = [
+                    gpu_worker.dispatch_once(f"run-{index}") for index in range(6)
+                ]
+
+        self.assertEqual(index_read.call_count, 6)
+        self.assertTrue(all(result["pending"] == [] for result in results))
+
     def test_orphan_audit_keeps_registered_and_terminates_unknown_sandbox(self) -> None:
         run = {"run_id": "unit", "training_app_name": "unit-training"}
         jobs = {
@@ -2382,16 +2523,16 @@ class GpuConcurrencyLimitTests(unittest.TestCase):
                 result = gpu_worker.reconcile_live_agent_cancel_requests(run)
 
             self.assertEqual(result[0]["decision"], "agent_cancel_terminated")
-            terminate.assert_called_once_with(
-                run, "running", reason="agent_cancelled"
-            )
+            terminate.assert_called_once_with(run, "running", reason="agent_cancelled")
             ack = json.loads(
                 (Path(raw) / "control-acks" / f"{'a' * 32}.json").read_text()
             )
             self.assertEqual(ack["outcome"], "terminated")
             events = [
                 json.loads(line)
-                for line in (Path(raw) / "control-events.jsonl").read_text().splitlines()
+                for line in (Path(raw) / "control-events.jsonl")
+                .read_text()
+                .splitlines()
             ]
             self.assertEqual(
                 [event["event"] for event in events],
@@ -2437,9 +2578,7 @@ class GpuConcurrencyLimitTests(unittest.TestCase):
 
             self.assertEqual(result[0]["decision"], "agent_cancel_terminated")
             terminate.assert_called_once()
-            self.assertTrue(
-                (Path(raw) / "control-acks" / f"{'b' * 32}.json").is_file()
-            )
+            self.assertTrue((Path(raw) / "control-acks" / f"{'b' * 32}.json").is_file())
 
     def test_unconfirmed_cancel_is_not_acknowledged(self) -> None:
         request = {
@@ -2475,9 +2614,7 @@ class GpuConcurrencyLimitTests(unittest.TestCase):
                 result = gpu_worker.reconcile_live_agent_cancel_requests(run)
 
             self.assertEqual(result[0]["decision"], "cancel_retry_required")
-            self.assertFalse(
-                (Path(raw) / "control-acks" / f"{'c' * 32}.json").exists()
-            )
+            self.assertFalse((Path(raw) / "control-acks" / f"{'c' * 32}.json").exists())
 
     def test_retry_backoff_reserves_slot_ahead_of_new_job(self) -> None:
         jobs = {
@@ -2902,8 +3039,7 @@ class RetryAndFencingTests(unittest.TestCase):
             any(
                 call.kwargs.get("phase") == "gpu_sandbox_create"
                 and call.kwargs.get("action") == "enter"
-                and call.kwargs.get("lifecycle_boundary")
-                == "before_sandbox_create"
+                and call.kwargs.get("lifecycle_boundary") == "before_sandbox_create"
                 for call in timeline_event.call_args_list
             )
         )
@@ -3241,6 +3377,32 @@ class CheckpointContinuationTests(unittest.TestCase):
 
 
 class AgentGpuCliTests(unittest.TestCase):
+    def test_dispatch_index_preserves_multiple_submissions_and_cancellation(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw) / "gpu-jobs"
+            job_a = {"run_id": "run-1", "job_id": "job-a", "status": "pending"}
+            train_cli.update_dispatch_index(root, "run-1", "job-a", job=job_a)
+            train_cli.update_dispatch_index(root, "run-1", "job-b")
+            train_cli.update_dispatch_index(
+                root,
+                "run-1",
+                "job-a",
+                cancel_state="cancelled_before_dispatch",
+            )
+            index = json.loads((root / "index.json").read_text())
+
+        self.assertEqual(index["schema_version"], 1)
+        self.assertEqual(index["run_id"], "run-1")
+        self.assertEqual(sorted(index["jobs"]), ["job-a", "job-b"])
+        self.assertEqual(
+            index["jobs"]["job-a"]["cancel_state"],
+            "cancelled_before_dispatch",
+        )
+        self.assertEqual(index["generation"], 3)
+        self.assertEqual(index["jobs"]["job-a"]["job"], job_a)
+
     def test_running_job_cancel_writes_scoped_request(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw) / "gpu-jobs"
@@ -3276,12 +3438,13 @@ class AgentGpuCliTests(unittest.TestCase):
                 json.loads((control_root / "cancel" / "job-1.json").read_text()),
                 request,
             )
+            index = json.loads((root / "index.json").read_text())
+            self.assertEqual(index["run_id"], "run-1")
+            self.assertEqual(index["jobs"]["job-1"]["cancel_state"], "requested")
+
     def test_worker_recognizes_scoped_running_job_cancel(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
-            marker = (
-                Path(raw)
-                / "runs/run-1/gpu-jobs/cancel/job-1.json"
-            )
+            marker = Path(raw) / "runs/run-1/gpu-jobs/cancel/job-1.json"
             marker.parent.mkdir(parents=True)
             marker.write_text(
                 json.dumps(
@@ -3293,9 +3456,7 @@ class AgentGpuCliTests(unittest.TestCase):
                     }
                 )
             )
-            self.assertTrue(
-                worker_run.job_cancel_requested("run-1", "job-1", raw)
-            )
+            self.assertTrue(worker_run.job_cancel_requested("run-1", "job-1", raw))
 
     def test_output_paths_are_scoped_and_have_unique_names(self) -> None:
         self.assertEqual(
@@ -3382,9 +3543,7 @@ class AgentGpuCliTests(unittest.TestCase):
                 mock.patch("sys.stdout", stdout),
             ):
                 self.assertEqual(
-                    train_cli.cmd_logs(
-                        type("Args", (), {"job_id": "job-1"})()
-                    ),
+                    train_cli.cmd_logs(type("Args", (), {"job_id": "job-1"})()),
                     0,
                 )
 
@@ -3463,7 +3622,7 @@ class LauncherWiringTests(unittest.TestCase):
             launcher,
         )
         self.assertIn(
-            'refusing to resume $RUN_ID with a different $AGENT_SECRET_NAME',
+            "refusing to resume $RUN_ID with a different $AGENT_SECRET_NAME",
             launcher,
         )
 
@@ -3484,7 +3643,7 @@ class LauncherWiringTests(unittest.TestCase):
             deepseek_harness,
         )
         luna = (ROOT / "event_runtime/control/providers/luna.sh").read_text()
-        self.assertIn('providers/openai.sh', luna)
+        self.assertIn("providers/openai.sh", luna)
         for name in ("run-opus.sh", "run-terra.sh", "run-lane.sh"):
             self.assertFalse((ROOT / "runs" / name).exists())
         starter = (
