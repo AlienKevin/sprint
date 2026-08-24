@@ -165,8 +165,13 @@ input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
 }
 .utilization-footer { display: flex; min-height: 31px; flex-wrap: wrap; align-items: center; gap: 8px 11px; padding: 7px 12px; color: var(--muted); font-size: 8px; }
 .utilization-footer span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
-.utilization-footer a { margin-left: auto; color: var(--text); }
-.utilization-footer a:hover { color: var(--accent); }
+.utilization-toggle { margin-left: auto; padding: 2px 0; border: 0; background: transparent; color: var(--text); cursor: pointer; font-size: 8px; }
+.utilization-toggle:hover, .utilization-toggle:focus-visible { color: var(--accent); outline: none; }
+.utilization-toggle:disabled { color: var(--muted); cursor: wait; }
+.utilization-toggle::after { content: " ↓"; }
+.utilization-toggle[aria-expanded="true"]::after { content: " ↑"; }
+.utilization-overview.is-expanded .utilization-stage { min-height: 330px; }
+.utilization-overview.is-expanded .utilization-stage canvas { height: 330px; }
 .pulse-dot { width: 6px; height: 6px; border-radius: 50%; background: #4fc3f7; }
 .pulse-dot.training { background: #9ccc65; }
 .pulse-dot.verifier { background: #b388ff; }
@@ -259,7 +264,7 @@ pre { max-height: 70vh; overflow: auto; margin: 0; padding: 13px; border: 1px so
   .trace-column { grid-row: 2; }
   .trajectory-controls { top: 62px; flex-wrap: wrap; }
   .utilization-footer { flex-wrap: wrap; }
-  .utilization-footer a { flex-basis: 100%; margin-left: 0; }
+  .utilization-toggle { flex-basis: 100%; margin-left: 0; text-align: left; }
   .status { flex: 1 1 100%; }
   .search { flex: 1; width: auto; }
 }

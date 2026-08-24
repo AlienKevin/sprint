@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="description" content="Inspect agent reasoning, messages, tools, observations, timing, and token usage for every Agents' 100m trial.">
   <title>Agents' 100m · Agent trajectory</title>
-  <link rel="stylesheet" href="/trajectory.css?v=20260824-9">
+  <link rel="stylesheet" href="/trajectory.css?v=20260824-10">
 </head>
 <body>
   <header class="viewer-nav">
@@ -38,9 +38,9 @@
         </dl>
         <div class="utilization-title-row">
           <div><p class="eyebrow">RUN PULSE</p><h2 id="utilization-title">Resources alongside the trace</h2></div>
-          <span>select to jump</span>
+          <span id="utilization-mode">select to jump</span>
         </div>
-        <div class="utilization-stage">
+        <div id="utilization-stage" class="utilization-stage">
           <canvas id="utilization-chart" height="154" tabindex="0" role="img" aria-label="CPU and GPU utilization over the run. Select a point to jump to the nearest agent step."></canvas>
           <div id="utilization-tip" class="utilization-tip" hidden></div>
         </div>
@@ -49,7 +49,7 @@
           <span><i class="pulse-dot training"></i>Train GPU</span>
           <span><i class="pulse-dot verifier"></i>Verify GPU</span>
           <span><i class="pulse-dot tools"></i>Tools</span>
-          <a id="utilization-detail-link" href="/timeline">Details ↗</a>
+          <button id="utilization-toggle" class="utilization-toggle" type="button" aria-expanded="false" aria-controls="utilization-stage" disabled>Expand details</button>
         </footer>
       </section>
     </aside>
@@ -79,6 +79,6 @@
   </main>
 
   <script src="/trajectory.js?v=20260824-9"></script>
-  <script src="/trajectory-overview.js?v=20260824-1"></script>
+  <script src="/trajectory-overview.js?v=20260824-2"></script>
 </body>
 </html>

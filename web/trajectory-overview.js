@@ -6,7 +6,9 @@
   const stage = canvas.parentElement;
   const tip = document.querySelector('#utilization-tip');
   const status = document.querySelector('#utilization-status');
-  const detailLink = document.querySelector('#utilization-detail-link');
+  const toggle = document.querySelector('#utilization-toggle');
+  const mode = document.querySelector('#utilization-mode');
+  const overview = document.querySelector('.utilization-overview');
   const dock = document.querySelector('.trajectory-controls');
   const colors = {
     line: '#242a31',
@@ -18,10 +20,16 @@
     tools: '#e5b45c',
     event: '#e8ebef',
   };
-  const lanes = [
+  const compactLanes = [
     {key: 'cpu', label: 'CPU', color: colors.cpu},
     {key: 'training', label: 'TRAIN GPU', color: colors.training},
     {key: 'verifier', label: 'VERIFY GPU', color: colors.verifier},
+  ];
+  const detailedLanes = [
+    ...compactLanes.slice(0, 2),
+    {key: 'trainingMemory', label: 'TRAIN MEM', color: '#d5efa9'},
+    compactLanes[2],
+    {key: 'verifierMemory', label: 'VERIFY MEM', color: '#d9c9ff'},
   ];
   const state = {
     timeline: null,
@@ -30,6 +38,7 @@
     cursorEpoch: null,
     hoverEpoch: null,
     scrollFrame: null,
+    expanded: false,
   };
 
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
@@ -38,6 +47,8 @@
     const minutes = Math.floor(seconds / 60);
     return `${minutes}m ${String(seconds % 60).padStart(2, '0')}s`;
   };
+  const activeLanes = () => state.expanded ? detailedLanes : compactLanes;
+  const chartHeight = () => state.expanded ? 330 : 154;
   const bounds = () => ({x0: 82, x1: Math.max(100, canvas.clientWidth - 12)});
   const xFor = epoch => {
     const clock = state.timeline.clock;
@@ -51,7 +62,7 @@
   };
 
   function buildSeries(timeline) {
-    const series = {cpu: [], training: [], verifier: [], infrastructure: []};
+    const series = {cpu: [], training: [], trainingMemory: [], verifier: [], verifierMemory: [], infrastructure: []};
     for (const event of timeline.events || []) {
       if (event.category === 'infrastructure' && /allocated|preempt|lost|stop_requested/.test(event.kind || '')) {
         series.infrastructure.push(event);
@@ -64,6 +75,9 @@
       if (!key) continue;
       for (const gpu of event.metrics?.gpus || []) {
         if (gpu.util_gpu_pct != null) series[key].push({epoch: event.epoch_ms, value: Number(gpu.util_gpu_pct)});
+        if (gpu.mem_used_mib != null && Number(gpu.mem_total_mib) > 0) {
+          series[`${key}Memory`].push({epoch: event.epoch_ms, value: Number(gpu.mem_used_mib) / Number(gpu.mem_total_mib) * 100});
+        }
       }
     }
     return series;
@@ -72,9 +86,10 @@
   function resize() {
     const ratio = window.devicePixelRatio || 1;
     const width = Math.max(320, stage.clientWidth);
+    const height = chartHeight();
     canvas.width = Math.round(width * ratio);
-    canvas.height = Math.round(154 * ratio);
-    canvas.style.height = '154px';
+    canvas.height = Math.round(height * ratio);
+    canvas.style.height = `${height}px`;
     ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
     draw();
   }
@@ -99,11 +114,13 @@
 
   function draw() {
     const width = canvas.clientWidth;
-    ctx.clearRect(0, 0, width, 154);
+    const height = chartHeight();
+    const lanes = activeLanes();
+    ctx.clearRect(0, 0, width, height);
     if (!state.timeline || !state.series) return;
     const {x0, x1} = bounds();
     const laneTop = 8;
-    const laneHeight = 31;
+    const laneHeight = state.expanded ? 47 : 31;
 
     lanes.forEach((lane, index) => {
       const y = laneTop + index * laneHeight;
@@ -116,6 +133,18 @@
       ctx.moveTo(x0, y + laneHeight - 2);
       ctx.lineTo(x1, y + laneHeight - 2);
       ctx.stroke();
+      if (state.expanded) {
+        ctx.strokeStyle = '#242a3188';
+        ctx.setLineDash([2, 4]);
+        ctx.beginPath();
+        ctx.moveTo(x0, y + laneHeight / 2);
+        ctx.lineTo(x1, y + laneHeight / 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = colors.muted;
+        ctx.fillText('100', x0 - 23, y + 8);
+        ctx.fillText('0', x0 - 10, y + laneHeight - 5);
+      }
       drawLine(state.series[lane.key], y + 3, laneHeight - 8, lane.color);
     });
 
@@ -144,10 +173,14 @@
 
     ctx.fillStyle = colors.muted;
     ctx.font = '8px ui-monospace, monospace';
-    ctx.fillText('0m', x0, 148);
-    const endLabel = fmtDuration(state.timeline.clock.end_epoch_ms - state.timeline.clock.origin_epoch_ms);
-    const endWidth = ctx.measureText(endLabel).width;
-    ctx.fillText(endLabel, x1 - endWidth, 148);
+    const duration = state.timeline.clock.end_epoch_ms - state.timeline.clock.origin_epoch_ms;
+    const tickCount = state.expanded ? 4 : 1;
+    for (let index = 0; index <= tickCount; index += 1) {
+      const label = index === 0 ? '0m' : fmtDuration(duration * index / tickCount);
+      const px = x0 + (x1 - x0) * index / tickCount;
+      const labelWidth = ctx.measureText(label).width;
+      ctx.fillText(label, clamp(px - (index ? labelWidth / 2 : 0), x0, x1 - labelWidth), height - 6);
+    }
 
     const markerEpoch = state.hoverEpoch ?? state.cursorEpoch;
     if (markerEpoch != null) {
@@ -156,7 +189,7 @@
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(px, 5);
-      ctx.lineTo(px, 136);
+      ctx.lineTo(px, height - 18);
       ctx.stroke();
       ctx.fillStyle = colors.text;
       ctx.beginPath();
@@ -182,11 +215,11 @@
     if (!state.timeline) return;
     const rect = canvas.getBoundingClientRect();
     state.hoverEpoch = epochFor(event.clientX - rect.left);
-    const values = lanes.map(lane => [lane.label, nearestValue(state.series[lane.key], state.hoverEpoch)]);
+    const values = activeLanes().map(lane => [lane.label, nearestValue(state.series[lane.key], state.hoverEpoch)]);
     tip.textContent = `${fmtDuration(state.hoverEpoch - state.timeline.clock.origin_epoch_ms)} · ${values.map(([label, value]) => `${label} ${value == null ? 'idle' : `${Math.round(value)}%`}`).join(' · ')}`;
     tip.hidden = false;
     tip.style.left = `${clamp(event.clientX - rect.left + 12, 8, rect.width - tip.offsetWidth - 8)}px`;
-    tip.style.top = `${clamp(event.clientY - rect.top - 34, 6, 118)}px`;
+    tip.style.top = `${clamp(event.clientY - rect.top - 34, 6, chartHeight() - 36)}px`;
     draw();
   }
 
@@ -237,9 +270,9 @@
     state.timeline = null;
     state.series = null;
     status.textContent = 'Loading utilization…';
+    toggle.disabled = true;
     draw();
     const runId = trajectory.run?.run_id || '';
-    detailLink.href = `/timeline?run=${encodeURIComponent(runId)}`;
     try {
       const response = await fetch(`/data/timelines/${encodeURIComponent(runId)}.json`, {cache: 'no-store'});
       if (!response.ok) throw Error(`${response.status} ${response.statusText}`);
@@ -247,6 +280,7 @@
       state.series = buildSeries(state.timeline);
       state.cursorEpoch = Date.parse(trajectory.steps?.[0]?.timestamp || '') || state.timeline.clock.origin_epoch_ms;
       status.textContent = 'Scroll the trace or select the chart';
+      toggle.disabled = false;
       resize();
       syncFromScroll();
     } catch (error) {
@@ -277,6 +311,17 @@
     const index = Math.max(0, steps.findIndex(step => step.step_id === current));
     const next = steps[clamp(index + (event.key === 'ArrowRight' ? 1 : -1), 0, steps.length - 1)];
     if (next) jumpToEpoch(Date.parse(next.timestamp));
+  });
+  toggle.addEventListener('click', () => {
+    state.expanded = !state.expanded;
+    toggle.setAttribute('aria-expanded', String(state.expanded));
+    toggle.textContent = state.expanded ? 'Collapse details' : 'Expand details';
+    overview.classList.toggle('is-expanded', state.expanded);
+    mode.textContent = state.expanded ? 'full resource detail' : 'select to jump';
+    canvas.setAttribute('aria-label', state.expanded
+      ? 'Detailed CPU, training GPU, training memory, verifier GPU, verifier memory, and tool activity timeline. Select a point to jump to the nearest agent step.'
+      : 'CPU and GPU utilization over the run. Select a point to jump to the nearest agent step.');
+    resize();
   });
   new ResizeObserver(resize).observe(stage);
 })();
