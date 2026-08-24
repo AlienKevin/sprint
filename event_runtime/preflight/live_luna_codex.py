@@ -14,6 +14,8 @@ from typing import Any
 
 import modal
 
+from event_runtime.preflight.warm_images import stop_warmup_app
+
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MANIFEST = ROOT / "runs/ops/modal-image-warmup.json"
@@ -238,6 +240,7 @@ def main() -> int:
     finally:
         if sandbox is not None:
             sandbox.terminate(wait=True)
+        stop_warmup_app(required=False)
 
 
 if __name__ == "__main__":

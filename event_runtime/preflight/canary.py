@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import base64
 import datetime as dt
 import hashlib
@@ -28,6 +29,7 @@ from event_runtime.preflight.warm_images import (  # noqa: E402
     MANIFEST,
     VOLUME_NAME,
     run_sandbox,
+    stop_warmup_app,
 )
 from event_runtime.cost import agent as agent_cost  # noqa: E402
 from event_runtime.cost import modal as modal_cost  # noqa: E402
@@ -341,6 +343,7 @@ def run_gpu_budget_mirror_canary(
 
 
 def main() -> int:
+    argparse.ArgumentParser(description=__doc__).parse_args()
     if not TRAINING_FIXTURE.is_file():
         raise RuntimeError(f"training canary fixture not found: {TRAINING_FIXTURE}")
 
@@ -508,6 +511,7 @@ def main() -> int:
         return 0
     finally:
         atomic_write(report)
+        stop_warmup_app(required=False)
         print(json.dumps(report, indent=2, sort_keys=True))
 
 
