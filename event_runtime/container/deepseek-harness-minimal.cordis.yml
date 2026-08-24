@@ -90,16 +90,13 @@
 # every other minimal-mode omission intact. The bootstrap is a trusted human-
 # plane adapter: it creates the goal at the first pre-step edge, before the
 # first model request, because the headless JSON-RPC protocol does not consume
-# `/goal` commands.
+# `/goal` commands. Goal mutation tools are deliberately not mounted: the
+# benchmark goal is host-owned, and exposing create_goal/get_goal/update_goal
+# would contradict the already-active native goal and waste model steps.
 - id: goal
   name: '@deepseek-ai/dsh-goal'
   config:
     defaultMaxGoalRounds: !!js Number(process.env.DSH_GOAL_MAX_ROUNDS ?? 256)
-
-- id: tool-goal
-  name: '@deepseek-ai/dsh-tool-goal'
-  config:
-    blockedAfterConsecutiveRounds: 3
 
 - id: goal-round-driver
   name: '@deepseek-ai/dsh-goal-round-driver'

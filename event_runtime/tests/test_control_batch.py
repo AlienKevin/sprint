@@ -736,9 +736,9 @@ def test_child_key_usage_audit_does_not_call_missing_ledger_a_bypass(
     }
 
     class Client:
-        def key_usage(self, key_hash: str) -> dict[str, float]:
-            assert key_hash == "hash-1"
-            return {"usage": 0.25}
+        def keys_usage(self, key_hashes: set[str]) -> dict[str, dict[str, float]]:
+            assert key_hashes == {"hash-1"}
+            return {"hash-1": {"usage": 0.25}}
 
     monkeypatch.setattr(
         batch_eval,
@@ -786,9 +786,9 @@ def test_child_key_usage_audit_defers_missing_ledger_during_startup(
     }
 
     class Client:
-        def key_usage(self, key_hash: str) -> dict[str, float]:
-            assert key_hash == "hash-1"
-            return {"usage": 0.01}
+        def keys_usage(self, key_hashes: set[str]) -> dict[str, dict[str, float]]:
+            assert key_hashes == {"hash-1"}
+            return {"hash-1": {"usage": 0.01}}
 
     monkeypatch.setattr(
         batch_eval,
@@ -827,9 +827,9 @@ def test_child_key_usage_audit_defers_while_proxy_request_is_in_flight(
     }
 
     class Client:
-        def key_usage(self, key_hash: str) -> dict[str, float]:
-            assert key_hash == "hash-1"
-            return {"usage": 0.25}
+        def keys_usage(self, key_hashes: set[str]) -> dict[str, dict[str, float]]:
+            assert key_hashes == {"hash-1"}
+            return {"hash-1": {"usage": 0.25}}
 
     monkeypatch.setattr(
         batch_eval,
@@ -854,6 +854,48 @@ def test_child_key_usage_audit_defers_while_proxy_request_is_in_flight(
     audit = payload["arms"][0]["openrouter_usage_audit"]
     assert "mismatch_first_seen_at" not in audit
     assert audit["reconciliation_deferred"] == "trusted_proxy_request_in_flight"
+
+
+def test_child_key_usage_audit_fetches_all_arms_in_one_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "arms": [
+            {
+                "run_id": f"eval-luna-{index}",
+                "status": "running",
+                "openrouter_credential": {"key_hash": f"hash-{index}"},
+            }
+            for index in (1, 2)
+        ],
+        "alerts": [],
+    }
+    calls: list[set[str]] = []
+
+    class Client:
+        def keys_usage(self, key_hashes: set[str]) -> dict[str, dict[str, float]]:
+            calls.append(key_hashes)
+            return {
+                key_hash: {"usage": float(index)}
+                for index, key_hash in enumerate(sorted(key_hashes), start=1)
+            }
+
+    monkeypatch.setattr(
+        batch_eval,
+        "_local_provider_billed_cost",
+        lambda run_id: (
+            1.0 if run_id.endswith("-1") else 2.0,
+            0,
+            "2026-08-23T00:00:00Z",
+        ),
+    )
+
+    assert batch_eval.audit_openrouter_child_usage(
+        payload,
+        Client(),
+        now=dt.datetime(2026, 8, 23, tzinfo=dt.timezone.utc),
+    ) == []
+    assert calls == [{"hash-1", "hash-2"}]
 
 
 def test_controller_recovers_generation_and_uploads_summary_last(
@@ -1022,8 +1064,9 @@ def test_child_key_usage_audit_resolves_prior_health_alert(
     }
 
     class Client:
-        def key_usage(self, _key_hash: str) -> dict[str, float]:
-            return {"usage": 0.25}
+        def keys_usage(self, key_hashes: set[str]) -> dict[str, dict[str, float]]:
+            assert key_hashes == {"hash-1"}
+            return {"hash-1": {"usage": 0.25}}
 
     monkeypatch.setattr(
         batch_eval,
@@ -1058,9 +1101,9 @@ def test_child_key_usage_audit_stops_persistent_proxy_bypass(
     }
 
     class Client:
-        def key_usage(self, key_hash: str) -> dict[str, float]:
-            assert key_hash == "hash-1"
-            return {"usage": 0.25}
+        def keys_usage(self, key_hashes: set[str]) -> dict[str, dict[str, float]]:
+            assert key_hashes == {"hash-1"}
+            return {"hash-1": {"usage": 0.25}}
 
     monkeypatch.setattr(
         batch_eval,

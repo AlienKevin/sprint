@@ -876,13 +876,22 @@ def audit_openrouter_child_usage(
 ) -> list[dict[str, str]]:
     """Detect use of a child key that bypassed the trusted ledger proxy."""
     alerts: list[dict[str, str]] = []
+    keyed_arms = {
+        str((arm.get("openrouter_credential") or {}).get("key_hash")): arm
+        for arm in payload.get("arms", [])
+        if (arm.get("openrouter_credential") or {}).get("key_hash")
+    }
+    # One paginated control-plane snapshot is both cheaper and internally more
+    # coherent than six independent per-key requests. A failed snapshot is a
+    # batch health problem and is intentionally propagated once to the caller.
+    usage_by_hash = client.keys_usage(set(keyed_arms))
     for arm in payload.get("arms", []):
         credential = arm.get("openrouter_credential") or {}
         key_hash = credential.get("key_hash")
         if not key_hash:
             continue
         try:
-            key = client.key_usage(str(key_hash))
+            key = usage_by_hash[str(key_hash)]
             upstream_usage = float(key.get("usage", 0.0) or 0.0)
             local_usage, pending, local_as_of = _local_provider_billed_cost(
                 arm["run_id"]
@@ -2550,7 +2559,19 @@ def monitor_cycle(
                         now=now,
                     )
                 )
+                payload.pop("openrouter_usage_audit_error", None)
+                resolve_alerts(
+                    payload,
+                    run_id="batch",
+                    kind="openrouter_key_usage_audit",
+                    resolution="OpenRouter batch key-usage snapshot recovered",
+                )
             except (KeyError, OSError, OpenRouterManagementError, ValueError) as exc:
+                payload["openrouter_usage_audit_error"] = {
+                    "checked_at": utc_now(),
+                    "source": type(exc).__name__,
+                    "message": str(exc)[:500],
+                }
                 cycle_alerts.append(
                     {
                         "run_id": "batch",

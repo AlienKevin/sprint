@@ -73,10 +73,10 @@ def test_minimal_cordis_contract_is_sealed() -> None:
     assert "@deepseek-ai/dsh-tool-str-replace-editor" in config
     assert "@deepseek-ai/dsh-session-persistence-jsonl" in config
     assert "@deepseek-ai/dsh-goal" in config
-    assert "@deepseek-ai/dsh-tool-goal" in config
+    assert "@deepseek-ai/dsh-tool-goal" not in config
     assert "@deepseek-ai/dsh-goal-round-driver" in config
     assert "defaultMaxGoalRounds: !!js Number(process.env.DSH_GOAL_MAX_ROUNDS ?? 256)" in config
-    assert "blockedAfterConsecutiveRounds: 3" in config
+    assert "Goal mutation tools are deliberately not mounted" in config
     assert "sprint-deepseek-goal-bootstrap.mjs" in config
     assert "compression: none" in config
     assert "dsh-tool-jobs" not in config
@@ -169,12 +169,12 @@ if (!continued) throw new Error('pre-step did not continue')
 def test_offline_probe_exercises_non_surface_stream_closed_retry() -> None:
     probe = (CONTAINER / "sprint-deepseek-harness-probe.py").read_text()
     assert 'FAILED_PARTIAL_TEXT = "partial-stream-content-must-not-surface"' in probe
-    assert "len(Handler.request_payloads) == 4" in probe
+    assert "len(Handler.request_payloads) == 2" in probe
     assert "first_request == retry_request" in probe
     assert 'retry["failure"]["code"] == "STREAM_CLOSED"' in probe
     assert "FAILED_PARTIAL_TEXT not in json.dumps(surface_messages)" in probe
-    assert '"benchmark goal is host-owned" in mutation_surface' in probe
-    assert 'get("operation") == "edit"' in probe
+    assert '"Use goal tools" not in messages[0]["content"]' in probe
+    assert 'for name in ("create_goal", "get_goal", "update_goal")' in probe
 
 
 def test_runner_records_only_versioned_structured_notifications() -> None:
@@ -207,7 +207,6 @@ def test_image_pins_runtime_and_sdk_versions() -> None:
         "dsh-agent-spine-demo",
         "dsh-goal",
         "dsh-goal-round-driver",
-        "dsh-tool-goal",
         "dsh-llm-deepseek",
         "dsh-llm-retry",
         "dsh-tool-bash-persistent",

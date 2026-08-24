@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import urllib.error
+from unittest import mock
 
 import pytest
 
 from event_runtime.control.openrouter_credentials import (
+    OpenRouterManagementClient,
     OpenRouterManagementError,
     TrialCredentialSpec,
     provision_trial_credentials,
@@ -133,3 +136,72 @@ def test_revoke_is_complete_and_journaled(tmp_path: Path) -> None:
     assert len(client.deleted_keys) == 2
     assert len(client.deleted_guardrails) == 2
     assert json.loads(journal.read_text())["status"] == "revoked"
+
+
+def test_bulk_key_usage_reads_one_coherent_snapshot() -> None:
+    client = OpenRouterManagementClient("m" * 32)
+    calls: list[tuple[str, str]] = []
+
+    def fake_request(method: str, path: str):
+        calls.append((method, path))
+        return {
+            "data": [
+                {"hash": "hash-1", "usage": 1.25},
+                {"hash": "hash-2", "usage": 2.5},
+            ]
+        }
+
+    client.request = fake_request  # type: ignore[method-assign]
+
+    assert client.keys_usage({"hash-1", "hash-2"}) == {
+        "hash-1": {"hash": "hash-1", "usage": 1.25},
+        "hash-2": {"hash": "hash-2", "usage": 2.5},
+    }
+    assert calls == [("GET", "/keys?include_disabled=true&offset=0")]
+
+
+def test_management_get_retries_transient_429_and_honors_retry_after() -> None:
+    client = OpenRouterManagementClient("m" * 32)
+    transient = urllib.error.HTTPError(
+        "https://openrouter.ai/api/v1/keys",
+        429,
+        "rate limited",
+        {"Retry-After": "0"},
+        None,
+    )
+    response = mock.MagicMock()
+    response.__enter__.return_value = response
+    response.status = 200
+    response.read.return_value = b'{"data": []}'
+
+    with (
+        mock.patch(
+            "event_runtime.control.openrouter_credentials.urllib.request.urlopen",
+            side_effect=[transient, response],
+        ) as urlopen,
+        mock.patch(
+            "event_runtime.control.openrouter_credentials.time.sleep"
+        ) as sleep,
+    ):
+        assert client.request("GET", "/keys") == {"data": []}
+
+    assert urlopen.call_count == 2
+    sleep.assert_called_once_with(0.0)
+
+
+def test_management_mutation_is_never_retried() -> None:
+    client = OpenRouterManagementClient("m" * 32)
+    transient = urllib.error.HTTPError(
+        "https://openrouter.ai/api/v1/keys",
+        500,
+        "server error",
+        {},
+        None,
+    )
+    with mock.patch(
+        "event_runtime.control.openrouter_credentials.urllib.request.urlopen",
+        side_effect=transient,
+    ) as urlopen:
+        with pytest.raises(OpenRouterManagementError, match="HTTP 500"):
+            client.request("POST", "/keys", {"name": "probe"}, expected=(201,))
+    assert urlopen.call_count == 1

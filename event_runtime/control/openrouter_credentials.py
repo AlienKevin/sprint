@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import re
 import tempfile
+import time
 from typing import Any
 import urllib.error
 import urllib.parse
@@ -24,6 +25,11 @@ import urllib.request
 
 API_ROOT = "https://openrouter.ai/api/v1"
 SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,80}$")
+READ_RETRY_ATTEMPTS = 4
+READ_RETRY_INITIAL_SECONDS = 0.5
+READ_RETRY_MAX_SECONDS = 10.0
+KEY_LIST_PAGE_SIZE = 100
+KEY_LIST_MAX_PAGES = 100
 
 
 class OpenRouterManagementError(RuntimeError):
@@ -104,40 +110,77 @@ class OpenRouterManagementClient:
     ) -> dict[str, Any]:
         if not path.startswith("/") or ".." in path:
             raise ValueError("unsafe OpenRouter management API path")
+        method = method.upper()
         body = None if payload is None else json.dumps(payload).encode()
-        request = urllib.request.Request(
-            self._api_root + path,
-            data=body,
-            method=method,
-            headers={
-                "Authorization": f"Bearer {self._key}",
-                "Accept": "application/json",
-                **({"Content-Type": "application/json"} if body is not None else {}),
-            },
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                status = int(response.status)
-                raw = response.read()
-                result = json.loads(raw) if raw else {}
-        except urllib.error.HTTPError as exc:
-            if exc.code in expected:
-                exc.read()
-                return {}
-            message = ""
+        # Only idempotent reads are retried. Provisioning and revocation calls
+        # must never be replayed after an ambiguous network response.
+        attempts = READ_RETRY_ATTEMPTS if method == "GET" and body is None else 1
+        result: Any = None
+        status = 0
+        for attempt in range(attempts):
+            request = urllib.request.Request(
+                self._api_root + path,
+                data=body,
+                method=method,
+                headers={
+                    "Authorization": f"Bearer {self._key}",
+                    "Accept": "application/json",
+                    **(
+                        {"Content-Type": "application/json"}
+                        if body is not None
+                        else {}
+                    ),
+                },
+            )
             try:
-                error = json.load(exc).get("error", {})
-                message = str(error.get("message") or error.get("code") or "")
-            except Exception:  # noqa: BLE001 - never expose raw control-plane body
-                pass
-            suffix = f": {' '.join(message.split())[:300]}" if message else ""
-            raise OpenRouterManagementError(
-                f"OpenRouter management {method} {path} failed: HTTP {exc.code}{suffix}"
-            ) from exc
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-            raise OpenRouterManagementError(
-                f"OpenRouter management {method} {path} failed: {type(exc).__name__}"
-            ) from exc
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    status = int(response.status)
+                    raw = response.read()
+                    result = json.loads(raw) if raw else {}
+                break
+            except urllib.error.HTTPError as exc:
+                if exc.code in expected:
+                    exc.read()
+                    return {}
+                message = ""
+                try:
+                    error = json.load(exc).get("error", {})
+                    message = str(error.get("message") or error.get("code") or "")
+                except Exception:  # noqa: BLE001 - do not expose raw body
+                    pass
+                retryable = exc.code == 429 or 500 <= exc.code < 600
+                if retryable and attempt + 1 < attempts:
+                    retry_after = None
+                    try:
+                        retry_after = float(exc.headers.get("Retry-After", ""))
+                    except (AttributeError, TypeError, ValueError):
+                        pass
+                    delay = min(
+                        retry_after
+                        if retry_after is not None and retry_after >= 0
+                        else READ_RETRY_INITIAL_SECONDS * (2**attempt),
+                        READ_RETRY_MAX_SECONDS,
+                    )
+                    time.sleep(delay)
+                    continue
+                suffix = f": {' '.join(message.split())[:300]}" if message else ""
+                raise OpenRouterManagementError(
+                    f"OpenRouter management {method} {path} failed: "
+                    f"HTTP {exc.code}{suffix}"
+                ) from exc
+            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+                if attempt + 1 < attempts:
+                    time.sleep(
+                        min(
+                            READ_RETRY_INITIAL_SECONDS * (2**attempt),
+                            READ_RETRY_MAX_SECONDS,
+                        )
+                    )
+                    continue
+                raise OpenRouterManagementError(
+                    f"OpenRouter management {method} {path} failed after "
+                    f"{attempts} attempts: {type(exc).__name__}"
+                ) from exc
         if status not in expected or not isinstance(result, dict):
             raise OpenRouterManagementError(
                 f"OpenRouter management {method} {path} returned HTTP {status}"
@@ -243,6 +286,38 @@ class OpenRouterManagementClient:
         if not isinstance(data, dict):
             raise OpenRouterManagementError("API key usage response was incomplete")
         return data
+
+    def keys_usage(self, key_hashes: set[str]) -> dict[str, dict[str, Any]]:
+        """Read a coherent usage snapshot for a batch of ephemeral keys."""
+        wanted = {str(key_hash) for key_hash in key_hashes if key_hash}
+        if not wanted:
+            return {}
+        found: dict[str, dict[str, Any]] = {}
+        offset = 0
+        for _page in range(KEY_LIST_MAX_PAGES):
+            query = urllib.parse.urlencode(
+                {"include_disabled": "true", "offset": offset}
+            )
+            data = self.request("GET", f"/keys?{query}").get("data")
+            if not isinstance(data, list):
+                raise OpenRouterManagementError(
+                    "API key list usage response was incomplete"
+                )
+            for row in data:
+                if not isinstance(row, dict):
+                    continue
+                key_hash = row.get("hash")
+                if isinstance(key_hash, str) and key_hash in wanted:
+                    found[key_hash] = row
+            if found.keys() >= wanted:
+                return found
+            if len(data) < KEY_LIST_PAGE_SIZE:
+                break
+            offset += len(data)
+        missing = len(wanted - found.keys())
+        raise OpenRouterManagementError(
+            f"API key list usage response omitted {missing} requested key(s)"
+        )
 
     def generation_usage(self, generation_id: str) -> dict[str, Any]:
         """Return OpenRouter's authoritative audit for one billed generation."""

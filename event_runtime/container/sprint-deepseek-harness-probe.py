@@ -35,83 +35,6 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _send_tool_call(
-        self, call_id: str, name: str, arguments: dict[str, object]
-    ) -> None:
-        self._send_events(
-            [
-                {
-                    "id": f"probe-{call_id}",
-                    "object": "chat.completion.chunk",
-                    "model": MODEL,
-                    "choices": [
-                        {
-                            "index": 0,
-                            "delta": {
-                                "role": "assistant",
-                                "tool_calls": [
-                                    {
-                                        "index": 0,
-                                        "id": call_id,
-                                        "type": "function",
-                                        "function": {
-                                            "name": name,
-                                            "arguments": json.dumps(arguments),
-                                        },
-                                    }
-                                ],
-                            },
-                            "finish_reason": None,
-                        }
-                    ],
-                },
-                {
-                    "id": f"probe-{call_id}",
-                    "object": "chat.completion.chunk",
-                    "model": MODEL,
-                    "choices": [
-                        {"index": 0, "delta": {}, "finish_reason": "tool_calls"}
-                    ],
-                    "usage": {
-                        "prompt_tokens": 100,
-                        "completion_tokens": 10,
-                        "total_tokens": 110,
-                    },
-                },
-            ]
-        )
-
-    @staticmethod
-    def _goal_ref(value: object) -> tuple[str, int, str] | None:
-        if isinstance(value, str):
-            try:
-                return Handler._goal_ref(json.loads(value))
-            except (json.JSONDecodeError, TypeError):
-                return None
-        if isinstance(value, list):
-            for item in value:
-                found = Handler._goal_ref(item)
-                if found is not None:
-                    return found
-            return None
-        if not isinstance(value, dict):
-            return None
-        goal_id = value.get("id")
-        revision = value.get("revision")
-        objective = value.get("objective")
-        if (
-            isinstance(goal_id, str)
-            and goal_id.startswith("goal-")
-            and isinstance(revision, int)
-            and isinstance(objective, str)
-        ):
-            return goal_id, revision, objective
-        for item in value.values():
-            found = Handler._goal_ref(item)
-            if found is not None:
-                return found
-        return None
-
     def do_POST(self) -> None:  # noqa: N802
         if self.path != "/api/v1/chat/completions":
             self.send_error(404)
@@ -146,31 +69,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        if request_number == 2:
-            # The successful retry asks the real goal tool for the host-seeded
-            # id and revision.  This makes the next request a valid, realistic
-            # attempt to mutate the benchmark objective.
-            self._send_tool_call("call_probe_get_goal", "get_goal", {})
-            return
-        if request_number == 3:
-            goal_ref = self._goal_ref(type(self).request_payloads[-1])
-            if goal_ref is None:
-                self.send_error(500, "get_goal tool result was absent")
-                return
-            goal_id, revision, _objective = goal_ref
-            self._send_tool_call(
-                "call_probe_update_goal",
-                "update_goal",
-                {
-                    "goal_id": goal_id,
-                    "revision": revision,
-                    "action": "edit",
-                    "objective": "mutated objective must never persist",
-                    "max_goal_rounds": 1,
-                },
-            )
-            return
-        if request_number != 4:
+        if request_number != 2:
             self.send_error(500, f"unexpected request {request_number}")
             return
         events = [
@@ -258,16 +157,10 @@ def main() -> int:
         # The first provider attempt closes without [DONE]. The finite retry
         # executor opens a retry turn over the same surface history; it is not a
         # second goal round and it does not require a CPU-agent relaunch.
-        assert len(Handler.request_payloads) == 4, len(Handler.request_payloads)
-        first_request, retry_request, goal_result_request, mutation_result_request = (
-            Handler.request_payloads
-        )
+        assert len(Handler.request_payloads) == 2, len(Handler.request_payloads)
+        first_request, retry_request = Handler.request_payloads
         assert first_request == retry_request
         assert FAILED_PARTIAL_TEXT not in json.dumps(retry_request)
-        assert "call_probe_get_goal" in json.dumps(goal_result_request)
-        mutation_surface = json.dumps(mutation_result_request)
-        assert "call_probe_update_goal" in mutation_surface
-        assert "benchmark goal is host-owned" in mutation_surface
         request = first_request
         assert request.get("model") == MODEL
         assert request.get("stream") is True
@@ -279,7 +172,7 @@ def main() -> int:
         assert messages[0]["content"].startswith(
             "You are a helpful software engineer assistant."
         )
-        assert "Use goal tools" in messages[0]["content"]
+        assert "Use goal tools" not in messages[0]["content"]
         assert "/goal" not in json.dumps(messages)
         tools = request.get("tools")
         assert isinstance(tools, list)
@@ -291,9 +184,6 @@ def main() -> int:
         assert names == {
             "bash",
             "str_replace_editor",
-            "get_goal",
-            "create_goal",
-            "update_goal",
         }, names
         events = result.events
         retry_events = [event for event in events if event.get("type") == "llm/retry"]
@@ -329,9 +219,8 @@ def main() -> int:
         assert goal["objective"] == objective
         assert goal["maxGoalRounds"] == 1
         assert not any(
-            event.get("type") == "goal/change"
-            and event.get("data", {}).get("operation") == "edit"
-            for event in events
+            name in json.dumps(Handler.request_payloads)
+            for name in ("create_goal", "get_goal", "update_goal")
         )
         print("DEEPSEEK_HARNESS_PROTOCOL_OK")
         return 0
