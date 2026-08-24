@@ -206,13 +206,13 @@ def test_reconstructs_deepseek_harness_trace_with_provider_billing(
                 "cost_basis": "openrouter_list_price_with_deepseek_peak_floor",
                 "promotion_snapshot": {"discount_fraction": 0.5},
                 "usage": {
-                    "input_tokens": 1000,
-                    "input_tokens_details": {
+                    "prompt_tokens": 1000,
+                    "prompt_tokens_details": {
                         "cached_tokens": 800,
                         "cache_write_tokens": 0,
                     },
-                    "output_tokens": 100,
-                    "output_tokens_details": {"reasoning_tokens": 50},
+                    "completion_tokens": 100,
+                    "completion_tokens_details": {"reasoning_tokens": 50},
                     "total_tokens": 1100,
                 },
             }
@@ -234,6 +234,10 @@ def test_reconstructs_deepseek_harness_trace_with_provider_billing(
     assert audit["request_count"] == 1
     assert audit["calculated_api_usage_usd"] == 0.3
     assert audit["requests"][0]["provider_only_usage"] is True
+    assert audit["requests"][0]["input_tokens"] == 1000
+    assert audit["requests"][0]["cached_input_tokens"] == 800
+    assert audit["requests"][0]["output_tokens"] == 100
+    assert audit["requests"][0]["reasoning_output_tokens"] == 50
     assert audit["source_sessions"][0]["agent_kind"] == "deepseek-harness"
     assert audit["source_sessions"][0]["trajectory_sha256"]
     assert sprintctl.run_usage_audit_ready(tmp_path, run) == (True, [])

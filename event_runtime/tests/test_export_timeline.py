@@ -22,6 +22,32 @@ def write_jsonl(path: Path, rows: list[dict]) -> None:
     path.write_text("".join(json.dumps(row) + "\n" for row in rows))
 
 
+def test_deepseek_harness_trace_uses_nested_event_clock_and_shape() -> None:
+    row = {
+        "schema_version": 1,
+        "method": "session.event",
+        "payload": {
+            "event": {
+                "seq": 17,
+                "type": "tool/call",
+                "time": 1_787_571_739_098,
+                "data": {"name": "exec", "callId": "call-17"},
+            }
+        },
+    }
+
+    assert unified_timeline.Builder._record_timestamp(row) == 1_787_571_739_098
+    kind, data = unified_timeline.Builder._trace_shape(row)
+    assert kind == "tool_call"
+    assert data == {
+        "trace_type": "deepseek_harness",
+        "trace_subtype": "tool/call",
+        "harness_sequence": 17,
+        "tool": "exec",
+        "call_id": "call-17",
+    }
+
+
 def fixture_run(
     tmp_path: Path, *, missing_artifact: bool = False, training_lifecycle: bool = True
 ) -> Path:

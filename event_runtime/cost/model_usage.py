@@ -289,13 +289,19 @@ def _provider_usage_signature(record: dict[str, Any]) -> tuple[int, ...] | None:
     usage = record.get("usage")
     if not isinstance(usage, dict):
         return None
-    input_details = usage.get("input_tokens_details") or {}
-    output_details = usage.get("output_tokens_details") or {}
+    input_details = (
+        usage.get("input_tokens_details") or usage.get("prompt_tokens_details") or {}
+    )
+    output_details = (
+        usage.get("output_tokens_details")
+        or usage.get("completion_tokens_details")
+        or {}
+    )
     return (
-        int(usage.get("input_tokens") or 0),
+        int(usage.get("input_tokens", usage.get("prompt_tokens")) or 0),
         int(input_details.get("cached_tokens") or 0),
         int(input_details.get("cache_write_tokens") or 0),
-        int(usage.get("output_tokens") or 0),
+        int(usage.get("output_tokens", usage.get("completion_tokens")) or 0),
         int(output_details.get("reasoning_tokens") or 0),
         int(usage.get("total_tokens") or 0),
     )
@@ -410,12 +416,22 @@ def apply_provider_reported_costs(
     # or failing the archived run rebuild.
     for record in remaining:
         usage = record.get("usage") or {}
-        input_details = usage.get("input_tokens_details") or {}
-        output_details = usage.get("output_tokens_details") or {}
-        input_tokens = int(usage.get("input_tokens") or 0)
+        input_details = (
+            usage.get("input_tokens_details")
+            or usage.get("prompt_tokens_details")
+            or {}
+        )
+        output_details = (
+            usage.get("output_tokens_details")
+            or usage.get("completion_tokens_details")
+            or {}
+        )
+        input_tokens = int(usage.get("input_tokens", usage.get("prompt_tokens")) or 0)
         cached_tokens = int(input_details.get("cached_tokens") or 0)
         cache_write_tokens = int(input_details.get("cache_write_tokens") or 0)
-        output_tokens = int(usage.get("output_tokens") or 0)
+        output_tokens = int(
+            usage.get("output_tokens", usage.get("completion_tokens")) or 0
+        )
         reasoning_tokens = int(output_details.get("reasoning_tokens") or 0)
         total_tokens = int(usage.get("total_tokens") or 0)
         ledger_id = str(record.get("ledger_request_id") or "unknown")

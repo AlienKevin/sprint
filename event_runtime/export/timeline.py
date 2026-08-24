@@ -921,6 +921,16 @@ class Builder:
                 value = parse_epoch_ms(payload.get(key))
                 if value is not None:
                     return value
+            # DeepSeek Harness emits versioned JSON-RPC notifications. Their
+            # authoritative event timestamp is an epoch-millisecond value
+            # nested in ``payload.event.time`` rather than on the wrapper.
+            event = payload.get("event")
+            if (
+                record.get("schema_version") == 1
+                and record.get("method") == "session.event"
+                and isinstance(event, dict)
+            ):
+                return parse_epoch_ms(event.get("time"))
         return None
 
     @staticmethod
@@ -929,6 +939,44 @@ class Builder:
         payload = (
             record.get("payload") if isinstance(record.get("payload"), dict) else {}
         )
+        harness_event = payload.get("event")
+        if (
+            record.get("schema_version") == 1
+            and record.get("method") == "session.event"
+            and isinstance(harness_event, dict)
+        ):
+            subtype = str(harness_event.get("type") or "event")
+            event_data = (
+                harness_event.get("data")
+                if isinstance(harness_event.get("data"), dict)
+                else {}
+            )
+            data: dict[str, Any] = {
+                "trace_type": "deepseek_harness",
+                "trace_subtype": subtype,
+                "harness_sequence": harness_event.get("seq"),
+            }
+            if subtype == "tool/call":
+                data["tool"] = str(event_data.get("name") or "unknown")
+                data["call_id"] = event_data.get("callId")
+                return "tool_call", data
+            if subtype == "tool/result":
+                message = (
+                    event_data.get("message")
+                    if isinstance(event_data.get("message"), dict)
+                    else {}
+                )
+                source = (
+                    message.get("source")
+                    if isinstance(message.get("source"), dict)
+                    else {}
+                )
+                data["call_id"] = source.get("callId")
+                return "tool_result", data
+            if subtype == "goal/change":
+                data["goal_operation"] = event_data.get("operation")
+                return "goal_change", data
+            return "agent_event", data
         subtype = str(payload.get("type") or outer)
         data: dict[str, Any] = {"trace_type": outer, "trace_subtype": subtype}
         call_types = {"custom_tool_call", "function_call", "tool_use"}
