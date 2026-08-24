@@ -20,7 +20,6 @@
     training: '#9ccc65',
     verifier: '#b388ff',
     tools: '#e5b45c',
-    event: '#e8ebef',
   };
   const compactLanes = [
     {key: 'cpu', label: 'CPU', color: colors.cpu},
@@ -37,6 +36,8 @@
     cursorEpoch: null,
     hoverEpoch: null,
     scrollFrame: null,
+    scrollSyncLocked: false,
+    scrollUnlockTimer: null,
     expanded: false,
     docked: false,
     selectedStepId: null,
@@ -152,7 +153,7 @@
     const eventY = laneTop + lanes.length * laneHeight + 8;
     ctx.fillStyle = colors.muted;
     ctx.font = '8px ui-monospace, monospace';
-    ctx.fillText('TOOLS + EVENTS', 10, eventY + 11);
+    ctx.fillText('TOOL CALLS', 10, eventY + 11);
     const buckets = state.timeline.tool_call_buckets?.buckets || [];
     const maxTools = Math.max(1, ...buckets.map(bucket => Number(bucket.total) || 0));
     for (const bucket of buckets) {
@@ -164,14 +165,6 @@
       ctx.fillRect(start, eventY + 17 - barHeight, Math.max(1, end - start - 1), barHeight);
     }
     ctx.globalAlpha = 1;
-    for (const event of state.series.infrastructure) {
-      const px = xFor(event.epoch_ms);
-      ctx.fillStyle = /preempt|lost/.test(event.kind || '') ? '#ff6b6b' : colors.event;
-      ctx.beginPath();
-      ctx.arc(px, eventY + 13, 2.4, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
     ctx.fillStyle = colors.muted;
     ctx.font = '8px ui-monospace, monospace';
     const duration = state.timeline.clock.end_epoch_ms - state.timeline.clock.origin_epoch_ms;
@@ -254,15 +247,20 @@
     const number = step.public_step_id ?? step.attempt_step_id;
     status.textContent = `Step #${number} · ${fmtDuration(stepEpoch - state.timeline.clock.origin_epoch_ms)}`;
     const previousBehavior = document.documentElement.style.scrollBehavior;
+    state.scrollSyncLocked = true;
+    clearTimeout(state.scrollUnlockTimer);
     document.documentElement.style.scrollBehavior = 'auto';
     target.scrollIntoView({behavior: 'auto', block: 'start'});
     document.documentElement.style.scrollBehavior = previousBehavior;
+    state.scrollUnlockTimer = setTimeout(() => {
+      state.scrollSyncLocked = false;
+    }, 180);
     draw();
   }
 
   function syncFromScroll() {
     state.scrollFrame = null;
-    if (!state.timeline || !state.trajectory) return;
+    if (state.scrollSyncLocked || !state.timeline || !state.trajectory) return;
     const anchor = (dock?.getBoundingClientRect().bottom || 0) + 20;
     let current = state.trajectory.steps?.[0];
     for (const step of state.trajectory.steps || []) {
@@ -305,6 +303,13 @@
 
   window.addEventListener('trajectory:loaded', event => loadOverview(event.detail.data));
   window.addEventListener('scroll', () => {
+    if (state.scrollSyncLocked) {
+      clearTimeout(state.scrollUnlockTimer);
+      state.scrollUnlockTimer = setTimeout(() => {
+        state.scrollSyncLocked = false;
+      }, 180);
+      return;
+    }
     if (state.scrollFrame == null) state.scrollFrame = requestAnimationFrame(syncFromScroll);
   }, {passive: true});
   canvas.addEventListener('pointermove', moveTip);
@@ -315,6 +320,8 @@
   });
   canvas.addEventListener('click', event => {
     const rect = canvas.getBoundingClientRect();
+    state.hoverEpoch = null;
+    tip.hidden = true;
     jumpToEpoch(epochFor(event.clientX - rect.left), true);
   });
   canvas.addEventListener('keydown', event => {
@@ -335,8 +342,8 @@
     document.body.classList.toggle('pulse-expanded', state.expanded);
     mode.textContent = state.expanded ? 'full resource detail' : 'hover, then click';
     canvas.setAttribute('aria-label', state.expanded
-      ? 'Detailed agent CPU, training GPU, training memory, tool calls, and resource events over the run. Hover to preview and click to select the nearest agent step.'
-      : 'Agent CPU, training GPU, tool calls, and resource events over the run. Hover to preview and click to select the nearest agent step.');
+      ? 'Detailed agent CPU, training GPU, training memory, and tool calls over the run. Hover to preview and click to select the nearest agent step.'
+      : 'Agent CPU, training GPU, and tool calls over the run. Hover to preview and click to select the nearest agent step.');
     resize();
   }
   function setDocked(docked) {
