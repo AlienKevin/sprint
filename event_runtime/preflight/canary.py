@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import argparse
 import base64
 import datetime as dt
 import hashlib
@@ -19,6 +18,7 @@ import modal
 ROOT = Path(__file__).resolve().parents[2]
 REPORT = ROOT / "runs/ops/training-gpu-canary.json"
 POLICY_ADAPTER = Path(__file__).with_name("canary_policy_adapter.py")
+TRAINING_FIXTURE = Path(__file__).with_name("training_canary") / "train_sprint.py"
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 sys.path.insert(0, str(ROOT))
@@ -54,9 +54,9 @@ CANARY_RESOURCE_CONTRACT = {
     },
 }
 
-# Keep this invocation aligned with the training app shipped in the preflight
-# archive.  The app owns task registration internally and exposes ``max_iters``
-# (not the older Isaac Lab ``task`` / ``max_iterations`` flags).
+# Keep this invocation aligned with the checked-in training canary fixture. The
+# fixture owns task registration and exposes ``max_iters`` (not the older Isaac
+# Lab ``task`` / ``max_iterations`` flags).
 TRAINING_CANARY_CLI = (
     "--num_envs=128 --max_iters=10 --chunk_iters=10 --save_interval=10 "
     "--headless --device=cuda:0"
@@ -289,7 +289,7 @@ def run_gpu_budget_mirror_canary(
                 "run_id": run_id,
                 "checked_at_epoch_s": checked_at,
                 "total_usd": total,
-                "stop_threshold_usd": 9.9,
+                "stop_threshold_usd": 10.0,
                 "status": "within_budget",
                 "canary_sequence": sequence,
             }
@@ -341,12 +341,8 @@ def run_gpu_budget_mirror_canary(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--work-archive", type=Path, required=True)
-    args = parser.parse_args()
-    archive = args.work_archive.resolve()
-    if not archive.is_file():
-        parser.error(f"work archive not found: {archive}")
+    if not TRAINING_FIXTURE.is_file():
+        raise RuntimeError(f"training canary fixture not found: {TRAINING_FIXTURE}")
 
     warmup = json.loads(MANIFEST.read_text())
     if not warmup.get("completed"):
@@ -359,7 +355,11 @@ def main() -> int:
     app = modal.App.lookup(APP_NAME, create_if_missing=True)
     volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
     with volume.batch_upload(force=True) as upload:
-        upload.put_file(archive, f"{remote_root}/app.tar.gz", mode=0o444)
+        upload.put_file(
+            TRAINING_FIXTURE,
+            f"{remote_root}/train_sprint.py",
+            mode=0o444,
+        )
         upload.put_file(
             POLICY_ADAPTER,
             f"{remote_root}/canary_policy_adapter.py",
@@ -368,7 +368,7 @@ def main() -> int:
 
     command = (
         "set -euo pipefail; "
-        f"tar -xzf /warm{remote_root}/app.tar.gz -C /; "
+        f"install -m 0444 /warm{remote_root}/train_sprint.py /app/train_sprint.py; "
         f"mkdir -p /warm{remote_root}/checkpoints /warm{remote_root}/logs "
         f"/warm{remote_root}/telemetry; "
         "SPRINT_REQUESTED_CPU_CORES=6 SPRINT_REQUESTED_MEMORY_MIB=12288 "
@@ -446,7 +446,10 @@ def main() -> int:
         "canary_id": canary_id,
         "image_id": image_id,
         "verifier_image_id": verifier_image_id,
-        "work_archive_sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+        "training_fixture": str(TRAINING_FIXTURE.relative_to(ROOT)),
+        "training_fixture_sha256": hashlib.sha256(
+            TRAINING_FIXTURE.read_bytes()
+        ).hexdigest(),
         "remote_root": remote_root,
         "started_at_epoch_s": started,
     }

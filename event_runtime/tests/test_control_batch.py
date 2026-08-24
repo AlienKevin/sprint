@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime as dt
+import hashlib
 import importlib.util
 import io
 import json
@@ -1019,6 +1020,9 @@ def test_functional_gpu_canary_must_match_both_warmed_images(
 ) -> None:
     warmup = tmp_path / "warmup.json"
     canary = tmp_path / "canary.json"
+    fixture = tmp_path / "train_sprint.py"
+    fixture.write_text("print('pinned canary')\n")
+    fixture_sha256 = hashlib.sha256(fixture.read_bytes()).hexdigest()
     warmup.write_text(
         json.dumps(
             {
@@ -1060,15 +1064,22 @@ def test_functional_gpu_canary_must_match_both_warmed_images(
                 },
                 "image_id": "im-agent",
                 "verifier_image_id": "im-verifier",
+                "training_fixture_sha256": fixture_sha256,
             }
         )
     )
     monkeypatch.setattr(batch_eval, "WARMUP_MANIFEST", warmup)
     monkeypatch.setattr(batch_eval, "FUNCTIONAL_CANARY_REPORT", canary)
+    monkeypatch.setattr(batch_eval, "FUNCTIONAL_CANARY_FIXTURE", fixture)
     assert batch_eval.functional_gpu_canary_ready()
     payload = json.loads(canary.read_text())
     payload["verifier_image_id"] = "im-stale"
     canary.write_text(json.dumps(payload))
+    assert not batch_eval.functional_gpu_canary_ready()
+
+    payload["verifier_image_id"] = "im-verifier"
+    canary.write_text(json.dumps(payload))
+    fixture.write_text("print('changed canary')\n")
     assert not batch_eval.functional_gpu_canary_ready()
 
 

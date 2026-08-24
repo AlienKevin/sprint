@@ -94,6 +94,19 @@ def test_functional_canary_uses_current_training_cli_contract() -> None:
     assert "--seed=" not in canary.TRAINING_CANARY_CLI
 
 
+def test_functional_canary_uses_pinned_repo_owned_training_fixture() -> None:
+    canary = load_script("canary.py")
+    source = (PREFLIGHT / "canary.py").read_text()
+
+    assert canary.TRAINING_FIXTURE == (
+        PREFLIGHT / "training_canary" / "train_sprint.py"
+    )
+    assert canary.TRAINING_FIXTURE.is_file()
+    assert "--work-archive" not in source
+    assert "app.tar.gz" not in source
+    assert "training_fixture_sha256" in source
+
+
 def test_functional_canary_uses_trainer_owned_final_checkpoint() -> None:
     source = (PREFLIGHT / "canary.py").read_text()
 

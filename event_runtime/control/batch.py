@@ -55,6 +55,9 @@ WEB = ROOT / "web"
 BATCH_ROOT = SCRIPT_DIR / "batches"
 WARMUP_MANIFEST = SCRIPT_DIR / "modal-image-warmup.json"
 FUNCTIONAL_CANARY_REPORT = SCRIPT_DIR / "training-gpu-canary.json"
+FUNCTIONAL_CANARY_FIXTURE = (
+    PREFLIGHT_DIR / "training_canary" / "train_sprint.py"
+)
 BUDGET_CONFIG = MODULE_DIR / "budget.env"
 HARBOR_REVISION = "dafb1387151e1c32702963d44fe6c3cea66cf8cb"
 CODEX_VERSION = "0.149.1"
@@ -302,6 +305,9 @@ def functional_gpu_canary_ready() -> bool:
     try:
         warmup = json.loads(WARMUP_MANIFEST.read_text())
         canary = json.loads(FUNCTIONAL_CANARY_REPORT.read_text())
+        fixture_sha256 = hashlib.sha256(
+            FUNCTIONAL_CANARY_FIXTURE.read_bytes()
+        ).hexdigest()
     except (OSError, json.JSONDecodeError):
         return False
     contexts = warmup.get("contexts", {})
@@ -341,6 +347,7 @@ def functional_gpu_canary_ready() -> bool:
         and canary.get("image_id") == contexts.get("agent_training", {}).get("image_id")
         and canary.get("verifier_image_id")
         == contexts.get("verifier", {}).get("image_id")
+        and canary.get("training_fixture_sha256") == fixture_sha256
     )
 
 
