@@ -149,7 +149,7 @@ def test_codex_comparison_models_pin_provider_compatible_tool_contracts(
         assert model["multi_agent_version"] == "v2"
 
     luna_lock = json.loads((models / "luna.json").read_text())
-    assert luna_lock["codex_version"] == "0.147.0"
+    assert luna_lock["codex_version"] == "0.149.1"
     assert luna_lock["model"]["slug"] == "gpt-5.6-luna"
     assert luna_lock["model"]["tool_mode"] == "code_mode_only"
     assert luna_lock["model"]["multi_agent_version"] == "v1"

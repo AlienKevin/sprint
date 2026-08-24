@@ -17,6 +17,11 @@ AGENT = ROOT / "event_runtime" / "agent"
 CODEX_COST = (
     ROOT / "harbor" / "src" / "harbor" / "agents" / "installed" / "codex_cost.py"
 )
+DEEPSEEK_HARNESS_NODE = CONTAINER / "deepseek-harness-node"
+NODE_VERSION = "22.22.0"
+CODEX_VERSION = "0.149.1"
+CLAUDE_CODE_VERSION = "2.1.220"
+DEEPSEEK_HARNESS_VERSION = "0.1.1-rc.2"
 
 _CONTAINER_LINKS = (
     "sprint-snapshot-loop.sh",
@@ -90,10 +95,47 @@ def agent_image(event: EventLayout, public_verifier: Path) -> modal.Image:
         event.environment / "Dockerfile", context_dir=event.environment
     )
     image = image.add_local_dir(
+        DEEPSEEK_HARNESS_NODE,
+        "/opt/deepseek-harness",
+        copy=True,
+    )
+    image = image.run_commands(
+        "set -eu; "
+        f"archive=node-v{NODE_VERSION}-linux-x64.tar.gz; "
+        f"curl -fsSLO https://nodejs.org/dist/v{NODE_VERSION}/$archive; "
+        f"curl -fsSLO https://nodejs.org/dist/v{NODE_VERSION}/SHASUMS256.txt; "
+        "grep \"  $archive$\" SHASUMS256.txt | sha256sum -c -; "
+        "tar -xzf $archive -C /usr/local --strip-components=1; "
+        "rm -f $archive SHASUMS256.txt; "
+        f"npm install -g @openai/codex@{CODEX_VERSION} "
+        f"@anthropic-ai/claude-code@{CLAUDE_CODE_VERSION}; "
+        "npm ci --prefix /opt/deepseek-harness --omit=dev --ignore-scripts; "
+        "ln -sf /opt/deepseek-harness/node_modules/.bin/dsh-jsonrpc-agent "
+        "/usr/local/bin/dsh-jsonrpc-agent; "
+        'pip3 install --no-cache-dir "pydantic>=2.12,<3"; '
+        'pip3 install --no-cache-dir --no-deps "deepseek-harness-sdk==0.1.1rc1"; '
+        f"test \"$(codex --version | sed 's/^codex-cli //')\" = "
+        f'"{CODEX_VERSION}"; '
+        f"claude --version | grep -F '{CLAUDE_CODE_VERSION}'; "
+        "node -e 'const v=require(\"/opt/deepseek-harness/node_modules/"
+        "@deepseek-ai/dsh-sdk-jsonrpc-demo/package.json\").version; "
+        "if (v !== process.argv[1]) throw new Error(`unexpected DeepSeek Harness "
+        f"version ${{v}}`)' '{DEEPSEEK_HARNESS_VERSION}'; "
+        "test \"$(find /opt/deepseek-harness/node_modules -path "
+        "'*/@deepseek-ai/dsh-agent/package.json' | wc -l)\" = 1; "
+        "test \"$(find /opt/deepseek-harness/node_modules -path "
+        "'*/@deepseek-ai/dsh-scope/package.json' | wc -l)\" = 1; "
+        'python3 -c "import deepseek_harness"',
+    )
+    image = image.add_local_dir(
         CONTAINER,
         "/opt/event_runtime/container",
         copy=True,
-        ignore=["**/__pycache__/**", "**/*.pyc"],
+        ignore=[
+            "**/__pycache__/**",
+            "**/*.pyc",
+            "deepseek-harness-node/**",
+        ],
     )
     image = image.add_local_dir(MODELS, "/opt/event_runtime/models", copy=True)
     image = image.add_local_dir(

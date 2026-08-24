@@ -38,7 +38,7 @@ event gpu status                                   # job and policy mirror
 event gpu logs JOB_ID                              # worker output
 event gpu wait JOB_ID                              # wait for completion
 event gpu get JOB_ID /app/policy.pt                # retrieve verified output
-event gpu cancel JOB_ID                            # cancel an undispatched job
+event gpu cancel JOB_ID                            # cancel a queued or running job
 event check POLICY.pt                              # validate TorchScript ABI
 event test POLICY.pt                               # run local published verifier
 event archive POLICY.pt --note "..."               # durably stage candidate
@@ -50,8 +50,9 @@ Declare every file that must return from the isolated GPU sandbox with a
 repeatable `--output /app/...` option. Declared files are required, bounded,
 checksummed, and copied automatically; `.pt` and `.pth` outputs become available
 through `event gpu get`. Do not encode model files into logs. Only one A10G job
-runs at a time; later jobs run FIFO. `event gpu cancel` works only before a GPU
-sandbox is allocated.
+runs at a time; later jobs run FIFO. Cancellation is asynchronous once a GPU
+sandbox has been allocated, so inspect `event gpu status JOB_ID` for the
+terminal acknowledgement.
 
 The worker automatically bootstraps Python scripts that use Isaac Lab; do not
 wrap them in another launcher or pass wrapper-reserved device flags. `/app`,

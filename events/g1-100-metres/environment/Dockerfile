@@ -61,33 +61,4 @@ COPY README.md __init__.py asset_probe.py robot.py spec.py standing_start.py /ap
 RUN apt-get update && apt-get install -y --no-install-recommends restic \
     && rm -rf /var/lib/apt/lists/*
 
-# Agent setup runs with no network. Bake the exact harness CLIs into a late
-# trusted layer so Harbor's version check is a local no-op and CLI pin changes
-# do not invalidate the much larger Isaac/PyTorch layers above.
-ARG NODE_VERSION=22.22.0
-ARG CODEX_VERSION=0.149.1
-ARG CLAUDE_CODE_VERSION=2.1.220
-ARG DEEPSEEK_HARNESS_VERSION=0.1.1-rc.2
-COPY deepseek-harness-node/package.json deepseek-harness-node/package-lock.json /opt/deepseek-harness/
-RUN set -eu; \
-    archive="node-v${NODE_VERSION}-linux-x64.tar.gz"; \
-    curl -fsSLO "https://nodejs.org/dist/v${NODE_VERSION}/${archive}"; \
-    curl -fsSLO "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt"; \
-    grep "  ${archive}$" SHASUMS256.txt | sha256sum -c -; \
-    tar -xzf "$archive" -C /usr/local --strip-components=1; \
-    rm -f "$archive" SHASUMS256.txt; \
-    npm install -g \
-      "@openai/codex@${CODEX_VERSION}" \
-      "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"; \
-    npm ci --prefix /opt/deepseek-harness --omit=dev --ignore-scripts; \
-    ln -sf /opt/deepseek-harness/node_modules/.bin/dsh-jsonrpc-agent \
-      /usr/local/bin/dsh-jsonrpc-agent; \
-    pip3 install --no-cache-dir "pydantic>=2.12,<3"; \
-    pip3 install --no-cache-dir --no-deps "deepseek-harness-sdk==0.1.1rc1"; \
-    test "$(codex --version | sed 's/^codex-cli //')" = "$CODEX_VERSION"; \
-    claude --version | grep -F "$CLAUDE_CODE_VERSION"; \
-    node -e 'const v=require("/opt/deepseek-harness/node_modules/@deepseek-ai/dsh-sdk-jsonrpc-demo/package.json").version; if (v !== process.argv[1]) throw new Error(`unexpected DeepSeek Harness version ${v}`)' "$DEEPSEEK_HARNESS_VERSION"; \
-    test "$(find /opt/deepseek-harness/node_modules -path '*/@deepseek-ai/dsh-agent/package.json' | wc -l)" = 1; \
-    test "$(find /opt/deepseek-harness/node_modules -path '*/@deepseek-ai/dsh-scope/package.json' | wc -l)" = 1; \
-    python3 -c "import deepseek_harness"
 WORKDIR /app

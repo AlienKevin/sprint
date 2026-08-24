@@ -135,22 +135,28 @@ def test_offline_probe_exercises_non_surface_stream_closed_retry() -> None:
     assert "FAILED_PARTIAL_TEXT not in json.dumps(surface_messages)" in probe
 
 
+def test_runner_records_only_versioned_structured_notifications() -> None:
+    runner = (CONTAINER / "sprint-deepseek-harness-runner.py").read_text()
+    assert '"schema_version": 1' in runner
+    assert '"method": raw["method"]' in runner
+    assert '"payload": raw["payload"]' in runner
+    assert "repr(notification)" not in runner
+
+
 def test_image_pins_runtime_and_sdk_versions() -> None:
-    dockerfile = (
-        ROOT / "events/g1-100-metres/environment/Dockerfile"
-    ).read_text()
-    assert "ARG DEEPSEEK_HARNESS_VERSION=0.1.1-rc.2" in dockerfile
-    assert '"deepseek-harness-sdk==0.1.1rc1"' in dockerfile
+    image_source = (ROOT / "event_runtime/image.py").read_text()
+    assert 'DEEPSEEK_HARNESS_VERSION = "0.1.1-rc.2"' in image_source
+    assert '"deepseek-harness-sdk==0.1.1rc1"' in image_source
     manifest = json.loads(
         (
             ROOT
-            / "events/g1-100-metres/environment/deepseek-harness-node/package.json"
+            / "event_runtime/container/deepseek-harness-node/package.json"
         ).read_text()
     )
     lock = json.loads(
         (
             ROOT
-            / "events/g1-100-metres/environment/deepseek-harness-node/package-lock.json"
+            / "event_runtime/container/deepseek-harness-node/package-lock.json"
         ).read_text()
     )
     required = {
@@ -170,8 +176,8 @@ def test_image_pins_runtime_and_sdk_versions() -> None:
         name = f"@deepseek-ai/{package}"
         assert manifest["dependencies"][name] == "0.1.1-rc.2"
         assert lock["packages"][f"node_modules/{name}"]["version"] == "0.1.1-rc.2"
-    assert "npm ci --prefix /opt/deepseek-harness" in dockerfile
-    assert "node_modules/.bin/dsh-jsonrpc-agent" in dockerfile
-    assert "/usr/local/bin/dsh-jsonrpc-agent" in dockerfile
-    assert "dsh-agent/package.json' | wc -l)\" = 1" in dockerfile
-    assert "dsh-scope/package.json' | wc -l)\" = 1" in dockerfile
+    assert "npm ci --prefix /opt/deepseek-harness" in image_source
+    assert "node_modules/.bin/dsh-jsonrpc-agent" in image_source
+    assert "/usr/local/bin/dsh-jsonrpc-agent" in image_source
+    assert "dsh-agent/package.json' | wc -l)" in image_source
+    assert "dsh-scope/package.json' | wc -l)" in image_source

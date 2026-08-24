@@ -59,9 +59,31 @@ def main() -> int:
 
     def record(notification: object) -> None:
         if hasattr(notification, "model_dump"):
-            payload = notification.model_dump(mode="json")
+            raw = notification.model_dump(mode="json")
+        elif isinstance(getattr(notification, "method", None), str) and isinstance(
+            getattr(notification, "payload", None), dict
+        ):
+            raw = {
+                "method": notification.method,
+                "payload": notification.payload,
+            }
         else:
-            payload = {"notification": repr(notification)}
+            raise TypeError(
+                "unsupported DeepSeek Harness notification schema; "
+                "structured method/payload fields are required"
+            )
+        if not isinstance(raw, dict) or not isinstance(
+            raw.get("method"), str
+        ) or not isinstance(raw.get("payload"), dict):
+            raise TypeError(
+                "unsupported DeepSeek Harness notification payload; "
+                "structured method/payload fields are required"
+            )
+        payload = {
+            "schema_version": 1,
+            "method": raw["method"],
+            "payload": raw["payload"],
+        }
         append_event(args.events, payload)
 
     with DeepSeekHarness(

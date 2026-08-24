@@ -73,8 +73,235 @@ def _attempt_number(path: Path) -> int:
     return int(match.group(1)) if match else 1
 
 
+def _notification_payload(row: dict[str, Any]) -> dict[str, Any] | None:
+    """Return one current structured DeepSeek Harness notification."""
+    if (
+        row.get("schema_version") == 1
+        and isinstance(row.get("method"), str)
+        and isinstance(row.get("payload"), dict)
+    ):
+        return {"method": row["method"], "payload": row["payload"]}
+    return None
+
+
+def _content_text(content: Any) -> str | None:
+    texts: list[str] = []
+    blocks = content if isinstance(content, list) else [content]
+    for block in blocks:
+        if isinstance(block, str):
+            texts.append(block)
+            continue
+        if not isinstance(block, dict):
+            continue
+        text = block.get("text")
+        if isinstance(text, str):
+            texts.append(text)
+        nested = block.get("content")
+        if isinstance(nested, (list, dict, str)):
+            nested_text = _content_text(nested)
+            if nested_text:
+                texts.append(nested_text)
+    joined = "\n".join(part for part in texts if part)
+    return joined or None
+
+
+def _tool_arguments(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value if value is not None else {}
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return {"input": value}
+
+
+def _deepseek_events(chunk_paths: list[Path]) -> list[dict[str, Any]]:
+    events: dict[int, dict[str, Any]] = {}
+    unsequenced: list[dict[str, Any]] = []
+    for path in chunk_paths:
+        try:
+            handle = path.open(encoding="utf-8")
+        except OSError:
+            continue
+        with handle:
+            for line in handle:
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                notification = _notification_payload(row)
+                if not notification or notification.get("method") != "session.event":
+                    continue
+                payload = notification.get("payload")
+                event = payload.get("event") if isinstance(payload, dict) else None
+                if not isinstance(event, dict):
+                    continue
+                seq = event.get("seq")
+                if isinstance(seq, int):
+                    events[seq] = event
+                else:
+                    unsequenced.append(event)
+    return [events[key] for key in sorted(events)] + unsequenced
+
+
+def _deepseek_atif(events: list[dict[str, Any]], *, model: str | None) -> dict[str, Any]:
+    """Convert high-level DeepSeek Harness events to the ATIF subset we publish."""
+    steps: list[dict[str, Any]] = []
+    calls: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
+    assistant_steps: dict[int, dict[str, Any]] = {}
+
+    for event in events:
+        kind = event.get("type")
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        timestamp = _iso_from_ms(event.get("time"))
+        seq = event.get("seq")
+        if not isinstance(seq, int):
+            seq = len(steps) + 1
+
+        if kind == "user/message":
+            message = _content_text(data.get("content"))
+            if message:
+                steps.append(
+                    {
+                        "step_id": seq,
+                        "timestamp": timestamp,
+                        "source": "user",
+                        "message": message,
+                    }
+                )
+            continue
+
+        if kind == "assistant/message":
+            message_data = data.get("message")
+            if not isinstance(message_data, dict):
+                continue
+            content = message_data.get("content")
+            blocks = content if isinstance(content, list) else []
+            tool_calls: list[dict[str, Any]] = []
+            for block in blocks:
+                if not isinstance(block, dict) or block.get("type") != "tool-call":
+                    continue
+                call_id = block.get("id")
+                call = {
+                    "tool_call_id": call_id,
+                    "function_name": str(block.get("name") or "tool"),
+                    "arguments": _tool_arguments(block.get("arguments")),
+                }
+                tool_calls.append(call)
+            source = message_data.get("source")
+            source_model = source.get("model") if isinstance(source, dict) else None
+            usage = message_data.get("usage")
+            usage = usage if isinstance(usage, dict) else {}
+            step: dict[str, Any] = {
+                "step_id": seq,
+                "timestamp": timestamp,
+                "source": "agent",
+                "model_name": source_model or model,
+            }
+            message = _content_text(
+                [block for block in blocks if isinstance(block, dict) and block.get("type") == "text"]
+            )
+            if message:
+                step["message"] = message
+            if tool_calls:
+                step["tool_calls"] = tool_calls
+                for call in tool_calls:
+                    call_id = call.get("tool_call_id")
+                    if isinstance(call_id, str):
+                        calls[call_id] = (step, call)
+            metrics = {
+                "prompt_tokens": sum(
+                    value
+                    for value in (usage.get("inputTokens"), usage.get("cacheReadTokens"))
+                    if isinstance(value, (int, float)) and not isinstance(value, bool)
+                ),
+                "cached_tokens": usage.get("cacheReadTokens"),
+                "completion_tokens": usage.get("outputTokens"),
+            }
+            step["metrics"] = {
+                name: value
+                for name, value in metrics.items()
+                if isinstance(value, (int, float)) and not isinstance(value, bool)
+            }
+            steps.append(step)
+            harness_step = data.get("step")
+            if isinstance(harness_step, int):
+                assistant_steps[harness_step] = step
+            continue
+
+        if kind == "tool/call":
+            call_id = data.get("callId")
+            harness_step = data.get("step")
+            step = assistant_steps.get(harness_step) if isinstance(harness_step, int) else None
+            if not isinstance(call_id, str) or step is None or call_id in calls:
+                continue
+            call = {
+                "tool_call_id": call_id,
+                "function_name": str(data.get("name") or "tool"),
+                "arguments": _tool_arguments(data.get("arguments")),
+            }
+            step.setdefault("tool_calls", []).append(call)
+            calls[call_id] = (step, call)
+            continue
+
+        if kind == "tool/result":
+            message_data = data.get("message")
+            if not isinstance(message_data, dict):
+                continue
+            source = message_data.get("source")
+            call_id = source.get("callId") if isinstance(source, dict) else None
+            if not isinstance(call_id, str):
+                continue
+            target = calls.get(call_id)
+            if target is None:
+                continue
+            step, _ = target
+            result = {
+                "source_call_id": call_id,
+                "content": _content_text(message_data.get("content")),
+            }
+            step.setdefault("observation", {}).setdefault("results", []).append(result)
+
+    return {"schema_version": "1.0", "steps": steps}
+
+
+def _materialize_deepseek_trajectories(state_dir: Path) -> list[tuple[int, Path]]:
+    grouped: dict[tuple[int, str], list[Path]] = {}
+    for path in sorted(
+        state_dir.glob(
+            "durable-trace/raw/cpu-attempt-*/deepseek-harness/*/chunks/*.jsonl"
+        )
+    ):
+        grouped.setdefault((_attempt_number(path), path.parent.parent.name), []).append(path)
+    run = _read_json(state_dir / "run.json")
+    materialized: list[tuple[int, Path]] = []
+    for (attempt, source), chunk_paths in grouped.items():
+        target = (
+            state_dir
+            / "trace"
+            / "reconstructed"
+            / f"cpu-attempt-{attempt:03d}"
+            / f"deepseek-harness-{source}"
+            / "trajectory.json"
+        )
+        fingerprint = _source_fingerprint(
+            [(index, path) for index, path in enumerate(chunk_paths, start=1)]
+        )
+        previous = _read_json(target)
+        if previous.get("deepseek_source_fingerprint") != fingerprint:
+            payload = _deepseek_atif(
+                _deepseek_events(chunk_paths), model=run.get("model")
+            )
+            payload["deepseek_source_fingerprint"] = fingerprint
+            _atomic_json(target, payload)
+        materialized.append((attempt, target))
+    return materialized
+
+
 def discover_trajectories(state_dir: Path) -> list[tuple[int, Path]]:
     """Return one reconstructed ATIF trajectory for each CPU attempt."""
+    _materialize_deepseek_trajectories(state_dir)
     paths = sorted(
         state_dir.glob("trace/reconstructed/cpu-attempt-*/*/trajectory.json")
     )
@@ -142,7 +369,22 @@ def _public_user_message(message: Any) -> bool:
     if not isinstance(message, str):
         return False
     text = message.lstrip()
-    return text.startswith("/goal ") or text.startswith("/goal\n")
+    if not text:
+        return False
+    # Codex records bootstrap context as user-role XML blocks.  Those records
+    # are implementation context, not operator messages.  The actual rollout
+    # task may be delivered either as `/goal ...` or as a plain resume prompt
+    # after the goal was created programmatically, so requiring the literal
+    # slash command hides the task and makes the public trace begin mid-turn.
+    private_bootstrap_prefixes = (
+        "<app-context",
+        "<codex_internal_context",
+        "<environment_context",
+        "<in-app-browser-context",
+        "<permissions",
+        "<skills_instructions",
+    )
+    return not text.startswith(private_bootstrap_prefixes)
 
 
 def _call_id(run_id: str, raw: Any) -> str | None:
@@ -229,6 +471,13 @@ def _read_json(path: Path) -> dict[str, Any]:
 def _timestamp_ms(value: Any) -> int | None:
     if not isinstance(value, str) or not value:
         return None
+    try:
+        return int(
+            dt.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+            * 1000
+        )
+    except ValueError:
+        return None
 
 
 def _iso_from_ms(value: Any) -> str | None:
@@ -239,10 +488,6 @@ def _iso_from_ms(value: Any) -> str | None:
         .isoformat(timespec="milliseconds")
         .replace("+00:00", "Z")
     )
-    try:
-        return int(dt.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1000)
-    except ValueError:
-        return None
 
 
 def _assert_public_safe(payload: dict[str, Any]) -> None:
@@ -298,6 +543,11 @@ def build_public_trajectory(state_dir: Path, *, web_dir: Path) -> dict[str, Any]
                     omitted += 1
                     continue
                 attempt_steps.append(public_step)
+            for public_number, public_step in enumerate(attempt_steps, start=1):
+                # Preserve attempt_step_id as the raw ATIF sequence for audit,
+                # while presenting a gap-free public sequence after bootstrap
+                # records have been removed.
+                public_step["public_step_id"] = public_number
             steps.extend(attempt_steps)
             timestamps = [
                 item.get("timestamp")

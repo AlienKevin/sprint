@@ -1,10 +1,11 @@
 # Sprint
 
-Sprint benchmarks how efficiently autonomous agents turn model inference and
-compute into embodied performance. In the current
+Sprint benchmarks how well autonomous agents turn a fixed model-inference and
+compute budget into embodied performance. In the current
 [G1 100 metres event](events/g1-100-metres/README.md), independent agents train
-Unitree G1 policies in Isaac Lab and are compared by Cost-Adjusted Effective
-Speed. Results are published at [g1-sprint.vercel.app](https://g1-sprint.vercel.app/).
+Unitree G1 policies in Isaac Lab. Each trial receives the same agent-cost cap;
+its result is the fastest valid policy archived before that cap is exhausted.
+Results are published at [g1-sprint.vercel.app](https://g1-sprint.vercel.app/).
 
 Agents begin with the [event environment guide](events/g1-100-metres/environment/README.md),
 installed as `/app/train/README.md` inside each agent sandbox.
@@ -19,7 +20,7 @@ git clone git@github.com:AlienKevin/sprint.git
 cd sprint
 uv sync --project harbor --extra modal
 uv run --project harbor modal setup
-cp .env.example .env  # add provider keys and MODAL_PROFILE
+cp .env.example .env  # add OpenRouter keys and MODAL_PROFILE
 ```
 
 ## Run the benchmark

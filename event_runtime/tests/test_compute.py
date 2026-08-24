@@ -2788,12 +2788,10 @@ class NetworkIsolationTests(unittest.TestCase):
         self.assertIn("not in the audited egress allowlist", result.stderr)
 
     def test_agent_clis_are_baked_at_launcher_pins(self) -> None:
-        dockerfile = (
-            ROOT / "events" / "g1-100-metres" / "environment" / "Dockerfile"
-        ).read_text()
+        image_source = (ROOT / "event_runtime" / "image.py").read_text()
         launcher = (ROOT / "event_runtime/control/launch.sh").read_text()
-        self.assertIn("ARG CODEX_VERSION=0.149.1", dockerfile)
-        self.assertIn("ARG CLAUDE_CODE_VERSION=2.1.220", dockerfile)
+        self.assertIn('CODEX_VERSION = "0.149.1"', image_source)
+        self.assertIn('CLAUDE_CODE_VERSION = "2.1.220"', image_source)
         self.assertIn("BAKED_CODEX_VERSION=0.149.1", launcher)
         self.assertIn("BAKED_CLAUDE_VERSION=2.1.220", launcher)
 
