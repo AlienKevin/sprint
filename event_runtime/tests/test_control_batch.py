@@ -660,7 +660,7 @@ def test_child_key_usage_audit_defers_missing_ledger_during_startup(
         "arms": [
             {
                 "run_id": "eval-luna-1",
-                "status": "running",
+                "status": "launched",
                 "launched_at": "2026-08-23T00:00:00Z",
                 "openrouter_credential": {"key_hash": "hash-1"},
             }

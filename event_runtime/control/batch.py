@@ -867,7 +867,7 @@ def audit_openrouter_child_usage(
                 except (TypeError, ValueError):
                     startup_age = None
                 if (
-                    arm.get("status") in {"launching", "running"}
+                    arm.get("status") in {"launching", "launched", "running"}
                     and startup_age is not None
                     and 0 <= startup_age < OPENROUTER_USAGE_AUDIT_GRACE_SECONDS
                 ):
