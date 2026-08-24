@@ -37,6 +37,10 @@ REQUEST_CONTRACT='{"model":"deepseek/deepseek-v4-flash-vision-exp","stream":true
   echo "DeepSeek Harness runtime wrapper is incomplete" >&2
   exit 2
 }
+[[ -r /opt/event_runtime/container/sprint-deepseek-goal-bootstrap.mjs ]] || {
+  echo "DeepSeek Harness native goal bootstrap is missing" >&2
+  exit 2
+}
 [[ "$STOP_ACK_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || {
   echo "SPRINT_STOP_ACK_TIMEOUT_SECONDS must be a positive integer" >&2
   exit 2
@@ -87,9 +91,9 @@ PY
 done
 ((ready == 1)) || { echo "OpenRouter ledger proxy failed to start" >&2; exit 1; }
 
-session_root="$DURABLE_DIR/runs/$RUN_ID/deepseek-harness/cpu-attempt-$ATTEMPT/sessions"
+session_root="$DURABLE_DIR/runs/$RUN_ID/deepseek-harness/sessions"
 events="$AGENT_LOG_DIR/deepseek-harness-events.jsonl"
-session_id="$RUN_ID-cpu-$ATTEMPT"
+session_id="$RUN_ID"
 
 setsid "$RUNNER" \
   --workspace /app \

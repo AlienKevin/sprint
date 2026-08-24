@@ -48,6 +48,14 @@ def main() -> int:
     workspace = args.workspace.resolve()
     session_root = args.session_root.resolve()
     session_root.mkdir(parents=True, exist_ok=True)
+    objective = args.prompt.strip()
+    if not objective:
+        raise SystemExit("DeepSeek Harness goal objective must be non-empty")
+    if objective == "/goal" or objective.startswith("/goal "):
+        raise SystemExit("DeepSeek Harness uses native goal mode, not /goal prompt text")
+    # The trusted Loader plugin reads this before the runtime accepts its first
+    # prompt and creates the native persisted goal at agent/pre-step.
+    os.environ["DSH_GOAL_OBJECTIVE"] = objective
 
     def record(notification: object) -> None:
         if hasattr(notification, "model_dump"):
@@ -71,27 +79,17 @@ def main() -> int:
         shutdown_timeout_seconds=30.0,
     ) as harness:
         session = harness.start_session(args.session_id)
-        prompt = args.prompt
-        round_number = 1
-        while not args.stop_file.exists():
-            result = session.run(prompt, on_notification=record)
-            if result.final_response:
-                print(result.final_response, flush=True)
-            if result.finish_reason != "completed":
-                if args.stop_file.exists():
-                    return 0
-                print(
-                    f"DeepSeek Harness ended with {result.finish_reason!r}",
-                    file=sys.stderr,
-                )
-                return 1
-            round_number += 1
-            prompt = (
-                "Continue working autonomously on the benchmark task. Inspect the "
-                "current workspace and durable run state, submit any improved policy, "
-                "then keep improving until the operator stops the run. "
-                f"This is continuation round {round_number}."
+        result = session.run(objective, on_notification=record)
+        if result.final_response:
+            print(result.final_response, flush=True)
+        if result.finish_reason != "completed":
+            if args.stop_file.exists():
+                return 0
+            print(
+                f"DeepSeek Harness ended with {result.finish_reason!r}",
+                file=sys.stderr,
             )
+            return 1
     return 0
 
 

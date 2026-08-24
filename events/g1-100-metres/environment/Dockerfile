@@ -65,7 +65,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends restic \
 # trusted layer so Harbor's version check is a local no-op and CLI pin changes
 # do not invalidate the much larger Isaac/PyTorch layers above.
 ARG NODE_VERSION=22.22.0
-ARG CODEX_VERSION=0.147.0
+ARG CODEX_VERSION=0.149.1
 ARG CLAUDE_CODE_VERSION=2.1.220
 ARG DEEPSEEK_HARNESS_VERSION=0.1.1-rc.2
 RUN set -eu; \
@@ -81,6 +81,9 @@ RUN set -eu; \
       "@deepseek-ai/dsh-sdk-jsonrpc-demo@${DEEPSEEK_HARNESS_VERSION}" \
       "@deepseek-ai/dsh-sdk-jsonrpc-server@${DEEPSEEK_HARNESS_VERSION}" \
       "@deepseek-ai/dsh-agent-spine-demo@${DEEPSEEK_HARNESS_VERSION}" \
+      "@deepseek-ai/dsh-goal@${DEEPSEEK_HARNESS_VERSION}" \
+      "@deepseek-ai/dsh-goal-round-driver@${DEEPSEEK_HARNESS_VERSION}" \
+      "@deepseek-ai/dsh-tool-goal@${DEEPSEEK_HARNESS_VERSION}" \
       "@deepseek-ai/dsh-llm-deepseek@${DEEPSEEK_HARNESS_VERSION}" \
       "@deepseek-ai/dsh-sandbox-local@${DEEPSEEK_HARNESS_VERSION}" \
       "@deepseek-ai/dsh-sandbox-policy@${DEEPSEEK_HARNESS_VERSION}" \

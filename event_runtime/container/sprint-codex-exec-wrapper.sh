@@ -197,7 +197,7 @@ fi
 
 # Install a static model catalog for every controlled comparison model.
 # DeepSeek needs its custom provider definition; OpenAI models use their exact
-# Codex 0.147.0 entries so backend refreshes cannot change tool or collaboration
+# Codex 0.149.1 entries so backend refreshes cannot change tool or collaboration
 # semantics during the experiment.
 want_deepseek=0
 want_openai=0
@@ -431,7 +431,7 @@ valid = (
 raise SystemExit(0 if valid else 1)
 PY
     then
-      # Codex 0.147.0 can report exit 1 when SIGINT invalidates an in-flight
+      # Codex can report exit 1 when SIGINT invalidates an in-flight
       # unified_exec process. The trusted interrupt marker plus a checksummed
       # durable STOP_ACK prove this was the requested stop, not an agent crash.
       exit 0

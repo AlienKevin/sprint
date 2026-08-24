@@ -46,6 +46,12 @@ def test_minimal_cordis_contract_is_sealed() -> None:
     assert "@deepseek-ai/dsh-tool-bash-persistent" in config
     assert "@deepseek-ai/dsh-tool-str-replace-editor" in config
     assert "@deepseek-ai/dsh-session-persistence-jsonl" in config
+    assert "@deepseek-ai/dsh-goal" in config
+    assert "@deepseek-ai/dsh-tool-goal" in config
+    assert "@deepseek-ai/dsh-goal-round-driver" in config
+    assert "defaultMaxGoalRounds: !!js Number(process.env.DSH_GOAL_MAX_ROUNDS ?? 256)" in config
+    assert "blockedAfterConsecutiveRounds: 3" in config
+    assert "sprint-deepseek-goal-bootstrap.mjs" in config
     assert "compression: none" in config
     assert "dsh-tool-jobs" not in config
     assert "dsh-compaction" not in config
@@ -67,6 +73,26 @@ def test_wrapper_seals_route_and_wire_parameters() -> None:
     assert "PROVIDER_ENDPOINT:-deepseek" in wrapper
     assert '--provider-endpoint "$PROVIDER_ENDPOINT"' in wrapper
     assert '--request-contract-json "$REQUEST_CONTRACT"' in wrapper
+    assert "DeepSeek Harness native goal bootstrap is missing" in wrapper
+    assert 'session_root="$DURABLE_DIR/runs/$RUN_ID/deepseek-harness/sessions"' in wrapper
+    assert 'session_id="$RUN_ID"' in wrapper
+    assert "deepseek-harness/cpu-attempt-$ATTEMPT/sessions" not in wrapper
+
+
+def test_native_goal_bootstrap_precedes_first_model_step() -> None:
+    bootstrap = (CONTAINER / "sprint-deepseek-goal-bootstrap.mjs").read_text()
+    assert "ctx.on('agent/pre-step'" in bootstrap
+    assert "ctx.goals.create(agent, { objective })" in bootstrap
+    assert "ctx.goals.resume(agent, { id: current.id, revision: current.revision })" in bootstrap
+    assert "textual /goal command" in bootstrap
+    runner = (CONTAINER / "sprint-deepseek-harness-runner.py").read_text()
+    assert 'os.environ["DSH_GOAL_OBJECTIVE"] = objective' in runner
+    assert "uses native goal mode, not /goal prompt text" in runner
+    assert "continuation round" not in runner
+    template = (
+        ROOT / "event_runtime/control/templates/deepseek-harness.j2"
+    ).read_text()
+    assert not template.lstrip().startswith("/goal")
 
 
 def test_image_pins_runtime_and_sdk_versions() -> None:
@@ -79,6 +105,9 @@ def test_image_pins_runtime_and_sdk_versions() -> None:
         "dsh-sdk-jsonrpc-demo",
         "dsh-sdk-jsonrpc-server",
         "dsh-agent-spine-demo",
+        "dsh-goal",
+        "dsh-goal-round-driver",
+        "dsh-tool-goal",
         "dsh-llm-deepseek",
         "dsh-tool-bash-persistent",
         "dsh-tool-str-replace-editor",

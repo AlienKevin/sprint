@@ -16,13 +16,13 @@ SANDBOX_TIMEOUT_SECONDS=86400
 DEPLOY_DEBOUNCE_SECONDS=300
 # These exact CLI versions are baked into the task image. Harbor verifies them
 # locally during offline agent setup and skips installation.
-CODEX_VERSION=${CODEX_VERSION:-0.147.0}
+CODEX_VERSION=${CODEX_VERSION:-0.149.1}
 # The optional Claude Code adapter remains pinned for reproducibility even
 # though the active comparison uses Codex for both model families.
 CLAUDE_VERSION=${CLAUDE_VERSION:-2.1.220}
 DEEPSEEK_HARNESS_VERSION=${DEEPSEEK_HARNESS_VERSION:-0.1.1-rc.2}
 DEEPSEEK_HARNESS_SDK_VERSION=${DEEPSEEK_HARNESS_SDK_VERSION:-0.1.1rc1}
-BAKED_CODEX_VERSION=0.147.0
+BAKED_CODEX_VERSION=0.149.1
 BAKED_CLAUDE_VERSION=2.1.220
 BAKED_DEEPSEEK_HARNESS_VERSION=0.1.1-rc.2
 export DEEPSEEK_HARNESS_VERSION
@@ -55,7 +55,7 @@ Options:
   --model MODEL              Agent model; required except for claude-code.
   --endpoint HTTPS_URL       Optional Codex API endpoint (no credentials/query).
   --reasoning-effort VALUE   Agent reasoning effort.
-  --codex-version VERSION    Pin @openai/codex npm version (codex only; default 0.147.0).
+  --codex-version VERSION    Pin @openai/codex npm version (codex only; default 0.149.1).
   --prompt-template PATH     Goal template under event_runtime/control/templates.
   --standing-gpu             Hold a dedicated A10G for the whole run.
   --dry-run                  Print redacted configuration; launch nothing.
@@ -1362,6 +1362,9 @@ elif [[ "$AGENT_KIND" == "codex" ]]; then
       --ae "SPRINT_CODEX_DEEPSEEK_BASE_URL=$ENDPOINT"
       --ae "SPRINT_CODEX_DEEPSEEK_MODEL=${SPRINT_CODEX_DEEPSEEK_MODEL:-$DEEPSEEK_OPENROUTER_MODEL}"
       --ae "SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW=${SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW:-1048576}"
+      --ae "CODEX_GOAL_BOOTSTRAP_MODEL=${SPRINT_CODEX_DEEPSEEK_MODEL:-$DEEPSEEK_OPENROUTER_MODEL}"
+      --ae "CODEX_GOAL_BOOTSTRAP_EXPECTED_PROVIDER=deepseek"
+      --ae "CODEX_GOAL_BOOTSTRAP_PREPARE_SCRIPT=/opt/sprint-apply-deepseek-codex-config.sh"
     )
     if [[ -n "$DEEPSEEK_PRICING_SNAPSHOT_JSON" ]]; then
       AGENT_HARBOR_ARGS+=(
@@ -1376,6 +1379,9 @@ elif [[ "$AGENT_KIND" == "codex" ]]; then
         --ae "SPRINT_CODEX_OPENAI_MODEL=$OPENAI_OPENROUTER_PRESET"
         --ae "SPRINT_CODEX_OPENAI_MODEL_ID=gpt-5.6-luna"
         --ae "SPRINT_CODEX_OPENAI_MODEL_LOCK=/opt/sprint-codex-luna-model-lock.json"
+        --ae "CODEX_GOAL_BOOTSTRAP_MODEL=$OPENAI_OPENROUTER_PRESET"
+        --ae "CODEX_GOAL_BOOTSTRAP_EXPECTED_PROVIDER=sprint_openrouter"
+        --ae "CODEX_GOAL_BOOTSTRAP_PREPARE_SCRIPT=/opt/sprint-apply-openai-codex-config.sh"
       )
       ;;
     gpt-5.6-sol)
@@ -1384,6 +1390,9 @@ elif [[ "$AGENT_KIND" == "codex" ]]; then
         --ae "SPRINT_CODEX_OPENAI_MODEL=$OPENAI_OPENROUTER_PRESET"
         --ae "SPRINT_CODEX_OPENAI_MODEL_ID=gpt-5.6-sol"
         --ae "SPRINT_CODEX_OPENAI_MODEL_LOCK=/opt/sprint-codex-sol-model-lock.json"
+        --ae "CODEX_GOAL_BOOTSTRAP_MODEL=$OPENAI_OPENROUTER_PRESET"
+        --ae "CODEX_GOAL_BOOTSTRAP_EXPECTED_PROVIDER=sprint_openrouter"
+        --ae "CODEX_GOAL_BOOTSTRAP_PREPARE_SCRIPT=/opt/sprint-apply-openai-codex-config.sh"
       )
       ;;
   esac

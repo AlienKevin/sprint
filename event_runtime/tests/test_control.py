@@ -1777,7 +1777,7 @@ def record(name):
 signal.signal(signal.SIGINT, lambda *_: record("INT"))
 def terminate(*_):
     record("TERM")
-    # Codex 0.147.0 may surface an interrupted unified_exec as exit 1. The
+    # Codex may surface an interrupted unified_exec as exit 1. The
     # wrapper must classify it from the trusted stop handshake, not this code.
     raise SystemExit(1)
 signal.signal(signal.SIGTERM, terminate)

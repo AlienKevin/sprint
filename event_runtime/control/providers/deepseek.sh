@@ -52,7 +52,7 @@ else
 fi
 REASONING_EFFORT="${REASONING_EFFORT:-max}"  # API-max for DeepSeek Flash
 # Same immutable harness pin as every competitor.
-CODEX_VERSION="${CODEX_VERSION:-0.147.0}"
+CODEX_VERSION="${CODEX_VERSION:-0.149.1}"
 RUN_ID="${RUN_ID:-lane-deepseek-$(date -u +%Y%m%dT%H%M%SZ)}"
 
 GOAL="$ROOT/event_runtime/control/templates/codex.j2"

@@ -33,6 +33,9 @@ REMOTE_PROGRAM = textwrap.dedent(
     from deepseek_harness import DeepSeekHarness
 
     model = "deepseek/deepseek-v4-flash-vision-exp"
+    objective = "Reply exactly LIVE-SMOKE-OK. Do not call a tool."
+    os.environ["DSH_GOAL_OBJECTIVE"] = objective
+    os.environ["DSH_GOAL_MAX_ROUNDS"] = "1"
     contract = {
         "model": model,
         "stream": True,
@@ -94,9 +97,7 @@ REMOTE_PROGRAM = textwrap.dedent(
                 request_timeout_seconds=600.0,
                 shutdown_timeout_seconds=30.0,
             ) as harness:
-                result = harness.start_session("live-smoke").run(
-                    "Reply exactly LIVE-SMOKE-OK. Do not call a tool."
-                )
+                result = harness.start_session("live-smoke").run(objective)
             if result.finish_reason != "completed" or not result.final_response:
                 raise RuntimeError(
                     f"harness did not complete: {result.finish_reason!r}"
@@ -110,9 +111,10 @@ REMOTE_PROGRAM = textwrap.dedent(
                 proxy.wait(timeout=10)
 
         records = sorted((root / "api-usage/requests").glob("*.json"))
-        if len(records) != 1:
-            raise RuntimeError(f"expected one ledger record, found {len(records)}")
-        record = json.loads(records[0].read_text())
+        if not records:
+            raise RuntimeError("expected at least one completed ledger record")
+        parsed_records = [json.loads(path.read_text()) for path in records]
+        record = parsed_records[-1]
         summary = json.loads((root / "api-usage/summary.json").read_text())
         snapshot = record.get("promotion_snapshot") or {}
         endpoints = snapshot.get("endpoints") or []
@@ -127,7 +129,8 @@ REMOTE_PROGRAM = textwrap.dedent(
                 snapshot.get("deepseek_peak_pricing_usd_per_token")
             ),
             "usage_present": isinstance(record.get("usage"), dict),
-            "one_completed_request": summary.get("completed_request_count") == 1,
+            "all_requests_complete": summary.get("completed_request_count")
+                == len(parsed_records),
             "no_pending_request": summary.get("pending_request_count") == 0,
             "benchmark_not_below_charge": float(record["benchmark_cost_usd"])
                 >= float(record["provider_reported_cost_usd"]),

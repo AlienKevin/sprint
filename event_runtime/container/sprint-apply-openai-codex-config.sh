@@ -37,8 +37,8 @@ model_slug = sys.argv[6]
 base_url = sys.argv[7]
 
 lock = json.loads(lock_path.read_text(encoding="utf-8"))
-if lock.get("codex_version") != "0.147.0":
-    raise SystemExit("OpenAI catalog lock must target Codex 0.147.0")
+if lock.get("codex_version") != "0.149.1":
+    raise SystemExit("OpenAI catalog lock must target Codex 0.149.1")
 model = lock.get("model")
 if not isinstance(model, dict) or model.get("slug") != expected_model:
     raise SystemExit(f"OpenAI catalog lock is missing {expected_model}")
@@ -119,4 +119,4 @@ text = "\n\n".join(parts).rstrip() + "\n"
 config_path.write_text(re.sub(r"\n{3,}", "\n\n", text), encoding="utf-8")
 PY
 
-echo "Applied pinned $EXPECTED_MODEL Codex 0.147.0 catalog in $CODEX_HOME_DIR" >&2
+echo "Applied pinned $EXPECTED_MODEL Codex 0.149.1 catalog in $CODEX_HOME_DIR" >&2

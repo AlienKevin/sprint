@@ -2655,9 +2655,9 @@ class NetworkIsolationTests(unittest.TestCase):
             ROOT / "events" / "g1-100-metres" / "environment" / "Dockerfile"
         ).read_text()
         launcher = (ROOT / "event_runtime/control/launch.sh").read_text()
-        self.assertIn("ARG CODEX_VERSION=0.147.0", dockerfile)
+        self.assertIn("ARG CODEX_VERSION=0.149.1", dockerfile)
         self.assertIn("ARG CLAUDE_CODE_VERSION=2.1.220", dockerfile)
-        self.assertIn("BAKED_CODEX_VERSION=0.147.0", launcher)
+        self.assertIn("BAKED_CODEX_VERSION=0.149.1", launcher)
         self.assertIn("BAKED_CLAUDE_VERSION=2.1.220", launcher)
 
 

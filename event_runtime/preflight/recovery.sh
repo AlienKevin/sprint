@@ -10,7 +10,7 @@ touch /data/.keepalive
 MODEL="${MODEL:-deepseek/deepseek-v4-flash}"
 ENDPOINT="${ENDPOINT:-https://api.deepseek.com}"
 REASONING_EFFORT="${REASONING_EFFORT:-max}"
-CODEX_VERSION="${CODEX_VERSION:-0.147.0}"
+CODEX_VERSION="${CODEX_VERSION:-0.149.1}"
 RUN_ID="${RUN_ID:-smoke-cpu-gpu-$(date -u +%Y%m%dT%H%M%SZ)}"
 SMOKE_DIR="$ROOT/runs/ops/$RUN_ID"
 REPORT="$SMOKE_DIR/gpu-recovery-report.md"

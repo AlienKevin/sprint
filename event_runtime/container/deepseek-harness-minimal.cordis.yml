@@ -64,6 +64,27 @@
     toolBash: false
     toolJobs: false
 
+# Opt into DeepSeek Harness's native, event-sourced goal domain while keeping
+# every other minimal-mode omission intact. The bootstrap is a trusted human-
+# plane adapter: it creates the goal at the first pre-step edge, before the
+# first model request, because the headless JSON-RPC protocol does not consume
+# `/goal` commands.
+- id: goal
+  name: '@deepseek-ai/dsh-goal'
+  config:
+    defaultMaxGoalRounds: !!js Number(process.env.DSH_GOAL_MAX_ROUNDS ?? 256)
+
+- id: tool-goal
+  name: '@deepseek-ai/dsh-tool-goal'
+  config:
+    blockedAfterConsecutiveRounds: 3
+
+- id: goal-round-driver
+  name: '@deepseek-ai/dsh-goal-round-driver'
+
+- id: goal-bootstrap
+  name: '/opt/event_runtime/container/sprint-deepseek-goal-bootstrap.mjs'
+
 - id: persistent-bash
   name: '@deepseek-ai/dsh-tool-bash-persistent'
   config:

@@ -57,7 +57,7 @@ WARMUP_MANIFEST = SCRIPT_DIR / "modal-image-warmup.json"
 FUNCTIONAL_CANARY_REPORT = SCRIPT_DIR / "training-gpu-canary.json"
 BUDGET_CONFIG = MODULE_DIR / "budget.env"
 HARBOR_REVISION = "dafb1387151e1c32702963d44fe6c3cea66cf8cb"
-CODEX_VERSION = "0.147.0"
+CODEX_VERSION = "0.149.1"
 TRIALS_PER_MODEL = 3
 DEFAULT_FAMILIES = ("deepseek", "luna")
 SUPPORTED_FAMILIES = ("deepseek", "luna", "sol", "flash-baidu", "pro-alibaba")
@@ -82,11 +82,10 @@ OPENAI_FAMILY_SPECS: dict[str, dict[str, str]] = {
     },
 }
 DEEPSEEK_ROUTED_FAMILY_SPECS: dict[str, dict[str, str]] = {
-    # `deepseek` is the current public/default family. Keep `flash-baidu` as
-    # an explicit legacy family so historical comparison batches remain
-    # reproducible. The DeepSeek Harness implementation remains available as
-    # an opt-in launcher, but active comparison batches use the same pinned
-    # Codex + /goal harness as the OpenAI families.
+    # `deepseek` is the current public/default family and uses DeepSeek's own
+    # pinned minimal benchmark harness with its native persisted goal mode.
+    # Keep the older provider comparisons on Codex so historical arms remain
+    # reproducible rather than silently changing harnesses.
     "deepseek": {
         "model": "deepseek/deepseek-v4-flash-vision-exp",
         "resolved_model": "deepseek/deepseek-v4-flash-vision-exp-20260821",
@@ -94,8 +93,10 @@ DEEPSEEK_ROUTED_FAMILY_SPECS: dict[str, dict[str, str]] = {
         "provider_endpoint": "deepseek",
         "quantization": "unknown",
         "context_window": "1048576",
-        "wrapper": "deepseek.sh",
-        "wire_api": "responses",
+        "wrapper": "deepseek_harness.sh",
+        "wire_api": "chat_completions",
+        "agent_kind": "deepseek-harness",
+        "goal_mode": "deepseek_native_goal",
     },
     "flash-baidu": {
         "model": "deepseek/deepseek-v4-flash-0731",
@@ -106,6 +107,8 @@ DEEPSEEK_ROUTED_FAMILY_SPECS: dict[str, dict[str, str]] = {
         "context_window": "1048576",
         "wrapper": "deepseek.sh",
         "wire_api": "responses",
+        "agent_kind": "codex",
+        "goal_mode": "codex_session_goal",
     },
     "pro-alibaba": {
         "model": "deepseek/deepseek-v4-pro-0813",
@@ -116,6 +119,8 @@ DEEPSEEK_ROUTED_FAMILY_SPECS: dict[str, dict[str, str]] = {
         "context_window": "1000000",
         "wrapper": "deepseek.sh",
         "wire_api": "responses",
+        "agent_kind": "codex",
+        "goal_mode": "codex_session_goal",
     },
 }
 REASONING_EFFORT = "max"
@@ -413,6 +418,8 @@ def matrix(
                 "provider": spec["provider"],
                 "provider_endpoint": spec["provider_endpoint"],
                 "quantization": "unknown",
+                "agent_kind": "codex",
+                "goal_mode": "codex_session_goal",
             }
             for family, spec in OPENAI_FAMILY_SPECS.items()
         },
@@ -442,8 +449,8 @@ def matrix(
                     "model": spec["model"],
                     "resolved_model_version": spec["resolved_model_version"],
                     "reasoning_effort": REASONING_EFFORT,
-                    "agent_kind": "codex",
-                    "goal_mode": "codex_session_goal",
+                    "agent_kind": spec["agent_kind"],
+                    "goal_mode": spec["goal_mode"],
                     "codex_version": CODEX_VERSION,
                     "wrapper": str(MODULE_DIR / "providers" / spec["wrapper"]),
                     "trial": trial,

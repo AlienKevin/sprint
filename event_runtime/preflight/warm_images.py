@@ -260,10 +260,11 @@ def main() -> int:
             role="cpu-agent-warmup",
             command=(
                 "python3 -c 'import torch; print(torch.__version__)' && "
-                "test \"$(codex --version)\" = 'codex-cli 0.147.0' && "
+                "test \"$(codex --version)\" = 'codex-cli 0.149.1' && "
                 "test -x /opt/sprint-codex-exec-wrapper.sh && "
                 "test -x /opt/sprint-deepseek-harness-exec-wrapper.sh && "
                 "test -x /opt/sprint-deepseek-harness-runner.py && "
+                "test -r /opt/event_runtime/container/sprint-deepseek-goal-bootstrap.mjs && "
                 "node -e 'const v=require(\"/usr/local/lib/node_modules/@deepseek-ai/dsh-sdk-jsonrpc-demo/package.json\").version; "
                 "if (v !== process.argv[1]) throw new Error(`unexpected DeepSeek Harness version ${v}`)' 0.1.1-rc.2 && "
                 "python3 -c \"import importlib.metadata; assert importlib.metadata.version('deepseek-harness-sdk') == '0.1.1rc1'\" && "

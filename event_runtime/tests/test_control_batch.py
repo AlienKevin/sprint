@@ -64,9 +64,18 @@ def test_batch_matrix_is_exact_six_arm_max_effort_contract() -> None:
     assert len({row["run_id"] for row in rows}) == 6
     assert {row["family"] for row in rows} == {"deepseek", "luna"}
     assert {row["reasoning_effort"] for row in rows} == {"max"}
-    assert {row["codex_version"] for row in rows} == {"0.147.0"}
-    assert {row["agent_kind"] for row in rows} == {"codex"}
-    assert {row["goal_mode"] for row in rows} == {"codex_session_goal"}
+    assert {row["codex_version"] for row in rows} == {"0.149.1"}
+    assert {row["agent_kind"] for row in rows} == {"codex", "deepseek-harness"}
+    assert {row["agent_kind"] for row in rows if row["family"] == "deepseek"} == {
+        "deepseek-harness"
+    }
+    assert {row["agent_kind"] for row in rows if row["family"] == "luna"} == {
+        "codex"
+    }
+    assert {row["goal_mode"] for row in rows} == {
+        "codex_session_goal",
+        "deepseek_native_goal",
+    }
     assert (
         sum(row["model"] == "deepseek/deepseek-v4-flash-vision-exp" for row in rows)
         == 3
@@ -85,7 +94,7 @@ def test_batch_matrix_is_exact_six_arm_max_effort_contract() -> None:
     } == {("deepseek", "unknown")}
     assert {
         Path(row["wrapper"]).name for row in rows if row["family"] == "deepseek"
-    } == {"deepseek.sh"}
+    } == {"deepseek_harness.sh"}
     assert batch_eval.LIVE_SITE_DEPLOY_SECONDS == 20 * 60
 
 
@@ -274,9 +283,11 @@ def test_batch_matrix_can_launch_three_deepseek_trials_only() -> None:
     assert {row["provider"] for row in rows} == {"DeepSeek"}
     assert {row["provider_endpoint"] for row in rows} == {"deepseek"}
     assert {row["quantization"] for row in rows} == {"unknown"}
-    assert {Path(row["wrapper"]).name for row in rows} == {"deepseek.sh"}
-    assert {row["agent_kind"] for row in rows} == {"codex"}
-    assert {row["goal_mode"] for row in rows} == {"codex_session_goal"}
+    assert {Path(row["wrapper"]).name for row in rows} == {
+        "deepseek_harness.sh"
+    }
+    assert {row["agent_kind"] for row in rows} == {"deepseek-harness"}
+    assert {row["goal_mode"] for row in rows} == {"deepseek_native_goal"}
 
 
 def test_batch_matrix_can_launch_three_luna_and_three_sol_trials() -> None:
@@ -329,8 +340,8 @@ def test_batch_matrix_can_seal_baidu_and_alibaba_deepseek_routes() -> None:
 def test_sol_model_lock_preserves_exact_codex_contract() -> None:
     lock = json.loads((ROOT / "event_runtime/models/sol.json").read_text())
     model = lock["model"]
-    assert lock["source"].startswith("openai/codex rust-v0.147.0")
-    assert lock["codex_version"] == "0.147.0"
+    assert lock["source"].startswith("openai/codex rust-v0.149.1")
+    assert lock["codex_version"] == "0.149.1"
     assert lock["model_messages_sha256"] == (
         "e1ab3222ab4ceb4196f381138bf63232456419dba5a03bc276137a323e4134aa"
     )
@@ -338,7 +349,7 @@ def test_sol_model_lock_preserves_exact_codex_contract() -> None:
     assert model["tool_mode"] == "code_mode_only"
     assert model["multi_agent_version"] == "v2"
     assert model["context_window"] == 272000
-    assert model["max_context_window"] == 272000
+    assert model["max_context_window"] == 872000
     assert [row["effort"] for row in model["supported_reasoning_levels"]][-1] == "ultra"
 
 
@@ -370,17 +381,19 @@ def test_generic_openai_catalog_installer_supports_sol(tmp_path: Path) -> None:
     model = catalog["models"][0]
     assert model["slug"] == "@preset/test-sol"
     assert model["multi_agent_version"] == "v2"
-    assert model["support_verbosity"] is False
+    assert model["support_verbosity"] is True
     config = (codex_home / "config.toml").read_text()
     assert 'model = "@preset/test-sol"' in config
     assert 'wire_api = "responses"' in config
 
 
-def test_openai_openrouter_catalogs_omit_unsupported_verbosity() -> None:
+def test_openai_openrouter_catalogs_match_codex_0_149_capabilities() -> None:
     for name in ("luna", "sol"):
         lock = json.loads((ROOT / f"event_runtime/models/{name}.json").read_text())
-        assert lock["model"]["support_verbosity"] is False
-        assert lock["model"]["supports_parallel_tool_calls"] is False
+        assert lock["codex_version"] == "0.149.1"
+        assert lock["model"]["support_verbosity"] is True
+        assert lock["model"]["max_context_window"] == 872000
+        assert "supports_parallel_tool_calls" not in lock["model"]
 
 
 @pytest.mark.parametrize(

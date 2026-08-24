@@ -72,6 +72,7 @@ class Codex(BaseInstalledAgent):
     _OUTPUT_FILENAME = "codex.txt"
     _REMOTE_CODEX_HOME = PurePosixPath("/tmp/codex-home")
     _REMOTE_CODEX_SECRETS_DIR = PurePosixPath("/tmp/codex-secrets")
+    _GOAL_BOOTSTRAP_SOURCE = Path(__file__).with_name("codex_goal_bootstrap.py")
     _INSTALL_CHECK_COMMAND = (
         "if [ -s ~/.nvm/nvm.sh ]; then . ~/.nvm/nvm.sh; fi; "
         "command -v codex >/dev/null 2>&1"
@@ -1212,12 +1213,31 @@ class Codex(BaseInstalledAgent):
 
         return None
 
+    @staticmethod
+    def _split_goal_instruction(instruction: str) -> tuple[str | None, str]:
+        """Separate Harbor's ``/goal`` marker from the first model prompt.
+
+        ``codex exec`` does not interpret slash commands.  The goal objective is
+        handed to the trusted app-server bootstrap instead, while the model sees
+        the same task text without the misleading slash-command prefix.
+        """
+        if not instruction.startswith("/goal"):
+            return None, instruction
+        remainder = instruction[len("/goal") :]
+        if remainder and not remainder[0].isspace():
+            return None, instruction
+        objective = remainder.strip()
+        if not objective:
+            raise ValueError("/goal requires a non-empty objective")
+        return objective, objective
+
     @override
     @with_prompt_template
     async def run(
         self, instruction: str, environment: BaseEnvironment, context: AgentContext
     ) -> None:
-        escaped_instruction = shlex.quote(instruction)
+        goal_objective, turn_instruction = self._split_goal_instruction(instruction)
+        escaped_instruction = shlex.quote(turn_instruction)
 
         if not self.model_name:
             raise ValueError("Model name is required")
@@ -1237,6 +1257,9 @@ class Codex(BaseInstalledAgent):
         remote_codex_home = self._REMOTE_CODEX_HOME.as_posix()
         remote_secrets_dir = self._REMOTE_CODEX_SECRETS_DIR.as_posix()
         remote_auth_path = (self._REMOTE_CODEX_SECRETS_DIR / "auth.json").as_posix()
+        remote_goal_bootstrap_path = (
+            self._REMOTE_CODEX_SECRETS_DIR / "codex_goal_bootstrap.py"
+        ).as_posix()
         agent_sessions_dir = (EnvironmentPaths.agent_dir / "sessions").as_posix()
 
         env: dict[str, str] = {
@@ -1274,6 +1297,19 @@ class Codex(BaseInstalledAgent):
                 '"$CODEX_HOME/auth.json"\n'
             )
 
+        if goal_objective and not self._resume:
+            await environment.upload_file(
+                self._GOAL_BOOTSTRAP_SOURCE, remote_goal_bootstrap_path
+            )
+            if environment.default_user is not None:
+                await self.exec_as_root(
+                    environment,
+                    command=(
+                        f"chown {environment.default_user} "
+                        f"{shlex.quote(remote_goal_bootstrap_path)}"
+                    ),
+                )
+
         if openai_base_url := self._get_env("OPENAI_BASE_URL"):
             env["OPENAI_BASE_URL"] = openai_base_url
 
@@ -1287,6 +1323,19 @@ class Codex(BaseInstalledAgent):
             )
 
         setup_command += config_toml_block
+
+        goal_bootstrap_model = self._get_env("CODEX_GOAL_BOOTSTRAP_MODEL") or model
+        goal_bootstrap_provider = self._get_env(
+            "CODEX_GOAL_BOOTSTRAP_EXPECTED_PROVIDER"
+        )
+        goal_prepare_script = self._get_env("CODEX_GOAL_BOOTSTRAP_PREPARE_SCRIPT")
+        if goal_objective and not self._resume and goal_prepare_script:
+            prepare_path = PurePosixPath(goal_prepare_script)
+            if not prepare_path.is_absolute() or ".." in prepare_path.parts:
+                raise ValueError(
+                    "CODEX_GOAL_BOOTSTRAP_PREPARE_SCRIPT must be an absolute safe path"
+                )
+            setup_command += f"\nbash {shlex.quote(prepare_path.as_posix())}"
 
         skills_command = self._build_register_skills_command()
         if skills_command:
@@ -1313,18 +1362,51 @@ class Codex(BaseInstalledAgent):
                 command=setup_command,
                 env=env,
             )
+
+        goal_bootstrap = ""
+        explicit_resume_id = ""
+        if goal_objective and not self._resume:
+            env["SPRINT_CODEX_GOAL_OBJECTIVE"] = goal_objective
+            env["SPRINT_CODEX_APP_SERVER_ARGS_JSON"] = json.dumps(
+                shlex.split(cli_flags)
+            )
+            goal_provider_arg = (
+                f" --expected-provider {shlex.quote(goal_bootstrap_provider)}"
+                if goal_bootstrap_provider
+                else ""
+            )
+            goal_bootstrap = (
+                "sprint_codex_thread_id=$("
+                f"python3 {shlex.quote(remote_goal_bootstrap_path)} "
+                f"--model {shlex.quote(goal_bootstrap_model)} --cwd /app "
+                f"--receipt {shlex.quote((EnvironmentPaths.agent_dir / 'goal-bootstrap.json').as_posix())}"
+                f"{goal_provider_arg}"
+                ")\n"
+                "unset SPRINT_CODEX_GOAL_OBJECTIVE "
+                "SPRINT_CODEX_APP_SERVER_ARGS_JSON\n"
+            )
+            explicit_resume_id = '"$sprint_codex_thread_id" '
+
+        if self._resume:
+            exec_mode = "resume --last "
+        elif goal_objective:
+            exec_mode = "resume "
+        else:
+            exec_mode = ""
         try:
             await self.exec_as_agent(
                 environment,
                 command=(
                     "if [ -s ~/.nvm/nvm.sh ]; then . ~/.nvm/nvm.sh; fi; "
-                    f"codex exec {'resume --last ' if self._resume else ''}"
+                    f"{goal_bootstrap}"
+                    f"codex exec {exec_mode}"
                     "--dangerously-bypass-approvals-and-sandbox "
                     "--skip-git-repo-check "
                     f"--model {model} "
                     "--json "
                     "--enable unified_exec "
                     f"{cli_flags_arg}"
+                    f"{explicit_resume_id}"
                     "-- "  # end of flags
                     f"{escaped_instruction} "
                     f"2>&1 </dev/null | tee {

@@ -9,7 +9,7 @@ export MODAL_PROFILE="${MODAL_PROFILE:-kevinli020508}"
 MODEL="${MODEL:?MODEL is required}"
 ENDPOINT="${ENDPOINT:-https://openrouter.ai/api/v1}"
 REASONING_EFFORT="${REASONING_EFFORT:-max}"
-CODEX_VERSION="${CODEX_VERSION:-0.147.0}"
+CODEX_VERSION="${CODEX_VERSION:-0.149.1}"
 RUN_ID="${RUN_ID:-lane-openai-$(date -u +%Y%m%dT%H%M%SZ)}"
 GOAL="$ROOT/event_runtime/control/templates/codex.j2"
 
