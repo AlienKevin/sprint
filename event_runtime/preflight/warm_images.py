@@ -3,10 +3,12 @@
 
 from __future__ import annotations
 
+import atexit
 import argparse
 import hashlib
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -41,6 +43,25 @@ FATAL_SANDBOX_OUTPUT = (
     "ModuleNotFoundError:",
     "Traceback (most recent call last):",
 )
+
+
+def stop_warmup_app(*, required: bool = True) -> None:
+    """Retire the zero-task helper app so clean-room preflight stays clean."""
+    last_error = ""
+    for attempt in range(3):
+        result = subprocess.run(
+            [sys.executable, "-m", "modal", "app", "stop", "-y", APP_NAME],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            return
+        last_error = (result.stderr or result.stdout).strip()[-1000:]
+        if attempt < 2:
+            time.sleep(0.5 * (2**attempt))
+    if required:
+        raise RuntimeError(f"failed to stop warmup Modal app: {last_error}")
 
 
 def build_image(
@@ -190,6 +211,13 @@ def main() -> int:
         parser.error(f"policy not found: {policy}")
 
     app = modal.App.lookup(APP_NAME, create_if_missing=True)
+    # Modal image builds leave their owning App in deployed/zero-task state.
+    # Register a failure-path cleanup immediately, then perform and verify the
+    # same cleanup synchronously before reporting successful completion.
+    def failure_cleanup() -> None:
+        stop_warmup_app(required=False)
+
+    atexit.register(failure_cleanup)
     volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
     with volume.batch_upload(force=True) as upload:
         upload.put_file(policy, "/policy.pt", mode=0o444)
@@ -363,10 +391,12 @@ def main() -> int:
             for index in (1, 2)
         ]
 
+    stop_warmup_app()
+    atexit.unregister(failure_cleanup)
     payload["completed"] = True
     payload["completed_at_epoch_s"] = time.time()
     payload["unique_image_count"] = 2
-    payload["cleanup"] = "all warmup sandboxes terminated"
+    payload["cleanup"] = "all warmup sandboxes terminated; warmup app stopped"
     atomic_write(payload)
     public_temp.cleanup()
     print(json.dumps(payload, indent=2, sort_keys=True))

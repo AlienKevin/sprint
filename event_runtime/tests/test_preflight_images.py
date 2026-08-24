@@ -82,6 +82,38 @@ def test_warmup_checks_agent_shell_entrypoints() -> None:
         assert f"test -x /opt/{name}" in source
 
 
+def test_warmup_retires_its_zero_task_modal_app(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    warmer = load_script("warm_images.py")
+    calls: list[list[str]] = []
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(
+        warmer.subprocess,
+        "run",
+        lambda command, **_kwargs: calls.append(command) or Result(),
+    )
+
+    warmer.stop_warmup_app()
+
+    assert calls == [
+        [
+            warmer.sys.executable,
+            "-m",
+            "modal",
+            "app",
+            "stop",
+            "-y",
+            warmer.APP_NAME,
+        ]
+    ]
+
+
 def test_functional_canary_uses_current_training_cli_contract() -> None:
     canary = load_script("canary.py")
 
