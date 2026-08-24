@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="description" content="Inspect agent reasoning, messages, tools, observations, timing, and token usage for every Agents' 100m trial.">
   <title>Agents' 100m · Agent trajectory</title>
-  <link rel="stylesheet" href="/trajectory.css?v=20260824-8">
+  <link rel="stylesheet" href="/trajectory.css?v=20260824-9">
 </head>
 <body>
   <header class="viewer-nav">
@@ -21,18 +21,37 @@
   <main class="viewer-layout">
     <aside class="viewer-rail left-rail">
       <a class="back-link" href="/">← Back to race overview</a>
-      <label class="run-picker"><span>Trial</span><select id="run"><option>Loading trajectories…</option></select></label>
-
-      <section class="summary-card" aria-live="polite">
-        <div class="run-identity"><span class="model-dot"></span><div><strong id="run-model">—</strong><small id="run-id">—</small></div></div>
-        <dl class="summary-stats">
+      <section class="utilization-overview" aria-labelledby="utilization-title">
+        <header class="utilization-head">
+          <div class="run-identity">
+            <span class="model-dot"></span>
+            <div><strong id="run-model">—</strong><small id="run-id">—</small></div>
+          </div>
+          <p id="utilization-status" class="utilization-status">Loading utilization…</p>
+        </header>
+        <label class="run-picker pulse-run-picker"><span>Trial</span><select id="run"><option>Loading trajectories…</option></select></label>
+        <dl class="pulse-stats" aria-live="polite">
           <div><dt>Elapsed</dt><dd id="summary-duration">—</dd></div>
           <div><dt>Steps</dt><dd id="summary-steps">—</dd></div>
-          <div><dt>Tool calls</dt><dd id="summary-tools">—</dd></div>
-          <div class="wide"><dt>Total cost</dt><dd id="summary-cost">—</dd></div>
+          <div><dt>Tools</dt><dd id="summary-tools">—</dd></div>
+          <div><dt>Cost</dt><dd id="summary-cost">—</dd></div>
         </dl>
+        <div class="utilization-title-row">
+          <div><p class="eyebrow">RUN PULSE</p><h2 id="utilization-title">Resources alongside the trace</h2></div>
+          <span>select to jump</span>
+        </div>
+        <div class="utilization-stage">
+          <canvas id="utilization-chart" height="154" tabindex="0" role="img" aria-label="CPU and GPU utilization over the run. Select a point to jump to the nearest agent step."></canvas>
+          <div id="utilization-tip" class="utilization-tip" hidden></div>
+        </div>
+        <footer class="utilization-footer">
+          <span><i class="pulse-dot cpu"></i>CPU</span>
+          <span><i class="pulse-dot training"></i>Train GPU</span>
+          <span><i class="pulse-dot verifier"></i>Verify GPU</span>
+          <span><i class="pulse-dot tools"></i>Tools</span>
+          <a id="utilization-detail-link" href="/timeline">Details ↗</a>
+        </footer>
       </section>
-
     </aside>
 
     <section class="trace-column" aria-labelledby="trajectory-title">
@@ -59,6 +78,7 @@
 
   </main>
 
-  <script src="/trajectory.js?v=20260824-8"></script>
+  <script src="/trajectory.js?v=20260824-9"></script>
+  <script src="/trajectory-overview.js?v=20260824-1"></script>
 </body>
 </html>
