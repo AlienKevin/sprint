@@ -54,7 +54,7 @@ body:before {
   z-index: -1;
 }
 .hero {
-  padding: 22px clamp(24px, 5vw, 80px) 38px;
+  padding: 14px clamp(24px, 5vw, 80px) 38px;
   border-bottom: 1px solid var(--line);
   display: flex;
   flex-direction: column;
@@ -65,16 +65,14 @@ body:before {
   align-items: center;
 }
 .brand,
-.eyebrow,
 .kicker {
   font: 700 12px/1 var(--mono);
   letter-spacing: 0.14em;
 }
 .hero-copy {
-  margin: 52px 0 34px;
+  margin: 24px 0 34px;
   max-width: 1050px;
 }
-.eyebrow,
 .kicker {
   color: var(--text);
 }
@@ -82,7 +80,7 @@ h1 {
   font-size: clamp(58px, 10vw, 142px);
   line-height: 0.82;
   letter-spacing: -0.075em;
-  margin: 18px 0 24px;
+  margin: 0 0 24px;
   font-weight: 760;
   white-space: nowrap;
 }
@@ -206,7 +204,7 @@ main {
   cursor: pointer;
   transition: background .16s ease;
 }
-.experiment-row:hover,
+.experiment-row:hover:not(:has(.experiment-model:hover)),
 .experiment-row:focus-visible {
   background: color-mix(in srgb, var(--model-accent) 7%, transparent);
 }
@@ -227,12 +225,16 @@ main {
   --model-accent: var(--pro);
 }
 .experiment-row.experiment-best {
-  background: color-mix(in srgb, var(--model-accent) 7%, transparent);
-  box-shadow: inset -2px 0 color-mix(in srgb, var(--model-accent) 80%, transparent);
+  background: color-mix(in srgb, var(--model-accent) 20%, var(--panel));
+  box-shadow: inset -4px 0 var(--model-accent);
 }
-.experiment-row.experiment-best:hover,
+.experiment-row.experiment-best > td {
+  border-top: 1px solid color-mix(in srgb, var(--model-accent) 58%, var(--line));
+  border-bottom-color: color-mix(in srgb, var(--model-accent) 58%, var(--line));
+}
+.experiment-row.experiment-best:hover:not(:has(.experiment-model:hover)),
 .experiment-row.experiment-best:focus-visible {
-  background: color-mix(in srgb, var(--model-accent) 11%, transparent);
+  background: color-mix(in srgb, var(--model-accent) 27%, var(--panel));
 }
 .experiment-model {
   width: 28%;
@@ -349,6 +351,9 @@ main {
 }
 .performance-scores {
   margin-top: 18px;
+}
+.metric-note span {
+  display: block;
 }
 .auc-bar-chart {
   padding: 20px;

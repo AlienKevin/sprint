@@ -500,9 +500,10 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "class:'submission-target'" in app
     assert "el.getScreenCTM()" in app
     assert "nearest.distance<=22**2" in app
-    assert "styles.css?v=20260825-7" in page
-    assert "app.js?v=20260825-7" in page
-    assert '"version":"20260825-7"' in (ROOT / "web/version.json").read_text()
+    assert "styles.css?v=20260825-8" in page
+    assert "app.js?v=20260825-8" in page
+    assert '"version":"20260825-8"' in (ROOT / "web/version.json").read_text()
+    assert "AI AGENTS · ONE HUMANOID · ONE FINISH LINE" not in page
     assert 'class="experiment-table"' in app
     assert 'scope="rowgroup"' in app
     assert '<th scope="col">Effort</th>' in app
@@ -514,6 +515,7 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "row.bestScore===familyBest" in app
     assert "highest Effective Speed for this model across all efforts" in app
     assert ".experiment-row.experiment-best" in styles
+    assert ".experiment-row:hover:not(:has(.experiment-model:hover))" in styles
     assert "best_continuous_score_mps" in app
     preview = trajectory_app.split("function stepPreview", 1)[1].split(
         "function matchesFilter", 1
