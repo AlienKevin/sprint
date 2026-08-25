@@ -104,7 +104,7 @@ h1 em {
   max-width: 820px;
   margin: 8px 0 0;
   color: var(--muted);
-  font-size: clamp(13px, 1.25vw, 16px);
+  font-size: clamp(17px, 2vw, 24px);
   line-height: 1.55;
 }
 .model-cards {
@@ -304,15 +304,6 @@ main {
 .gridline {
   stroke: #292929;
   stroke-width: 1;
-}
-.auc-cap-line {
-  stroke: var(--warm);
-  stroke-width: 1;
-  stroke-dasharray: 5 5;
-  opacity: 0.8;
-}
-.auc-cap-label {
-  fill: var(--warm);
 }
 .best-line {
   fill: none;

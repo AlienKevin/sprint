@@ -500,12 +500,18 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "class:'submission-target'" in app
     assert "el.getScreenCTM()" in app
     assert "nearest.distance<=22**2" in app
-    assert "styles.css?v=20260825-12" in page
-    assert "app.js?v=20260825-12" in page
-    assert '"version":"20260825-12"' in (ROOT / "web/version.json").read_text()
+    assert "styles.css?v=20260825-14" in page
+    assert "app.js?v=20260825-14" in page
+    assert '"version":"20260825-14"' in (ROOT / "web/version.json").read_text()
+    assert "AUC cutoff" not in app
+    assert "auc-cap-line" not in app
+    assert ".auc-cap-line" not in styles
+    assert "value === 0 ? '0'" in app
     assert "AI AGENTS · ONE HUMANOID · ONE FINISH LINE" not in page
     assert "Can agents train a humanoid to run?" in page
-    assert "We give each agent an A10G GPU and $10 total budget to train their runner." in page
+    assert "We give each agent an A10G GPU and $10 total budget to train their humanoid runner." in page
+    assert ".intro-detail" in styles
+    assert "font-size: clamp(17px, 2vw, 24px)" in styles
     assert 'class="experiment-table"' in app
     assert 'scope="rowgroup"' in app
     assert '<th scope="col">Effort</th>' in app
@@ -515,6 +521,7 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert '>Trial ${esc(row.arm.trial)}</a>' not in app
     assert "const familyBest=Math.max" in app
     assert "row.bestScore===familyBest" in app
+    assert "${isBest?`<b>${speed}</b>`:speed}" in app
     assert "highest Effective Speed for this model across all efforts" in app
     assert ".experiment-row.experiment-best" in styles
     assert ".experiment-row.experiment-best > td:first-of-type" in styles
