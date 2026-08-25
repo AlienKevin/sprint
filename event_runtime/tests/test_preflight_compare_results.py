@@ -23,26 +23,49 @@ def result(**overrides):
     return canonical(payload)
 
 
-def test_equivalent_accepts_millimetre_scale_gpu_physics_jitter() -> None:
-    matches, deltas = equivalent(result(), result(max_distance_m=0.793))
+def test_equivalent_accepts_observed_cross_gpu_physics_jitter() -> None:
+    matches, deltas = equivalent(result(), result(max_distance_m=0.796))
 
     assert matches is True
-    assert 0 < deltas["max_distance_m"] <= 0.002
+    assert 0 < deltas["max_distance_m"] <= 0.01
 
 
-def test_equivalent_accepts_inclusive_two_millimetre_boundary() -> None:
+def test_equivalent_accepts_inclusive_one_centimetre_boundary() -> None:
     matches, deltas = equivalent(
-        result(max_distance_m=0.796), result(max_distance_m=0.794)
+        result(max_distance_m=0.802), result(max_distance_m=0.792)
     )
 
     assert matches is True
-    assert round(deltas["max_distance_m"], 3) == 0.002
+    assert round(deltas["max_distance_m"], 3) == 0.01
 
 
 def test_equivalent_rejects_larger_numeric_difference() -> None:
-    matches, _ = equivalent(result(), result(max_distance_m=0.795))
+    matches, _ = equivalent(result(), result(max_distance_m=0.803))
 
     assert matches is False
+
+
+def test_equivalent_uses_one_control_tick_for_finish_times() -> None:
+    matches, _ = equivalent(
+        result(
+            valid_run=True,
+            best_valid_100m_s=12.0,
+            all_valid_times_s=[12.0],
+            failed_gates=[],
+            lanes_finished=1,
+            lanes_valid=1,
+        ),
+        result(
+            valid_run=True,
+            best_valid_100m_s=12.02,
+            all_valid_times_s=[12.02],
+            failed_gates=[],
+            lanes_finished=1,
+            lanes_valid=1,
+        ),
+    )
+
+    assert matches is True
 
 
 def test_equivalent_requires_exact_verdicts_and_gates() -> None:

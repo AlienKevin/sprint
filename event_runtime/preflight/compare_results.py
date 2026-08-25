@@ -10,8 +10,15 @@ from pathlib import Path
 from typing import Any
 
 
-FLOAT_TOLERANCE = 0.002
-DECIMAL_TOLERANCE = Decimal(str(FLOAT_TOLERANCE))
+NUMERIC_TOLERANCES = {
+    # One 50 Hz control tick. Separate GPU executions may resolve the finish
+    # crossing on adjacent physics/control samples even with identical source.
+    "best_valid_100m_s": Decimal("0.02"),
+    # The canary's observed cross-GPU drift is 4 mm. A 1 cm bound is still far
+    # below any meaningful configuration or scoring difference while covering
+    # one control-step worth of motion for the deliberately slow probe policy.
+    "max_distance_m": Decimal("0.01"),
+}
 
 
 def rounded(value: Any) -> float | None:
@@ -65,12 +72,12 @@ def equivalent(
         if left is not None:
             delta = abs(float(left) - float(right))
             deltas[key] = delta
-            # These values have already been rounded to the benchmark's
-            # published millimetre precision.  Decimal avoids rejecting the
-            # inclusive 2 mm boundary because binary float subtraction can
-            # represent 0.796 - 0.794 as 0.0020000000000000018.
-            if Decimal(str(left)) - Decimal(str(right)) > DECIMAL_TOLERANCE or (
-                Decimal(str(right)) - Decimal(str(left)) > DECIMAL_TOLERANCE
+            tolerance = NUMERIC_TOLERANCES[key]
+            # Decimal avoids rejecting an inclusive boundary because binary
+            # float subtraction may represent it just above the configured
+            # tolerance.
+            if Decimal(str(left)) - Decimal(str(right)) > tolerance or (
+                Decimal(str(right)) - Decimal(str(left)) > tolerance
             ):
                 return False, deltas
 
@@ -87,9 +94,9 @@ def equivalent(
                 deltas[f"{key}[{index}]"] = delta
                 if (
                     Decimal(str(left_item)) - Decimal(str(right_item))
-                    > DECIMAL_TOLERANCE
+                    > NUMERIC_TOLERANCES["best_valid_100m_s"]
                     or Decimal(str(right_item)) - Decimal(str(left_item))
-                    > DECIMAL_TOLERANCE
+                    > NUMERIC_TOLERANCES["best_valid_100m_s"]
                 ):
                     return False, deltas
     return True, deltas
@@ -115,7 +122,9 @@ def main() -> int:
         "schema_version": 1,
         "equivalent": True,
         "canonical_result": official,
-        "numeric_tolerance": FLOAT_TOLERANCE,
+        "numeric_tolerances": {
+            key: float(value) for key, value in NUMERIC_TOLERANCES.items()
+        },
         "numeric_deltas": numeric_deltas,
     }
     args.out.parent.mkdir(parents=True, exist_ok=True)
