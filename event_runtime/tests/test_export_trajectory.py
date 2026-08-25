@@ -150,6 +150,33 @@ def test_build_public_trajectory_redacts_and_preserves_attempts(tmp_path: Path) 
     assert index["runs"][0]["path"] == "/data/trajectories/trajectory-fixture.json"
 
 
+def test_sanitizer_version_invalidates_cached_public_snapshot(
+    tmp_path: Path, monkeypatch
+) -> None:
+    state = tmp_path / "trajectory-fixture"
+    web = tmp_path / "web"
+    write_fixture(state)
+    trajectory.build_public_trajectory(state, web_dir=web)
+
+    public_path = web / "data" / "trajectories" / "trajectory-fixture.json"
+    cached = json.loads(public_path.read_text())
+    cached["steps"][0]["message"] = "stale cached rendering"
+    public_path.write_text(json.dumps(cached))
+    assert (
+        trajectory.build_public_trajectory(state, web_dir=web)["steps"][0]["message"]
+        == "stale cached rendering"
+    )
+
+    monkeypatch.setattr(
+        trajectory,
+        "PUBLIC_SANITIZER_VERSION",
+        trajectory.PUBLIC_SANITIZER_VERSION + 1,
+    )
+    refreshed = trajectory.build_public_trajectory(state, web_dir=web)
+
+    assert refreshed["steps"][0]["message"] == "build the fastest policy"
+
+
 def test_redact_handles_headers_urls_and_images() -> None:
     value = {
         "Authorization": "Bearer abcdefghijklmnopqrstuvwxyz",
@@ -162,6 +189,40 @@ def test_redact_handles_headers_urls_and_images() -> None:
     assert result["Authorization"] == "[REDACTED]"
     assert "super-secret" not in result["url"]
     assert result["parts"][0]["content"] == "[IMAGE OMITTED FROM PUBLIC VIEW]"
+
+
+def test_redact_preserves_non_secret_token_and_key_fields_in_source_text() -> None:
+    value = """const p = await tools.exec_command({
+  yield_time_ms: 10000,
+  max_output_tokens: 128000,
+});
+json.dumps(payload, sort_keys=True)
+best = min(valid, key=lambda row: row.finish_time_s)
+original_token_count=923
+idempotency_key=args.key
+trace = {key: [] for key in fields}
+SPRINT_SCORING_QUEUE_KEY=s10-vexp-r32-20260824
+"""
+
+    assert trajectory.redact(value) == value
+
+
+def test_redact_scrubs_explicit_and_uppercase_env_assignments_in_source_text() -> None:
+    value = """api_key='plain-provider-secret'
+\"refresh_token\": \"temporary-refresh-value\"
+OPENROUTER_API_KEY=provider-secret
+MODAL_TOKEN_ID: modal-token-id
+RESTIC_PASSWORD = snapshot-secret
+"""
+
+    result = trajectory.redact(value)
+
+    assert "plain-provider-secret" not in result
+    assert "temporary-refresh-value" not in result
+    assert "provider-secret" not in result
+    assert "modal-token-id" not in result
+    assert "snapshot-secret" not in result
+    assert result.count("[REDACTED]") == 5
 
 
 def test_build_public_trajectory_from_deepseek_harness_events(tmp_path: Path) -> None:

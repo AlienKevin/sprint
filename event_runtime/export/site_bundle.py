@@ -15,7 +15,7 @@ from urllib.parse import unquote, urlsplit
 
 DYNAMIC_DIRECTORIES = frozenset({"data", "captures", "replay"})
 IGNORED_DIRECTORIES = frozenset({".git", ".vercel", "__pycache__", "node_modules"})
-INDEX_FAMILIES = ("policies", "timelines", "trajectories")
+INDEX_FAMILIES = ("policies", "timelines", "timeline-overviews", "trajectories")
 
 
 def is_atomic_staging_file(path: Path) -> bool:

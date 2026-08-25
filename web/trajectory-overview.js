@@ -34,6 +34,11 @@
     docked: false,
     selectedStepId: null,
   };
+  const requestedRunId = new URLSearchParams(location.search).get('run');
+  const settleTimeline = promise => promise.then(data => ({data}), error => ({error}));
+  const prefetchedTimeline = requestedRunId
+    ? settleTimeline(fetchTimeline(requestedRunId))
+    : null;
 
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
   const fmtDuration = ms => {
@@ -74,6 +79,15 @@
       }
     }
     return series;
+  }
+
+  async function fetchTimeline(runId) {
+    const overview = await fetch(`/data/timeline-overviews/${encodeURIComponent(runId)}.json`, {cache: 'no-store'});
+    if (overview.ok) return overview.json();
+    if (overview.status !== 404) throw Error(`${overview.status} ${overview.statusText}`);
+    const full = await fetch(`/data/timelines/${encodeURIComponent(runId)}.json`, {cache: 'no-store'});
+    if (!full.ok) throw Error(`${full.status} ${full.statusText}`);
+    return full.json();
   }
 
   function resize() {
@@ -210,9 +224,14 @@
     return best;
   }
 
+  function renderedStepNode(step) {
+    if (!step) return null;
+    return document.querySelector(`[data-step-ids~="${CSS.escape(step.step_id)}"]`);
+  }
+
   function jumpToEpoch(epoch, forceScroll = false) {
     const step = nearestStep(epoch);
-    const target = step && document.getElementById(step.step_id);
+    const target = renderedStepNode(step);
     if (!target) return;
     const stepEpoch = Date.parse(step.timestamp || '');
     if (Number.isFinite(stepEpoch)) state.cursorEpoch = stepEpoch;
@@ -243,7 +262,7 @@
     const anchor = (dock?.getBoundingClientRect().bottom || 0) + 20;
     let current = state.trajectory.steps?.[0];
     for (const step of state.trajectory.steps || []) {
-      const node = document.getElementById(step.step_id);
+      const node = renderedStepNode(step);
       if (!node) continue;
       if (node.getBoundingClientRect().top <= anchor) current = step;
       else break;
@@ -264,9 +283,11 @@
     draw();
     const runId = trajectory.run?.run_id || '';
     try {
-      const response = await fetch(`/data/timelines/${encodeURIComponent(runId)}.json`, {cache: 'no-store'});
-      if (!response.ok) throw Error(`${response.status} ${response.statusText}`);
-      state.timeline = await response.json();
+      const result = prefetchedTimeline && requestedRunId === runId
+        ? await prefetchedTimeline
+        : await settleTimeline(fetchTimeline(runId));
+      if (result.error) throw result.error;
+      state.timeline = result.data;
       state.series = buildSeries(state.timeline);
       state.cursorEpoch = Date.parse(trajectory.steps?.[0]?.timestamp || '') || state.timeline.clock.origin_epoch_ms;
       status.textContent = 'Scroll the trace or select the chart';

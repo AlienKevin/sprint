@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="description" content="Inspect agent reasoning, messages, tools, observations, timing, and token usage for every Agents' 100m trial.">
   <title>Agents' 100m · Agent trajectory</title>
-  <link rel="stylesheet" href="/trajectory.css?v=20260824-17">
+  <link rel="stylesheet" href="/trajectory.css?v=20260825-9">
 </head>
 <body>
   <header class="viewer-nav">
@@ -42,6 +42,16 @@
           <span><i class="pulse-dot tools"></i>Tools</span>
         </footer>
       </section>
+      <section id="rollout-outline" class="rollout-outline" aria-labelledby="rollout-outline-title" hidden>
+        <header class="rollout-outline-head">
+          <div>
+            <h2 id="rollout-outline-title">Rollout outline</h2>
+          </div>
+          <span id="chapter-count" class="chapter-count"></span>
+        </header>
+        <p id="rollout-synopsis" class="rollout-synopsis"></p>
+        <nav id="chapter-nav" class="chapter-nav" aria-label="Rollout chapters"></nav>
+      </section>
     </aside>
 
     <section class="trace-column" aria-label="Agent trace">
@@ -49,14 +59,13 @@
         <span id="status" class="status">Loading…</span>
         <label class="jump-control"><span class="sr-only">Jump to step</span><input id="jump-step" type="number" min="1" placeholder="step #" inputmode="numeric"></label>
         <label class="search"><span class="sr-only">Search trajectory</span><input id="search" type="search" placeholder="Search trace…" autocomplete="off"></label>
-        <button id="expand" class="expand-button" type="button">Expand all</button>
       </div>
       <div id="steps" class="steps" aria-live="polite"></div>
     </section>
 
   </main>
 
-  <script src="/trajectory.js?v=20260824-10"></script>
-  <script src="/trajectory-overview.js?v=20260824-8"></script>
+  <script src="/trajectory.js?v=20260825-8"></script>
+  <script src="/trajectory-overview.js?v=20260825-1"></script>
 </body>
 </html>
