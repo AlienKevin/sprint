@@ -541,12 +541,16 @@ def generate(
             model=model,
             reasoning_effort=reasoning_effort,
         )
-    except Exception as exc:
+    except BaseException as exc:
         capture_manifest(
             capture_dir,
             {
                 "schema_version": "trajectory-outline-capture/v1",
-                "status": "failed",
+                "status": (
+                    "interrupted"
+                    if isinstance(exc, (KeyboardInterrupt, SystemExit))
+                    else "failed"
+                ),
                 "run_id": run_id,
                 "model": model,
                 "reasoning_effort": reasoning_effort,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -140,15 +141,34 @@ def test_invoke_codex_captures_event_stream_and_final_response(
     trajectory.write_text(json.dumps(payload()))
     capture = tmp_path / "capture"
 
+    @contextmanager
+    def fake_isolation(*args: object, **kwargs: object):
+        source = tmp_path / "isolated" / "trajectory.json"
+        source.parent.mkdir()
+        source.write_bytes(trajectory.read_bytes())
+        schema = source.parent / "outline.schema.json"
+        schema.write_text("{}")
+        yield {
+            "prefix": ["codex"],
+            "repository": source.parent,
+            "trajectory": source,
+            "schema": schema,
+            "output": source.parent / "final-response.json",
+        }
+
     def fake_run(command: list[str], **kwargs: object) -> SimpleNamespace:
         assert "--json" in command
         assert "--ephemeral" in command
-        assert command[command.index("--sandbox") + 1] == "read-only"
+        assert "--ignore-user-config" in command
+        assert "--dangerously-bypass-approvals-and-sandbox" in command
         output = Path(command[command.index("--output-last-message") + 1])
         output.write_text(json.dumps(authored()))
         kwargs["stdout"].write('{"type":"thread.started","thread_id":"test"}\n')
         return SimpleNamespace(returncode=0)
 
+    monkeypatch.setattr(
+        trajectory_outline, "isolated_codex_environment", fake_isolation
+    )
     monkeypatch.setattr(trajectory_outline.subprocess, "run", fake_run)
     result = trajectory_outline.invoke_codex(
         trajectory,
@@ -164,6 +184,10 @@ def test_invoke_codex_captures_event_stream_and_final_response(
     assert json.loads((capture / "events.jsonl").read_text())["type"] == "thread.started"
     assert json.loads((capture / "final-response.json").read_text()) == authored()
     assert (capture / "stderr.log").is_file()
+    assert (capture / "prompt.txt").is_file()
+    assert json.loads((capture / "command.json").read_text())["isolation"] == (
+        "unprivileged-user-read-only-source/v1"
+    )
 
 
 def test_generate_preserves_rejected_response_and_failure_manifest(
@@ -206,3 +230,30 @@ def test_generate_preserves_rejected_response_and_failure_manifest(
     manifest = json.loads((capture / "manifest.json").read_text())
     assert manifest["status"] == "failed"
     assert manifest["error"]["type"] == "ValueError"
+
+
+def test_generate_records_interrupted_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trajectory = tmp_path / "run-a.json"
+    trajectory.write_text(json.dumps(payload()))
+    capture = tmp_path / "capture"
+
+    def interrupt(*args: object, **kwargs: object) -> dict:
+        capture.mkdir()
+        (capture / "events.jsonl").write_text('{"type":"turn.started"}\n')
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(trajectory_outline, "invoke_codex", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        trajectory_outline.generate(
+            trajectory,
+            output_path=tmp_path / "run-a.outline.json",
+            repository=tmp_path,
+            capture_dir=capture,
+            force=True,
+        )
+
+    manifest = json.loads((capture / "manifest.json").read_text())
+    assert manifest["status"] == "interrupted"
+    assert manifest["error"]["type"] == "KeyboardInterrupt"
