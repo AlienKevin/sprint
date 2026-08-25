@@ -257,3 +257,25 @@ def test_generate_records_interrupted_capture(
     manifest = json.loads((capture / "manifest.json").read_text())
     assert manifest["status"] == "interrupted"
     assert manifest["error"]["type"] == "KeyboardInterrupt"
+
+
+def test_authored_response_can_be_recovered_from_jsonl(tmp_path: Path) -> None:
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        "\n".join(
+            [
+                '{"type":"thread.started","thread_id":"test"}',
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "agent_message",
+                            "text": json.dumps(authored()),
+                        },
+                    }
+                ),
+            ]
+        )
+    )
+
+    assert trajectory_outline.authored_from_event_stream(events) == authored()

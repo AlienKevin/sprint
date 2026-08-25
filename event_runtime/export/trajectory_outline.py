@@ -163,9 +163,12 @@ def isolated_codex_environment(
         source_root.chmod(0o555)
 
         codex_home = temp / "codex-home"
-        codex_home.mkdir(mode=0o700)
+        codex_home.mkdir(mode=0o711)
         shutil.copyfile(auth_path, codex_home / "auth.json")
         (codex_home / "auth.json").chmod(0o600)
+        transient_output = codex_home / "final-response.json"
+        transient_output.touch(mode=0o666)
+        transient_output.chmod(0o666)
         subprocess.run(
             ["sudo", "-n", "chown", "-R", "nobody:nogroup", str(codex_home)],
             check=True,
@@ -177,7 +180,6 @@ def isolated_codex_environment(
         # Add traverse-only access temporarily, then restore the exact mode.
         user_home = Path.home()
         original_mode = stat.S_IMODE(user_home.stat().st_mode)
-        transient_output = codex_home / "final-response.json"
         try:
             if not original_mode & stat.S_IXOTH:
                 subprocess.run(
@@ -376,6 +378,28 @@ def artifact_matches(
     )
 
 
+def authored_from_event_stream(events: Path) -> dict[str, Any]:
+    """Recover the final structured agent message from a Codex JSONL capture."""
+    final_message: str | None = None
+    for line in events.read_text(errors="replace").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        item = event.get("item") or {}
+        if event.get("type") == "item.completed" and item.get("type") == "agent_message":
+            final_message = item.get("text")
+    if not final_message:
+        raise RuntimeError("Codex event stream contains no completed agent response")
+    try:
+        authored = json.loads(final_message)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Codex final event is not valid outline JSON") from exc
+    if not isinstance(authored, dict):
+        raise RuntimeError("Codex final event must contain a JSON object")
+    return authored
+
+
 def invoke_codex(
     trajectory_path: Path,
     *,
@@ -440,6 +464,7 @@ def invoke_codex(
             completed = subprocess.run(
                 command,
                 text=True,
+                stdin=subprocess.DEVNULL,
                 stdout=event_stream,
                 stderr=error_stream,
                 timeout=timeout_seconds,
@@ -453,7 +478,11 @@ def invoke_codex(
     try:
         authored = json.loads(output.read_text())
     except (OSError, json.JSONDecodeError) as exc:
-        raise RuntimeError("Codex did not produce valid outline JSON") from exc
+        try:
+            authored = authored_from_event_stream(events)
+            atomic_json(output, authored)
+        except RuntimeError:
+            raise RuntimeError("Codex did not produce valid outline JSON") from exc
     if not isinstance(authored, dict):
         raise RuntimeError("Codex outline response must be a JSON object")
     return authored

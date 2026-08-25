@@ -34,7 +34,8 @@ uv run --project harbor pytest -q event_runtime/tests tests
 
 ## Website trajectory outlines
 
-Rollout tables of contents are authored offline by a read-only Codex agent and
+Rollout tables of contents are authored offline by a Codex agent running as an
+unprivileged OS user over an exact, read-only copy of the public trajectory and
 published beside the sanitized trajectory as
 `web/data/trajectories/<run-id>.outline.json`. Run:
 
@@ -45,9 +46,10 @@ python -m event_runtime.export.trajectory_outline \
 
 Each Codex synthesis attempt is retained under
 `.artifacts/trajectory-outlines/<run-id>/<timestamp>-<pid>/`. The directory
-contains the complete `codex exec --json` event stream, the final structured
-response, stderr, and a manifest recording success or the validation error.
-These review traces remain local and are not included in the website bundle.
+contains the complete `codex exec --json` event stream, exact prompt, invocation
+metadata, final structured response, stderr, and a manifest recording success
+or the validation error. These review traces remain local and are not included
+in the website bundle.
 
 The command pins the authoring model to GPT-5.6 Sol and lets it browse the exact
 already-public trajectory with read-only file-inspection tools. There is no
