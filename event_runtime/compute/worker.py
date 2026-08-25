@@ -1830,7 +1830,9 @@ def exec_on_standing(run: dict[str, Any], job: dict[str, Any]) -> str:
         + " "
         + shlex.quote(str(int(job["attempt"])))
         + " "
-        + shlex.quote(str(job["lease_id"])),
+        + shlex.quote(str(job["lease_id"]))
+        + " "
+        + shlex.quote(str(int(job.get("fence_epoch") or 0))),
     )
     return sid
 
@@ -1842,6 +1844,7 @@ def spawn_gpu_sandbox(run: dict[str, Any], job: dict[str, Any]) -> str:
     job_id = str(job["job_id"])
     attempt = int(job["attempt"])
     lease_id = str(job["lease_id"])
+    fence_epoch = int(job.get("fence_epoch") or 0)
     app = modal.App.lookup(
         str(run.get("training_app_name") or run["app_name"]),
         create_if_missing=True,
@@ -1859,6 +1862,8 @@ def spawn_gpu_sandbox(run: dict[str, Any], job: dict[str, Any]) -> str:
         + shlex.quote(str(attempt))
         + " "
         + shlex.quote(lease_id)
+        + " "
+        + shlex.quote(str(fence_epoch))
     )
     command = (
         "deadline=$((SECONDS + 120)); "

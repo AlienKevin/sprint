@@ -245,13 +245,22 @@ def read_json(path: Path) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
-def lease_owned(path: Path, attempt: int, lease_id: str) -> bool:
+LEASE_VISIBILITY_TIMEOUT_SEC = 120.0
+LEASE_VISIBILITY_POLL_SEC = 0.25
+
+
+def lease_owned(
+    path: Path,
+    attempt: int,
+    lease_id: str,
+    fence_epoch: int,
+) -> bool:
     job = read_json(path)
     lease = Lease(
         job_id=str(job.get("job_id") or ""),
         attempt=attempt,
         lease_id=lease_id,
-        fence_epoch=int(job.get("fence_epoch") or 0),
+        fence_epoch=fence_epoch,
     )
     return lease.owns(job) and str(job.get("status") or "") in {
         "claiming",
@@ -259,6 +268,45 @@ def lease_owned(path: Path, attempt: int, lease_id: str) -> bool:
         "running",
         "death_observed",
     }
+
+
+def wait_for_lease(
+    path: Path,
+    attempt: int,
+    lease_id: str,
+    fence_epoch: int,
+    *,
+    timeout_sec: float = LEASE_VISIBILITY_TIMEOUT_SEC,
+    poll_sec: float = LEASE_VISIBILITY_POLL_SEC,
+) -> bool:
+    """Wait for a just-published host lease to reach the mounted Volume.
+
+    Modal can start a Sandbox from a Volume snapshot taken just before the
+    host's claim record becomes visible in that mount.  Treat an older fence
+    epoch as propagation lag, while rejecting a conflicting or newer fence
+    immediately.  The immutable lease arguments still remain authoritative;
+    this wait never adopts a lease observed from the Volume.
+    """
+
+    deadline = time.monotonic() + max(0.0, timeout_sec)
+    while True:
+        if lease_owned(path, attempt, lease_id, fence_epoch):
+            return True
+        job = read_json(path)
+        try:
+            observed_epoch = int(job.get("fence_epoch") or 0)
+        except (TypeError, ValueError):
+            observed_epoch = 0
+        observed_lease = str(job.get("lease_id") or "")
+        if observed_epoch > fence_epoch or (
+            observed_epoch == fence_epoch
+            and observed_lease
+            and observed_lease != lease_id
+        ):
+            return False
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(max(0.01, poll_sec))
 
 
 def latest_checkpoint(checkpoint_dir: Path, *, verify_hash: bool = True) -> str | None:
@@ -790,15 +838,17 @@ def supervise_child(
 
 
 def main() -> int:
-    if len(sys.argv) != 5:
+    if len(sys.argv) != 6:
         print(
-            "Usage: sprint-gpu-worker-run.py RUN_ID JOB_ID ATTEMPT LEASE_ID",
+            "Usage: sprint-gpu-worker-run.py "
+            "RUN_ID JOB_ID ATTEMPT LEASE_ID FENCE_EPOCH",
             file=sys.stderr,
         )
         return 2
-    run_id, job_id, raw_attempt, lease_id = sys.argv[1:]
+    run_id, job_id, raw_attempt, lease_id, raw_fence_epoch = sys.argv[1:]
     try:
         attempt = int(raw_attempt)
+        fence_epoch = int(raw_fence_epoch)
     except ValueError:
         return 2
     prefix = Path("/durable") / "runs" / run_id / "gpu-jobs"
@@ -826,7 +876,7 @@ def main() -> int:
     log_handle = log_path.open("a", encoding="utf-8")
     sys.stdout = Tee(sys.__stdout__, log_handle)  # type: ignore[assignment]
     sys.stderr = Tee(sys.__stderr__, log_handle)  # type: ignore[assignment]
-    if not lease_owned(status_path, attempt, lease_id):
+    if not wait_for_lease(status_path, attempt, lease_id, fence_epoch):
         print(f"lease rejected job={job_id} attempt={attempt}", flush=True)
         return 75
 
@@ -1119,7 +1169,7 @@ def main() -> int:
                     phase=phase,
                 ),
             )
-            if not lease_owned(status_path, attempt, lease_id):
+            if not lease_owned(status_path, attempt, lease_id, fence_epoch):
                 print("lease fenced; stopping child", flush=True)
                 stop_child(proc)
                 attempt_record.update(

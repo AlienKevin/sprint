@@ -1699,6 +1699,23 @@ class LeaseLivenessTests(unittest.TestCase):
         )
         self.assertEqual(second, "dead")
 
+    def test_exited_startup_bypasses_cold_start_grace(self) -> None:
+        job = {
+            **self.job,
+            "status": "dispatched",
+            "claimed_at_epoch_s": 195,
+        }
+        decision = gpu_claim.assess_worker_liveness(
+            job,
+            None,
+            probe_state="exited",
+            now=200,
+            heartbeat_timeout_sec=30,
+            startup_grace_sec=600,
+            dead_grace_sec=10,
+        )
+        self.assertEqual(decision, "observe")
+
     def test_unknown_probe_gets_extra_lease_window(self) -> None:
         observed = {
             **self.job,
@@ -2811,8 +2828,77 @@ class RetryAndFencingTests(unittest.TestCase):
                     }
                 )
             )
-            self.assertFalse(worker_run.lease_owned(status, 1, "old"))
-            self.assertTrue(worker_run.lease_owned(status, 2, "new"))
+            self.assertFalse(worker_run.lease_owned(status, 1, "old", 0))
+            self.assertTrue(worker_run.lease_owned(status, 2, "new", 0))
+
+    def test_worker_waits_for_newer_lease_visibility(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            status = Path(raw) / "status.json"
+            status.write_text(
+                json.dumps(
+                    {
+                        "job_id": "logical",
+                        "status": "pending",
+                        "attempt": 0,
+                        "fence_epoch": 0,
+                    }
+                )
+            )
+
+            def publish() -> None:
+                time.sleep(0.03)
+                status.write_text(
+                    json.dumps(
+                        {
+                            "job_id": "logical",
+                            "status": "claiming",
+                            "attempt": 1,
+                            "lease_id": "lease",
+                            "fence_epoch": 1,
+                        }
+                    )
+                )
+
+            thread = threading.Thread(target=publish)
+            thread.start()
+            try:
+                self.assertTrue(
+                    worker_run.wait_for_lease(
+                        status,
+                        1,
+                        "lease",
+                        1,
+                        timeout_sec=0.5,
+                        poll_sec=0.01,
+                    )
+                )
+            finally:
+                thread.join()
+
+    def test_worker_rejects_newer_fence_without_waiting(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            status = Path(raw) / "status.json"
+            status.write_text(
+                json.dumps(
+                    {
+                        "job_id": "logical",
+                        "status": "claiming",
+                        "attempt": 2,
+                        "lease_id": "new",
+                        "fence_epoch": 2,
+                    }
+                )
+            )
+            self.assertFalse(
+                worker_run.wait_for_lease(
+                    status,
+                    1,
+                    "old",
+                    1,
+                    timeout_sec=10,
+                    poll_sec=0.01,
+                )
+            )
 
     def test_stop_fences_before_terminate(self) -> None:
         run = {"run_id": "unit"}

@@ -160,7 +160,14 @@ def assess_worker_liveness(
         or parse_ts(job.get("claimed_at") or job.get("dispatched_at"))
         or ref
     )
-    if status in {"claiming", "dispatched"} and ref - started < startup_grace_sec:
+    # An authoritative provider exit means startup is over.  Give the worker's
+    # terminal Volume commit the normal two-observation grace, but do not hide
+    # an exited Sandbox behind the much longer cold-start allowance.
+    if (
+        probe_state != "exited"
+        and status in {"claiming", "dispatched"}
+        and ref - started < startup_grace_sec
+    ):
         return "grace"
 
     observed = job.get("death_observed_epoch_s")
