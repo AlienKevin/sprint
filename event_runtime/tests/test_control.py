@@ -1834,6 +1834,76 @@ while True:
                 monitor.wait()
                 wrapper.communicate()
 
+    def test_agent_exit_ack_keeps_harbor_sandbox_alive_for_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            durable = root / "durable"
+            runtime = root / "run"
+            agent_logs = root / "agent"
+            artifact_logs = root / "artifacts"
+            codex_home = root / "codex-home"
+            for path in (durable, runtime, agent_logs, artifact_logs, codex_home):
+                path.mkdir()
+
+            agent = subprocess.Popen(
+                ["bash", "-c", "exec -a sprint-test-codex sleep 1"],
+                preexec_fn=os.setsid,
+            )
+            process_dir = runtime / "sprint-agent"
+            process_dir.mkdir()
+            start_time = Path(f"/proc/{agent.pid}/stat").read_text().split()[21]
+            (process_dir / "codex-process").write_text(
+                f"{agent.pid} {os.getpgid(agent.pid)} {start_time}\n"
+            )
+
+            watcher = subprocess.Popen(
+                [
+                    "bash",
+                    str(ROOT / "event_runtime/container/sprint-agent-supervisor.sh"),
+                    "--run-id",
+                    "test-natural-exit",
+                    "--agent-kind",
+                    "codex",
+                    "--poll-seconds",
+                    "1",
+                    "--durable-dir",
+                    str(durable),
+                    "--runtime-dir",
+                    str(runtime),
+                    "--agent-log-dir",
+                    str(agent_logs),
+                    "--artifact-log-dir",
+                    str(artifact_logs),
+                    "--codex-home-dir",
+                    str(codex_home),
+                    "--budget-watchdog-bin",
+                    "/bin/true",
+                    "--codex-pattern",
+                    "sprint-test-codex",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                agent.wait(timeout=5)
+                ack_path = durable / "runs/test-natural-exit/STOP_ACK"
+                deadline = time.time() + 10
+                while not ack_path.exists() and time.time() < deadline:
+                    time.sleep(0.1)
+                self.assertTrue(ack_path.exists())
+                self.assertEqual(json.loads(ack_path.read_text())["reason"], "agent_exit")
+                self.assertIsNone(
+                    watcher.poll(),
+                    "supervisor keepalive exited before Harbor cleanup",
+                )
+            finally:
+                watcher.kill()
+                watcher.communicate()
+                if agent.poll() is None:
+                    agent.kill()
+                    agent.wait()
+
     def test_atomic_attempt_archive_and_checksum(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

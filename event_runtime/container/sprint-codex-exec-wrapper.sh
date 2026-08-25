@@ -344,6 +344,12 @@ mv "$process_tmp" "$PROCESS_FILE"
 wait "$codex_pid"
 rc=$?
 
+# Publish the natural agent boundary before copying potentially large Codex
+# state.  The supervisor uses this record as the authoritative liveness signal;
+# leaving it behind while the wrapper drains its proxy makes a clean exit look
+# like a live agent that has lost budget telemetry.
+rm -f "$PROCESS_FILE"
+
 # After a requested interrupt, retain metadata while the watcher checks and,
 # if needed, terminates any child left in the isolated group.
 if [[ -f "$EXPECTED_INTERRUPT" ]]; then
@@ -354,7 +360,6 @@ if [[ -f "$EXPECTED_INTERRUPT" ]]; then
 fi
 
 copy_codex_state
-rm -f "$PROCESS_FILE"
 
 if [[ -f "$EXPECTED_INTERRUPT" ]]; then
   if [[ -z "$RUN_ID" ]]; then

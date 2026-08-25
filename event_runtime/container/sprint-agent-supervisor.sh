@@ -280,13 +280,16 @@ finalize_and_ack() {
   stop_signal_watch
   stop_trace_mirror
   mirror_trace_once
-  budget_watchdog_once || true
   write_heartbeat finalizing
   write_ack "$reason"
   write_heartbeat stop_acknowledged
   log "STOP_ACK written reason=$reason"
-  if ((EXIT_AFTER_ACK)) || [[ "$reason" == "agent_cost_budget_exhausted" ]] || \
-    [[ "$reason" == "budget_telemetry_unavailable" ]]; then
+  # The supervisor is Modal's sandbox keepalive.  Exiting it here tears down
+  # the entire sandbox before Harbor can restore its network policy and copy
+  # final artifacts.  Only explicitly supervised test/one-shot callers may
+  # request that behavior; production Harbor trials keep the sandbox alive and
+  # let Harbor own environment teardown after the agent command returns.
+  if ((EXIT_AFTER_ACK)); then
     exit 0
   fi
   while true; do
@@ -429,10 +432,6 @@ write_heartbeat waiting_for_agent
 
 while true; do
   now=$(date +%s)
-  if ((now - last_budget_epoch >= 5)); then
-    budget_watchdog_once || true
-    last_budget_epoch=$now
-  fi
   if ((SAW_AGENT == 0)) && [[ -f "$FIRST_SEEN" ]]; then
     first_epoch=$(tr -dc '0-9' <"$FIRST_SEEN")
     [[ -n "$first_epoch" ]] && SAW_AGENT=1
@@ -452,6 +451,16 @@ while true; do
   elif [[ -e "$STOP_FILE" ]]; then
     final_reason=$(tr -d '\r\n' <"$STOP_FILE" 2>/dev/null || true)
     finalize_and_ack "${final_reason:-budget_telemetry_unavailable}"
+  fi
+
+  # Check process identity before refreshing the in-sandbox ledger.  The
+  # wrapper removes its authoritative process record as soon as the agent
+  # exits, then drains and stops the local proxy.  Running the watchdog first
+  # can observe that normal teardown window as "agent without proxy", create a
+  # false fail-closed stop, and overwrite a clean agent_exit classification.
+  if ((now - last_budget_epoch >= 5)); then
+    budget_watchdog_once || true
+    last_budget_epoch=$now
   fi
 
   if ((now - last_heartbeat_epoch >= 20)); then
