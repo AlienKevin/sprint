@@ -106,6 +106,8 @@ DEEPSEEK_ROUTED_FAMILY_SPECS: dict[str, dict[str, str]] = {
 REASONING_EFFORT = "max"
 RUN_HOURS: float | None = None
 POLL_SECONDS = 30
+RUN_MONITOR_STARTUP_TIMEOUT_SECONDS = 120
+RUN_MONITOR_STARTUP_POLL_SECONDS = 1.0
 # The task permits 15 minutes for one sealed verification. Leave five minutes
 # for sandbox startup and result archival before declaring one run's accepted
 # work stuck in the shared verifier lane; otherwise a legitimate timeout can
@@ -2301,6 +2303,7 @@ def launch(
             launched.append(arm)
             atomic_json(batch_path(batch_id), payload)
             time.sleep(2)
+        wait_for_run_monitors_ready([arm["run_id"] for arm in launched])
     except Exception as exc:
         arm["status"] = "launch_error"
         arm["launch_error"] = f"{type(exc).__name__}: {exc}"
@@ -2509,6 +2512,42 @@ def live_run_monitor_status(run_id: str) -> dict[str, Any] | None:
     if not isinstance(payload, dict) or payload.get("run_id") != run_id:
         return None
     return payload
+
+
+def wait_for_run_monitors_ready(
+    run_ids: list[str],
+    *,
+    timeout_seconds: float = RUN_MONITOR_STARTUP_TIMEOUT_SECONDS,
+    poll_seconds: float = RUN_MONITOR_STARTUP_POLL_SECONDS,
+) -> None:
+    """Gate batch supervision on every lane monitor observing a live agent.
+
+    The per-run launch wrapper returns while its transient monitor service is
+    still establishing the first durable status snapshot. Starting the batch
+    observer inside that window makes an ordinary launch look like a dead lane
+    and can trigger recovery/finalization before the unit even exists.
+    """
+
+    pending = set(run_ids)
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    last_status: dict[str, dict[str, Any] | None] = {}
+    while pending:
+        for run_id in tuple(pending):
+            status = live_run_monitor_status(run_id)
+            last_status[run_id] = status
+            if status is not None and status.get("harbor_alive") is True:
+                pending.remove(run_id)
+        if not pending:
+            return
+        if time.monotonic() >= deadline:
+            details = ", ".join(
+                f"{run_id}={last_status.get(run_id)!r}" for run_id in sorted(pending)
+            )
+            raise RuntimeError(
+                "run monitor startup barrier timed out before live-agent "
+                f"snapshots: {details}"
+            )
+        time.sleep(max(0.0, poll_seconds))
 
 
 def local_run_status(run_id: str) -> dict[str, Any]:

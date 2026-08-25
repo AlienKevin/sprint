@@ -3669,6 +3669,36 @@ def test_batch_observer_recovers_transient_finalizing_lane_to_running(
     assert "finalization_conditions" not in arm
 
 
+def test_run_monitor_startup_barrier_requires_live_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshots = iter(
+        [
+            {"run_id": "sol-1", "harbor_alive": False},
+            {"run_id": "sol-1", "harbor_alive": True},
+        ]
+    )
+    monkeypatch.setattr(
+        batch_eval, "live_run_monitor_status", lambda _run_id: next(snapshots)
+    )
+    monkeypatch.setattr(batch_eval.time, "sleep", lambda _seconds: None)
+
+    batch_eval.wait_for_run_monitors_ready(
+        ["sol-1"], timeout_seconds=10, poll_seconds=0
+    )
+
+
+def test_run_monitor_startup_barrier_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(batch_eval, "live_run_monitor_status", lambda _run_id: None)
+
+    with pytest.raises(RuntimeError, match="startup barrier timed out"):
+        batch_eval.wait_for_run_monitors_ready(
+            ["deepseek-1"], timeout_seconds=0, poll_seconds=0
+        )
+
+
 def test_batch_observer_recovers_missing_lane_monitor_without_remote_poll(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
