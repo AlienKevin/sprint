@@ -214,6 +214,7 @@ main {
 .experiment-row:hover:not(:has(.experiment-model:hover)),
 .experiment-row:focus-visible {
   background: color-mix(in srgb, var(--model-accent) 7%, transparent);
+  box-shadow: inset 4px 0 var(--model-accent);
 }
 .experiment-row:focus-visible {
   outline: 1px solid var(--model-accent);
@@ -233,7 +234,7 @@ main {
 }
 .experiment-row.experiment-best {
   background: color-mix(in srgb, var(--model-accent) 20%, var(--panel));
-  box-shadow: inset -4px 0 var(--model-accent);
+  box-shadow: inset 4px 0 var(--model-accent);
 }
 .experiment-row.experiment-best > td {
   border-top: 1px solid color-mix(in srgb, var(--model-accent) 58%, var(--line));

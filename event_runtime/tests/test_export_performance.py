@@ -500,9 +500,9 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "class:'submission-target'" in app
     assert "el.getScreenCTM()" in app
     assert "nearest.distance<=22**2" in app
-    assert "styles.css?v=20260825-10" in page
-    assert "app.js?v=20260825-10" in page
-    assert '"version":"20260825-10"' in (ROOT / "web/version.json").read_text()
+    assert "styles.css?v=20260825-11" in page
+    assert "app.js?v=20260825-11" in page
+    assert '"version":"20260825-11"' in (ROOT / "web/version.json").read_text()
     assert "AI AGENTS · ONE HUMANOID · ONE FINISH LINE" not in page
     assert "Can agents train a humanoid to run?" in page
     assert "We give each agent an A10G GPU and $10 total budget to train their runner." in page
@@ -517,6 +517,8 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "row.bestScore===familyBest" in app
     assert "highest Effective Speed for this model across all efforts" in app
     assert ".experiment-row.experiment-best" in styles
+    assert "box-shadow: inset 4px 0 var(--model-accent)" in styles
+    assert "box-shadow: inset -4px 0 var(--model-accent)" not in styles
     assert ".experiment-row:hover:not(:has(.experiment-model:hover))" in styles
     assert ".experiment-model.experiment-model-hover" in styles
     assert "data-family=\"${esc(key)}\"" in app
