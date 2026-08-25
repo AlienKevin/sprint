@@ -398,6 +398,7 @@ def matrix(
     trials_per_model: int = TRIALS_PER_MODEL,
     families: tuple[str, ...] = DEFAULT_FAMILIES,
     reasoning_effort: str = DEFAULT_REASONING_EFFORT,
+    trial_numbers: tuple[int, ...] | None = None,
 ) -> list[dict[str, Any]]:
     if isinstance(trials_per_model, bool) or not 1 <= trials_per_model <= 50:
         raise ValueError("trials per model must be between 1 and 50")
@@ -405,6 +406,19 @@ def matrix(
         raise ValueError(
             f"reasoning effort must be one of: {', '.join(REASONING_EFFORTS)}"
         )
+    if trial_numbers is None:
+        selected_trials = tuple(range(1, trials_per_model + 1))
+    else:
+        if (
+            not trial_numbers
+            or any(
+                isinstance(trial, bool) or not 1 <= trial <= 50
+                for trial in trial_numbers
+            )
+            or len(set(trial_numbers)) != len(trial_numbers)
+        ):
+            raise ValueError("trial numbers must be unique integers between 1 and 50")
+        selected_trials = trial_numbers
     arms: list[dict[str, Any]] = []
     specs = {
         **{
@@ -445,7 +459,7 @@ def matrix(
             raise ValueError(
                 f"{family} must use its model author's official OpenRouter provider"
             )
-        for trial in range(1, trials_per_model + 1):
+        for trial in selected_trials:
             run_id = f"{batch_id}-{family}-{trial}"
             if not RUN_ID_RE.fullmatch(run_id):
                 raise ValueError(f"generated run ID is invalid: {run_id}")
@@ -1436,6 +1450,7 @@ def preflight(
     check_providers: bool = True,
     families: tuple[str, ...] = DEFAULT_FAMILIES,
     trials_per_model: int = TRIALS_PER_MODEL,
+    trial_numbers: tuple[int, ...] | None = None,
     reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     probe_training_fleet: bool = False,
     coexist_batch_ids: tuple[str, ...] = (),
@@ -1452,6 +1467,7 @@ def preflight(
         trials_per_model=trials_per_model,
         families=families,
         reasoning_effort=reasoning_effort,
+        trial_numbers=trial_numbers,
     )
     required_keys = {
         "deepseek": "OPENROUTER_API_KEY",
@@ -1786,6 +1802,7 @@ def preflight(
         "modal_profile": modal_profile,
         "families": list(families),
         "trials_per_model": trials_per_model,
+        "trial_numbers": list(trial_numbers) if trial_numbers is not None else None,
         "reasoning_effort": reasoning_effort,
         "coexist_batch_ids": list(coexist_batch_ids),
         "env_file": str(env_file),
@@ -2197,6 +2214,7 @@ def launch(
     *,
     families: tuple[str, ...] = DEFAULT_FAMILIES,
     trials_per_model: int = TRIALS_PER_MODEL,
+    trial_numbers: tuple[int, ...] | None = None,
     reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     coexist_batch_ids: tuple[str, ...] = (),
 ) -> dict[str, Any]:
@@ -2206,6 +2224,7 @@ def launch(
         modal_profile=modal_profile,
         families=families,
         trials_per_model=trials_per_model,
+        trial_numbers=trial_numbers,
         reasoning_effort=reasoning_effort,
         probe_training_fleet=True,
         coexist_batch_ids=coexist_batch_ids,
@@ -2223,6 +2242,7 @@ def launch(
         "reasoning_effort": reasoning_effort,
         "codex_version": CODEX_VERSION,
         "trials_per_model": trials_per_model,
+        "trial_numbers": list(trial_numbers) if trial_numbers is not None else None,
         "families": list(families),
         "coexist_batch_ids": list(coexist_batch_ids),
         "run_hours": RUN_HOURS,
@@ -2235,6 +2255,7 @@ def launch(
             trials_per_model=trials_per_model,
             families=families,
             reasoning_effort=reasoning_effort,
+            trial_numbers=trial_numbers,
         ),
         "alerts": [],
         "status": "launching",
@@ -2713,7 +2734,6 @@ def public_tracking_batch(payload: dict[str, Any]) -> dict[str, Any]:
                             "source_batch_id": batch.get("batch_id"),
                         }
                     )
-                    continue
                 family = str(arm.get("family") or "")
                 effort = str(
                     arm.get("reasoning_effort")
@@ -2888,7 +2908,12 @@ def refresh_performance_snapshot(payload: dict[str, Any]) -> None:
 
     if payload.get("coexist_batch_ids"):
         tracking = public_tracking_batch(payload)
-        run_ids = [arm["run_id"] for arm in tracking["arms"]]
+        run_ids = [
+            arm["run_id"]
+            for arm in tracking["arms"]
+            if arm.get("benchmark_valid") is not False
+            and arm.get("replacement_required") is not True
+        ]
     else:
         run_ids = [
             arm["run_id"] for arm in payload.get("arms", []) if arm.get("run_id")
@@ -3725,6 +3750,12 @@ def parser() -> argparse.ArgumentParser:
                 default=TRIALS_PER_MODEL,
                 help="independent trials to launch for each selected model family",
             )
+            command.add_argument(
+                "--trial-numbers",
+                nargs="+",
+                type=int,
+                help="exact trial slots to launch (for a scoped replacement batch)",
+            )
         if name == "monitor":
             command.add_argument("--loop", action="store_true")
             command.add_argument("--poll-seconds", type=int, default=POLL_SECONDS)
@@ -3747,6 +3778,7 @@ def main() -> int:
             modal_profile=args.modal_profile,
             families=tuple(args.families),
             trials_per_model=args.trials_per_model,
+            trial_numbers=(tuple(args.trial_numbers) if args.trial_numbers else None),
             reasoning_effort=args.reasoning_effort,
             probe_training_fleet=True,
             coexist_batch_ids=tuple(args.coexist_with_batch),
@@ -3760,6 +3792,7 @@ def main() -> int:
             args.modal_profile,
             families=tuple(args.families),
             trials_per_model=args.trials_per_model,
+            trial_numbers=(tuple(args.trial_numbers) if args.trial_numbers else None),
             reasoning_effort=args.reasoning_effort,
             coexist_batch_ids=tuple(args.coexist_with_batch),
         )

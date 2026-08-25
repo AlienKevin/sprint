@@ -158,6 +158,14 @@ def build_integrity_report(
                     "GPU job terminated without a host-recorded reason",
                 )
             )
+        if str(job.get("termination_reason") or "") == "budget_telemetry_unavailable":
+            reasons.append(
+                _reason(
+                    "gpu_budget_telemetry_unavailable",
+                    path.name,
+                    "GPU worker failed closed after its trusted budget feed became unavailable",
+                )
+            )
         provider_error = str(job.get("provider_terminal_error") or "").strip()
         if "context" in provider_error.lower() and "token" in provider_error.lower():
             reasons.append(

@@ -2599,6 +2599,7 @@ def reconcile_job(
                     "finished_at_epoch_s",
                     "exit_code",
                     "error",
+                    "termination_reason",
                     "progress",
                     "checkpoint",
                 }
@@ -2770,6 +2771,7 @@ def reconcile_terminal_attempt_before_stop(
         "finished_at_epoch_s",
         "exit_code",
         "error",
+        "termination_reason",
         "progress",
         "checkpoint",
     ):

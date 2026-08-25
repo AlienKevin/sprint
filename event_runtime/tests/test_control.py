@@ -399,7 +399,7 @@ class DurableOpsTests(unittest.TestCase):
                     sprintctl.agent_cost, "build_snapshot", return_value=merged
                 ),
                 mock.patch.object(
-                    sprintctl, "run_services_should_exit", return_value=False
+                    sprintctl, "budget_safety_should_exit", return_value=False
                 ),
                 mock.patch.object(
                     gpu_worker,
@@ -459,7 +459,7 @@ class DurableOpsTests(unittest.TestCase):
                     sprintctl.agent_cost, "build_snapshot", return_value=merged
                 ),
                 mock.patch.object(
-                    sprintctl, "run_services_should_exit", return_value=True
+                    sprintctl, "budget_safety_should_exit", return_value=True
                 ),
                 mock.patch.object(gpu_worker, "mirror_gpu_budget") as gpu_mirror,
                 mock.patch.object(gpu_worker, "mirror_agent_cost") as agent_mirror,
@@ -761,6 +761,22 @@ class DurableOpsTests(unittest.TestCase):
             (state / "STOP_ACK.json").write_text(json.dumps({"reason": "agent_exit"}))
 
             self.assertTrue(sprintctl.terminal_stop_acknowledged(state))
+
+    def test_budget_safety_stays_live_between_cpu_ack_and_host_stop(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            (state / "STOP_ACK.json").write_text(
+                json.dumps({"reason": "agent_cost_budget_exhausted"})
+            )
+            run = {"run_id": "budget-race"}
+            with mock.patch.object(
+                sprintctl, "run_results_finished", return_value=False
+            ):
+                self.assertFalse(sprintctl.budget_safety_should_exit(state, run))
+                (state / "STOP_REQUESTED.json").write_text(
+                    json.dumps({"reason": "agent_cost_budget_exhausted"})
+                )
+                self.assertTrue(sprintctl.budget_safety_should_exit(state, run))
 
             (state / "STOP_ACK.json").write_text(
                 json.dumps({"reason": "agent_cost_budget_exhausted"})

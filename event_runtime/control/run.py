@@ -2585,7 +2585,7 @@ def _budget_pulse_once_unlocked(
     # STOP_ACK can arrive while this pulse is rebuilding the local snapshot.
     # Preserve the final accounting, but never race Modal teardown by
     # contacting a sandbox after terminal state is durable.
-    if run_services_should_exit(state_dir, run):
+    if budget_safety_should_exit(state_dir, run):
         mirror_status = "terminal_snapshot_not_mirrored"
         atomic_write_json(
             state_dir / "telemetry" / "gpu-budget-mirror.json",
@@ -2722,6 +2722,37 @@ def run_services_should_exit(state_dir: Path, run: dict[str, Any]) -> bool:
         return True
 
 
+def budget_safety_should_exit(state_dir: Path, run: dict[str, Any]) -> bool:
+    """Keep the independent budget feed alive through a CPU self-stop race.
+
+    The in-sandbox watchdog can acknowledge a budget stop before the host has
+    observed it and fenced an already-running GPU worker.  STOP_ACK alone is
+    therefore not a safe boundary for the host budget pulse: ending the pulse
+    at that instant makes the GPU's private trusted snapshot go stale and
+    converts a normal budget stop into a fail-closed infrastructure stop.
+
+    A host STOP_REQUESTED marker proves the controller has entered the
+    synchronous CPU/GPU teardown path. Natural completion and FINALIZED remain
+    terminal without such a marker.
+    """
+    if (state_dir / "FINALIZED.json").is_file():
+        return True
+    ack_path = state_dir / "STOP_ACK.json"
+    if ack_path.is_file():
+        try:
+            ack_reason = str(json.loads(ack_path.read_text()).get("reason") or "")
+        except (OSError, json.JSONDecodeError):
+            return True
+        if ack_reason != "agent_cost_budget_exhausted":
+            return True
+        if (state_dir / "STOP_REQUESTED.json").is_file():
+            return True
+    try:
+        return run_results_finished(state_dir, run)
+    except KeyError:
+        return True
+
+
 def budget_pulse_loop(run_id: str, poll_seconds: int) -> int:
     state_dir, run = load_run(run_id)
     with file_lock(state_dir / "budget-pulse.lock", blocking=False) as acquired:
@@ -2732,7 +2763,7 @@ def budget_pulse_loop(run_id: str, poll_seconds: int) -> int:
         own_pid = os.getpid()
         atomic_write_text(pid_path, f"{own_pid}\n", 0o600)
         try:
-            while not run_services_should_exit(state_dir, run):
+            while not budget_safety_should_exit(state_dir, run):
                 started = time.monotonic()
                 try:
                     payload = budget_pulse_once(run_id)

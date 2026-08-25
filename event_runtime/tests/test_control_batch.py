@@ -120,6 +120,28 @@ def test_batch_matrix_accepts_explicit_reasoning_effort() -> None:
     assert {row["reasoning_effort"] for row in rows} == {"medium"}
 
 
+def test_batch_matrix_accepts_exact_replacement_trial_slots() -> None:
+    rows = batch_eval.matrix(
+        "eval-sol-medium-replacement",
+        families=("sol",),
+        reasoning_effort="medium",
+        trial_numbers=(3,),
+    )
+
+    assert [row["run_id"] for row in rows] == [
+        "eval-sol-medium-replacement-sol-3"
+    ]
+    assert [row["trial"] for row in rows] == [3]
+
+
+@pytest.mark.parametrize("trial_numbers", [(), (0,), (51,), (3, 3), (True,)])
+def test_batch_matrix_rejects_invalid_replacement_trial_slots(
+    trial_numbers: tuple[int, ...],
+) -> None:
+    with pytest.raises(ValueError, match="trial numbers"):
+        batch_eval.matrix("eval-invalid", trial_numbers=trial_numbers)
+
+
 def test_batch_matrix_rejects_unknown_reasoning_effort() -> None:
     with pytest.raises(ValueError, match="reasoning effort must be one of"):
         batch_eval.matrix("eval-sol-invalid", reasoning_effort="ultra")
@@ -2081,7 +2103,7 @@ def test_tracking_batch_ignores_delegated_site_alerts(
         ("untrusted_agent_stop_marker", None, "untrusted_agent_stop_marker"),
     ],
 )
-def test_tracking_batch_excludes_invalid_replaced_lane(
+def test_tracking_batch_keeps_invalid_lane_visible_until_replaced(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     invalidated_reason: str | None,
@@ -2118,6 +2140,7 @@ def test_tracking_batch_excludes_invalid_replaced_lane(
     current = batch_eval.public_tracking_batch(replacement)
 
     assert [arm["run_id"] for arm in current["arms"]] == [
+        "base-luna-1",
         "base-sol-1",
         "replacement-luna-1",
     ]

@@ -2503,6 +2503,49 @@ class NetworkIsolationTests(unittest.TestCase):
 
 
 class RetryAndFencingTests(unittest.TestCase):
+    def test_terminal_reconciliation_preserves_worker_termination_reason(self) -> None:
+        job = {
+            "job_id": "logical",
+            "run_id": "unit",
+            "status": "running",
+            "attempt": 1,
+            "lease_id": "lease",
+        }
+        attempt = {
+            "attempt": 1,
+            "lease_id": "lease",
+            "status": "terminated",
+            "finished_at_epoch_s": 100,
+            "exit_code": -6,
+            "error": "budget telemetry unavailable",
+            "termination_reason": "budget_telemetry_unavailable",
+        }
+        with (
+            mock.patch.object(gpu_worker, "load_attempt_record", return_value=attempt),
+            mock.patch.object(gpu_worker, "load_heartbeat", return_value=None),
+            mock.patch.object(
+                gpu_worker,
+                "drain_worker_submission_outbox",
+                side_effect=lambda _run, payload: (payload, {}),
+            ),
+            mock.patch.object(
+                gpu_worker, "archive_provider_logs", side_effect=lambda _run, payload: (payload, {})
+            ),
+            mock.patch.object(
+                gpu_worker, "persist_job", side_effect=lambda _run, payload: payload
+            ),
+            mock.patch.object(gpu_worker, "_timeline_event"),
+        ):
+            reconciled, detail = gpu_worker.reconcile_job(
+                {"run_id": "unit"}, job, now=101
+            )
+
+        self.assertEqual(detail["decision"], "terminal")
+        self.assertEqual(reconciled["status"], "terminated")
+        self.assertEqual(
+            reconciled["termination_reason"], "budget_telemetry_unavailable"
+        )
+
     def test_exited_provider_closes_billing_before_terminal_volume_commit(
         self,
     ) -> None:
@@ -3034,6 +3077,34 @@ class RetryAndFencingTests(unittest.TestCase):
             repaired = gpu_worker.reconcile_terminal_attempt_before_stop(run, job)
         self.assertEqual(repaired["status"], "succeeded")
         self.assertEqual(repaired["finished_at_epoch_s"], 100)
+
+    def test_stop_repair_preserves_worker_termination_reason(self) -> None:
+        run = {"run_id": "unit"}
+        job = {
+            "job_id": "logical",
+            "status": "running",
+            "attempt": 1,
+            "lease_id": "lease",
+        }
+        attempt = {
+            "job_id": "logical",
+            "status": "terminated",
+            "attempt": 1,
+            "lease_id": "lease",
+            "finished_at_epoch_s": 100,
+            "termination_reason": "agent_cost_budget_exhausted",
+        }
+        with (
+            mock.patch.object(gpu_worker, "load_attempt_record", return_value=attempt),
+            mock.patch.object(
+                gpu_worker, "persist_job", side_effect=lambda _run, payload: payload
+            ),
+        ):
+            repaired = gpu_worker.reconcile_terminal_attempt_before_stop(run, job)
+        self.assertEqual(repaired["status"], "terminated")
+        self.assertEqual(
+            repaired["termination_reason"], "agent_cost_budget_exhausted"
+        )
 
     def test_reconcile_automatically_retries_lost_running_worker(self) -> None:
         job = {
