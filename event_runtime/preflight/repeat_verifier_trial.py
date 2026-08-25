@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 parser = argparse.ArgumentParser()
@@ -59,9 +60,15 @@ def main() -> int:
             print(f"repeat {repeat + 1}: ok", flush=True)
     finally:
         env.close()
-        app.close()
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    exit_code = main()
+    # Isaac Sim 5.1 can hang indefinitely in SimulationApp.close() after the
+    # environment has already released its resources. This is a disposable
+    # canary process, so flush its evidence and let process teardown reclaim
+    # the remaining Kit globals instead of entering that unbounded hook.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(exit_code)

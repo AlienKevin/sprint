@@ -163,6 +163,9 @@ def test_functional_canary_reuses_the_published_rollout_in_one_process() -> None
     assert 'geometry="/opt/event-verifier/verifier/collision_geometry.json"' in fixture
     assert "repeat_verifier_trial.py --headless --device=cuda:0" in source
     assert 'repeat-verifier.log)" = 3' in source
+    assert "env.close()" in fixture
+    assert "app.close()" not in fixture
+    assert "os._exit(exit_code)" in fixture
 
 
 def test_functional_canary_uses_trainer_owned_final_checkpoint() -> None:
