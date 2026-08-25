@@ -437,7 +437,7 @@ start_telemetry() {
 }
 
 budget_watchdog_once() {
-  local snapshot_age
+  local snapshot_age stage_diag
   [[ -x "$BUDGET_WATCHDOG_BIN" ]] || {
     log "budget watchdog missing; failing closed"
     atomic_text "$STOP_FILE" "budget_telemetry_unavailable"$'\n'
@@ -453,11 +453,15 @@ budget_watchdog_once() {
   case "$status" in
     0|10|20) return "$status" ;;
     *)
+      stage_diag=unavailable
+      if [[ -r "$RUNTIME_DIR/sprint-budget-watchdog-stage.json" ]]; then
+        stage_diag=$(tr '\n' ' ' <"$RUNTIME_DIR/sprint-budget-watchdog-stage.json")
+      fi
       if snapshot_age=$(recent_trusted_budget_snapshot_age); then
-        log "budget watchdog transient failure status=$status; reusing trusted within-budget snapshot age=${snapshot_age}s"
+        log "budget watchdog transient failure status=$status stage=$stage_diag; reusing trusted within-budget snapshot age=${snapshot_age}s"
         return 0
       fi
-      log "budget watchdog crashed status=$status; failing closed"
+      log "budget watchdog crashed status=$status stage=$stage_diag; failing closed"
       atomic_text "$STOP_FILE" "budget_telemetry_unavailable"$'\n'
       return 20
       ;;

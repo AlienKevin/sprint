@@ -88,6 +88,41 @@ def append_watchdog_error(path: Path, payload: dict[str, Any]) -> None:
         os.fsync(handle.fileno())
 
 
+def record_runtime_stage(
+    runtime_dir: Path,
+    *,
+    run_id: str,
+    stage: str,
+    detail: str | None = None,
+) -> None:
+    """Leave a local breadcrumb identifying a watchdog's blocking phase.
+
+    The outer supervisor may SIGKILL this process after its wall-clock limit,
+    which prevents Python from emitting a traceback.  Keep this diagnostic on
+    the sandbox-local runtime filesystem rather than the durable Modal Volume:
+    if durable I/O is the operation that stalls, the preceding breadcrumb must
+    still remain readable by the supervisor.
+    """
+    payload: dict[str, Any] = {
+        "schema_version": 1,
+        "run_id": run_id,
+        "pid": os.getpid(),
+        "stage": stage,
+        "recorded_at_epoch_s": time.time(),
+    }
+    if detail:
+        payload["detail"] = detail
+    try:
+        atomic_json(runtime_dir / "sprint-budget-watchdog-stage.json", payload)
+    except OSError as exc:
+        # Diagnostics must never turn a healthy accounting pass into a stop.
+        print(
+            f"budget watchdog could not record runtime stage {stage}: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
 def recover_openrouter_generation(
     generation_id: str, api_key: str
 ) -> dict[str, Any] | None:
@@ -887,6 +922,9 @@ def check_once(
     ref = time.time() if now is None else float(now)
     run_root = durable_dir / "runs" / run_id
     run_path = run_root / "state" / "run.json"
+    record_runtime_stage(
+        runtime_dir, run_id=run_id, stage="durable_run_contract_read"
+    )
     try:
         run = json.loads(run_path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
@@ -907,6 +945,9 @@ def check_once(
             f"hard-cap minimum for {canonical_model}"
         )
     attempt = 1
+    record_runtime_stage(
+        runtime_dir, run_id=run_id, stage="durable_lifecycle_accounting"
+    )
     attempt_started_at = ensure_cpu_start(run_root, attempt, ref)
     cpu_seconds = cpu_allocated_seconds(run_root, attempt, ref)
     gpu_seconds = gpu_allocated_seconds(
@@ -918,6 +959,9 @@ def check_once(
     if not run.get("usage_audit_required"):
         raise BudgetTelemetryError("live API pricing is unsupported for this run")
     if enforcement.get("api_cost_source") == "openrouter_reported_per_request":
+        record_runtime_stage(
+            runtime_dir, run_id=run_id, stage="openrouter_ledger_accounting"
+        )
         require_live_openrouter_proxy(runtime_dir)
         # The API key is deliberately scoped to the agent exec and controller,
         # not the sandbox keepalive. Completed response charges are already in
@@ -965,6 +1009,9 @@ def check_once(
         awaiting_proxy_recovery = False
     cpu_usd = cpu_seconds * CPU_USD_PER_SECOND
     training_usd = gpu_seconds * TRAINING_USD_PER_SECOND
+    record_runtime_stage(
+        runtime_dir, run_id=run_id, stage="host_cost_mirror_read"
+    )
     host_mirror = load_host_cost_mirror(
         runtime_dir,
         run_id=run_id,
@@ -1093,9 +1140,16 @@ def check_once(
             "modal_role": "allocated_seconds * pinned requested-resource rate",
         },
     }
+    record_runtime_stage(
+        runtime_dir, run_id=run_id, stage="durable_watchdog_snapshot_write"
+    )
     atomic_json(run_root / "budget" / "watchdog.json", payload)
     if total >= threshold:
+        record_runtime_stage(
+            runtime_dir, run_id=run_id, stage="durable_stop_marker_write"
+        )
         write_stop(run_root, runtime_dir, {**payload, "reason": STOP_REASON})
+    record_runtime_stage(runtime_dir, run_id=run_id, stage="complete")
     return payload
 
 

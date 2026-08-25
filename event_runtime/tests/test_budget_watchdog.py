@@ -144,6 +144,27 @@ def write_codex_request(codex_home: Path, *, model: str = "deepseek-v4-flash") -
     session.write_text("".join(json.dumps(row) + "\n" for row in rows))
 
 
+def test_budget_watchdog_records_local_blocking_stage(tmp_path: Path) -> None:
+    runtime = tmp_path / "runtime"
+
+    watchdog.record_runtime_stage(
+        runtime,
+        run_id="unit",
+        stage="durable_watchdog_snapshot_write",
+        detail="before fsync",
+    )
+
+    payload = json.loads(
+        (runtime / "sprint-budget-watchdog-stage.json").read_text()
+    )
+    assert payload["schema_version"] == 1
+    assert payload["run_id"] == "unit"
+    assert payload["stage"] == "durable_watchdog_snapshot_write"
+    assert payload["detail"] == "before fsync"
+    assert payload["pid"] == os.getpid()
+    assert payload["recorded_at_epoch_s"] > 0
+
+
 def test_budget_watchdog_retries_transient_snapshot_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
