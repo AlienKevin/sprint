@@ -109,6 +109,47 @@ def build_integrity_report(
             )
         )
 
+    # A persistent Codex goal may span multiple turns, but the benchmark CPU
+    # process must not disappear while that goal is still active.  The trusted
+    # runner records its last observed lifecycle beside Harbor's bootstrap
+    # receipt.  An ordinary agent exit is valid only after a terminal goal
+    # status; budget/operator stops remain authoritative regardless of status.
+    agent_kind = str(run.get("agent_kind") or "")
+    bootstrap_paths = sorted(
+        state_dir.glob("harbor-jobs/*/*/agent/goal-bootstrap.json")
+    )
+    lifecycle_paths = sorted(
+        state_dir.glob("harbor-jobs/*/*/agent/goal-lifecycle.json")
+    )
+    observations["codex_goal_bootstrap_count"] = len(bootstrap_paths)
+    observations["codex_goal_lifecycle_count"] = len(lifecycle_paths)
+    if lifecycle_paths:
+        observations["codex_goal_lifecycle"] = _read_json(lifecycle_paths[-1]) or None
+    if agent_kind == "codex" and stop_reason == "agent_exit" and bootstrap_paths:
+        if len(bootstrap_paths) != 1 or len(lifecycle_paths) != 1:
+            reasons.append(
+                _reason(
+                    "codex_goal_lifecycle_missing",
+                    "harbor-jobs/*/*/agent/goal-lifecycle.json",
+                    "Codex agent exited without one unambiguous persistent-goal lifecycle record",
+                )
+            )
+        else:
+            lifecycle = _read_json(lifecycle_paths[0])
+            goal_status = str(lifecycle.get("goal_status") or "")
+            runner_state = str(lifecycle.get("runner_state") or "")
+            if (
+                goal_status not in {"complete", "blocked"}
+                or runner_state != "terminal"
+            ):
+                reasons.append(
+                    _reason(
+                        "codex_goal_active_at_agent_exit",
+                        str(lifecycle_paths[0].relative_to(state_dir)),
+                        "Codex agent exited before its persistent goal reached a terminal state",
+                    )
+                )
+
     gpu_jobs = 0
     retried_jobs = 0
     for path in sorted((state_dir / "gpu-job-registry").glob("*.json")):

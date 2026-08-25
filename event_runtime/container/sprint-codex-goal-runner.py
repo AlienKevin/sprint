@@ -17,6 +17,7 @@ import selectors
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Any, Callable, Sequence
 
@@ -28,6 +29,29 @@ TERMINAL_GOAL_STATUSES = {"complete", "blocked"}
 
 class GoalRunnerError(RuntimeError):
     """The persistent goal lifecycle could not be verified."""
+
+
+def write_lifecycle(path: Path, **payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "schema_version": 1,
+        "updated_at_epoch_s": time.time(),
+        **payload,
+    }
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+        delete=False,
+    ) as handle:
+        json.dump(record, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+        temporary = Path(handle.name)
+    os.replace(temporary, path)
 
 
 def _rpc_request(
@@ -185,6 +209,7 @@ def run_goal_loop(
     codex_arguments: Sequence[str],
     thread_id: str,
     receipt_path: Path,
+    lifecycle_path: Path,
     app_server_args: Sequence[str],
     continuation_prompt: str,
     relay: SignalRelay,
@@ -192,11 +217,36 @@ def run_goal_loop(
     status_reader: Callable[..., str] = read_goal_status,
 ) -> int:
     arguments = list(codex_arguments)
+    turns = 0
+    write_lifecycle(
+        lifecycle_path,
+        thread_id=thread_id,
+        goal_status="active",
+        completed_turns=turns,
+        runner_state="running",
+    )
     while True:
         rc = turn_runner([codex_executable, *arguments], relay)
+        turns += 1
         if relay.signum is not None:
+            write_lifecycle(
+                lifecycle_path,
+                thread_id=thread_id,
+                goal_status="active",
+                completed_turns=turns,
+                runner_state="interrupted",
+                signal=relay.signum,
+            )
             return 128 + relay.signum
         if rc != 0:
+            write_lifecycle(
+                lifecycle_path,
+                thread_id=thread_id,
+                goal_status="active",
+                completed_turns=turns,
+                runner_state="turn_failed",
+                turn_exit_code=rc,
+            )
             return rc
 
         status: str | None = None
@@ -216,6 +266,13 @@ def run_goal_loop(
                     time.sleep(1)
         if status is None:
             raise GoalRunnerError(f"cannot verify persistent goal: {last_error}")
+        write_lifecycle(
+            lifecycle_path,
+            thread_id=thread_id,
+            goal_status=status,
+            completed_turns=turns,
+            runner_state="terminal" if status in TERMINAL_GOAL_STATUSES else "running",
+        )
         if status in TERMINAL_GOAL_STATUSES:
             return 0
 
@@ -224,6 +281,14 @@ def run_goal_loop(
         while stop_requested() and relay.signum is None:
             time.sleep(0.25)
         if relay.signum is not None:
+            write_lifecycle(
+                lifecycle_path,
+                thread_id=thread_id,
+                goal_status="active",
+                completed_turns=turns,
+                runner_state="interrupted",
+                signal=relay.signum,
+            )
             return 128 + relay.signum
         arguments = continuation_args(arguments, continuation_prompt)
 
@@ -233,6 +298,7 @@ def main() -> int:
     parser.add_argument("--codex-executable", required=True)
     parser.add_argument("--thread-id", required=True)
     parser.add_argument("--receipt", type=Path, required=True)
+    parser.add_argument("--lifecycle", type=Path, required=True)
     parser.add_argument(
         "--app-server-args-env", default="SPRINT_CODEX_APP_SERVER_ARGS_JSON"
     )
@@ -261,6 +327,7 @@ def main() -> int:
             codex_arguments=codex_arguments,
             thread_id=args.thread_id,
             receipt_path=args.receipt,
+            lifecycle_path=args.lifecycle,
             app_server_args=app_server_args,
             continuation_prompt=args.continuation_prompt,
             relay=relay,

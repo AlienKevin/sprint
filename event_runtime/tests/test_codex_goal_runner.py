@@ -36,6 +36,7 @@ def test_continuation_replaces_only_prompt() -> None:
 def test_goal_loop_resumes_active_thread_until_terminal(tmp_path: Path) -> None:
     runner = load_runner()
     receipt = tmp_path / "receipt.json"
+    lifecycle = tmp_path / "lifecycle.json"
     receipt.write_text("{}")
     commands: list[list[str]] = []
     statuses = iter(["active", "active", "complete"])
@@ -52,6 +53,7 @@ def test_goal_loop_resumes_active_thread_until_terminal(tmp_path: Path) -> None:
         codex_arguments=["exec", "resume", "thread", "--", "original"],
         thread_id="thread",
         receipt_path=receipt,
+        lifecycle_path=lifecycle,
         app_server_args=[],
         continuation_prompt="continue",
         relay=runner.SignalRelay(),
@@ -64,6 +66,7 @@ def test_goal_loop_resumes_active_thread_until_terminal(tmp_path: Path) -> None:
         "continue",
         "continue",
     ]
+    assert runner.json.loads(lifecycle.read_text())["goal_status"] == "complete"
 
 
 def test_goal_loop_propagates_failed_turn_without_resuming(tmp_path: Path) -> None:
@@ -80,6 +83,7 @@ def test_goal_loop_propagates_failed_turn_without_resuming(tmp_path: Path) -> No
         codex_arguments=["exec", "resume", "thread", "--", "original"],
         thread_id="thread",
         receipt_path=tmp_path / "receipt.json",
+        lifecycle_path=tmp_path / "lifecycle.json",
         app_server_args=[],
         continuation_prompt="continue",
         relay=runner.SignalRelay(),

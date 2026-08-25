@@ -327,11 +327,16 @@ if [[ "${SPRINT_CODEX_GOAL_PERSIST:-0}" == "1" ]]; then
     echo "persistent Codex goal requires SPRINT_CODEX_GOAL_RECEIPT" >&2
     exit 1
   }
+  [[ -n "${SPRINT_CODEX_GOAL_LIFECYCLE:-}" ]] || {
+    echo "persistent Codex goal requires SPRINT_CODEX_GOAL_LIFECYCLE" >&2
+    exit 1
+  }
   launch=(
     python3 "$GOAL_RUNNER_BIN"
     --codex-executable "$CODEX_EXECUTABLE"
     --thread-id "$SPRINT_CODEX_GOAL_THREAD_ID"
     --receipt "$SPRINT_CODEX_GOAL_RECEIPT"
+    --lifecycle "$SPRINT_CODEX_GOAL_LIFECYCLE"
     -- "${@:1}"
   )
 fi

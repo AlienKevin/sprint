@@ -2042,6 +2042,9 @@ raise SystemExit(2)
                     "SPRINT_CODEX_GOAL_PERSIST": "1",
                     "SPRINT_CODEX_GOAL_THREAD_ID": "thread-1",
                     "SPRINT_CODEX_GOAL_RECEIPT": str(receipt),
+                    "SPRINT_CODEX_GOAL_LIFECYCLE": str(
+                        agent_logs / "goal-lifecycle.json"
+                    ),
                     "SPRINT_CODEX_GOAL_RUNNER_BIN": str(
                         ROOT
                         / "event_runtime/container/sprint-codex-goal-runner.py"

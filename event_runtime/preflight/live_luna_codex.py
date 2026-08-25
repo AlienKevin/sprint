@@ -173,6 +173,7 @@ def main() -> int:
             + "export SPRINT_CODEX_GOAL_PERSIST=1; "
             + 'export SPRINT_CODEX_GOAL_THREAD_ID="$sprint_codex_thread_id"; '
             + "export SPRINT_CODEX_GOAL_RECEIPT=/tmp/logs/agent/goal-bootstrap.json; "
+            + "export SPRINT_CODEX_GOAL_LIFECYCLE=/tmp/logs/agent/goal-lifecycle.json; "
             + "unset SPRINT_CODEX_GOAL_OBJECTIVE; "
             + "/opt/sprint-codex-exec-wrapper.sh \"$(command -v codex)\" "
             + "exec resume --dangerously-bypass-approvals-and-sandbox "
@@ -229,7 +230,8 @@ def main() -> int:
             + run_id
             + "/api-usage'); records=sorted((root/'requests').glob('*.json')); "
             + "assert records; parsed=[json.loads(p.read_text()) for p in records]; "
-            + "print(json.dumps({'records':parsed,'summary':json.loads((root/'summary.json').read_text())}))",
+            + "print(json.dumps({'records':parsed,'summary':json.loads((root/'summary.json').read_text()),"
+            + "'lifecycle':json.loads(pathlib.Path('/tmp/logs/agent/goal-lifecycle.json').read_text())}))",
             timeout=30,
         )
         raw = inspect.stdout.read() or ""
@@ -240,6 +242,7 @@ def main() -> int:
         records = ledger["records"]
         record = records[-1]
         summary = ledger["summary"]
+        lifecycle = ledger["lifecycle"]
         snapshot = record.get("promotion_snapshot") or {}
         endpoints = snapshot.get("endpoints") or []
         endpoint = endpoints[0] if endpoints else {}
@@ -257,6 +260,10 @@ def main() -> int:
             "reasoning_summary_preserved": trace_reasoning["summary_count"] > 0,
             "persistent_goal_crossed_turn_boundary": len(records) >= 2,
             "first_turn_marker_preserved": "CANARY-FIRST-TURN" in stdout,
+            "terminal_goal_lifecycle_recorded": lifecycle.get("runner_state")
+            == "terminal"
+            and lifecycle.get("goal_status") == "complete"
+            and int(lifecycle.get("completed_turns") or 0) >= 2,
         }
         if not all(checks.values()):
             raise RuntimeError(f"live smoke checks failed: {checks}")
