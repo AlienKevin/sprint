@@ -3616,6 +3616,49 @@ def test_provider_auth_alert_does_not_match_decimal_score(
     ]
 
 
+def test_provider_auth_alert_does_not_match_heartbeat_age(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = "eval-sol-1"
+    state_dir = tmp_path / run_id
+    state_dir.mkdir()
+    (state_dir / "monitor.log").write_text(
+        '{"snapshot_heartbeat_age_seconds": 401, "snapshot_heartbeat_ok": true}\n'
+    )
+    monkeypatch.setattr(batch_eval, "SCRIPT_DIR", tmp_path)
+
+    assert batch_eval.log_alerts(run_id) == []
+
+
+def test_recovered_log_alert_is_archived() -> None:
+    payload = {
+        "alerts": [
+            {
+                "run_id": "run-1",
+                "kind": "provider_auth",
+                "source": "monitor.log",
+            },
+            {
+                "run_id": "run-1",
+                "kind": "monitor_error",
+                "source": "RuntimeError",
+            },
+        ]
+    }
+
+    batch_eval.resolve_recovered_log_alerts(payload, [])
+
+    assert payload["alerts"] == [
+        {
+            "run_id": "run-1",
+            "kind": "monitor_error",
+            "source": "RuntimeError",
+        }
+    ]
+    assert payload["resolved_alerts"][0]["kind"] == "provider_auth"
+    assert payload["resolved_alerts"][0]["resolution"] == "matching log condition recovered"
+
+
 def test_website_javascript_parses_and_has_no_legacy_opus_copy() -> None:
     source = (ROOT / "web/app.js").read_text()
     assert "DeepSeek V4 Flash Vision Exp" in source

@@ -139,7 +139,8 @@ ALERT_PATTERNS = {
     ),
     "provider_auth": re.compile(
         r"(?:\b(?:invalid api key|authentication failed)\b|"
-        r"(?<![A-Za-z0-9.])(?:401|403)(?![A-Za-z0-9]))",
+        r"\b(?:http(?: status)?|status(?: code)?|response)\s*[:=]?\s*(?:401|403)\b|"
+        r"\b(?:401|403)\s+(?:unauthorized|forbidden)\b)",
         re.I,
     ),
     "modal_infrastructure": re.compile(
@@ -2703,6 +2704,30 @@ def resolve_alerts(
     payload["alerts"] = active
 
 
+def resolve_recovered_log_alerts(
+    payload: dict[str, Any], current_alerts: list[dict[str, str]]
+) -> None:
+    """Archive log-pattern alerts once the matching text leaves the live tail."""
+
+    current = {
+        (item.get("run_id"), item.get("kind"), item.get("source"))
+        for item in current_alerts
+        if item.get("kind") in ALERT_PATTERNS
+    }
+    active: list[dict[str, Any]] = []
+    resolved = payload.setdefault("resolved_alerts", [])
+    for alert in payload.get("alerts", []):
+        key = (alert.get("run_id"), alert.get("kind"), alert.get("source"))
+        if alert.get("kind") in ALERT_PATTERNS and key not in current:
+            archived = dict(alert)
+            archived["resolved_at"] = utc_now()
+            archived["resolution"] = "matching log condition recovered"
+            resolved.append(archived)
+        else:
+            active.append(alert)
+    payload["alerts"] = active
+
+
 def resolve_recovered_verifier_stalls(
     payload: dict[str, Any], active_stalls: list[dict[str, str]]
 ) -> None:
@@ -3030,6 +3055,7 @@ def monitor_cycle(batch_id: str, *, env_file: Path | None = None) -> dict[str, A
 
         verifier_stalls = verifier_lane_stall_alerts(payload, now=now)
         cycle_alerts.extend(verifier_stalls)
+        resolve_recovered_log_alerts(payload, cycle_alerts)
         resolve_recovered_verifier_stalls(payload, verifier_stalls)
         cycle_alerts.extend(continuous_ledger_error_alerts(payload))
         for arm in payload["arms"]:
