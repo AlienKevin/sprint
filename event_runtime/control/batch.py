@@ -2001,7 +2001,11 @@ def retire_run_control_services(run_id: str) -> None:
 
 
 def start_batch_control_services(
-    batch_id: str, env_file: Path, modal_profile: str
+    batch_id: str,
+    env_file: Path,
+    modal_profile: str,
+    *,
+    coexist_batch_ids: tuple[str, ...] = (),
 ) -> None:
     """Start independent health supervision and website publication services.
 
@@ -2148,6 +2152,14 @@ def start_batch_control_services(
         write_publication(batch_id, publication)
         run_checked(["systemctl", "--user", "restart", units["publisher_timer"]])
         run_checked(["systemctl", "--user", "start", "--no-block", units["publisher"]])
+        # The tracking batch publishes the union of its own arms and every
+        # explicitly admitted coexisting batch.  Leaving a source publisher
+        # active would let two correct snapshots alternately overwrite the
+        # shared current.json pointer, producing a flickering website.  Retire
+        # only the source publishers; their health monitors and experiments
+        # remain completely independent and continue running.
+        for source_batch_id in coexist_batch_ids:
+            quiesce_batch_publisher(source_batch_id)
     except Exception as exc:  # noqa: BLE001 - observer must not abort launch
         quiesce_batch_publisher(batch_id)
         publication = {
@@ -2316,7 +2328,12 @@ def launch(
     payload["launched_at"] = utc_now()
     atomic_json(batch_path(batch_id), payload)
     try:
-        start_batch_control_services(batch_id, env_file, modal_profile)
+        start_batch_control_services(
+            batch_id,
+            env_file,
+            modal_profile,
+            coexist_batch_ids=coexist_batch_ids,
+        )
     except Exception:
         retire_batch_control_services(batch_id)
         for started_arm in launched:
