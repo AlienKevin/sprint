@@ -399,6 +399,9 @@ class DurableOpsTests(unittest.TestCase):
                     sprintctl.agent_cost, "build_snapshot", return_value=merged
                 ),
                 mock.patch.object(
+                    sprintctl, "run_services_should_exit", return_value=False
+                ),
+                mock.patch.object(
                     gpu_worker,
                     "mirror_gpu_budget",
                     side_effect=mirror_gpu,
@@ -424,6 +427,61 @@ class DurableOpsTests(unittest.TestCase):
             self.assertEqual(payload["upstream_watchdog_age_seconds"], 10.0)
             persisted = json.loads((state / "telemetry/budget-pulse.json").read_text())
             self.assertEqual(persisted["gpu_mirror"], "updated")
+
+    def test_budget_pulse_does_not_mirror_after_stop_ack_arrives(self) -> None:
+        from event_runtime.compute import worker as gpu_worker
+
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            (state / "telemetry").mkdir()
+            run = {"run_id": "pulse-run"}
+            canonical = {
+                "schema_version": 2,
+                "run_id": "pulse-run",
+                "checked_at_epoch_s": 1000.0,
+            }
+            merged = {
+                "schema_version": 2,
+                "run_id": "pulse-run",
+                "total_usd": 10.05,
+                "budget_remaining_usd": -0.05,
+                "status": "stop_requested",
+            }
+            with (
+                mock.patch.object(sprintctl, "load_run", return_value=(state, run)),
+                mock.patch.object(
+                    sprintctl, "fetch_budget_watchdog", return_value=canonical
+                ),
+                mock.patch.object(
+                    sprintctl, "build_unified_timeline", return_value={"events": []}
+                ),
+                mock.patch.object(
+                    sprintctl.agent_cost, "build_snapshot", return_value=merged
+                ),
+                mock.patch.object(
+                    sprintctl, "run_services_should_exit", return_value=True
+                ),
+                mock.patch.object(gpu_worker, "mirror_gpu_budget") as gpu_mirror,
+                mock.patch.object(gpu_worker, "mirror_agent_cost") as agent_mirror,
+                mock.patch.object(sprintctl, "enforce_agent_cost_budget") as enforce,
+            ):
+                payload = sprintctl.budget_pulse_once("pulse-run", now=1010.0)
+
+            gpu_mirror.assert_not_called()
+            agent_mirror.assert_not_called()
+            enforce.assert_not_called()
+            self.assertEqual(
+                payload["gpu_mirror"], "terminal_snapshot_not_mirrored"
+            )
+            self.assertEqual(
+                payload["agent_mirror"], "terminal_snapshot_not_mirrored"
+            )
+            self.assertEqual(
+                json.loads((state / "telemetry/agent-cost.json").read_text())[
+                    "total_usd"
+                ],
+                10.05,
+            )
 
     def test_artifact_cost_refresh_releases_lock_before_fallback_mirrors(self) -> None:
         from event_runtime.compute import worker as gpu_worker

@@ -2578,6 +2578,46 @@ def _budget_pulse_once_unlocked(
     }
     atomic_write_json(state_dir / "telemetry" / "agent-cost.json", payload, mode=0o600)
 
+    # STOP_ACK can arrive while this pulse is rebuilding the local snapshot.
+    # Preserve the final accounting, but never race Modal teardown by
+    # contacting a sandbox after terminal state is durable.
+    if run_services_should_exit(state_dir, run):
+        mirror_status = "terminal_snapshot_not_mirrored"
+        atomic_write_json(
+            state_dir / "telemetry" / "gpu-budget-mirror.json",
+            {
+                "schema_version": 1,
+                "updated_at": utc_now(),
+                "gpu_budget_mirror": mirror_status,
+            },
+            mode=0o600,
+        )
+        atomic_write_json(
+            state_dir / "telemetry" / "agent-cost-mirror.json",
+            {
+                "schema_version": 1,
+                "updated_at": utc_now(),
+                "agent_cost_mirror": mirror_status,
+            },
+            mode=0o600,
+        )
+        result = {
+            "schema_version": 1,
+            "run_id": run_id,
+            "updated_at": utc_now(),
+            "total_usd": payload.get("total_usd"),
+            "budget_remaining_usd": payload.get("budget_remaining_usd"),
+            "status": payload.get("status"),
+            "upstream_watchdog_age_seconds": round(upstream_age, 3),
+            "source": pulse_source,
+            "gpu_mirror": mirror_status,
+            "agent_mirror": mirror_status,
+        }
+        atomic_write_json(
+            state_dir / "telemetry" / "budget-pulse.json", result, mode=0o600
+        )
+        return result
+
     from event_runtime.compute import worker as gpu_worker
 
     gpu_mirror = gpu_worker.mirror_gpu_budget(run, payload)
