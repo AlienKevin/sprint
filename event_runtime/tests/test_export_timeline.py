@@ -769,9 +769,12 @@ def test_training_cost_excludes_archive_pin_before_sandbox_create(
     # gpu_worker_starting events include two seconds of host archive pinning
     # and must not inflate the live Modal estimate.
     assert training["billing_upper_bound_allocated_ms"] == 35_000
-    assert payload["resource_usage_summary"]["modal_estimate"]["by_role"][
-        "training_gpu"
-    ]["allocated_ms"] == 35_000
+    assert (
+        payload["resource_usage_summary"]["modal_estimate"]["by_role"]["training_gpu"][
+            "allocated_ms"
+        ]
+        == 35_000
+    )
 
 
 def test_training_billing_uses_provider_exit_observation_during_volume_lag(
@@ -895,9 +898,7 @@ def test_post_run_accounting_does_not_stretch_activity_clock(tmp_path: Path) -> 
     assert payload["clock"]["observer_end_epoch_ms"] == 1786111200000
     assert payload["clock"]["post_run_event_count"] >= 1
     late = next(
-        event
-        for event in payload["events"]
-        if event["kind"] == "model_request_usage"
+        event for event in payload["events"] if event["kind"] == "model_request_usage"
     )
     assert late["post_run"] is True
 
@@ -931,9 +932,9 @@ def test_failed_submission_ingestion_is_preserved_without_claiming_policy_bytes(
 
     payload = unified_timeline.build_timeline(state)
 
-    assert payload["coverage"]["requirements"][
-        "all_submitted_artifacts_captured"
-    ] is True
+    assert (
+        payload["coverage"]["requirements"]["all_submitted_artifacts_captured"] is True
+    )
     assert payload["coverage"]["counts"]["failed_submission_ingestions"] == 1
     failed = [
         event
@@ -1246,9 +1247,7 @@ def test_codex_usage_still_requires_settled_provider_summary(tmp_path: Path) -> 
     payload = unified_timeline.build_timeline(state)
 
     assert payload["usage_summary"]["request_count"] > 0
-    assert payload["coverage"]["counts"][
-        "incomplete_provider_usage_summaries"
-    ] == 1
+    assert payload["coverage"]["counts"]["incomplete_provider_usage_summaries"] == 1
     assert payload["coverage"]["requirements"]["model_usage_and_cost"] is False
     assert payload["coverage"]["ready"] is False
 
@@ -1313,6 +1312,7 @@ def test_all_submission_result_set_has_no_privileged_primary(
     assert "primary_score_policy" not in payload["comparison_summary"]
     assert "primary_final_100m_s" not in payload["comparison_summary"]
     assert all("primary_final" not in item for item in payload["artifacts"])
+
 
 def test_provider_billing_is_selected_and_error_text_is_not_published(
     tmp_path: Path,
@@ -1618,12 +1618,11 @@ def test_preworker_terminated_allocation_does_not_require_impossible_gpu_samples
         }
     ]
     assert payload["coverage"]["requirements"]["training_gpu_metrics"] is True
-    assert payload["coverage"]["requirements"][
-        "training_gpu_pipeline_metrics"
-    ] is True
-    assert payload["coverage"]["counts"][
-        "training_gpu_preworker_terminated_intervals"
-    ] == 1
+    assert payload["coverage"]["requirements"]["training_gpu_pipeline_metrics"] is True
+    assert (
+        payload["coverage"]["counts"]["training_gpu_preworker_terminated_intervals"]
+        == 1
+    )
 
 
 def test_host_registry_drops_allocation_published_after_terminal_attempt(
@@ -1675,10 +1674,7 @@ def test_host_registry_drops_allocation_published_after_terminal_attempt(
     intervals = payload["resource_usage_summary"]["training_gpu"]["intervals"]
     assert not any(item.get("gpu_job_id") == "short-race" for item in intervals)
     assert (
-        payload["coverage"]["counts"][
-            "gpu_registry_post_terminal_starts_dropped"
-        ]
-        == 1
+        payload["coverage"]["counts"]["gpu_registry_post_terminal_starts_dropped"] == 1
     )
 
 

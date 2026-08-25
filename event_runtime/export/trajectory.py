@@ -20,7 +20,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from event_runtime.export.config import PUBLIC_RUN_LIMIT
+from event_runtime.export.config import PUBLIC_RUN_LIMIT, public_index_lock
 
 SCHEMA_VERSION = 1
 DEEPSEEK_ATIF_TRANSFORM_VERSION = 3
@@ -44,8 +44,7 @@ _EXPLICIT_SECRET_ASSIGNMENT_RE = re.compile(
 _ENV_SECRET_ASSIGNMENT_RE = re.compile(
     r"(?P<prefix>(?P<key_quote>['\"]?)(?P<env_key>"
     r"(?:[A-Z][A-Z0-9]*_)*(?:AUTH|CREDENTIALS?|KEY|PASSWORD|SECRET|TOKEN)"
-    r"(?:_[A-Z0-9]+)*)(?P=key_quote)\s*[:=]\s*)"
-    + _ASSIGNMENT_VALUE_PATTERN
+    r"(?:_[A-Z0-9]+)*)(?P=key_quote)\s*[:=]\s*)" + _ASSIGNMENT_VALUE_PATTERN
 )
 _SECRET_PATTERNS = (
     re.compile(r"sk-or-v1-[A-Za-z0-9_-]+"),
@@ -61,7 +60,7 @@ _SECRET_PATTERNS = (
 
 
 def _redact_assignment(match: re.Match[str]) -> str:
-    return f'{match.group("prefix")}[REDACTED]'
+    return f"{match.group('prefix')}[REDACTED]"
 
 
 def _redact_env_assignment(match: re.Match[str]) -> str:
@@ -393,7 +392,9 @@ def _source_fingerprint(
     return digest.hexdigest()
 
 
-def _redact_string(value: str, *, max_chars: int | None = MAX_PUBLIC_STRING_CHARS) -> str:
+def _redact_string(
+    value: str, *, max_chars: int | None = MAX_PUBLIC_STRING_CHARS
+) -> str:
     text = _ANSI_RE.sub("", value).replace("\x00", "")
     for pattern in _SECRET_PATTERNS:
         if pattern.groups:
@@ -520,9 +521,7 @@ def _public_step(
         # Reasoning is a primary benchmark artifact, not a preview. Preserve it
         # in full while applying the same credential redaction as every other
         # public trajectory field.
-        public["reasoning_content"] = _redact_string(
-            reasoning_content, max_chars=None
-        )
+        public["reasoning_content"] = _redact_string(reasoning_content, max_chars=None)
     if tool_calls:
         public["tool_calls"] = tool_calls
     if results:
@@ -690,31 +689,35 @@ def build_public_trajectory(state_dir: Path, *, web_dir: Path) -> dict[str, Any]
         _atomic_json(public_path, payload)
 
     index_path = web_dir / "data" / "trajectories" / "index.json"
-    index = _read_json(index_path) or {"schema_version": SCHEMA_VERSION, "runs": []}
-    entries = {
-        str(item.get("run_id")): item
-        for item in index.get("runs") or []
-        if isinstance(item, dict) and item.get("run_id")
-    }
-    entries[run_id] = {
-        "run_id": run_id,
-        "model": run.get("model"),
-        "created_at": run.get("created_at"),
-        "generated_at": payload.get("generated_at"),
-        "path": f"/data/trajectories/{run_id}.json",
-        "summary": payload.get("summary") or {},
-        "attempts": payload.get("attempts") or [],
-    }
-    index_payload = {
-        "schema_version": SCHEMA_VERSION,
-        "updated_at": payload.get("generated_at"),
-        "runs": sorted(
-            entries.values(),
-            key=lambda item: (item.get("created_at") or "", item["run_id"]),
-            reverse=True,
-        )[:PUBLIC_RUN_LIMIT],
-    }
-    _atomic_json(index_path, index_payload)
+    with public_index_lock(index_path):
+        index = _read_json(index_path) or {
+            "schema_version": SCHEMA_VERSION,
+            "runs": [],
+        }
+        entries = {
+            str(item.get("run_id")): item
+            for item in index.get("runs") or []
+            if isinstance(item, dict) and item.get("run_id")
+        }
+        entries[run_id] = {
+            "run_id": run_id,
+            "model": run.get("model"),
+            "created_at": run.get("created_at"),
+            "generated_at": payload.get("generated_at"),
+            "path": f"/data/trajectories/{run_id}.json",
+            "summary": payload.get("summary") or {},
+            "attempts": payload.get("attempts") or [],
+        }
+        index_payload = {
+            "schema_version": SCHEMA_VERSION,
+            "updated_at": payload.get("generated_at"),
+            "runs": sorted(
+                entries.values(),
+                key=lambda item: (item.get("created_at") or "", item["run_id"]),
+                reverse=True,
+            )[:PUBLIC_RUN_LIMIT],
+        }
+        _atomic_json(index_path, index_payload)
     return payload
 
 

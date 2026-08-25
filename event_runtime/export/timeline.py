@@ -28,7 +28,7 @@ from event_runtime.cost import modal as modal_cost  # noqa: E402
 from event_runtime.container.sprint_openrouter_usage import (  # noqa: E402
     validate_token_usage_totals,
 )
-from event_runtime.export.config import PUBLIC_RUN_LIMIT  # noqa: E402
+from event_runtime.export.config import PUBLIC_RUN_LIMIT, public_index_lock  # noqa: E402
 
 SCHEMA_VERSION = 6
 DEFAULT_BUCKET_SECONDS = 60
@@ -675,8 +675,7 @@ class Builder:
                     continue
                 attempt = record.get("attempt")
                 dispatched_at = parse_epoch_ms(
-                    record.get("dispatched_at_epoch_s")
-                    or record.get("dispatched_at")
+                    record.get("dispatched_at_epoch_s") or record.get("dispatched_at")
                 )
                 terminal_values = [
                     parse_epoch_ms(record.get(key))
@@ -689,16 +688,13 @@ class Builder:
                 ]
                 terminal_values = [value for value in terminal_values if value]
                 if isinstance(attempt, int) and attempt > 0:
-                    bounds = self._gpu_registry_bounds.setdefault(
-                        (job_id, attempt), {}
-                    )
+                    bounds = self._gpu_registry_bounds.setdefault((job_id, attempt), {})
                     # ``started_at`` is written by the worker, while
                     # ``dispatched_at`` and ``terminated_at`` are host-owned.
                     # A sandbox can therefore be billable yet be terminated
                     # before the worker (and its telemetry sampler) starts.
                     worker_started_at = parse_epoch_ms(
-                        record.get("started_at_epoch_s")
-                        or record.get("started_at")
+                        record.get("started_at_epoch_s") or record.get("started_at")
                     )
                     if worker_started_at is not None:
                         bounds["worker_started"] = True
@@ -1174,9 +1170,7 @@ class Builder:
             summary: dict[str, Any] = {}
             try:
                 summary = json.loads(summary_path.read_text())
-                token_usage = validate_token_usage_totals(
-                    summary.get("token_usage")
-                )
+                token_usage = validate_token_usage_totals(summary.get("token_usage"))
                 valid = (
                     summary.get("schema_version") == 3
                     and summary.get("run_id") == self.run_id
@@ -1239,9 +1233,7 @@ class Builder:
                     "calculated_cost_usd": calculated_cost,
                     "provider_reported_cost_usd": provider_cost,
                     "promotion_savings_usd": calculated_cost - provider_cost,
-                    "provider_cost_basis": summary.get(
-                        "provider_billed_cost_basis"
-                    ),
+                    "provider_cost_basis": summary.get("provider_billed_cost_basis"),
                     "calculated_cost_basis": summary.get("model_api_cost_basis"),
                     "cost_reconstruction_status": (
                         "complete" if pending == 0 else "in_progress"
@@ -1298,12 +1290,8 @@ class Builder:
                 if not isinstance(output_details, dict):
                     output_details = {}
                 cached_tokens = int(input_details.get("cached_tokens") or 0)
-                cache_write_tokens = int(
-                    input_details.get("cache_write_tokens") or 0
-                )
-                reasoning_tokens = int(
-                    output_details.get("reasoning_tokens") or 0
-                )
+                cache_write_tokens = int(input_details.get("cache_write_tokens") or 0)
+                reasoning_tokens = int(output_details.get("reasoning_tokens") or 0)
                 total_tokens = int(
                     usage.get("total_tokens") or input_tokens + output_tokens
                 )
@@ -1343,8 +1331,7 @@ class Builder:
                 "pricing_snapshot_id": None,
                 "calculated_cost_usd": float(calculated_cost),
                 "provider_reported_cost_usd": float(provider_cost),
-                "promotion_savings_usd": float(calculated_cost)
-                - float(provider_cost),
+                "promotion_savings_usd": float(calculated_cost) - float(provider_cost),
                 "promotion_discount_fraction": record.get(
                     "promotion_discount_fraction"
                 ),
@@ -1534,6 +1521,7 @@ class Builder:
                             ),
                             data=data,
                         )
+
     def add_final_verification(self, trials: list[pathlib.Path]) -> None:
         """Add the sealed final verifier as a distinct verifier-GPU interval."""
         for trial in trials:
@@ -1645,27 +1633,17 @@ class Builder:
                         continue
                     matching.append(sample["epoch_ms"])
             matching.sort()
-            leading_gap = (
-                matching[0] - start if end is not None and matching else None
-            )
+            leading_gap = matching[0] - start if end is not None and matching else None
             internal_gaps = [b - a for a, b in zip(matching, matching[1:])]
             internal_max_gap = max(internal_gaps, default=0) if matching else None
-            trailing_gap = (
-                end - matching[-1]
-                if end is not None and matching
-                else None
-            )
+            trailing_gap = end - matching[-1] if end is not None and matching else None
             gaps = [] if leading_gap is None else [leading_gap]
             if matching:
                 gaps.extend(internal_gaps)
                 gaps.append(trailing_gap)
             interval_gap = end - start if end is not None else None
             worst_gap = (
-                max(gaps)
-                if gaps
-                else interval_gap
-                if allow_empty_within_gap
-                else None
+                max(gaps) if gaps else interval_gap if allow_empty_within_gap else None
             )
             item = {
                 **interval,
@@ -1683,8 +1661,7 @@ class Builder:
                             and internal_max_gap is not None
                             and internal_max_gap <= max_gap_ms
                             and trailing_gap is not None
-                            and trailing_gap
-                            <= (terminal_tail_grace_ms or max_gap_ms)
+                            and trailing_gap <= (terminal_tail_grace_ms or max_gap_ms)
                         )
                         or (not matching and worst_gap <= max_gap_ms)
                     )
@@ -2282,8 +2259,7 @@ class Builder:
             bool(item["covered"]) for item in training_coverage
         )
         self.counts["training_gpu_terminal_tail_grace_intervals"] = sum(
-            bool(item.get("terminal_tail_grace_used"))
-            for item in training_coverage
+            bool(item.get("terminal_tail_grace_used")) for item in training_coverage
         )
         self.counts["verifier_gpu_intervals"] = len(verifier_intervals)
         self.counts["verifier_evaluation_intervals"] = len(
@@ -2446,9 +2422,7 @@ class Builder:
                 "max_gap_ms": max_gap_ms,
                 "terminal_tail_grace_ms": (
                     int(
-                        self.run.get(
-                            "telemetry_gpu_terminal_tail_grace_seconds"
-                        )
+                        self.run.get("telemetry_gpu_terminal_tail_grace_seconds")
                         or DEFAULT_GPU_TERMINAL_TAIL_GRACE_SECONDS
                     )
                     * 1000
@@ -2660,9 +2634,7 @@ class Builder:
             "training_gpu": {
                 "allocation_count": len(training_intervals),
                 "allocated_ms": allocated_ms(training_intervals),
-                "billing_upper_bound_allocated_ms": allocated_by_role[
-                    "training_gpu"
-                ],
+                "billing_upper_bound_allocated_ms": allocated_by_role["training_gpu"],
                 # Preserve the provider-registry-clamped intervals used for
                 # billing so downstream cost curves cannot reconstruct a
                 # larger provisional lifecycle from controller events.
@@ -3011,70 +2983,75 @@ def build_timeline(
         atomic_json(overview, build_timeline_overview(payload), mode=0o644)
         trajectory_export.build_public_trajectory(state_dir, web_dir=web_dir)
         index_path = web_dir / "data" / "timelines" / "index.json"
-        try:
-            index = json.loads(index_path.read_text())
-        except (OSError, json.JSONDecodeError):
-            index = {"schema_version": SCHEMA_VERSION, "runs": []}
-        entries = {
-            str(item.get("run_id")): item
-            for item in index.get("runs", [])
-            if isinstance(item, dict) and item.get("run_id")
-        }
-        entries[builder.run_id] = {
-            "run_id": builder.run_id,
-            "model": run.get("model"),
-            "agent_kind": run.get("agent_kind"),
-            "reasoning_effort": run.get("reasoning_effort"),
-            "resolved_model_version": run.get("resolved_model_version"),
-            "created_at": run.get("created_at"),
-            "generated_at": payload["generated_at"],
-            "path": f"/data/timelines/{builder.run_id}.json",
-            "overview_path": f"/data/timeline-overviews/{builder.run_id}.json",
-            "ready": payload["coverage"]["ready"],
-            "origin_epoch_ms": payload["clock"]["origin_epoch_ms"],
-            "end_epoch_ms": payload["clock"]["end_epoch_ms"],
-            "artifact_count": len(payload["artifacts"]),
-            "event_count": len(payload["events"]),
-            "usage_summary": payload["usage_summary"],
-            "comparison_summary": payload["comparison_summary"],
-            "resource_usage_summary": payload["resource_usage_summary"],
-            "dashboard_artifacts": [
-                {
-                    "submission_index": artifact.get("submission_index"),
-                    "finished_epoch_ms": parse_epoch_ms(artifact.get("finished_at")),
-                    "rewards": {
-                        "valid_run": (artifact.get("rewards") or {}).get("valid_run"),
-                        "best_100m_s": (artifact.get("rewards") or {}).get(
-                            "best_100m_s"
+        with public_index_lock(index_path):
+            try:
+                index = json.loads(index_path.read_text())
+            except (OSError, json.JSONDecodeError):
+                index = {"schema_version": SCHEMA_VERSION, "runs": []}
+            entries = {
+                str(item.get("run_id")): item
+                for item in index.get("runs", [])
+                if isinstance(item, dict) and item.get("run_id")
+            }
+            entries[builder.run_id] = {
+                "run_id": builder.run_id,
+                "model": run.get("model"),
+                "agent_kind": run.get("agent_kind"),
+                "reasoning_effort": run.get("reasoning_effort"),
+                "resolved_model_version": run.get("resolved_model_version"),
+                "created_at": run.get("created_at"),
+                "generated_at": payload["generated_at"],
+                "path": f"/data/timelines/{builder.run_id}.json",
+                "overview_path": f"/data/timeline-overviews/{builder.run_id}.json",
+                "ready": payload["coverage"]["ready"],
+                "origin_epoch_ms": payload["clock"]["origin_epoch_ms"],
+                "end_epoch_ms": payload["clock"]["end_epoch_ms"],
+                "artifact_count": len(payload["artifacts"]),
+                "event_count": len(payload["events"]),
+                "usage_summary": payload["usage_summary"],
+                "comparison_summary": payload["comparison_summary"],
+                "resource_usage_summary": payload["resource_usage_summary"],
+                "dashboard_artifacts": [
+                    {
+                        "submission_index": artifact.get("submission_index"),
+                        "finished_epoch_ms": parse_epoch_ms(
+                            artifact.get("finished_at")
                         ),
-                        "gate_finished": (artifact.get("rewards") or {}).get(
-                            "gate_finished"
-                        ),
-                        "gate_in_lane": (artifact.get("rewards") or {}).get(
-                            "gate_in_lane"
-                        ),
-                        "gate_self_collision": (artifact.get("rewards") or {}).get(
-                            "gate_self_collision"
-                        ),
-                        "peak_speed_mps": (artifact.get("rewards") or {}).get(
-                            "peak_speed_mps"
-                        ),
-                    },
-                    "cost_at_result": artifact.get("cost_at_result"),
-                }
-                for artifact in payload["artifacts"]
-            ],
-        }
-        index = {
-            "schema_version": SCHEMA_VERSION,
-            "updated_at": payload["generated_at"],
-            "runs": sorted(
-                entries.values(),
-                key=lambda item: (item.get("created_at") or "", item["run_id"]),
-                reverse=True,
-            )[:PUBLIC_RUN_LIMIT],
-        }
-        atomic_json(index_path, index, mode=0o644)
+                        "rewards": {
+                            "valid_run": (artifact.get("rewards") or {}).get(
+                                "valid_run"
+                            ),
+                            "best_100m_s": (artifact.get("rewards") or {}).get(
+                                "best_100m_s"
+                            ),
+                            "gate_finished": (artifact.get("rewards") or {}).get(
+                                "gate_finished"
+                            ),
+                            "gate_in_lane": (artifact.get("rewards") or {}).get(
+                                "gate_in_lane"
+                            ),
+                            "gate_self_collision": (artifact.get("rewards") or {}).get(
+                                "gate_self_collision"
+                            ),
+                            "peak_speed_mps": (artifact.get("rewards") or {}).get(
+                                "peak_speed_mps"
+                            ),
+                        },
+                        "cost_at_result": artifact.get("cost_at_result"),
+                    }
+                    for artifact in payload["artifacts"]
+                ],
+            }
+            index = {
+                "schema_version": SCHEMA_VERSION,
+                "updated_at": payload["generated_at"],
+                "runs": sorted(
+                    entries.values(),
+                    key=lambda item: (item.get("created_at") or "", item["run_id"]),
+                    reverse=True,
+                )[:PUBLIC_RUN_LIMIT],
+            }
+            atomic_json(index_path, index, mode=0o644)
     return payload
 
 

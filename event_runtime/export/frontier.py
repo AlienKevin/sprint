@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[2]
 WEB_DEFAULT = ROOT / "web"
 sys.path.insert(0, str(ROOT))
 from event_runtime.event import load_event  # noqa: E402
-from event_runtime.export.config import PUBLIC_RUN_LIMIT  # noqa: E402
+from event_runtime.export.config import PUBLIC_RUN_LIMIT, public_index_lock  # noqa: E402
 from event_runtime.export.site_bundle import build_site_bundle  # noqa: E402
 
 EVENT = load_event(repository_root=ROOT)
@@ -943,39 +943,40 @@ def write_web_policy_indexes(
     atomic_write_json(run_path, payload)
 
     index_path = web / "data" / "policies" / "index.json"
-    try:
-        index = json.loads(index_path.read_text())
-    except (OSError, json.JSONDecodeError):
-        index = {"schema_version": 1, "runs": []}
-    entries = {
-        str(item.get("run_id")): item
-        for item in index.get("runs", [])
-        if isinstance(item, dict) and item.get("run_id")
-    }
-    entries[run_id] = {
-        "run_id": run_id,
-        "model": payload["model"],
-        "resolved_model_version": payload["resolved_model_version"],
-        "reasoning_effort": payload["reasoning_effort"],
-        "created_at": payload["created_at"],
-        "updated_at": payload["updated_at"],
-        "policy_count": len(rows),
-        "valid_count": sum(row["valid_run"] for row in rows),
-        "replay_count": sum(row["replay_ready"] for row in rows),
-        "path": f"/data/policies/{run_id}.json",
-    }
-    atomic_write_json(
-        index_path,
-        {
-            "schema_version": 1,
+    with public_index_lock(index_path):
+        try:
+            index = json.loads(index_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            index = {"schema_version": 1, "runs": []}
+        entries = {
+            str(item.get("run_id")): item
+            for item in index.get("runs", [])
+            if isinstance(item, dict) and item.get("run_id")
+        }
+        entries[run_id] = {
+            "run_id": run_id,
+            "model": payload["model"],
+            "resolved_model_version": payload["resolved_model_version"],
+            "reasoning_effort": payload["reasoning_effort"],
+            "created_at": payload["created_at"],
             "updated_at": payload["updated_at"],
-            "runs": sorted(
-                entries.values(),
-                key=lambda item: (item.get("created_at") or "", item["run_id"]),
-                reverse=True,
-            )[:PUBLIC_RUN_LIMIT],
-        },
-    )
+            "policy_count": len(rows),
+            "valid_count": sum(row["valid_run"] for row in rows),
+            "replay_count": sum(row["replay_ready"] for row in rows),
+            "path": f"/data/policies/{run_id}.json",
+        }
+        atomic_write_json(
+            index_path,
+            {
+                "schema_version": 1,
+                "updated_at": payload["updated_at"],
+                "runs": sorted(
+                    entries.values(),
+                    key=lambda item: (item.get("created_at") or "", item["run_id"]),
+                    reverse=True,
+                )[:PUBLIC_RUN_LIMIT],
+            },
+        )
 
 
 def verify_project_link(web: Path) -> None:
