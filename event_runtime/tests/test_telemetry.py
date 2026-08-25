@@ -16,7 +16,6 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[2]
 TELEMETRY_PY = ROOT / "event_runtime/container/sprint-telemetry.py"
 TELEMETRY_SH = ROOT / "event_runtime/container/sprint-telemetry.sh"
-KEEPALIVE_PY = ROOT / "event_runtime/telemetry/keepalive.py"
 VERIFIER_TELEMETRY_PY = ROOT / "event_runtime/container/verifier_telemetry.py"
 PIPELINE_PY = ROOT / "event_runtime/container/sprint_gpu_pipeline.py"
 OPS = ROOT / "runs/ops"
@@ -26,7 +25,6 @@ sys.path.insert(0, str(ROOT / "event_runtime/container"))
 
 from event_runtime.compute import worker as gpu_worker  # noqa: E402
 from event_runtime.telemetry import host as telemetry_host  # noqa: E402
-from event_runtime.telemetry import keepalive as telemetry_keepalive  # noqa: E402
 
 
 def load_module(name: str, path: Path):
@@ -365,22 +363,6 @@ class TelemetrySamplerTests(unittest.TestCase):
                     blob += path.read_text(encoding="utf-8", errors="replace")
             blob += completed.stdout + completed.stderr
             self.assertNotIn(secret, blob)
-
-    def test_keepalive_json_starts_telemetry(self) -> None:
-        argv = telemetry_keepalive.keepalive_argv(run_id="lane-smoke")
-        self.assertEqual(argv[0], "sh")
-        self.assertEqual(argv[1], "-c")
-        self.assertIn("/opt/sprint-telemetry.sh", argv[2])
-        self.assertIn("/logs/artifacts/telemetry", argv[2])
-        self.assertIn("lane-smoke", argv[2])
-        completed = subprocess.run(
-            [sys.executable, str(KEEPALIVE_PY), "--run-id", "x"],
-            text=True,
-            stdout=subprocess.PIPE,
-            check=True,
-        )
-        parsed = json.loads(completed.stdout)
-        self.assertIsInstance(parsed, list)
 
     def test_durable_dry_run_keepalive_includes_telemetry(self) -> None:
         run_id = "dry-telem-check"

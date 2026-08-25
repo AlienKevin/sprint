@@ -297,7 +297,6 @@ class Builder:
 
     def add_cpu_lifecycle(self) -> None:
         paths = [self.state_dir / "telemetry" / "cpu_lifecycle.jsonl"]
-        paths.extend(self.state_dir.glob("recovery/*/*/telemetry/cpu_lifecycle.jsonl"))
         for path in sorted({path for path in paths if path.is_file()}):
             rows, malformed = read_jsonl(path)
             self.counts["malformed_cpu_lifecycle"] += malformed
@@ -339,8 +338,6 @@ class Builder:
                     "*/verifier/telemetry/samples.jsonl"
                 )
             )
-        paths.extend(self.state_dir.glob("recovery/*/*/telemetry/samples.jsonl"))
-        paths.extend(self.state_dir.glob("recovery/*/*/telemetry/host-samples.jsonl"))
         return sorted({path for path in paths if path.is_file()})
 
     def verifier_evaluation_id(
@@ -996,13 +993,9 @@ class Builder:
                     path = trial / "agent" / name
                     if path.is_file():
                         candidates.append(path)
-        for root in (
-            self.state_dir / "durable-trace",
-            self.state_dir / "trace" / "raw",
-        ):
-            if root.is_dir():
-                candidates.extend(root.rglob("*.jsonl"))
-        candidates.extend(self.state_dir.glob("recovery/*/*/trace/raw/**/*.jsonl"))
+        root = self.state_dir / "durable-trace"
+        if root.is_dir():
+            candidates.extend(root.rglob("*.jsonl"))
         unique: list[pathlib.Path] = []
         file_hashes: set[str] = set()
         for path in sorted(set(candidates)):

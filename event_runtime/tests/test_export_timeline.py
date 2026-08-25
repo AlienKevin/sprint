@@ -1453,14 +1453,14 @@ def test_host_registry_recovers_provider_exit_billing_boundary(tmp_path: Path) -
     assert payload["coverage"]["counts"]["gpu_registry_provider_exit_events"] == 1
 
 
-def test_host_registry_clamps_legacy_pre_spawn_training_interval(
+def test_host_registry_clamps_pre_spawn_training_interval(
     tmp_path: Path,
 ) -> None:
     state = fixture_run(tmp_path)
     lifecycle_path = state / "telemetry" / "gpu_timeline.jsonl"
     rows = [
         {
-            "event_id": "legacy-start",
+            "event_id": "lifecycle-start",
             "epoch_s": 1786104000,
             "phase": "gpu_lifecycle",
             "action": "instant",
@@ -1469,7 +1469,7 @@ def test_host_registry_clamps_legacy_pre_spawn_training_interval(
             "detail": {"event": "gpu_allocated"},
         },
         {
-            "event_id": "legacy-end",
+            "event_id": "lifecycle-end",
             "epoch_s": 1786104101,
             "phase": "gpu_lifecycle",
             "action": "instant",

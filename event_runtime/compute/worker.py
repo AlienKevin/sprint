@@ -23,7 +23,6 @@ import sys
 import tempfile
 import time
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -2777,14 +2776,6 @@ def reconcile_terminal_attempt_before_stop(
     return persist_job(run, payload)
 
 
-def list_pending_job_ids(run: dict[str, Any]) -> list[str]:
-    return sorted(
-        job_id
-        for job_id, detail in (indexed_agent_jobs(run) or {}).items()
-        if detail.get("cancel_state") != "cancelled_before_dispatch"
-    )
-
-
 def list_agent_cancelled_job_ids(
     run: dict[str, Any],
     *,
@@ -3222,17 +3213,6 @@ def _candidate_job_ids(
                 created = float(job.get("created_at_epoch_s") or 0)
             except (TypeError, ValueError):
                 created = 0.0
-            if created <= 0:
-                try:
-                    created = (
-                        datetime.fromisoformat(
-                            str(job.get("created_at") or "").replace("Z", "+00:00")
-                        )
-                        .astimezone(timezone.utc)
-                        .timestamp()
-                    )
-                except (TypeError, ValueError):
-                    created = 0.0
             out.append((created, job_id))
     return [job_id for _created, job_id in sorted(out)]
 

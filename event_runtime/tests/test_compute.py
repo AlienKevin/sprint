@@ -87,17 +87,17 @@ class ClaimSelectionTests(unittest.TestCase):
             "claim",
         )
 
-    def test_pending_candidates_are_fifo_including_legacy_timestamp(self) -> None:
+    def test_pending_candidates_are_fifo(self) -> None:
         jobs = {
             "later": {
                 "job_id": "later",
                 "status": "pending",
                 "created_at_epoch_s": 20,
             },
-            "legacy": {
-                "job_id": "legacy",
+            "earlier": {
+                "job_id": "earlier",
                 "status": "pending",
-                "created_at": "1970-01-01T00:00:10Z",
+                "created_at_epoch_s": 10,
             },
         }
         with (
@@ -107,7 +107,7 @@ class ClaimSelectionTests(unittest.TestCase):
             ),
         ):
             candidates = gpu_worker._candidate_job_ids({}, now=30)
-        self.assertEqual(candidates, ["legacy", "later"])
+        self.assertEqual(candidates, ["earlier", "later"])
 
     def test_running_with_sandbox_skipped(self) -> None:
         job = {
@@ -1568,12 +1568,11 @@ class HostJobRegistryTests(unittest.TestCase):
             mock.patch.object(gpu_worker, "list_host_job_ids", return_value=["hosted"]),
         ):
             self.assertEqual(gpu_worker.list_job_ids(run), ["hosted", "queued"])
-            self.assertEqual(gpu_worker.list_pending_job_ids(run), ["queued"])
             self.assertEqual(
                 gpu_worker.list_agent_cancelled_job_ids(run), ["cancelled"]
             )
 
-        self.assertEqual(reader.call_count, 3)
+        self.assertEqual(reader.call_count, 2)
         self.assertTrue(
             all(
                 call.args[1].endswith("/gpu-jobs/index.json")
@@ -1639,7 +1638,6 @@ class HostJobRegistryTests(unittest.TestCase):
             mock.patch.object(gpu_worker, "list_host_job_ids", return_value=[]),
         ):
             self.assertEqual(gpu_worker.list_job_ids(run), [])
-            self.assertEqual(gpu_worker.list_pending_job_ids(run), [])
 
 
 class LeaseLivenessTests(unittest.TestCase):

@@ -202,27 +202,17 @@ def recover_harbor_provenance(
 
 def source_groups(state_dir: Path) -> list[tuple[int, str, str, list[Path]]]:
     groups: dict[tuple[int, str, str], list[Path]] = {}
-    roots = [state_dir / "durable-trace" / "raw", state_dir / "trace" / "raw"]
-    roots.extend(state_dir.glob("recovery/*/*/trace/raw"))
-    for root in roots:
-        for agent_kind in ("codex", "deepseek-harness"):
-            for chunks in root.glob(f"cpu-attempt-*/{agent_kind}/*/chunks"):
-                match = ATTEMPT_RE.fullmatch(chunks.parents[2].name)
-                if not match:
-                    continue
-                attempt = int(match.group(1))
-                source_id = chunks.parent.name
-                files = sorted(chunks.glob("*.jsonl"))
-                if not files:
-                    continue
-                key = (attempt, agent_kind, source_id)
-                existing = groups.get(key)
-                if existing is None or sum(path.stat().st_size for path in files) > sum(
-                    path.stat().st_size for path in existing
-                ):
-                    # Recovery snapshots may contain an older prefix of the same
-                    # immutable stream. Use the most complete copy.
-                    groups[key] = files
+    root = state_dir / "durable-trace" / "raw"
+    for agent_kind in ("codex", "deepseek-harness"):
+        for chunks in root.glob(f"cpu-attempt-*/{agent_kind}/*/chunks"):
+            match = ATTEMPT_RE.fullmatch(chunks.parents[2].name)
+            if not match:
+                continue
+            attempt = int(match.group(1))
+            source_id = chunks.parent.name
+            files = sorted(chunks.glob("*.jsonl"))
+            if files:
+                groups[(attempt, agent_kind, source_id)] = files
     return [
         (attempt, agent_kind, source_id, groups[(attempt, agent_kind, source_id)])
         for attempt, agent_kind, source_id in sorted(groups)
