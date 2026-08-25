@@ -12,8 +12,8 @@ import urllib.request
 
 UNDISCOUNTED_COST_BASIS = "openrouter_list_price_before_endpoint_discount"
 BENCHMARK_COST_BASIS = "openrouter_list_price_with_deepseek_peak_floor"
-OPENAI_SOL_FULL_PRICE_BASIS = (
-    "openai_sol_official_non_promotional_list_price_after_openrouter_discount_reversal"
+OPENAI_SOL_PROMOTIONAL_PRICE_BASIS = (
+    "openai_sol_official_promotional_list_price_after_openrouter_discount_reversal"
 )
 PROVIDER_COST_BASIS = "openrouter_reported_per_request"
 
@@ -22,18 +22,18 @@ OPENAI_SOL_MODEL_ALIASES = {
     "openai/gpt-5.6-sol-20260709",
 }
 OPENAI_SOL_LONG_CONTEXT_THRESHOLD = 272_000
-OPENAI_SOL_FULL_PRICING_PER_TOKEN: dict[str, dict[str, float]] = {
+OPENAI_SOL_PROMOTIONAL_PRICING_PER_TOKEN: dict[str, dict[str, float]] = {
     "short": {
-        "uncached_input": 5.00 / 1_000_000,
-        "cached_input": 0.50 / 1_000_000,
-        "cache_write_input": 6.25 / 1_000_000,
-        "output": 30.00 / 1_000_000,
+        "uncached_input": 4.00 / 1_000_000,
+        "cached_input": 0.40 / 1_000_000,
+        "cache_write_input": 5.00 / 1_000_000,
+        "output": 20.00 / 1_000_000,
     },
     "long": {
-        "uncached_input": 10.00 / 1_000_000,
-        "cached_input": 1.00 / 1_000_000,
-        "cache_write_input": 12.50 / 1_000_000,
-        "output": 45.00 / 1_000_000,
+        "uncached_input": 8.00 / 1_000_000,
+        "cached_input": 0.80 / 1_000_000,
+        "cache_write_input": 10.00 / 1_000_000,
+        "output": 30.00 / 1_000_000,
     },
 }
 
@@ -87,7 +87,7 @@ class OpenRouterPricingError(RuntimeError):
 def benchmark_cost_basis_for_model(model: str) -> str:
     """Return the canonical benchmark basis for one pinned OpenRouter model."""
     if model in OPENAI_SOL_MODEL_ALIASES:
-        return OPENAI_SOL_FULL_PRICE_BASIS
+        return OPENAI_SOL_PROMOTIONAL_PRICE_BASIS
     return (
         BENCHMARK_COST_BASIS
         if model in DEEPSEEK_PEAK_PRICING
@@ -198,8 +198,8 @@ def parse_endpoint_discount_snapshot(
         )
     discount = discounts.pop()
     peak_pricing = DEEPSEEK_PEAK_PRICING.get(model)
-    sol_full_pricing = (
-        OPENAI_SOL_FULL_PRICING_PER_TOKEN
+    sol_promotional_pricing = (
+        OPENAI_SOL_PROMOTIONAL_PRICING_PER_TOKEN
         if model in OPENAI_SOL_MODEL_ALIASES
         else None
     )
@@ -213,9 +213,9 @@ def parse_endpoint_discount_snapshot(
         "discount_fraction": discount,
         "gross_up_multiplier": 1.0 / (1.0 - discount),
         "deepseek_peak_pricing_usd_per_token": peak_pricing,
-        "openai_sol_full_pricing_usd_per_token": sol_full_pricing,
+        "openai_sol_promotional_pricing_usd_per_token": sol_promotional_pricing,
         "openai_sol_long_context_threshold_tokens": (
-            OPENAI_SOL_LONG_CONTEXT_THRESHOLD if sol_full_pricing else None
+            OPENAI_SOL_LONG_CONTEXT_THRESHOLD if sol_promotional_pricing else None
         ),
         "cost_basis": benchmark_cost_basis_for_model(model),
     }
@@ -348,9 +348,10 @@ def benchmark_cost_usd(
 
     Every route is first grossed up to its undiscounted OpenRouter endpoint
     price. DeepSeek additionally gets a fixed official-peak reconstruction.
-    Sol gets the official pre-promotion OpenAI schedule, including its long-
-    context and cache-write rules. The greatest applicable value wins, so
-    neither layer of discount can increase the amount of work bought by a run.
+    Sol gets the official promotional OpenAI schedule, including its long-
+    context and cache-write rules, after reversing any separate OpenRouter
+    endpoint discount. The greatest applicable value wins, so an OpenRouter
+    discount cannot increase the amount of work bought by a run.
     """
     list_cost = undiscounted_cost_usd(charged_cost_usd, snapshot)
     try:
@@ -358,7 +359,7 @@ def benchmark_cost_usd(
     except AttributeError as exc:
         raise OpenRouterPricingError("request has no valid pricing snapshot") from exc
     try:
-        sol_pricing = snapshot.get("openai_sol_full_pricing_usd_per_token")  # type: ignore[union-attr]
+        sol_pricing = snapshot.get("openai_sol_promotional_pricing_usd_per_token")  # type: ignore[union-attr]
         sol_threshold = snapshot.get("openai_sol_long_context_threshold_tokens")  # type: ignore[union-attr]
     except AttributeError as exc:
         raise OpenRouterPricingError("request has no valid pricing snapshot") from exc
@@ -380,7 +381,7 @@ def benchmark_cost_usd(
             raise OpenRouterPricingError("DeepSeek peak rates are invalid") from exc
     elif sol_pricing is not None:
         if not isinstance(sol_pricing, dict):
-            raise OpenRouterPricingError("Sol full pricing snapshot is invalid")
+            raise OpenRouterPricingError("Sol promotional pricing snapshot is invalid")
         try:
             threshold = int(sol_threshold)
             schedule = sol_pricing[
@@ -393,7 +394,7 @@ def benchmark_cost_usd(
                 + output * float(schedule["output"])
             )
         except (KeyError, TypeError, ValueError) as exc:
-            raise OpenRouterPricingError("Sol full rates are invalid") from exc
+            raise OpenRouterPricingError("Sol promotional rates are invalid") from exc
     if not math.isfinite(reconstructed_cost) or reconstructed_cost < 0:
         raise OpenRouterPricingError("official reconstructed cost is invalid")
     return max(list_cost, reconstructed_cost)

@@ -1918,7 +1918,7 @@ def run_usage_audit_ready(
         "openrouter_list_price_before_endpoint_discount",
         "openrouter_list_price_with_deepseek_peak_floor",
         (
-            "openai_sol_official_non_promotional_list_price_after_"
+            "openai_sol_official_promotional_list_price_after_"
             "openrouter_discount_reversal"
         ),
     }

@@ -3011,8 +3011,10 @@ def test_homepage_uses_compact_timeline_index_summaries() -> None:
     assert "/data/batches/current.json" in source
     assert "renderExperimentTracker" in source
     assert "updateExperimentClocks" in source
-    assert "cache read" in source
-    assert "${row.submitted} submitted</b>" in source
+    assert 'class="experiment-table"' in source
+    assert 'scope="rowgroup"' in source
+    assert "${row.submitted}</td>" in source
+    assert "Effective Speed" in source
     assert "Total cost" in source
     assert "await json(tMeta.path)" not in source
     assert "showReadout" in source

@@ -1632,7 +1632,7 @@ class DurableOpsTests(unittest.TestCase):
         )
         self.assertEqual(
             config["budget_enforcement"]["api_budget_cost_basis"],
-            "openai_sol_official_non_promotional_list_price_after_openrouter_discount_reversal",
+            "openai_sol_official_promotional_list_price_after_openrouter_discount_reversal",
         )
         self.assertTrue(config["usage_audit_required"])
 

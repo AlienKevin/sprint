@@ -636,7 +636,7 @@ def test_openrouter_run_audit_normalizes_codex_preset_to_pinned_model(
         "budget_enforcement": {
             "api_cost_source": "openrouter_reported_per_request",
             "api_budget_cost_basis": (
-                "openai_sol_official_non_promotional_list_price_after_"
+                "openai_sol_official_promotional_list_price_after_"
                 "openrouter_discount_reversal"
             ),
         },

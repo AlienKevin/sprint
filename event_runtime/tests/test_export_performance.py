@@ -458,8 +458,11 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "class:'submission-target'" in app
     assert "el.getScreenCTM()" in app
     assert "nearest.distance<=22**2" in app
-    assert "app.js?v=20260824-4" in page
-    assert '"version":"20260824-8"' in (ROOT / "web/version.json").read_text()
+    assert "app.js?v=20260825-1" in page
+    assert '"version":"20260825-1"' in (ROOT / "web/version.json").read_text()
+    assert 'class="experiment-table"' in app
+    assert 'scope="rowgroup"' in app
+    assert "best_continuous_score_mps" in app
     preview = trajectory_app.split("function stepPreview", 1)[1].split(
         "function matchesFilter", 1
     )[0]

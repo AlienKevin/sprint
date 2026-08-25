@@ -600,7 +600,7 @@ def test_endpoint_promotion_is_reversed_without_changing_cache_skus() -> None:
     assert proxy.undiscounted_cost_usd(0.25, parsed) == pytest.approx(0.5)
 
 
-def test_sol_removes_openrouter_and_official_promotional_discounts() -> None:
+def test_sol_removes_only_openrouter_endpoint_discount() -> None:
     parsed = proxy.sys.modules[
         "sprint_openrouter_pricing"
     ].parse_endpoint_discount_snapshot(
@@ -628,15 +628,15 @@ def test_sol_removes_openrouter_and_official_promotional_discounts() -> None:
     }
 
     # The endpoint discount first grosses $3.00 up to $4.00. The official
-    # non-promotional long-context schedule is higher: $1 uncached input +
-    # $0.80 cached input + $1.25 cache write + $4.50 output = $7.55.
-    assert proxy.benchmark_cost_usd(3.0, parsed, usage) == pytest.approx(7.55)
+    # promotional long-context schedule is higher: $0.80 uncached input +
+    # $0.64 cached input + $1.00 cache write + $3.00 output = $5.44.
+    assert proxy.benchmark_cost_usd(3.0, parsed, usage) == pytest.approx(5.44)
     assert parsed["cost_basis"] == (
-        "openai_sol_official_non_promotional_list_price_after_openrouter_discount_reversal"
+        "openai_sol_official_promotional_list_price_after_openrouter_discount_reversal"
     )
 
 
-def test_sol_non_promotional_short_context_schedule() -> None:
+def test_sol_promotional_short_context_schedule() -> None:
     parsed = proxy.sys.modules[
         "sprint_openrouter_pricing"
     ].parse_endpoint_discount_snapshot(
@@ -653,8 +653,8 @@ def test_sol_non_promotional_short_context_schedule() -> None:
         "output_tokens": 10_000,
     }
 
-    # $0.25 uncached + $0.05 cached + $0.3125 cache write + $0.30 output.
-    assert proxy.benchmark_cost_usd(0.1, parsed, usage) == pytest.approx(0.9125)
+    # $0.20 uncached + $0.04 cached + $0.25 cache write + $0.20 output.
+    assert proxy.benchmark_cost_usd(0.1, parsed, usage) == pytest.approx(0.69)
 
 
 def test_baidu_promotion_cannot_extend_the_budget() -> None:
