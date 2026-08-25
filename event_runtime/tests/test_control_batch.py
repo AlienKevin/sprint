@@ -108,6 +108,23 @@ def test_batch_matrix_is_exact_six_arm_max_effort_contract() -> None:
     assert batch_eval.LIVE_SITE_DEPLOY_SECONDS == 20 * 60
 
 
+def test_batch_matrix_accepts_explicit_reasoning_effort() -> None:
+    rows = batch_eval.matrix(
+        "eval-sol-medium",
+        families=("sol",),
+        trials_per_model=3,
+        reasoning_effort="medium",
+    )
+    assert len(rows) == 3
+    assert {row["family"] for row in rows} == {"sol"}
+    assert {row["reasoning_effort"] for row in rows} == {"medium"}
+
+
+def test_batch_matrix_rejects_unknown_reasoning_effort() -> None:
+    with pytest.raises(ValueError, match="reasoning effort must be one of"):
+        batch_eval.matrix("eval-sol-invalid", reasoning_effort="ultra")
+
+
 def test_one_shot_batch_monitor_does_not_claim_lifetime_owner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

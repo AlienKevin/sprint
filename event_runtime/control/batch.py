@@ -103,7 +103,8 @@ DEEPSEEK_ROUTED_FAMILY_SPECS: dict[str, dict[str, str]] = {
         "goal_mode": "deepseek_native_goal",
     },
 }
-REASONING_EFFORT = "max"
+DEFAULT_REASONING_EFFORT = "max"
+REASONING_EFFORTS = ("medium", "high", "max")
 RUN_HOURS: float | None = None
 POLL_SECONDS = 30
 RUN_MONITOR_STARTUP_TIMEOUT_SECONDS = 120
@@ -396,9 +397,14 @@ def matrix(
     batch_id: str,
     trials_per_model: int = TRIALS_PER_MODEL,
     families: tuple[str, ...] = DEFAULT_FAMILIES,
+    reasoning_effort: str = DEFAULT_REASONING_EFFORT,
 ) -> list[dict[str, Any]]:
     if isinstance(trials_per_model, bool) or not 1 <= trials_per_model <= 50:
         raise ValueError("trials per model must be between 1 and 50")
+    if reasoning_effort not in REASONING_EFFORTS:
+        raise ValueError(
+            f"reasoning effort must be one of: {', '.join(REASONING_EFFORTS)}"
+        )
     arms: list[dict[str, Any]] = []
     specs = {
         **{
@@ -449,7 +455,7 @@ def matrix(
                     "family": family,
                     "model": spec["model"],
                     "resolved_model_version": spec["resolved_model_version"],
-                    "reasoning_effort": REASONING_EFFORT,
+                    "reasoning_effort": reasoning_effort,
                     "agent_kind": spec["agent_kind"],
                     "goal_mode": spec["goal_mode"],
                     "codex_version": CODEX_VERSION,
@@ -1430,6 +1436,7 @@ def preflight(
     check_providers: bool = True,
     families: tuple[str, ...] = DEFAULT_FAMILIES,
     trials_per_model: int = TRIALS_PER_MODEL,
+    reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     probe_training_fleet: bool = False,
     coexist_batch_ids: tuple[str, ...] = (),
 ) -> dict[str, Any]:
@@ -1444,6 +1451,7 @@ def preflight(
         batch_id,
         trials_per_model=trials_per_model,
         families=families,
+        reasoning_effort=reasoning_effort,
     )
     required_keys = {
         "deepseek": "OPENROUTER_API_KEY",
@@ -1612,7 +1620,7 @@ def preflight(
                             "allow_fallbacks": False,
                             "require_parameters": True,
                         },
-                        "reasoning": {"effort": REASONING_EFFORT},
+                        "reasoning": {"effort": reasoning_effort},
                         "max_output_tokens": 128_000,
                         "service_tier": "default",
                         "tools": [
@@ -1681,7 +1689,7 @@ def preflight(
                     "model": spec["model"],
                     "messages": [{"role": "user", "content": "Return OK."}],
                     "provider": provider,
-                    "reasoning_effort": REASONING_EFFORT,
+                    "reasoning_effort": reasoning_effort,
                     "temperature": 1.0,
                     "top_p": 0.95,
                     "max_tokens": 16,
@@ -1709,7 +1717,7 @@ def preflight(
                     "model": spec["model"],
                     "input": "Return OK.",
                     "provider": provider,
-                    "reasoning": {"effort": REASONING_EFFORT},
+                    "reasoning": {"effort": reasoning_effort},
                     "max_output_tokens": 16,
                     # Exercise the same Responses features Codex adds to a
                     # real agent turn. A text.verbosity field is
@@ -1778,6 +1786,7 @@ def preflight(
         "modal_profile": modal_profile,
         "families": list(families),
         "trials_per_model": trials_per_model,
+        "reasoning_effort": reasoning_effort,
         "coexist_batch_ids": list(coexist_batch_ids),
         "env_file": str(env_file),
         "checks": checks,
@@ -2188,6 +2197,7 @@ def launch(
     *,
     families: tuple[str, ...] = DEFAULT_FAMILIES,
     trials_per_model: int = TRIALS_PER_MODEL,
+    reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     coexist_batch_ids: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     report = preflight(
@@ -2196,6 +2206,7 @@ def launch(
         modal_profile=modal_profile,
         families=families,
         trials_per_model=trials_per_model,
+        reasoning_effort=reasoning_effort,
         probe_training_fleet=True,
         coexist_batch_ids=coexist_batch_ids,
     )
@@ -2209,7 +2220,7 @@ def launch(
         "schema_version": 1,
         "batch_id": batch_id,
         "created_at": started,
-        "reasoning_effort": REASONING_EFFORT,
+        "reasoning_effort": reasoning_effort,
         "codex_version": CODEX_VERSION,
         "trials_per_model": trials_per_model,
         "families": list(families),
@@ -2223,6 +2234,7 @@ def launch(
             batch_id,
             trials_per_model=trials_per_model,
             families=families,
+            reasoning_effort=reasoning_effort,
         ),
         "alerts": [],
         "status": "launching",
@@ -2266,7 +2278,7 @@ def launch(
         {
             "MODAL_PROFILE": modal_profile,
             "CONFIRM_LAUNCH": "1",
-            "REASONING_EFFORT": REASONING_EFFORT,
+            "REASONING_EFFORT": reasoning_effort,
             "CODEX_VERSION": CODEX_VERSION,
             "SPRINT_BATCH_ID": batch_id,
             "UV": str(UV),
@@ -3673,6 +3685,11 @@ def parser() -> argparse.ArgumentParser:
             command.add_argument("--confirm", action="store_true")
         if name in {"preflight", "launch"}:
             command.add_argument(
+                "--reasoning-effort",
+                choices=REASONING_EFFORTS,
+                default=DEFAULT_REASONING_EFFORT,
+            )
+            command.add_argument(
                 "--coexist-with-batch",
                 action="append",
                 default=[],
@@ -3712,6 +3729,7 @@ def main() -> int:
             modal_profile=args.modal_profile,
             families=tuple(args.families),
             trials_per_model=args.trials_per_model,
+            reasoning_effort=args.reasoning_effort,
             probe_training_fleet=True,
             coexist_batch_ids=tuple(args.coexist_with_batch),
         )
@@ -3724,6 +3742,7 @@ def main() -> int:
             args.modal_profile,
             families=tuple(args.families),
             trials_per_model=args.trials_per_model,
+            reasoning_effort=args.reasoning_effort,
             coexist_batch_ids=tuple(args.coexist_with_batch),
         )
     elif args.command == "monitor":
