@@ -500,9 +500,9 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "class:'submission-target'" in app
     assert "el.getScreenCTM()" in app
     assert "nearest.distance<=22**2" in app
-    assert "styles.css?v=20260825-14" in page
-    assert "app.js?v=20260825-14" in page
-    assert '"version":"20260825-14"' in (ROOT / "web/version.json").read_text()
+    assert "styles.css?v=20260825-15" in page
+    assert "app.js?v=20260825-15" in page
+    assert '"version":"20260825-15"' in (ROOT / "web/version.json").read_text()
     assert "AUC cutoff" not in app
     assert "auc-cap-line" not in app
     assert ".auc-cap-line" not in styles
@@ -516,7 +516,7 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert 'scope="rowgroup"' in app
     assert '<th scope="col">Effort</th>' in app
     assert '<th scope="col">Trial</th>' in app
-    assert '<td><strong>${esc(row.effort||\'—\')}</strong></td>' in app
+    assert "${isBest?`<strong>${esc(row.effort||'—')}</strong>`:esc(row.effort||'—')}" in app
     assert 'aria-label="Open trial ${esc(row.arm.trial)} trace">${esc(row.arm.trial)}</a>' in app
     assert '>Trial ${esc(row.arm.trial)}</a>' not in app
     assert "const familyBest=Math.max" in app
