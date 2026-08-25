@@ -806,15 +806,19 @@ def main() -> int:
     )
     if provider_cost_source:
         apply_provider_reported_costs(requests, provider_records)
-        # A provider request can finish after the Codex process is interrupted,
-        # leaving no local token_count event to carry the configured identity.
-        # Keep the provider response model separately, but attest the benchmark
-        # model and reasoning configuration on the synthetic run-audit row.
+        # Codex records the configured OpenRouter preset in turn_context.model,
+        # not necessarily the immutable benchmark model selected by that
+        # preset.  The trusted provider ledger and key guardrail attest the
+        # actual route.  Preserve Codex's raw label for provenance, while every
+        # reconciled row uses the run's pinned model identity.  This also covers
+        # provider-only requests that finish after the Codex process exits.
         expected_model = str(run["model"]).split("/", 1)[-1]
         for request in requests:
-            if request.get("provider_only_usage") is True:
-                request["model"] = expected_model
-                request["reasoning_effort"] = run["reasoning_effort"]
+            trace_model = request.get("model")
+            if trace_model and trace_model != expected_model:
+                request["trace_reported_model"] = trace_model
+            request["model"] = expected_model
+            request["reasoning_effort"] = run["reasoning_effort"]
     request_ids = [request["run_api_call_id"] for request in requests]
     if len(request_ids) != len(set(request_ids)):
         raise SystemExit("duplicate run-level Codex API call IDs")

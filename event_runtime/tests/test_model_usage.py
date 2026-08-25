@@ -26,7 +26,15 @@ from event_runtime.cost.model_usage import (  # noqa: E402
 )
 
 
-def write_session(state: Path, attempt: int, session_id: str, timestamp: str) -> None:
+def write_session(
+    state: Path,
+    attempt: int,
+    session_id: str,
+    timestamp: str,
+    *,
+    model: str = "deepseek-v4-flash",
+    effort: str = "high",
+) -> None:
     chunk = (
         state
         / "durable-trace"
@@ -51,7 +59,7 @@ def write_session(state: Path, attempt: int, session_id: str, timestamp: str) ->
         {
             "type": "turn_context",
             "timestamp": timestamp,
-            "payload": {"model": "deepseek-v4-flash", "effort": "high"},
+            "payload": {"model": model, "effort": effort},
         },
         {
             "type": "response_item",
@@ -614,6 +622,84 @@ def test_openrouter_run_audit_uses_reconciled_provider_cost_over_session_cost(
     ready, details = sprintctl.run_usage_audit_ready(tmp_path, run)
     assert ready is False
     assert "run usage source session cost is incomplete" in details
+
+
+def test_openrouter_run_audit_normalizes_codex_preset_to_pinned_model(
+    tmp_path: Path,
+) -> None:
+    run = {
+        "run_id": "openrouter-sol-preset",
+        "model": "openai/gpt-5.6-sol",
+        "resolved_model_version": "gpt-5.6-sol",
+        "reasoning_effort": "max",
+        "cpu_launch_history": [{"attempt": 1}],
+        "budget_enforcement": {
+            "api_cost_source": "openrouter_reported_per_request",
+            "api_budget_cost_basis": (
+                "openai_sol_official_non_promotional_list_price_after_"
+                "openrouter_discount_reversal"
+            ),
+        },
+    }
+    (tmp_path / "run.json").write_text(json.dumps(run))
+    write_session(
+        tmp_path,
+        1,
+        "session-sol",
+        "2026-08-25T00:00:00Z",
+        model="sprint-gpt-5-6-sol-openai-standard",
+        effort="max",
+    )
+    record = tmp_path / "provider-api-usage/api-usage/requests/request.json"
+    record.parent.mkdir(parents=True)
+    record.write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "run_id": run["run_id"],
+                "cpu_attempt": 1,
+                "ledger_request_id": "ledger-sol-1",
+                "generation_id": "generation-sol-1",
+                "requested_at": "2026-08-25T00:00:00Z",
+                "completed_at": "2026-08-25T00:00:01Z",
+                "state": "complete",
+                "requested_model": run["model"],
+                "response_model": run["model"],
+                "provider_reported_cost_usd": 0.1,
+                "undiscounted_cost_usd": 0.2,
+                "benchmark_cost_usd": 0.3,
+                "cost_basis": run["budget_enforcement"]["api_budget_cost_basis"],
+                "promotion_snapshot": {"discount_fraction": 0.5},
+                "usage": {
+                    "input_tokens": 1000,
+                    "input_tokens_details": {
+                        "cached_tokens": 800,
+                        "cache_write_tokens": 0,
+                    },
+                    "output_tokens": 100,
+                    "output_tokens_details": {"reasoning_tokens": 50},
+                    "total_tokens": 1100,
+                },
+            }
+        )
+    )
+
+    subprocess.run(
+        [sys.executable, str(SCRIPT), "--state-dir", str(tmp_path)],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    audit = json.loads((tmp_path / "usage/run-usage-audit.json").read_text())
+    request = audit["requests"][0]
+    assert request["model"] == "gpt-5.6-sol"
+    assert request["trace_reported_model"] == (
+        "sprint-gpt-5-6-sol-openai-standard"
+    )
+    assert request["openrouter_response_model"] == "openai/gpt-5.6-sol"
+    assert sprintctl.run_usage_audit_ready(tmp_path, run) == (True, [])
 
 
 def test_dominating_harbor_final_supersedes_shifted_durable_ordinals(
