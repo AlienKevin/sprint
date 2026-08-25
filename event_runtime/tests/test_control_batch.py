@@ -3611,6 +3611,64 @@ def test_batch_observer_never_finalizes_terminal_lane_inline(
     }
 
 
+def test_batch_observer_recovers_transient_finalizing_lane_to_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    batch_id = "recovered-finalizing"
+    run_id = "recovered-finalizing-sol-1"
+    ops = tmp_path / "ops"
+    run_dir = ops / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.json").write_text("{}\n")
+    monkeypatch.setattr(batch_eval, "SCRIPT_DIR", ops)
+    monkeypatch.setattr(batch_eval, "BATCH_ROOT", ops / "batches")
+    batch_eval.atomic_json(
+        batch_eval.batch_path(batch_id),
+        {
+            "batch_id": batch_id,
+            "status": "running",
+            "reasoning_effort": "max",
+            "codex_version": "0.149.1",
+            "run_hours": None,
+            "arms": [
+                {
+                    "run_id": run_id,
+                    "family": "sol",
+                    "status": "finalizing",
+                    "finalization_conditions": {
+                        "independent_run_finalizer_complete": False
+                    },
+                }
+            ],
+            "alerts": [],
+            "credential_status": "revoked",
+        },
+    )
+    monkeypatch.setattr(
+        batch_eval,
+        "live_run_monitor_status",
+        lambda _run_id: {
+            "harbor_alive": True,
+            "snapshot_heartbeat_ok": True,
+            "ledger": {},
+            "stop_ack": None,
+        },
+    )
+    monkeypatch.setattr(batch_eval, "log_alerts", lambda _run_id: [])
+    monkeypatch.setattr(
+        batch_eval, "verifier_lane_stall_alerts", lambda *_args, **_kwargs: []
+    )
+    monkeypatch.setattr(
+        batch_eval, "continuous_ledger_error_alerts", lambda _payload: []
+    )
+
+    result = batch_eval.monitor_cycle(batch_id)
+
+    arm = result["arms"][0]
+    assert arm["status"] == "running"
+    assert "finalization_conditions" not in arm
+
+
 def test_batch_observer_recovers_missing_lane_monitor_without_remote_poll(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

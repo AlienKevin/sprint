@@ -3091,6 +3091,15 @@ def monitor_cycle(batch_id: str, *, env_file: Path | None = None) -> dict[str, A
                     "stop_ack",
                 ):
                     arm[key] = status.get(key)
+                if arm.get("status") == "finalizing" and not arm_terminal(arm):
+                    # A lane can be observed between process launch and its
+                    # first durable heartbeat.  If that transient snapshot
+                    # classified it as terminal, recovery must be reversible
+                    # once the independent monitor proves the same process is
+                    # alive.  Otherwise the batch permanently mislabels a
+                    # healthy trial as finalizing.
+                    arm["status"] = "running"
+                    arm.pop("finalization_conditions", None)
                 arm["last_monitor_at"] = utc_now()
             except Exception as exc:
                 arm["monitor_error"] = f"{type(exc).__name__}: {exc}"
