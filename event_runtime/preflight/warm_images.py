@@ -8,6 +8,7 @@ import argparse
 import hashlib
 import json
 import os
+import runpy
 import subprocess
 import sys
 import tempfile
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import modal
+import torch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -201,13 +203,41 @@ def atomic_write(payload: dict[str, Any]) -> None:
     os.replace(tmp, MANIFEST)
 
 
+class WarmupPolicy(torch.nn.Module):
+    """Deterministic policy used only to exercise the sealed verifier image."""
+
+    def __init__(self, action_dim: int) -> None:
+        super().__init__()
+        self.action_dim = action_dim
+
+    def forward(self, observation: torch.Tensor) -> torch.Tensor:
+        return observation[:, : self.action_dim] * 0.0
+
+
+def build_warmup_policy(path: Path) -> None:
+    """Create a valid task-shaped TorchScript artifact for verifier warmup."""
+    contract = runpy.run_path(str(EVENT.environment / "spec.py"))
+    observation_dim = int(contract["OBSERVATION_DIM"])
+    action_dim = int(contract["ACTION_DIM"])
+    if observation_dim < action_dim:
+        raise RuntimeError(
+            f"invalid policy contract: {observation_dim=} is smaller than {action_dim=}"
+        )
+    scripted = torch.jit.script(WarmupPolicy(action_dim).eval())
+    probe = scripted(torch.zeros((2, observation_dim), dtype=torch.float32))
+    if tuple(probe.shape) != (2, action_dim):
+        raise RuntimeError(f"warmup policy has unexpected output shape {tuple(probe.shape)}")
+    torch.jit.save(scripted, path)
+    torch.jit.load(path, map_location="cpu").eval()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--policy", type=Path, required=True)
-    args = parser.parse_args()
-    policy = args.policy.resolve()
-    if not policy.is_file():
-        parser.error(f"policy not found: {policy}")
+    parser.parse_args()
+
+    policy_temp = tempfile.TemporaryDirectory(prefix="event-warmup-policy-")
+    policy = Path(policy_temp.name) / "policy.pt"
+    build_warmup_policy(policy)
 
     app = modal.App.lookup(APP_NAME, create_if_missing=True)
     # Modal image builds leave their owning App in deployed/zero-task state.
@@ -397,6 +427,7 @@ def main() -> int:
     payload["cleanup"] = "all warmup sandboxes terminated; warmup app stopped"
     atomic_write(payload)
     public_temp.cleanup()
+    policy_temp.cleanup()
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
 

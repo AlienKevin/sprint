@@ -80,6 +80,22 @@ def test_warmup_checks_agent_shell_entrypoints() -> None:
         assert f"test -x /opt/{name}" in source
 
 
+def test_warmup_builds_a_valid_dynamic_batch_torchscript_policy(
+    tmp_path: Path,
+) -> None:
+    import torch
+
+    warmer = load_script("warm_images.py")
+    policy = tmp_path / "policy.pt"
+
+    warmer.build_warmup_policy(policy)
+
+    module = torch.jit.load(policy, map_location="cpu").eval()
+    output = module(torch.randn(3, 122))
+    assert tuple(output.shape) == (3, 37)
+    assert torch.count_nonzero(output).item() == 0
+
+
 def test_warmup_retires_its_zero_task_modal_app(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

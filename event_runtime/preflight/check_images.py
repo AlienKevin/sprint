@@ -32,7 +32,8 @@ def main() -> int:
         payload = json.loads(MANIFEST.read_text())
     except (OSError, json.JSONDecodeError) as exc:
         raise SystemExit(
-            "Modal images are not warmed; run event_runtime/preflight/warm_images.py "
+            "Modal images are not warmed; run `python -m "
+            "event_runtime.preflight.warm_images` "
             f"before launching ({exc})"
         ) from exc
     if payload.get("schema_version") != 1 or payload.get("completed") is not True:
