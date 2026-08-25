@@ -104,6 +104,12 @@ def test_documented_container_paths_match_the_built_agent_image() -> None:
     assert "COPY README.md __init__.py asset_probe.py robot.py spec.py " in dockerfile
     assert "standing_start.py /app/train/" in dockerfile
     assert "`/app/train/README.md`" in instruction
+    network_contract = (
+        "General outbound internet access is unavailable; all required runtime "
+        "dependencies and assets are installed locally."
+    )
+    assert network_contract in instruction
+    assert network_contract in " ".join(guide.split())
     assert "The writable workspace is `/app`" in guide
     assert (
         "event gpu --output /app/policy.pt -- python3 -u /app/YOUR_SCRIPT.py" in guide
