@@ -600,6 +600,63 @@ def test_endpoint_promotion_is_reversed_without_changing_cache_skus() -> None:
     assert proxy.undiscounted_cost_usd(0.25, parsed) == pytest.approx(0.5)
 
 
+def test_sol_removes_openrouter_and_official_promotional_discounts() -> None:
+    parsed = proxy.sys.modules[
+        "sprint_openrouter_pricing"
+    ].parse_endpoint_discount_snapshot(
+        {
+            "data": {
+                "endpoints": [
+                    {
+                        "provider_name": "OpenAI",
+                        "tag": "openai",
+                        "pricing": {"discount": 0.25},
+                    }
+                ]
+            }
+        },
+        model="openai/gpt-5.6-sol",
+        provider_tag="openai",
+    )
+    usage = {
+        "input_tokens": 1_000_000,
+        "input_tokens_details": {
+            "cached_tokens": 800_000,
+            "cache_write_tokens": 100_000,
+        },
+        "output_tokens": 100_000,
+    }
+
+    # The endpoint discount first grosses $3.00 up to $4.00. The official
+    # non-promotional long-context schedule is higher: $1 uncached input +
+    # $0.80 cached input + $1.25 cache write + $4.50 output = $7.55.
+    assert proxy.benchmark_cost_usd(3.0, parsed, usage) == pytest.approx(7.55)
+    assert parsed["cost_basis"] == (
+        "openai_sol_official_non_promotional_list_price_after_openrouter_discount_reversal"
+    )
+
+
+def test_sol_non_promotional_short_context_schedule() -> None:
+    parsed = proxy.sys.modules[
+        "sprint_openrouter_pricing"
+    ].parse_endpoint_discount_snapshot(
+        {"data": {"endpoints": [{"tag": "openai", "pricing": {"discount": 0}}]}},
+        model="openai/gpt-5.6-sol",
+        provider_tag="openai",
+    )
+    usage = {
+        "input_tokens": 200_000,
+        "input_tokens_details": {
+            "cached_tokens": 100_000,
+            "cache_write_tokens": 50_000,
+        },
+        "output_tokens": 10_000,
+    }
+
+    # $0.25 uncached + $0.05 cached + $0.3125 cache write + $0.30 output.
+    assert proxy.benchmark_cost_usd(0.1, parsed, usage) == pytest.approx(0.9125)
+
+
 def test_baidu_promotion_cannot_extend_the_budget() -> None:
     parsed = proxy.sys.modules[
         "sprint_openrouter_pricing"

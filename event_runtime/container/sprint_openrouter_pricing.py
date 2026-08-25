@@ -12,7 +12,30 @@ import urllib.request
 
 UNDISCOUNTED_COST_BASIS = "openrouter_list_price_before_endpoint_discount"
 BENCHMARK_COST_BASIS = "openrouter_list_price_with_deepseek_peak_floor"
+OPENAI_SOL_FULL_PRICE_BASIS = (
+    "openai_sol_official_non_promotional_list_price_after_openrouter_discount_reversal"
+)
 PROVIDER_COST_BASIS = "openrouter_reported_per_request"
+
+OPENAI_SOL_MODEL_ALIASES = {
+    "openai/gpt-5.6-sol",
+    "openai/gpt-5.6-sol-20260709",
+}
+OPENAI_SOL_LONG_CONTEXT_THRESHOLD = 272_000
+OPENAI_SOL_FULL_PRICING_PER_TOKEN: dict[str, dict[str, float]] = {
+    "short": {
+        "uncached_input": 5.00 / 1_000_000,
+        "cached_input": 0.50 / 1_000_000,
+        "cache_write_input": 6.25 / 1_000_000,
+        "output": 30.00 / 1_000_000,
+    },
+    "long": {
+        "uncached_input": 10.00 / 1_000_000,
+        "cached_input": 1.00 / 1_000_000,
+        "cache_write_input": 12.50 / 1_000_000,
+        "output": 45.00 / 1_000_000,
+    },
+}
 
 # Official DeepSeek peak rates, in USD per token.  The benchmark deliberately
 # uses these fixed rates even when OpenRouter reports an off-peak charge.  Keep
@@ -63,6 +86,8 @@ class OpenRouterPricingError(RuntimeError):
 
 def benchmark_cost_basis_for_model(model: str) -> str:
     """Return the canonical benchmark basis for one pinned OpenRouter model."""
+    if model in OPENAI_SOL_MODEL_ALIASES:
+        return OPENAI_SOL_FULL_PRICE_BASIS
     return (
         BENCHMARK_COST_BASIS
         if model in DEEPSEEK_PEAK_PRICING
@@ -173,6 +198,11 @@ def parse_endpoint_discount_snapshot(
         )
     discount = discounts.pop()
     peak_pricing = DEEPSEEK_PEAK_PRICING.get(model)
+    sol_full_pricing = (
+        OPENAI_SOL_FULL_PRICING_PER_TOKEN
+        if model in OPENAI_SOL_MODEL_ALIASES
+        else None
+    )
     return {
         "schema_version": 2,
         "captured_at": captured_at or _utc_now(),
@@ -183,6 +213,10 @@ def parse_endpoint_discount_snapshot(
         "discount_fraction": discount,
         "gross_up_multiplier": 1.0 / (1.0 - discount),
         "deepseek_peak_pricing_usd_per_token": peak_pricing,
+        "openai_sol_full_pricing_usd_per_token": sol_full_pricing,
+        "openai_sol_long_context_threshold_tokens": (
+            OPENAI_SOL_LONG_CONTEXT_THRESHOLD if sol_full_pricing else None
+        ),
         "cost_basis": benchmark_cost_basis_for_model(model),
     }
 
@@ -241,24 +275,28 @@ def undiscounted_cost_usd(charged_cost_usd: object, snapshot: object) -> float:
     return charged / (1.0 - discount)
 
 
-def _usage_token_counts(usage: object) -> tuple[float, float, float]:
-    """Return uncached input, cached input, and output tokens.
+def _usage_token_counts(usage: object) -> tuple[float, float, float, float]:
+    """Return uncached input, cached input, cache-write, and output tokens.
 
     Supports both a Responses API usage object and OpenRouter's generation
     audit shape used to recover a streamed request after a proxy restart.
     """
     if not isinstance(usage, dict):
-        raise OpenRouterPricingError("DeepSeek peak pricing requires token usage")
+        raise OpenRouterPricingError("official benchmark pricing requires token usage")
 
     if "native_tokens_prompt" in usage:
         input_tokens = usage.get("native_tokens_prompt")
         cached_tokens = usage.get("native_tokens_cached", 0)
+        cache_write_tokens = usage.get("native_tokens_cache_write", 0)
         output_tokens = usage.get("native_tokens_completion")
     elif "prompt_tokens" in usage:
         input_tokens = usage.get("prompt_tokens")
         details = usage.get("prompt_tokens_details") or {}
         cached_tokens = (
             details.get("cached_tokens", 0) if isinstance(details, dict) else 0
+        )
+        cache_write_tokens = (
+            details.get("cache_write_tokens", 0) if isinstance(details, dict) else 0
         )
         output_tokens = usage.get("completion_tokens")
     else:
@@ -267,31 +305,40 @@ def _usage_token_counts(usage: object) -> tuple[float, float, float]:
         cached_tokens = (
             details.get("cached_tokens", 0) if isinstance(details, dict) else 0
         )
+        cache_write_tokens = (
+            details.get("cache_write_tokens", 0) if isinstance(details, dict) else 0
+        )
         output_tokens = usage.get("output_tokens")
 
     values: list[float] = []
     for name, raw in (
         ("input", input_tokens),
         ("cached input", cached_tokens),
+        ("cache-write input", cache_write_tokens),
         ("output", output_tokens),
     ):
         try:
             value = float(raw)
         except (TypeError, ValueError) as exc:
             raise OpenRouterPricingError(
-                f"DeepSeek peak pricing has no valid {name} token count"
+                f"official benchmark pricing has no valid {name} token count"
             ) from exc
         if not math.isfinite(value) or value < 0 or not value.is_integer():
             raise OpenRouterPricingError(
-                f"DeepSeek peak pricing has an invalid {name} token count"
+                f"official benchmark pricing has an invalid {name} token count"
             )
         values.append(value)
-    input_value, cached_value, output_value = values
-    if cached_value > input_value:
+    input_value, cached_value, cache_write_value, output_value = values
+    if cached_value + cache_write_value > input_value:
         raise OpenRouterPricingError(
-            "DeepSeek cached token count exceeds total input tokens"
+            "priced cache token counts exceed total input tokens"
         )
-    return input_value - cached_value, cached_value, output_value
+    return (
+        input_value - cached_value - cache_write_value,
+        cached_value,
+        cache_write_value,
+        output_value,
+    )
 
 
 def benchmark_cost_usd(
@@ -300,28 +347,53 @@ def benchmark_cost_usd(
     """Return the cost used by the agent, cutoff, telemetry, and scoring.
 
     Every route is first grossed up to its undiscounted OpenRouter endpoint
-    price. DeepSeek additionally gets a fixed official-peak reconstruction from
-    token usage. The greater value wins, so neither a promotion nor an
-    off-peak/cheaper endpoint can increase the amount of work bought by a run.
+    price. DeepSeek additionally gets a fixed official-peak reconstruction.
+    Sol gets the official pre-promotion OpenAI schedule, including its long-
+    context and cache-write rules. The greatest applicable value wins, so
+    neither layer of discount can increase the amount of work bought by a run.
     """
     list_cost = undiscounted_cost_usd(charged_cost_usd, snapshot)
     try:
         pricing = snapshot.get("deepseek_peak_pricing_usd_per_token")  # type: ignore[union-attr]
     except AttributeError as exc:
         raise OpenRouterPricingError("request has no valid pricing snapshot") from exc
-    if pricing is None:
-        return list_cost
-    if not isinstance(pricing, dict):
-        raise OpenRouterPricingError("DeepSeek peak pricing snapshot is invalid")
-    uncached, cached, output = _usage_token_counts(usage)
     try:
-        peak_cost = (
-            uncached * float(pricing["uncached_input"])
-            + cached * float(pricing["cached_input"])
-            + output * float(pricing["output"])
-        )
-    except (KeyError, TypeError, ValueError) as exc:
-        raise OpenRouterPricingError("DeepSeek peak rates are invalid") from exc
-    if not math.isfinite(peak_cost) or peak_cost < 0:
-        raise OpenRouterPricingError("DeepSeek peak cost is invalid")
-    return max(list_cost, peak_cost)
+        sol_pricing = snapshot.get("openai_sol_full_pricing_usd_per_token")  # type: ignore[union-attr]
+        sol_threshold = snapshot.get("openai_sol_long_context_threshold_tokens")  # type: ignore[union-attr]
+    except AttributeError as exc:
+        raise OpenRouterPricingError("request has no valid pricing snapshot") from exc
+    if pricing is None and sol_pricing is None:
+        return list_cost
+
+    uncached, cached, cache_write, output = _usage_token_counts(usage)
+    reconstructed_cost = 0.0
+    if pricing is not None:
+        if not isinstance(pricing, dict):
+            raise OpenRouterPricingError("DeepSeek peak pricing snapshot is invalid")
+        try:
+            reconstructed_cost = (
+                (uncached + cache_write) * float(pricing["uncached_input"])
+                + cached * float(pricing["cached_input"])
+                + output * float(pricing["output"])
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise OpenRouterPricingError("DeepSeek peak rates are invalid") from exc
+    elif sol_pricing is not None:
+        if not isinstance(sol_pricing, dict):
+            raise OpenRouterPricingError("Sol full pricing snapshot is invalid")
+        try:
+            threshold = int(sol_threshold)
+            schedule = sol_pricing[
+                "long" if uncached + cached + cache_write > threshold else "short"
+            ]
+            reconstructed_cost = (
+                uncached * float(schedule["uncached_input"])
+                + cached * float(schedule["cached_input"])
+                + cache_write * float(schedule["cache_write_input"])
+                + output * float(schedule["output"])
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise OpenRouterPricingError("Sol full rates are invalid") from exc
+    if not math.isfinite(reconstructed_cost) or reconstructed_cost < 0:
+        raise OpenRouterPricingError("official reconstructed cost is invalid")
+    return max(list_cost, reconstructed_cost)

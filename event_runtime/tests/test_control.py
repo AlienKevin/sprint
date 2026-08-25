@@ -1533,7 +1533,7 @@ class DurableOpsTests(unittest.TestCase):
                 "--model",
                 "openai/gpt-5.6-sol",
                 "--reasoning-effort",
-                "high",
+                "max",
                 "--endpoint",
                 "https://openrouter.ai/api/v1",
             ],
@@ -1545,7 +1545,37 @@ class DurableOpsTests(unittest.TestCase):
         )
         config = json.loads(completed.stdout)
         self.assertEqual(config["service_tier"], "default")
-        self.assertEqual(config["reasoning_effort"], "high")
+        self.assertEqual(config["reasoning_effort"], "max")
+        self.assertEqual(config["agent_allowed_host"], "openrouter.ai")
+        self.assertEqual(
+            config["openrouter_route"],
+            {
+                "only": ["openai"],
+                "order": ["openai"],
+                "allow_fallbacks": False,
+                "require_parameters": True,
+                "quantizations": [],
+            },
+        )
+        self.assertEqual(
+            config["openrouter_request_contract"],
+            {
+                "model": "openai/gpt-5.6-sol",
+                "max_output_tokens": 128_000,
+                "reasoning": {"effort": "max", "summary": "auto"},
+                "service_tier": "default",
+            },
+        )
+        self.assertEqual(config["agent_cost_budget_usd"], 10.0)
+        self.assertEqual(config["budget_enforcement"]["shutdown_reserve_usd"], 0.0)
+        self.assertEqual(
+            config["budget_enforcement"]["api_cost_source"],
+            "openrouter_reported_per_request",
+        )
+        self.assertEqual(
+            config["budget_enforcement"]["api_budget_cost_basis"],
+            "openai_sol_official_non_promotional_list_price_after_openrouter_discount_reversal",
+        )
         self.assertTrue(config["usage_audit_required"])
 
     def test_codex_cannot_launch_a_deepseek_model(self) -> None:

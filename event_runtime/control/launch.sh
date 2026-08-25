@@ -176,8 +176,9 @@ if [[ "${MODEL#*/}" == deepseek-v4-flash* && "$MODEL_API_HOST" != "openrouter.ai
   echo "DeepSeek V4 Flash is locked to the audited OpenRouter endpoint" >&2
   exit 2
 fi
-if [[ "${MODEL#*/}" == "gpt-5.6-luna" && "$MODEL_API_HOST" != "openrouter.ai" ]]; then
-  echo "GPT-5.6 Luna is locked to the audited OpenRouter/OpenAI endpoint" >&2
+if [[ ("${MODEL#*/}" == "gpt-5.6-luna" || "${MODEL#*/}" == "gpt-5.6-sol") \
+      && "$MODEL_API_HOST" != "openrouter.ai" ]]; then
+  echo "GPT-5.6 OpenAI models are locked to the audited OpenRouter/OpenAI endpoint" >&2
   exit 2
 fi
 if [[ "$CODEX_VERSION" != "$BAKED_CODEX_VERSION" ]]; then
@@ -248,14 +249,14 @@ fi
 # pinning remains an independent defense against provider drift.
 if [[ "$AGENT_KIND" == "codex" \
       && "$MODEL_API_HOST" == "openrouter.ai" \
-      && "${MODEL#*/}" == "gpt-5.6-luna" ]]; then
+      && ("${MODEL#*/}" == "gpt-5.6-luna" || "${MODEL#*/}" == "gpt-5.6-sol") ]]; then
   if [[ -n "${SPRINT_OPENROUTER_PROVIDER_ENDPOINT:-}" \
         && "$SPRINT_OPENROUTER_PROVIDER_ENDPOINT" != "openai" ]]; then
-    echo "GPT-5.6 Luna is locked to the official OpenAI endpoint" >&2
+    echo "${MODEL#*/} is locked to the official OpenAI endpoint" >&2
     exit 2
   fi
   if [[ -n "${SPRINT_OPENROUTER_QUANTIZATION:-}" ]]; then
-    echo "GPT-5.6 Luna official endpoint has no quantization override" >&2
+    echo "${MODEL#*/} official endpoint has no quantization override" >&2
     exit 2
   fi
   export SPRINT_OPENROUTER_PROVIDER_ENDPOINT=openai
