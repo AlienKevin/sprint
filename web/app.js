@@ -76,16 +76,16 @@
       const api=Number(run.timeline?.comparison_summary?.final_api_cost_usd),cpu=modalRoleCost(run,'cpu_agent'),training=modalRoleCost(run,'training_gpu');
       const apiBasis=(run.timeline?.usage_summary?.calculated_api_usage_cost_basis||[]).includes('openrouter_reported_cost')?'OpenRouter reported request cost':'reconstructed at published list price';
       const parts=[{key:'api',label:'Model API',value:finite(api)?api:0,basis:apiBasis},{key:'cpu',label:'CPU agent',...cpu},{key:'training',label:'Training sandbox',...training}];
-      return {run,family:family(run.model),trial:trialNumber(run),parts,total:parts.reduce((sum,part)=>sum+part.value,0)};
-    }).sort((a,b)=>order.indexOf(a.family)-order.indexOf(b.family)||(a.trial||0)-(b.trial||0));
+      return {run,family:family(run.model),trial:trialNumber(run),effort:run.reasoning_effort||'',parts,total:parts.reduce((sum,part)=>sum+part.value,0)};
+    }).sort((a,b)=>order.indexOf(a.family)-order.indexOf(b.family)||String(a.effort).localeCompare(String(b.effort))||(a.trial||0)-(b.trial||0));
     if(!rows.length){$('#resource-bars').innerHTML='<p class="empty">Costs appear as trials start.</p>';return}
     const max=Math.max(.01,...rows.map(row=>row.total));
     const legend=`<div class="cost-legend"><span><i class="api"></i>Model API</span><span><i class="cpu"></i>CPU agent</span><span><i class="training"></i>Training sandbox</span></div><p class="cost-note">${rows.length} active trial total${rows.length===1?'':'s'} · verifier sandbox excluded · Modal charges are pre-credit</p>`;
     const bars=rows.map((row,index)=>{
-      const model=MODEL[row.family]?.label||row.family,trial=row.trial??index+1;
+      const model=MODEL[row.family]?.label||row.family,trial=row.trial??index+1,effort=row.effort?` · ${row.effort}`:'';
       const segments=row.parts.map(part=>`<i class="cost-segment ${part.key}" style="width:${100*part.value/max}%" title="${esc(part.label)}: ${part.value.toFixed(2)} USD · ${esc(part.basis)}"></i>`).join('');
       const breakdown=row.parts.map(part=>`${part.label} $${part.value.toFixed(2)}`).join(', ');
-      return `<div class="cost-trial-row ${row.family}"><span class="cost-trial-label"><strong>${model} ${trial}</strong><small>${esc(row.run.run_id)}</small></span><div class="cost-stack" role="img" aria-label="${model} trial ${trial}: ${esc(breakdown)}; verifier sandbox excluded">${segments}</div><b>$${row.total.toFixed(2)}</b></div>`;
+      return `<div class="cost-trial-row ${row.family}"><span class="cost-trial-label"><strong>${model}${esc(effort)} · trial ${trial}</strong><small>${esc(row.run.run_id)}</small></span><div class="cost-stack" role="img" aria-label="${model}${esc(effort)} trial ${trial}: ${esc(breakdown)}; verifier sandbox excluded">${segments}</div><b>$${row.total.toFixed(2)}</b></div>`;
     }).join('');
     $('#resource-bars').innerHTML=legend+`<div class="cost-trial-list">${bars}</div>`;
   }
@@ -103,19 +103,20 @@
       const run=byId[arm.run_id]||{},usage=run.timeline?.usage_summary||{},ledger=arm.ledger||{},performance=performanceById[arm.run_id]||{};
       const submitted=Math.max(Number(ledger.submitted)||0,Number(run.policy_count)||0),rendered=Number(run.replay_count)||0,totalCost=Number(run.timeline?.comparison_summary?.final_agent_total_cost_usd);
       const bestScore=Math.max(0,Number(performance.summary?.best_continuous_score_mps)||0,...(performance.points||[]).map(point=>Number(point.continuous_score_mps)||0));
-      return {arm,run,usage,submitted,rendered,totalCost,bestScore,elapsed:experimentElapsed(arm,run),phase:experimentPhase(arm,run),family:family(arm.model)||arm.family||'deepseek'};
+      return {arm,run,usage,submitted,rendered,totalCost,bestScore,elapsed:experimentElapsed(arm,run),phase:experimentPhase(arm,run),family:family(arm.model)||arm.family||'deepseek',effort:arm.reasoning_effort||run.reasoning_effort||state.batch.reasoning_effort||''};
     });
     const totals=rows.reduce((out,row)=>{for(const key of ['input_tokens','cached_input_tokens','cache_write_input_tokens','output_tokens','reasoning_output_tokens','total_tokens'])out[key]+=Number(row.usage[key])||0;out.submitted+=row.submitted;out.rendered+=row.rendered;return out},{input_tokens:0,cached_input_tokens:0,cache_write_input_tokens:0,output_tokens:0,reasoning_output_tokens:0,total_tokens:0,submitted:0,rendered:0});
     const declaredActive=['running','stopping','finalizing_site'].includes(batch.status),active=batchIsLive(batch),freshness=elapsedSince(snapshotUpdatedAt(batch)),statusLabel=active?'IN PROGRESS':declaredActive?'STALE SNAPSHOT':batch.status==='complete'?'COMPLETE':String(batch.status||'PUBLISHED').toUpperCase();
     const grouped=groupBy(rows,row=>row.family),familyOrder=[...DISPLAY_FAMILIES,...Object.keys(grouped).filter(key=>!DISPLAY_FAMILIES.includes(key))];
     const body=familyOrder.filter(key=>grouped[key]?.length).map(key=>{
-      const familyRows=grouped[key].sort((a,b)=>(Number(a.arm.trial)||0)-(Number(b.arm.trial)||0));
+      const effortOrder={medium:0,high:1,max:2};
+      const familyRows=grouped[key].sort((a,b)=>(effortOrder[a.effort]??99)-(effortOrder[b.effort]??99)||(Number(a.arm.trial)||0)-(Number(b.arm.trial)||0));
       return familyRows.map((row,index)=>{
         const label=MODEL[key]?.label||row.arm.model,href=`/trajectory?run=${encodeURIComponent(row.arm.run_id)}`;
-        return `<tr class="experiment-row ${esc(key)}" data-run-href="${href}" tabindex="0" aria-label="Open ${esc(label)} trial ${esc(row.arm.trial)} trace">${index===0?`<th class="experiment-model" scope="rowgroup" rowspan="${familyRows.length}"><span class="trial-dot"></span><strong>${esc(label)}</strong></th>`:''}<td><a href="${href}">Trial ${esc(row.arm.trial)}</a></td><td><b>${fmtScore(row.bestScore)} m/s</b></td><td data-experiment-elapsed="${esc(row.arm.run_id)}">${fmtDuration(row.elapsed)}</td><td>${fmtMoney(row.totalCost)}</td><td>${row.submitted}</td></tr>`;
+        return `<tr class="experiment-row ${esc(key)}" data-run-href="${href}" tabindex="0" aria-label="Open ${esc(label)} ${esc(row.effort)} trial ${esc(row.arm.trial)} trace">${index===0?`<th class="experiment-model" scope="rowgroup" rowspan="${familyRows.length}"><span class="trial-dot"></span><strong>${esc(label)}</strong></th>`:''}<td>${esc(row.effort||'—')}</td><td><a href="${href}">Trial ${esc(row.arm.trial)}</a></td><td><b>${fmtScore(row.bestScore)} m/s</b></td><td data-experiment-elapsed="${esc(row.arm.run_id)}">${fmtDuration(row.elapsed)}</td><td>${fmtMoney(row.totalCost)}</td><td>${row.submitted}</td></tr>`;
       }).join('');
     }).join('');
-    target.innerHTML=`<div class="experiment-summary"><div class="live-state ${active?'active':''}"><i></i><span><strong>${statusLabel}</strong><small>${esc(batch.batch_id)} · snapshot <span data-experiment-snapshot-age>${esc(freshness)}</span></small></span></div><div><span>Elapsed</span><b data-experiment-total-elapsed>${fmtDuration(Math.max(0,...rows.map(row=>row.elapsed||0)))}</b></div><div><span>Tokens</span><b>${fmtTokens(totals.total_tokens)}</b></div><div><span>Policies</span><b>${totals.submitted} submitted</b></div><div><span>Replays</span><b>${totals.rendered} rendered</b></div></div><div class="experiment-table-wrap"><table class="experiment-table"><thead><tr><th scope="col">Model</th><th scope="col">Trial</th><th scope="col">Effective Speed</th><th scope="col">Elapsed</th><th scope="col">Total cost</th><th scope="col">Policies submitted</th></tr></thead><tbody>${body||'<tr><td colspan="6" class="empty">Trials are waiting to launch.</td></tr>'}</tbody></table></div>`;
+    target.innerHTML=`<div class="experiment-summary"><div class="live-state ${active?'active':''}"><i></i><span><strong>${statusLabel}</strong><small>${esc(batch.batch_id)} · snapshot <span data-experiment-snapshot-age>${esc(freshness)}</span></small></span></div><div><span>Elapsed</span><b data-experiment-total-elapsed>${fmtDuration(Math.max(0,...rows.map(row=>row.elapsed||0)))}</b></div><div><span>Tokens</span><b>${fmtTokens(totals.total_tokens)}</b></div><div><span>Policies</span><b>${totals.submitted} submitted</b></div><div><span>Replays</span><b>${totals.rendered} rendered</b></div></div><div class="experiment-table-wrap"><table class="experiment-table"><thead><tr><th scope="col">Model</th><th scope="col">Effort</th><th scope="col">Trial</th><th scope="col">Effective Speed</th><th scope="col">Elapsed</th><th scope="col">Total cost</th><th scope="col">Policies submitted</th></tr></thead><tbody>${body||'<tr><td colspan="7" class="empty">Trials are waiting to launch.</td></tr>'}</tbody></table></div>`;
     for(const row of target.querySelectorAll('tr[data-run-href]')){
       const open=()=>{window.location.href=row.dataset.runHref};
       row.addEventListener('click',event=>{if(!event.target.closest('a'))open()});

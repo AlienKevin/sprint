@@ -2624,6 +2624,7 @@ def public_batch(payload: dict[str, Any]) -> dict[str, Any]:
                     "family",
                     "model",
                     "resolved_model_version",
+                    "reasoning_effort",
                     "trial",
                     "status",
                     "launched_at",
