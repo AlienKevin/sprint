@@ -7,7 +7,9 @@
   const tip = document.querySelector('#utilization-tip');
   const status = document.querySelector('#utilization-status');
   const dockSentinel = document.querySelector('#pulse-dock-sentinel');
-  const dock = document.querySelector('.trajectory-controls');
+  const pulse = document.querySelector('.utilization-overview');
+  const trace = document.querySelector('.trace-column');
+  const nav = document.querySelector('.viewer-nav');
   const narrowViewport = window.matchMedia('(max-width: 850px)');
   const colors = {
     line: '#242a31',
@@ -20,7 +22,7 @@
   };
   const compactLanes = [
     {key: 'cpu', label: 'CPU', color: colors.cpu},
-    {key: 'training', label: 'TRAIN GPU', color: colors.training},
+    {key: 'training', label: 'GPU', color: colors.training},
   ];
   const state = {
     timeline: null,
@@ -126,8 +128,8 @@
     ctx.clearRect(0, 0, width, height);
     if (!state.timeline || !state.series) return;
     const {x0, x1} = bounds();
-    const laneTop = state.docked ? 3 : 8;
-    const laneHeight = state.docked ? 22 : 31;
+    const laneTop = state.docked ? 23 : 24;
+    const laneHeight = state.docked ? 17 : 25;
 
     lanes.forEach((lane, index) => {
       const y = laneTop + index * laneHeight;
@@ -206,7 +208,6 @@
     tip.textContent = `${fmtDuration(state.hoverEpoch - state.timeline.clock.origin_epoch_ms)} · ${values.map(([label, value]) => `${label} ${value == null ? 'idle' : `${Math.round(value)}%`}`).join(' · ')}`;
     tip.hidden = false;
     tip.style.left = `${clamp(event.clientX - rect.left + 12, 8, rect.width - tip.offsetWidth - 8)}px`;
-    tip.style.top = `${clamp(event.clientY - rect.top - 34, 6, chartHeight() - 36)}px`;
     draw();
   }
 
@@ -229,6 +230,18 @@
     return document.querySelector(`[data-step-ids~="${CSS.escape(step.step_id)}"]`);
   }
 
+  function scrollTargetForStep(target) {
+    const divider = target?.previousElementSibling;
+    return divider?.classList.contains('chapter-divider') ? divider : target;
+  }
+
+  function traceAnchor() {
+    const controlsRect = pulse?.getBoundingClientRect();
+    const traceRect = trace?.getBoundingClientRect();
+    const overlaps = controlsRect && traceRect && controlsRect.right > traceRect.left && controlsRect.left < traceRect.right;
+    return (overlaps ? controlsRect.bottom : nav?.getBoundingClientRect().bottom || 0) + 20;
+  }
+
   function jumpToEpoch(epoch, forceScroll = false) {
     const step = nearestStep(epoch);
     const target = renderedStepNode(step);
@@ -248,7 +261,7 @@
     state.scrollSyncLocked = true;
     clearTimeout(state.scrollUnlockTimer);
     document.documentElement.style.scrollBehavior = 'auto';
-    target.scrollIntoView({behavior: 'auto', block: 'start'});
+    scrollTargetForStep(target).scrollIntoView({behavior: 'auto', block: 'start'});
     document.documentElement.style.scrollBehavior = previousBehavior;
     state.scrollUnlockTimer = setTimeout(() => {
       state.scrollSyncLocked = false;
@@ -259,7 +272,7 @@
   function syncFromScroll() {
     state.scrollFrame = null;
     if (state.scrollSyncLocked || !state.timeline || !state.trajectory) return;
-    const anchor = (dock?.getBoundingClientRect().bottom || 0) + 20;
+    const anchor = traceAnchor();
     let current = state.trajectory.steps?.[0];
     for (const step of state.trajectory.steps || []) {
       const node = renderedStepNode(step);

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="description" content="Inspect agent reasoning, messages, tools, observations, timing, and token usage for every Agents' 100m trial.">
   <title>Agents' 100m · Agent trajectory</title>
-  <link rel="stylesheet" href="/trajectory.css?v=20260825-10">
+  <link rel="stylesheet" href="/trajectory.css?v=20260825-14">
 </head>
 <body>
   <header class="viewer-nav">
@@ -26,7 +26,6 @@
           <dl class="pulse-stats" aria-live="polite">
             <div><dt>Elapsed</dt><dd id="summary-duration">—</dd></div>
             <div><dt>Steps</dt><dd id="summary-steps">—</dd></div>
-            <div><dt>Tools</dt><dd id="summary-tools">—</dd></div>
             <div><dt>Cost</dt><dd id="summary-cost">—</dd></div>
           </dl>
           <p id="utilization-status" class="sr-only" aria-live="polite">Loading utilization…</p>
@@ -40,27 +39,22 @@
       <section id="rollout-outline" class="rollout-outline" aria-labelledby="rollout-outline-title" hidden>
         <header class="rollout-outline-head">
           <div>
-            <h2 id="rollout-outline-title">Rollout outline</h2>
+            <h2 id="rollout-outline-title">Trial Outline</h2>
           </div>
           <span id="chapter-count" class="chapter-count"></span>
         </header>
         <p id="rollout-synopsis" class="rollout-synopsis"></p>
-        <nav id="chapter-nav" class="chapter-nav" aria-label="Rollout chapters"></nav>
+        <nav id="chapter-nav" class="chapter-nav" aria-label="Trial outline chapters"></nav>
       </section>
     </aside>
 
     <section class="trace-column" aria-label="Agent trace">
-      <div class="trajectory-controls">
-        <span id="status" class="status">Loading…</span>
-        <label class="jump-control"><span class="sr-only">Jump to step</span><input id="jump-step" type="number" min="1" placeholder="step #" inputmode="numeric"></label>
-        <label class="search"><span class="sr-only">Search trajectory</span><input id="search" type="search" placeholder="Search trace…" autocomplete="off"></label>
-      </div>
       <div id="steps" class="steps" aria-live="polite"></div>
     </section>
 
   </main>
 
-  <script src="/trajectory.js?v=20260825-16"></script>
-  <script src="/trajectory-overview.js?v=20260825-1"></script>
+  <script src="/trajectory.js?v=20260825-20"></script>
+  <script src="/trajectory-overview.js?v=20260825-4"></script>
 </body>
 </html>

@@ -483,7 +483,9 @@ def test_dashboard_loads_continuous_readouts() -> None:
     page = (ROOT / "web/index.html").read_text()
     styles = (ROOT / "web/styles.css").read_text()
     trajectory_app = (ROOT / "web/trajectory.js").read_text()
+    trajectory_overview = (ROOT / "web/trajectory-overview.js").read_text()
     trajectory_page = (ROOT / "web/trajectory.html").read_text()
+    trajectory_styles = (ROOT / "web/trajectory.css").read_text()
     timeline_page = (ROOT / "web/timeline.html").read_text()
     timeline_app = (ROOT / "web/timeline.js").read_text()
     assert "/data/performance/current.json" in app
@@ -498,11 +500,20 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "class:'submission-target'" in app
     assert "el.getScreenCTM()" in app
     assert "nearest.distance<=22**2" in app
-    assert "app.js?v=20260825-5" in page
-    assert '"version":"20260825-5"' in (ROOT / "web/version.json").read_text()
+    assert "styles.css?v=20260825-7" in page
+    assert "app.js?v=20260825-7" in page
+    assert '"version":"20260825-7"' in (ROOT / "web/version.json").read_text()
     assert 'class="experiment-table"' in app
     assert 'scope="rowgroup"' in app
     assert '<th scope="col">Effort</th>' in app
+    assert '<th scope="col">Trial</th>' in app
+    assert '<td><strong>${esc(row.effort||\'—\')}</strong></td>' in app
+    assert 'aria-label="Open trial ${esc(row.arm.trial)} trace">${esc(row.arm.trial)}</a>' in app
+    assert '>Trial ${esc(row.arm.trial)}</a>' not in app
+    assert "const familyBest=Math.max" in app
+    assert "row.bestScore===familyBest" in app
+    assert "highest Effective Speed for this model across all efforts" in app
+    assert ".experiment-row.experiment-best" in styles
     assert "best_continuous_score_mps" in app
     preview = trajectory_app.split("function stepPreview", 1)[1].split(
         "function matchesFilter", 1
@@ -514,10 +525,49 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "meta.append(el('b','',`#" in trajectory_app
     assert "fmtClock(step.timestamp)" not in trajectory_app
     assert 'class="right-rail"' not in trajectory_page
-    assert "trajectory.js?v=20260825-16" in trajectory_page
+    assert "trajectory.css?v=20260825-14" in trajectory_page
+    assert "trajectory.js?v=20260825-20" in trajectory_page
+    assert "trajectory-overview.js?v=20260825-4" in trajectory_page
     assert 'id="rollout-outline"' in trajectory_page
+    assert '<h2 id="rollout-outline-title">Trial Outline</h2>' in trajectory_page
+    assert 'aria-label="Trial outline chapters"' in trajectory_page
+    assert ">Rollout outline</h2>" not in trajectory_page
+    assert trajectory_page.index('class="utilization-overview"') < trajectory_page.index(
+        'id="rollout-outline"'
+    )
+    assert trajectory_page.index('id="rollout-outline"') < trajectory_page.index(
+        'class="trace-column"'
+    )
     assert 'class="utilization-footer"' not in trajectory_page
+    assert 'id="summary-tools"' not in trajectory_page
+    assert "grid-template-columns: repeat(3, 1fr)" in trajectory_styles
+    assert 'class="trajectory-controls"' not in trajectory_page
+    assert 'id="search"' not in trajectory_page
+    assert 'id="jump-step"' not in trajectory_page
+    assert ".trajectory-controls" not in trajectory_styles
+    assert ".jump-control" not in trajectory_styles
+    assert "gap: 12px" in trajectory_styles
+    assert "flex: 0 0 auto" in trajectory_styles
     assert "function authoredChapters" in trajectory_app
+    assert "· Start time: ${elapsed(" in trajectory_app
+    assert "function chapterTarget(chapter){return document.getElementById(chapter.id)}" in trajectory_app
+    assert "target.scrollIntoView({behavior:'auto',block:'start'})" in trajectory_app
+    assert "step.classList.add('jump-flash')" in trajectory_app
+    assert "function jumpToStepInput(input)" not in trajectory_app
+    assert "$('#jump-step')" not in trajectory_app
+    assert "$('#search')" not in trajectory_app
+    assert "function hasPrimaryContent(group)" in trajectory_app
+    assert "const pulse=document.querySelector('.utilization-overview')" in trajectory_app
+    assert "chapterNav.scrollTop=bottom-chapterNav.clientHeight" in trajectory_app
+    assert "current.scrollIntoView({block:'nearest'})" not in trajectory_app
+    assert "el('span','chapter-divider-number',number)" in trajectory_app
+    assert "scrollTargetForStep(target).scrollIntoView" in trajectory_overview
+    assert "classList.contains('chapter-divider') ? divider : target" in trajectory_overview
+    assert "const anchor = traceAnchor();" in trajectory_overview
+    assert "{key: 'training', label: 'GPU'" in trajectory_overview
+    assert "TRAIN GPU" not in trajectory_overview
+    assert "const laneTop = state.docked ? 23 : 24" in trajectory_overview
+    assert "tip.style.top" not in trajectory_overview
     assert "trajectory-outline/v1" in trajectory_app
     assert "generator.model!=='gpt-5.6-sol'" in trajectory_app
     assert "outlinePath=`/data/trajectories/" in trajectory_app
@@ -538,7 +588,7 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "window.addEventListener('focus'" in app
     assert "window.addEventListener('pageshow'" in app
     assert "This policy has no archived website replay." in app
-    assert 'id="cost-scores"' in page
+    assert 'id="cost-scores"' not in page
     assert 'id="time-scores"' in page
     assert "auc-bar-row" in app
     assert "color:'#4D6BFF'" in app
