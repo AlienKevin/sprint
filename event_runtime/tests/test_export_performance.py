@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -468,7 +470,7 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "meta.append(el('b','',`#" in trajectory_app
     assert "fmtClock(step.timestamp)" not in trajectory_app
     assert 'class="right-rail"' not in trajectory_page
-    assert "trajectory.js?v=20260825-11" in trajectory_page
+    assert "trajectory.js?v=20260825-12" in trajectory_page
     assert 'id="rollout-outline"' in trajectory_page
     assert 'class="utilization-footer"' not in trajectory_page
     assert "function deriveChapters" in trajectory_app
@@ -549,6 +551,44 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "hours_since_agent_launch" in app
     assert "hours_since_agent launch" not in app
     assert "best of 3 trials" not in app
+
+
+def test_trajectory_exec_parser_preserves_escaped_shell_quotes() -> None:
+    trajectory_app = (ROOT / "web/trajectory.js").read_text()
+    helpers = []
+    for name in ("decodeJsEscapes", "jsStringProperty", "parseExecCalls"):
+        prefix = f"  function {name}"
+        helpers.append(
+            next(
+                line.strip()
+                for line in trajectory_app.splitlines()
+                if line.startswith(prefix)
+            )
+        )
+
+    command = r"""date -u +%H:%M:%S; event gpu status fcc0bce2c548 | rg '\"provider_live_logs_checked_at\"|\"status\"' | head -n 8; event cost | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get(\"total_usd\"))'"""
+    program = (
+        "text((await tools.exec_command({"
+        f"cmd:{json.dumps(command)},workdir:\"/app\",yield_time_ms:10000"
+        "})).output);"
+        "text(await tools.write_stdin({session_id:7,chars:\"\"}));"
+    )
+    script = "\n".join(
+        [
+            *helpers,
+            f"const program={json.dumps(program)};",
+            "const calls=parseExecCalls(program);",
+            "console.log(JSON.stringify({names:calls.map(call=>call.name),command:jsStringProperty(calls[0].body,'cmd')}));",
+        ]
+    )
+    completed = subprocess.run(
+        ["node", "--input-type=module", "--eval", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    parsed = json.loads(completed.stdout)
+    assert parsed == {"names": ["exec_command", "write_stdin"], "command": command}
 
 
 def test_trusted_pose_capture_index_recovers_renderer_failure_and_cache_hit(
