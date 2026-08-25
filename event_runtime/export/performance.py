@@ -425,10 +425,6 @@ def aggregate_models(
     if not grouped:
         raise RuntimeError("expected at least one model family")
     family_sizes = {family: len(runs) for family, runs in grouped.items()}
-    if len(set(family_sizes.values())) != 1:
-        raise RuntimeError(
-            f"expected equal trial counts across model families, found {family_sizes}"
-        )
 
     if per_trial_cost_cap is None:
         per_trial_cost_cap = configured_per_trial_cost_cap_usd()
@@ -775,7 +771,7 @@ def build(
             "modal_method": "allocation intervals integrated to each readout timestamp using the pinned published requested-resource tariff; provider billing is retained separately for audit",
             "common_auc_cap_usd": model_cost_cap,
             "per_trial_cost_cap_usd": per_trial_cost_cap,
-            "trials_per_model": len(selected) // len(family_counts),
+            "trial_counts_by_model": family_counts,
             "aggregation": "place every submitted policy at the cumulative cost of its own independent trial; take the best policy quality available at each per-trial price point",
         },
         "time": {

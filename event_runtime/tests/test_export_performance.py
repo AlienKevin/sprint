@@ -84,6 +84,46 @@ def test_completed_comparison_uses_per_trial_cost_cap() -> None:
     assert cap == pytest.approx(10.0)
 
 
+def test_comparison_supports_unequal_model_cohort_sizes() -> None:
+    runs = [
+        {
+            "run_id": "batch-luna-1",
+            "model": "openai/gpt-5.6-luna",
+            "points": [],
+            "summary": {
+                "final_agent_cost_usd": 10.0,
+                "missing_readout_indices": [],
+            },
+        },
+        *[
+            {
+                "run_id": f"batch-sol-{trial}",
+                "model": "openai/gpt-5.6-sol",
+                "points": [],
+                "summary": {
+                    "final_agent_cost_usd": 10.0,
+                    "missing_readout_indices": [],
+                },
+            }
+            for trial in range(1, 4)
+        ],
+    ]
+    ledgers = {run["run_id"]: {"origin_epoch_ms": 0} for run in runs}
+
+    models, cap = continuous.aggregate_models(
+        runs,
+        common_time_cap=1.0,
+        cost_ledgers=ledgers,
+        per_trial_cost_cap=10.0,
+    )
+
+    assert {model["family"]: len(model["run_ids"]) for model in models} == {
+        "luna": 1,
+        "sol": 3,
+    }
+    assert cap == pytest.approx(10.0)
+
+
 def test_completed_comparison_carries_frontier_to_declared_budget() -> None:
     runs = [
         {
