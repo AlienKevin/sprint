@@ -1262,7 +1262,7 @@ def provider_inference_probe(
 
 
 def run_checked(command: list[str], *, env: dict[str, str] | None = None) -> str:
-    subprocess.run(
+    completed = subprocess.run(
         command,
         cwd=ROOT,
         env=env,
@@ -1917,7 +1917,7 @@ def retire_run_control_services(run_id: str) -> None:
     """
 
     units = run_control_units(run_id)
-    completed = subprocess.run(
+    subprocess.run(
         ["systemctl", "--user", "stop", *units],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,

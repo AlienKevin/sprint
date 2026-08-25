@@ -2048,6 +2048,17 @@ def test_retire_run_control_services_accepts_units_already_absent(
     batch_eval.retire_run_control_services("eval-luna-1")
 
 
+def test_batch_run_checked_returns_captured_stdout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    completed = mock.Mock(stdout="expected output\n")
+    run = mock.Mock(return_value=completed)
+    monkeypatch.setattr(batch_eval.subprocess, "run", run)
+
+    assert batch_eval.run_checked(["example", "command"]) == "expected output\n"
+    run.assert_called_once()
+
+
 def test_retire_run_control_services_stops_zero_task_modal_apps(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
