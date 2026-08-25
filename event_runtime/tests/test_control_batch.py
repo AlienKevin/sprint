@@ -2028,6 +2028,20 @@ def test_run_control_units_cover_every_host_process_for_one_trial() -> None:
     )
 
 
+def test_retire_run_control_services_accepts_units_already_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    completed = mock.Mock(returncode=5, stderr="Unit not loaded")
+    absent = mock.Mock(returncode=3)
+    monkeypatch.setattr(
+        batch_eval.subprocess,
+        "run",
+        mock.Mock(side_effect=[completed, absent, absent, absent, absent]),
+    )
+
+    batch_eval.retire_run_control_services("eval-luna-1")
+
+
 def test_batch_stop_fails_closed_when_host_controllers_survive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

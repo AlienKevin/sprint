@@ -1265,6 +1265,20 @@ class Codex(BaseInstalledAgent):
         env: dict[str, str] = {
             "CODEX_HOME": remote_codex_home,
         }
+        ledger_required = parse_bool_env_value(
+            self._get_env("SPRINT_OPENROUTER_LEDGER_REQUIRED"),
+            name="SPRINT_OPENROUTER_LEDGER_REQUIRED",
+            default=False,
+        )
+        if ledger_required:
+            openrouter_api_key = self._get_env("OPENROUTER_API_KEY")
+            if not openrouter_api_key:
+                raise ValueError(
+                    "SPRINT_OPENROUTER_LEDGER_REQUIRED requires OPENROUTER_API_KEY"
+                )
+            # The trusted Codex executable wrapper consumes this key to start
+            # the metered localhost proxy, then unsets it before Codex runs.
+            env["OPENROUTER_API_KEY"] = openrouter_api_key
 
         await self.exec_as_agent(
             environment,

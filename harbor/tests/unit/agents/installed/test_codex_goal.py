@@ -70,6 +70,7 @@ async def test_first_goal_is_bootstrapped_before_codex_exec(
     temp_dir, monkeypatch
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-sealed-test")
     monkeypatch.delenv("CODEX_AUTH_JSON_PATH", raising=False)
     monkeypatch.delenv("CODEX_FORCE_AUTH_JSON", raising=False)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
@@ -79,6 +80,7 @@ async def test_first_goal_is_bootstrapped_before_codex_exec(
         model_name="openai/gpt-5.6-luna",
         reasoning_effort="max",
         extra_env={
+            "SPRINT_OPENROUTER_LEDGER_REQUIRED": "1",
             "CODEX_GOAL_BOOTSTRAP_MODEL": "@preset/pinned-luna",
             "CODEX_GOAL_BOOTSTRAP_EXPECTED_PROVIDER": "sprint_openrouter",
             "CODEX_GOAL_BOOTSTRAP_PREPARE_SCRIPT": "/opt/apply-pinned-luna.sh",
@@ -119,9 +121,30 @@ async def test_first_goal_is_bootstrapped_before_codex_exec(
     assert execution_call.kwargs["env"]["SPRINT_CODEX_GOAL_OBJECTIVE"] == (
         "deterministic objective"
     )
+    assert execution_call.kwargs["env"]["OPENROUTER_API_KEY"] == (
+        "sk-or-sealed-test"
+    )
     assert json.loads(
         execution_call.kwargs["env"]["SPRINT_CODEX_APP_SERVER_ARGS_JSON"]
     ) == ["-c", "model_reasoning_effort=max"]
+
+
+@pytest.mark.asyncio
+async def test_openrouter_ledger_requires_sealed_key(temp_dir, monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    agent = Codex(
+        logs_dir=temp_dir,
+        model_name="openai/gpt-5.6-luna",
+        extra_env={"SPRINT_OPENROUTER_LEDGER_REQUIRED": "1"},
+    )
+    environment = AsyncMock()
+
+    with pytest.raises(ValueError, match="requires OPENROUTER_API_KEY"):
+        await agent.run("ordinary task", environment, AsyncMock())
+
+    environment.exec.assert_not_called()
 
 
 @pytest.mark.asyncio

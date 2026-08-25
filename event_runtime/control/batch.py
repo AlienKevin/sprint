@@ -1925,11 +1925,10 @@ def retire_run_control_services(run_id: str) -> None:
         check=False,
         timeout=60,
     )
-    if completed.returncode != 0:
-        raise RuntimeError(
-            f"failed to stop host controllers for {run_id}: "
-            f"{completed.stderr.strip() or f'exit {completed.returncode}'}"
-        )
+    # ``systemctl stop`` returns nonzero when every requested transient unit is
+    # already absent.  That is the desired idempotent state, so verify the
+    # authoritative postcondition below instead of treating the command status
+    # itself as a teardown failure.
     active = [
         unit
         for unit in units
