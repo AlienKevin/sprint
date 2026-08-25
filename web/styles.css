@@ -214,6 +214,9 @@ main {
 .experiment-row:hover:not(:has(.experiment-model:hover)),
 .experiment-row:focus-visible {
   background: color-mix(in srgb, var(--model-accent) 7%, transparent);
+}
+.experiment-row:hover:not(:has(.experiment-model:hover)) > td:first-of-type,
+.experiment-row:focus-visible > td:first-of-type {
   box-shadow: inset 4px 0 var(--model-accent);
 }
 .experiment-row:focus-visible {
@@ -234,11 +237,13 @@ main {
 }
 .experiment-row.experiment-best {
   background: color-mix(in srgb, var(--model-accent) 20%, var(--panel));
-  box-shadow: inset 4px 0 var(--model-accent);
 }
 .experiment-row.experiment-best > td {
   border-top: 1px solid color-mix(in srgb, var(--model-accent) 58%, var(--line));
   border-bottom-color: color-mix(in srgb, var(--model-accent) 58%, var(--line));
+}
+.experiment-row.experiment-best > td:first-of-type {
+  box-shadow: inset 4px 0 var(--model-accent);
 }
 .experiment-row.experiment-best:hover:not(:has(.experiment-model:hover)),
 .experiment-row.experiment-best:focus-visible {
