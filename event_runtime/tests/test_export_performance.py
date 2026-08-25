@@ -468,7 +468,7 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "meta.append(el('b','',`#" in trajectory_app
     assert "fmtClock(step.timestamp)" not in trajectory_app
     assert 'class="right-rail"' not in trajectory_page
-    assert "trajectory.js?v=20260825-8" in trajectory_page
+    assert "trajectory.js?v=20260825-10" in trajectory_page
     assert 'id="rollout-outline"' in trajectory_page
     assert "function deriveChapters" in trajectory_app
     assert "function rolloutSynopsis" in trajectory_app
