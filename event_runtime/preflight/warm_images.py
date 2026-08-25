@@ -288,6 +288,7 @@ def main() -> int:
             command=(
                 "python3 -c 'import torch; print(torch.__version__)' && "
                 "test \"$(codex --version)\" = 'codex-cli 0.149.1' && "
+                "test -x /opt/sprint-agent-supervisor.sh && "
                 "test -x /opt/sprint-codex-exec-wrapper.sh && "
                 "test -x /opt/sprint-deepseek-harness-exec-wrapper.sh && "
                 "test -x /opt/sprint-deepseek-harness-runner.py && "

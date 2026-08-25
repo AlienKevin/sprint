@@ -174,6 +174,7 @@ def agent_image(event: EventLayout, public_verifier: Path) -> modal.Image:
         f"{links} "
         "chmod 0755 /opt/event_runtime/container/bin/event "
         "/opt/event/check_policy.py "
+        "/opt/event_runtime/container/sprint-agent-supervisor.sh "
         "/opt/event_runtime/container/sprint-codex-exec-wrapper.sh "
         "/opt/event_runtime/container/sprint-deepseek-harness-exec-wrapper.sh "
         "/opt/event_runtime/container/sprint-deepseek-harness-runner.py "

@@ -49,6 +49,7 @@ def test_agent_command_source_is_part_of_image_digest(tmp_path: Path) -> None:
 def test_agent_image_marks_codex_shell_entrypoints_executable() -> None:
     source = (ROOT / "event_runtime" / "image.py").read_text()
     for name in (
+        "sprint-agent-supervisor.sh",
         "sprint-codex-exec-wrapper.sh",
         "sprint-apply-openai-codex-config.sh",
         "sprint-agent-shell-env.sh",
@@ -71,6 +72,7 @@ def test_image_compositor_is_part_of_both_image_contexts() -> None:
 def test_warmup_checks_agent_shell_entrypoints() -> None:
     source = (PREFLIGHT / "warm_images.py").read_text()
     for name in (
+        "sprint-agent-supervisor.sh",
         "sprint-codex-exec-wrapper.sh",
         "sprint-apply-openai-codex-config.sh",
         "sprint-agent-shell-env.sh",
