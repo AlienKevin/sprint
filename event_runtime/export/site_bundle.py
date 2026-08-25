@@ -234,8 +234,19 @@ def _copy_current_dynamic_tree(
             if family == "policies":
                 copied_payloads.append(payload)
 
+    # Clean and explicit replay URLs may both name the same on-disk HTML file.
+    # Resolve every public reference before copying so a live exporter replacing
+    # that file between aliases cannot turn the second alias into a false
+    # destination collision.
+    resolved_assets: dict[Path, Path] = {}
     for relative in sorted(_public_asset_references(copied_payloads)):
         item, resolved_relative = _resolve_asset(source, relative)
+        prior = resolved_assets.setdefault(resolved_relative, item)
+        if prior != item:
+            raise RuntimeError(
+                f"website asset aliases resolve to different sources: /{resolved_relative}"
+            )
+    for resolved_relative, item in sorted(resolved_assets.items()):
         _link_or_copy(item, destination / resolved_relative, root=source)
     return run_ids
 
