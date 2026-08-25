@@ -594,8 +594,23 @@ def test_unified_timeline_is_joined_deduplicated_and_public_safe(
     assert "SUPER_SECRET_TOOL_ARGUMENT" not in encoded
     assert (state / "telemetry" / "unified-timeline.json").is_file()
     assert (web / "data" / "timelines" / "timeline-fixture.json").is_file()
+    overview = json.loads(
+        (web / "data" / "timeline-overviews" / "timeline-fixture.json").read_text()
+    )
+    assert overview["clock"] == payload["clock"]
+    assert overview["tool_call_buckets"] == payload["tool_call_buckets"]
+    assert overview["events"]
+    assert {event["category"] for event in overview["events"]} <= {
+        "metrics",
+        "infrastructure",
+    }
+    assert all("source" not in event for event in overview["events"])
     index = json.loads((web / "data" / "timelines" / "index.json").read_text())
     assert index["runs"][0]["path"] == "/data/timelines/timeline-fixture.json"
+    assert (
+        index["runs"][0]["overview_path"]
+        == "/data/timeline-overviews/timeline-fixture.json"
+    )
     assert index["runs"][0]["comparison_summary"]["best_100m_s"] == 48.0
     assert index["runs"][0]["usage_summary"] == payload["usage_summary"]
     assert index["runs"][0]["dashboard_artifacts"] == [

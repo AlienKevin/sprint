@@ -409,6 +409,7 @@ def public_artifact_hashes(web: Path) -> dict[str, str]:
                 *web.glob("data/performance/current.json"),
                 *web.glob("data/policies/*.json"),
                 *web.glob("data/timelines/*.json"),
+                *web.glob("data/timeline-overviews/*.json"),
             ]
             return {
                 path.relative_to(web).as_posix(): sha256_file(path)

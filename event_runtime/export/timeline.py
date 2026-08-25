@@ -2922,6 +2922,63 @@ class Builder:
         }
 
 
+def build_timeline_overview(payload: dict[str, Any]) -> dict[str, Any]:
+    """Project the unified timeline down to the fields used by the trace pulse."""
+    events: list[dict[str, Any]] = []
+    for event in payload.get("events", []):
+        category = event.get("category")
+        if category == "metrics" and event.get("role") in RESOURCE_ROLES:
+            source_metrics = event.get("metrics") or {}
+            metrics: dict[str, Any] = {}
+            if source_metrics.get("cpu_util_pct") is not None:
+                metrics["cpu_util_pct"] = source_metrics["cpu_util_pct"]
+            gpus = []
+            for gpu in source_metrics.get("gpus") or []:
+                projected = {
+                    key: gpu[key]
+                    for key in ("util_gpu_pct", "mem_used_mib", "mem_total_mib")
+                    if gpu.get(key) is not None
+                }
+                if projected:
+                    gpus.append(projected)
+            if gpus:
+                metrics["gpus"] = gpus
+            events.append(
+                {
+                    "category": "metrics",
+                    "epoch_ms": event.get("epoch_ms"),
+                    "role": event.get("role"),
+                    "metrics": metrics,
+                }
+            )
+        elif category == "infrastructure":
+            events.append(
+                {
+                    key: event[key]
+                    for key in (
+                        "category",
+                        "epoch_ms",
+                        "kind",
+                        "role",
+                        "reason",
+                        "post_run",
+                        "cpu_attempt",
+                        "gpu_attempt",
+                        "gpu_job_id",
+                    )
+                    if event.get(key) is not None
+                }
+            )
+    return {
+        "schema_version": 1,
+        "generated_at": payload.get("generated_at"),
+        "run": payload.get("run"),
+        "clock": payload.get("clock"),
+        "events": events,
+        "tool_call_buckets": payload.get("tool_call_buckets"),
+    }
+
+
 def build_timeline(
     state_dir: pathlib.Path,
     *,
@@ -2950,6 +3007,8 @@ def build_timeline(
 
         public = web_dir / "data" / "timelines" / f"{builder.run_id}.json"
         atomic_json(public, payload, mode=0o644)
+        overview = web_dir / "data" / "timeline-overviews" / f"{builder.run_id}.json"
+        atomic_json(overview, build_timeline_overview(payload), mode=0o644)
         trajectory_export.build_public_trajectory(state_dir, web_dir=web_dir)
         index_path = web_dir / "data" / "timelines" / "index.json"
         try:
@@ -2970,6 +3029,7 @@ def build_timeline(
             "created_at": run.get("created_at"),
             "generated_at": payload["generated_at"],
             "path": f"/data/timelines/{builder.run_id}.json",
+            "overview_path": f"/data/timeline-overviews/{builder.run_id}.json",
             "ready": payload["coverage"]["ready"],
             "origin_epoch_ms": payload["clock"]["origin_epoch_ms"],
             "end_epoch_ms": payload["clock"]["end_epoch_ms"],

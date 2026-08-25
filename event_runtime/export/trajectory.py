@@ -22,15 +22,29 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 DEEPSEEK_ATIF_TRANSFORM_VERSION = 3
+PUBLIC_SANITIZER_VERSION = 3
 PUBLIC_RUN_LIMIT = 6
 MAX_PUBLIC_STRING_CHARS = 200_000
 
 _ATTEMPT_RE = re.compile(r"cpu-attempt-(\d+)")
 _ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-_SENSITIVE_KEY_RE = re.compile(
+_SENSITIVE_KEY_PATTERN = (
     r"(?:authorization|api[_-]?key|management[_-]?key|password|passwd|secret|"
-    r"access[_-]?token|refresh[_-]?token|credential|cookie|private[_-]?key)",
+    r"access[_-]?token|refresh[_-]?token|credential|cookie|private[_-]?key)"
+)
+_SENSITIVE_KEY_RE = re.compile(_SENSITIVE_KEY_PATTERN, re.IGNORECASE)
+_PUBLIC_ENV_ASSIGNMENT_KEYS = frozenset({"SPRINT_SCORING_QUEUE_KEY"})
+_ASSIGNMENT_VALUE_PATTERN = r"(?:['\"][^'\"\r\n]*['\"]|[^\s'\"`,;}\]]+)"
+_EXPLICIT_SECRET_ASSIGNMENT_RE = re.compile(
+    rf"(?P<prefix>(?P<key_quote>['\"]?){_SENSITIVE_KEY_PATTERN}"
+    rf"(?P=key_quote)\s*[:=]\s*){_ASSIGNMENT_VALUE_PATTERN}",
     re.IGNORECASE,
+)
+_ENV_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?P<prefix>(?P<key_quote>['\"]?)(?P<env_key>"
+    r"(?:[A-Z][A-Z0-9]*_)*(?:AUTH|CREDENTIALS?|KEY|PASSWORD|SECRET|TOKEN)"
+    r"(?:_[A-Z0-9]+)*)(?P=key_quote)\s*[:=]\s*)"
+    + _ASSIGNMENT_VALUE_PATTERN
 )
 _SECRET_PATTERNS = (
     re.compile(r"sk-or-v1-[A-Za-z0-9_-]+"),
@@ -39,14 +53,20 @@ _SECRET_PATTERNS = (
     re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{16,}", re.IGNORECASE),
     re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+\b"),
     re.compile(
-        r"(?im)\b([A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)[A-Z0-9_]*)"
-        r"\s*[:=]\s*([^\s'\"`]+)"
-    ),
-    re.compile(
         r"(?i)([?&](?:api[_-]?key|token|secret|password|signature|sig)=)"
         r"[^&#\s]+"
     ),
 )
+
+
+def _redact_assignment(match: re.Match[str]) -> str:
+    return f'{match.group("prefix")}[REDACTED]'
+
+
+def _redact_env_assignment(match: re.Match[str]) -> str:
+    if match.group("env_key") in _PUBLIC_ENV_ASSIGNMENT_KEYS:
+        return match.group(0)
+    return _redact_assignment(match)
 
 
 def _utc_now() -> str:
@@ -379,6 +399,8 @@ def _redact_string(value: str, *, max_chars: int | None = MAX_PUBLIC_STRING_CHAR
             text = pattern.sub(lambda match: f"{match.group(1)}[REDACTED]", text)
         else:
             text = pattern.sub("[REDACTED]", text)
+    text = _EXPLICIT_SECRET_ASSIGNMENT_RE.sub(_redact_assignment, text)
+    text = _ENV_SECRET_ASSIGNMENT_RE.sub(_redact_env_assignment, text)
     if max_chars is not None and len(text) > max_chars:
         omitted = len(text) - max_chars
         text = (
@@ -560,10 +582,15 @@ def build_public_trajectory(state_dir: Path, *, web_dir: Path) -> dict[str, Any]
         return None
     unified_path = state_dir / "telemetry" / "unified-timeline.json"
     unified = _read_json(unified_path)
-    fingerprint = _source_fingerprint(
+    source_fingerprint = _source_fingerprint(
         sources,
         metadata_paths=(state_dir / "run.json", unified_path),
     )
+    # Sanitizer changes must invalidate already-generated public snapshots even
+    # when their immutable source traces have not changed.
+    fingerprint = hashlib.sha256(
+        f"public-sanitizer-v{PUBLIC_SANITIZER_VERSION}:{source_fingerprint}".encode()
+    ).hexdigest()
     public_path = web_dir / "data" / "trajectories" / f"{run_id}.json"
     previous = _read_json(public_path)
     if previous.get("source_fingerprint") == fingerprint:
