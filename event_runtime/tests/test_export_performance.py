@@ -500,10 +500,11 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "class:'submission-target'" in app
     assert "el.getScreenCTM()" in app
     assert "nearest.distance<=22**2" in app
-    assert "styles.css?v=20260825-8" in page
-    assert "app.js?v=20260825-8" in page
-    assert '"version":"20260825-8"' in (ROOT / "web/version.json").read_text()
+    assert "styles.css?v=20260825-9" in page
+    assert "app.js?v=20260825-9" in page
+    assert '"version":"20260825-9"' in (ROOT / "web/version.json").read_text()
     assert "AI AGENTS · ONE HUMANOID · ONE FINISH LINE" not in page
+    assert "We give each agent a simulated Unitree G1 humanoid" in page
     assert 'class="experiment-table"' in app
     assert 'scope="rowgroup"' in app
     assert '<th scope="col">Effort</th>' in app
