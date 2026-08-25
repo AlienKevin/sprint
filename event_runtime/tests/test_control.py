@@ -2189,6 +2189,116 @@ raise SystemExit(2)
                     agent.kill()
                     agent.wait()
 
+    def test_supervisor_tolerates_one_watchdog_timeout_with_recent_snapshot(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            durable = root / "durable"
+            runtime = root / "run"
+            agent_logs = root / "agent"
+            artifact_logs = root / "artifacts"
+            codex_home = root / "codex-home"
+            for path in (durable, runtime, agent_logs, artifact_logs, codex_home):
+                path.mkdir()
+
+            run_root = durable / "runs/test-watchdog-timeout"
+            counter = root / "watchdog-count"
+            watchdog = root / "watchdog.py"
+            watchdog.write_text(
+                f'''#!/usr/bin/env python3
+import json
+from pathlib import Path
+import time
+
+counter = Path({str(counter)!r})
+count = int(counter.read_text()) + 1 if counter.exists() else 1
+counter.write_text(str(count))
+if count == 1:
+    path = Path({str(run_root / "budget/watchdog.json")!r})
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({{
+        "schema_version": 2,
+        "run_id": "test-watchdog-timeout",
+        "checked_at_epoch_s": time.time(),
+        "status": "within_budget",
+        "total_usd": 0.25,
+        "stop_threshold_usd": 10.0,
+    }}))
+else:
+    time.sleep(10)
+'''
+            )
+            watchdog.chmod(0o755)
+            agent = subprocess.Popen(
+                ["bash", "-c", "exec -a sprint-test-codex sleep 60"],
+                preexec_fn=os.setsid,
+            )
+            process_dir = runtime / "sprint-agent"
+            process_dir.mkdir()
+            start_time = Path(f"/proc/{agent.pid}/stat").read_text().split()[21]
+            (process_dir / "codex-process").write_text(
+                f"{agent.pid} {os.getpgid(agent.pid)} {start_time}\n"
+            )
+            env = os.environ.copy()
+            env["SPRINT_BUDGET_WATCHDOG_TIMEOUT_SECONDS"] = "1"
+            env["SPRINT_BUDGET_WATCHDOG_STALE_GRACE_SECONDS"] = "10"
+            watcher = subprocess.Popen(
+                [
+                    "bash",
+                    str(ROOT / "event_runtime/container/sprint-agent-supervisor.sh"),
+                    "--run-id",
+                    "test-watchdog-timeout",
+                    "--agent-kind",
+                    "codex",
+                    "--poll-seconds",
+                    "1",
+                    "--durable-dir",
+                    str(durable),
+                    "--runtime-dir",
+                    str(runtime),
+                    "--agent-log-dir",
+                    str(agent_logs),
+                    "--artifact-log-dir",
+                    str(artifact_logs),
+                    "--codex-home-dir",
+                    str(codex_home),
+                    "--budget-watchdog-bin",
+                    str(watchdog),
+                    "--codex-pattern",
+                    "sprint-test-codex",
+                ],
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                log_path = run_root / "supervisor/logs/agent-supervisor.log"
+                deadline = time.time() + 8
+                while time.time() < deadline:
+                    if log_path.exists() and "reusing trusted" in log_path.read_text():
+                        break
+                    time.sleep(0.1)
+                self.assertTrue(log_path.exists())
+                self.assertIn("reusing trusted", log_path.read_text())
+                self.assertFalse((runtime / "sprint-stop").exists())
+                self.assertIsNone(agent.poll())
+                stale_deadline = time.time() + 15
+                while not (runtime / "sprint-stop").exists() and time.time() < stale_deadline:
+                    time.sleep(0.1)
+                self.assertEqual(
+                    (runtime / "sprint-stop").read_text().strip(),
+                    "budget_telemetry_unavailable",
+                )
+                self.assertIn("failing closed", log_path.read_text())
+            finally:
+                watcher.kill()
+                watcher.communicate()
+                if agent.poll() is None:
+                    os.killpg(os.getpgid(agent.pid), signal.SIGKILL)
+                    agent.wait()
+
     def test_atomic_attempt_archive_and_checksum(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

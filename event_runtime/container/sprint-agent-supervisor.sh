@@ -12,6 +12,8 @@ ARTIFACT_LOG_DIR=/logs/artifacts
 CODEX_HOME_DIR=/tmp/codex-home
 TRACE_MIRROR_BIN=/opt/sprint-trace-mirror.py
 BUDGET_WATCHDOG_BIN=/opt/sprint-budget-watchdog.py
+BUDGET_WATCHDOG_TIMEOUT_SECONDS=${SPRINT_BUDGET_WATCHDOG_TIMEOUT_SECONDS:-15}
+BUDGET_WATCHDOG_STALE_GRACE_SECONDS=${SPRINT_BUDGET_WATCHDOG_STALE_GRACE_SECONDS:-60}
 CODEX_PATTERN=""
 EXIT_AFTER_ACK=0
 TRACE_MIRROR_PID=""
@@ -55,7 +57,8 @@ if [[ "$AGENT_KIND" != "codex" && "$AGENT_KIND" != "deepseek-harness" ]]; then
   echo "--agent-kind must be codex or deepseek-harness" >&2
   exit 2
 fi
-for value in "$POLL_SECONDS" "$TERM_GRACE_SECONDS"; do
+for value in "$POLL_SECONDS" "$TERM_GRACE_SECONDS" \
+  "$BUDGET_WATCHDOG_TIMEOUT_SECONDS" "$BUDGET_WATCHDOG_STALE_GRACE_SECONDS"; do
   if [[ ! "$value" =~ ^[0-9]+$ ]]; then
     echo "time values must be whole seconds" >&2
     exit 2
@@ -88,6 +91,41 @@ chmod 0600 "$LOG_DIR/agent-supervisor.log" 2>/dev/null || true
 
 now_iso() {
   date -u +%Y-%m-%dT%H:%M:%SZ
+}
+
+recent_trusted_budget_snapshot_age() {
+  python3 - "$RUN_ROOT/budget/watchdog.json" "$RUN_ID" \
+    "$BUDGET_WATCHDOG_STALE_GRACE_SECONDS" <<'PY'
+import json
+import math
+import pathlib
+import sys
+import time
+
+path = pathlib.Path(sys.argv[1])
+run_id = sys.argv[2]
+max_age = float(sys.argv[3])
+try:
+    payload = json.loads(path.read_text())
+    checked_at = float(payload["checked_at_epoch_s"])
+    total = float(payload["total_usd"])
+    threshold = float(payload["stop_threshold_usd"])
+except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+    raise SystemExit(1)
+age = time.time() - checked_at
+valid = (
+    payload.get("schema_version") == 2
+    and payload.get("run_id") == run_id
+    and payload.get("status") == "within_budget"
+    and all(math.isfinite(value) for value in (age, total, threshold, max_age))
+    and -60.0 <= age <= max_age
+    and 0.0 <= total < threshold
+    and max_age > 0.0
+)
+if not valid:
+    raise SystemExit(1)
+print(f"{max(0.0, age):.1f}")
+PY
 }
 
 log() {
@@ -399,12 +437,13 @@ start_telemetry() {
 }
 
 budget_watchdog_once() {
+  local snapshot_age
   [[ -x "$BUDGET_WATCHDOG_BIN" ]] || {
     log "budget watchdog missing; failing closed"
     atomic_text "$STOP_FILE" "budget_telemetry_unavailable"$'\n'
     return 20
   }
-  timeout --signal=KILL 15 "$BUDGET_WATCHDOG_BIN" \
+  timeout --signal=KILL "$BUDGET_WATCHDOG_TIMEOUT_SECONDS" "$BUDGET_WATCHDOG_BIN" \
     --run-id "$RUN_ID" \
     --durable-dir "$DURABLE_DIR" \
     --runtime-dir "$RUNTIME_DIR" \
@@ -414,6 +453,10 @@ budget_watchdog_once() {
   case "$status" in
     0|10|20) return "$status" ;;
     *)
+      if snapshot_age=$(recent_trusted_budget_snapshot_age); then
+        log "budget watchdog transient failure status=$status; reusing trusted within-budget snapshot age=${snapshot_age}s"
+        return 0
+      fi
       log "budget watchdog crashed status=$status; failing closed"
       atomic_text "$STOP_FILE" "budget_telemetry_unavailable"$'\n'
       return 20
