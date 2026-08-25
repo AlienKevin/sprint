@@ -168,6 +168,15 @@ def test_functional_canary_reuses_the_published_rollout_in_one_process() -> None
     assert "os._exit(exit_code)" in fixture
 
 
+def test_asset_localization_avoids_cpu_only_isaac_shutdown() -> None:
+    source = (
+        ROOT / "event_runtime" / "container" / "localize_assets.py"
+    ).read_text()
+
+    assert "app.close()" not in source
+    assert "os._exit(code)" in source
+
+
 def test_functional_canary_uses_trainer_owned_final_checkpoint() -> None:
     source = (PREFLIGHT / "canary.py").read_text()
 

@@ -58,5 +58,10 @@ def main() -> int:
 
 if __name__ == "__main__":
     code = main()
-    app.close()
-    raise SystemExit(code)
+    # Isaac Sim can segfault while tearing down a CPU-only build container
+    # after every requested asset has already been copied successfully.  Image
+    # construction has no live simulator state to preserve, so flush the
+    # observable result and exit without invoking the unstable Kit destructor.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)
