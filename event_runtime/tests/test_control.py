@@ -1636,6 +1636,74 @@ class DurableOpsTests(unittest.TestCase):
         )
         self.assertTrue(config["usage_audit_required"])
 
+    def test_sol_dry_run_propagates_reasoning_effort_into_trusted_contract(self) -> None:
+        for effort in ("medium", "high", "max"):
+            with self.subTest(effort=effort):
+                run_id = f"dry-{uuid.uuid4().hex[:12]}"
+                env = os.environ.copy()
+                env["OPENROUTER_API_KEY"] = (
+                    "fake-openrouter-key-that-must-never-print-123456789"
+                )
+                completed = subprocess.run(
+                    [
+                        "bash",
+                        str(ROOT / "event_runtime/control/launch.sh"),
+                        "--dry-run",
+                        "--run-id",
+                        run_id,
+                        "--agent-kind",
+                        "codex",
+                        "--model",
+                        "openai/gpt-5.6-sol",
+                        "--reasoning-effort",
+                        effort,
+                        "--endpoint",
+                        "https://openrouter.ai/api/v1",
+                    ],
+                    env=env,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=True,
+                )
+                config = json.loads(completed.stdout)
+                self.assertEqual(config["reasoning_effort"], effort)
+                self.assertEqual(
+                    config["openrouter_request_contract"]["reasoning"],
+                    {"effort": effort, "summary": "auto"},
+                )
+
+    def test_codex_dry_run_rejects_unknown_reasoning_effort(self) -> None:
+        run_id = f"dry-{uuid.uuid4().hex[:12]}"
+        env = os.environ.copy()
+        env["OPENROUTER_API_KEY"] = (
+            "fake-openrouter-key-that-must-never-print-123456789"
+        )
+        completed = subprocess.run(
+            [
+                "bash",
+                str(ROOT / "event_runtime/control/launch.sh"),
+                "--dry-run",
+                "--run-id",
+                run_id,
+                "--agent-kind",
+                "codex",
+                "--model",
+                "openai/gpt-5.6-sol",
+                "--reasoning-effort",
+                "not-an-effort",
+                "--endpoint",
+                "https://openrouter.ai/api/v1",
+            ],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("must be low, medium, high, xhigh, max, or ultra", completed.stderr)
+
     def test_codex_cannot_launch_a_deepseek_model(self) -> None:
         run_id = f"dry-{uuid.uuid4().hex[:12]}"
         env = os.environ.copy()
