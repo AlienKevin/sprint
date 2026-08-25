@@ -5,7 +5,7 @@
     "synopsis": {
       "type": "string",
       "minLength": 40,
-      "maxLength": 700
+      "maxLength": 360
     },
     "chapters": {
       "type": "array",
@@ -36,7 +36,7 @@
           "summary": {
             "type": "string",
             "minLength": 30,
-            "maxLength": 500
+            "maxLength": 150
           }
         },
         "required": [

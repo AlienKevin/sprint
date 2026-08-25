@@ -72,7 +72,7 @@ def test_build_artifact_anchors_every_chapter_to_trace() -> None:
 
     assert result["schema_version"] == "trajectory-outline/v1"
     assert result["trajectory"]["source_fingerprint"] == "f" * 64
-    assert result["generator"]["prompt_version"] == "rollout-outline/v1"
+    assert result["generator"]["prompt_version"] == "rollout-outline/v2"
     assert result["generator"]["source_access"] == "direct-public-trajectory/v1"
     assert result["chapters"][0]["start"] == {
         "step_id": "a1-s1",
@@ -90,6 +90,18 @@ def test_validation_rejects_gaps_between_model_chapters() -> None:
 
     with pytest.raises(ValueError, match="gap or overlaps"):
         trajectory_outline.validate_authored(broken, payload())
+
+
+def test_validation_rejects_copy_that_cannot_fit_the_viewer() -> None:
+    oversized_chapter = authored()
+    oversized_chapter["chapters"][0]["summary"] = "x" * 151
+    with pytest.raises(ValueError, match="30–150 characters"):
+        trajectory_outline.validate_authored(oversized_chapter, payload())
+
+    oversized_synopsis = authored()
+    oversized_synopsis["synopsis"] = "x" * 361
+    with pytest.raises(ValueError, match="40–360 characters"):
+        trajectory_outline.validate_authored(oversized_synopsis, payload())
 
 
 def test_prompt_points_codex_at_exact_public_trace(tmp_path: Path) -> None:

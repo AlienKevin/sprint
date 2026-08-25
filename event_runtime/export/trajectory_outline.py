@@ -26,10 +26,12 @@ from typing import Any
 
 
 SCHEMA_VERSION = "trajectory-outline/v1"
-PROMPT_VERSION = "rollout-outline/v1"
+PROMPT_VERSION = "rollout-outline/v2"
 SOURCE_ACCESS_VERSION = "direct-public-trajectory/v1"
 DEFAULT_MODEL = "gpt-5.6-sol"
 DEFAULT_REASONING_EFFORT = "high"
+CHAPTER_SUMMARY_MAX_CHARS = 150
+SYNOPSIS_MAX_CHARS = 360
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
@@ -121,9 +123,9 @@ frequency. Cover the entire ordered rollout with 2–20 contiguous chapters
 and never collapse the entire trace into one chapter. Every boundary must use
 an exact eligible `step_id` from the public trace.
 
-Titles must be concise, concrete action/outcome phrases. Summaries must be one
-or two information-dense sentences explaining what the agent actually tried,
-why it changed direction, and what happened. Name concrete methods and results
+Titles must be concise, concrete action/outcome phrases. Each chapter summary
+must be one information-dense sentence of at most 150 characters explaining
+what the agent actually tried and what happened. Name concrete methods and results
 when the trace supports them—for example PPO, behavior cloning, reward shaping,
 phase-conditioned hopping, a verifier failure, measured distance, or a lane
 violation. Expand or explain specialist shorthand instead of emitting vague
@@ -132,7 +134,7 @@ labels such as "phase", "wait", "monitoring", "testing candidates", or
 credentials. Use start_step_id/end_step_id to partition every viewer step
 exactly once, in order, with no gaps or overlaps. Use stable descriptive slugs
 for chapter IDs. The synopsis should state the overall strategy, major pivots,
-and final outcome in two or three sentences."""
+and final outcome in no more than two sentences and 360 characters."""
 
 
 @contextlib.contextmanager
@@ -291,7 +293,7 @@ def validate_authored(
             raw.get("summary"),
             name=f"chapter {chapter_id} summary",
             minimum=30,
-            maximum=500,
+            maximum=CHAPTER_SUMMARY_MAX_CHARS,
         )
         normalized_title = title.casefold()
         if normalized_title in seen_titles:
@@ -317,7 +319,12 @@ def validate_authored(
         expected_start = end_index + 1
     if expected_start != len(groups):
         raise ValueError("chapters do not cover the end of the trajectory")
-    _validate_text(authored.get("synopsis"), name="synopsis", minimum=40, maximum=700)
+    _validate_text(
+        authored.get("synopsis"),
+        name="synopsis",
+        minimum=40,
+        maximum=SYNOPSIS_MAX_CHARS,
+    )
     return validated
 
 

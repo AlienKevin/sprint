@@ -498,8 +498,8 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "class:'submission-target'" in app
     assert "el.getScreenCTM()" in app
     assert "nearest.distance<=22**2" in app
-    assert "app.js?v=20260825-4" in page
-    assert '"version":"20260825-4"' in (ROOT / "web/version.json").read_text()
+    assert "app.js?v=20260825-5" in page
+    assert '"version":"20260825-5"' in (ROOT / "web/version.json").read_text()
     assert 'class="experiment-table"' in app
     assert 'scope="rowgroup"' in app
     assert '<th scope="col">Effort</th>' in app
