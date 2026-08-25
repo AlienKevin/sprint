@@ -20,11 +20,10 @@ CODEX_COST = (
 DEEPSEEK_HARNESS_NODE = CONTAINER / "deepseek-harness-node"
 NODE_VERSION = "22.22.0"
 CODEX_VERSION = "0.149.1"
-CLAUDE_CODE_VERSION = "2.1.220"
 DEEPSEEK_HARNESS_VERSION = "0.1.1-rc.2"
 
 _CONTAINER_LINKS = (
-    "sprint-snapshot-loop.sh",
+    "sprint-agent-supervisor.sh",
     "sprint-trace-mirror.py",
     "sprint-telemetry.sh",
     "sprint-telemetry.py",
@@ -34,9 +33,7 @@ _CONTAINER_LINKS = (
     "sprint-deepseek-harness-runner.py",
     "sprint-deepseek-harness-probe.py",
     "sprint-openrouter-ledger-proxy.py",
-    "sprint-apply-deepseek-codex-config.sh",
     "sprint-apply-openai-codex-config.sh",
-    "sprint-apply-luna-codex-config.sh",
     "sprint-agent-shell-env.sh",
     "sprint-gpu-worker-run.py",
     "sprint-budget-watchdog.py",
@@ -107,8 +104,7 @@ def agent_image(event: EventLayout, public_verifier: Path) -> modal.Image:
         "grep \"  $archive$\" SHASUMS256.txt | sha256sum -c -; "
         "tar -xzf $archive -C /usr/local --strip-components=1; "
         "rm -f $archive SHASUMS256.txt; "
-        f"npm install -g @openai/codex@{CODEX_VERSION} "
-        f"@anthropic-ai/claude-code@{CLAUDE_CODE_VERSION}; "
+        f"npm install -g @openai/codex@{CODEX_VERSION}; "
         "npm ci --prefix /opt/deepseek-harness --omit=dev --ignore-scripts; "
         "ln -sf /opt/deepseek-harness/node_modules/.bin/dsh-jsonrpc-agent "
         "/usr/local/bin/dsh-jsonrpc-agent; "
@@ -116,7 +112,6 @@ def agent_image(event: EventLayout, public_verifier: Path) -> modal.Image:
         'pip3 install --no-cache-dir --no-deps "deepseek-harness-sdk==0.1.1rc1"; '
         f"test \"$(codex --version | sed 's/^codex-cli //')\" = "
         f'"{CODEX_VERSION}"; '
-        f"claude --version | grep -F '{CLAUDE_CODE_VERSION}'; "
         "node -e 'const v=require(\"/opt/deepseek-harness/node_modules/"
         "@deepseek-ai/dsh-sdk-jsonrpc-demo/package.json\").version; "
         "if (v !== process.argv[1]) throw new Error(`unexpected DeepSeek Harness "
@@ -169,7 +164,7 @@ def agent_image(event: EventLayout, public_verifier: Path) -> modal.Image:
         "mkdir -p /usr/local/bin /app /opt/event; "
         "ln -sf /opt/event_runtime/container/bin/event /usr/local/bin/event; "
         "ln -sf /opt/event_runtime/models/deepseek.json "
-        "/opt/sprint-codex-deepseek-models.json; "
+        "/opt/sprint-codex-model-messages.json; "
         "ln -sf /opt/event_runtime/models/luna.json "
         "/opt/sprint-codex-luna-model-lock.json; "
         "ln -sf /opt/event_runtime/models/sol.json "
@@ -183,9 +178,7 @@ def agent_image(event: EventLayout, public_verifier: Path) -> modal.Image:
         "/opt/event_runtime/container/sprint-deepseek-harness-exec-wrapper.sh "
         "/opt/event_runtime/container/sprint-deepseek-harness-runner.py "
         "/opt/event_runtime/container/sprint-openrouter-ledger-proxy.py "
-        "/opt/event_runtime/container/sprint-apply-deepseek-codex-config.sh "
         "/opt/event_runtime/container/sprint-apply-openai-codex-config.sh "
-        "/opt/event_runtime/container/sprint-apply-luna-codex-config.sh "
         "/opt/event_runtime/container/sprint-agent-shell-env.sh "
         "/opt/event_runtime/container/sprint-trace-mirror.py "
         "/opt/event_runtime/container/sprint-budget-watchdog.py; "

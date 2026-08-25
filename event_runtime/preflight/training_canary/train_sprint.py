@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Deterministic Isaac Lab PPO workload for the functional launch canary.
+"""Method-neutral Isaac Lab optimization workload for the launch canary.
 
 This program is benchmark infrastructure, not an agent-produced candidate.  It
-exists solely to prove that the immutable training image can run real PPO,
-export the event's TorchScript policy ABI, and hand the resulting bytes to both
-verifiers before a paid batch is allowed to launch.
+proves that the immutable training image can construct and step the exact
+environment, optimize a Torch module on the GPU, export the event's TorchScript
+policy ABI, and hand the resulting bytes to both verifiers before a paid batch
+is allowed to launch.  It deliberately avoids choosing a learning algorithm on
+the entrant's behalf.
 """
 
 from __future__ import annotations
@@ -30,19 +32,30 @@ simulation_app = app_launcher.app
 
 import gymnasium as gym  # noqa: E402
 import torch  # noqa: E402
-from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper  # noqa: E402
-from isaaclab_rl.rsl_rl.exporter import export_policy_as_jit  # noqa: E402
-from isaaclab_tasks.manager_based.locomotion.velocity.config.g1.agents.rsl_rl_ppo_cfg import (  # noqa: E402
-    G1FlatPPORunnerCfg,
-)
-from rsl_rl.runners import OnPolicyRunner  # noqa: E402
 
 import verifier.tasks  # noqa: F401,E402
 from verifier.assets import use_local_assets  # noqa: E402
 from verifier.environment import G1100MetresEnvCfg  # noqa: E402
+from train.spec import ACTION_DIM, OBSERVATION_DIM  # noqa: E402
 
 
 SEED = 20260824
+
+
+class CanaryPolicy(torch.nn.Module):
+    """Small generic policy used only to exercise optimization and export."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.layers = torch.nn.Sequential(
+            torch.nn.Linear(OBSERVATION_DIM, 128),
+            torch.nn.Tanh(),
+            torch.nn.Linear(128, ACTION_DIM),
+            torch.nn.Tanh(),
+        )
+
+    def forward(self, observation: torch.Tensor) -> torch.Tensor:
+        return self.layers(observation)
 
 
 def atomic_json(path: Path, payload: dict[str, object]) -> None:
@@ -86,40 +99,39 @@ def main() -> None:
     env_cfg.export_io_descriptors = False
     env_cfg.log_dir = str(train_root)
 
-    agent_cfg = G1FlatPPORunnerCfg()
-    agent_cfg.seed = SEED
-    agent_cfg.device = env_cfg.sim.device
-    agent_cfg.max_iterations = args.max_iters
-    agent_cfg.num_steps_per_env = 24
-    agent_cfg.save_interval = args.save_interval
-    agent_cfg.experiment_name = "sprint_functional_canary"
-    agent_cfg.run_name = "pinned"
-    agent_cfg.logger = "tensorboard"
-
     env = gym.make("Isaac-G1-100Metres-v0", cfg=env_cfg)
-    wrapped = RslRlVecEnvWrapper(env, clip_actions=None)
+    policy = CanaryPolicy().to(env_cfg.sim.device)
+    optimizer = torch.optim.Adam(policy.parameters(), lr=1.0e-3)
     try:
-        runner = OnPolicyRunner(
-            wrapped,
-            agent_cfg.to_dict(),
-            log_dir=str(train_root),
-            device=agent_cfg.device,
+        observations, _ = env.reset()
+        for iteration in range(args.max_iters):
+            policy_observations = observations["policy"].detach()
+            actions = policy(policy_observations)
+            loss = actions.square().mean()
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+
+            observations, *_ = env.step(actions.detach())
+            print(
+                f"Optimization iteration {iteration}/{args.max_iters} "
+                f"loss={loss.item():.6f}",
+                flush=True,
+            )
+
+        torch.save(
+            {
+                "seed": SEED,
+                "iterations": args.max_iters,
+                "policy": policy.state_dict(),
+                "optimizer": optimizer.state_dict(),
+            },
+            checkpoint_dir / "optimizer_final.pt",
         )
-        runner.learn(
-            num_learning_iterations=args.max_iters,
-            init_at_random_ep_len=False,
-        )
-        runner.save(str(checkpoint_dir / "runner_final.pt"))
-        policy = runner.alg.policy
-        normalizer = getattr(policy, "actor_obs_normalizer", None)
-        export_policy_as_jit(
-            policy,
-            normalizer=normalizer,
-            path=str(checkpoint_dir),
-            filename="policy_final.pt",
-        )
+        scripted = torch.jit.script(policy.to("cpu").eval())
+        torch.jit.save(scripted, str(checkpoint_dir / "policy_final.pt"))
     finally:
-        wrapped.close()
+        env.close()
 
     atomic_json(
         progress_file,
@@ -130,8 +142,8 @@ def main() -> None:
             "seed": SEED,
         },
     )
-    print(f"Learning iteration {args.max_iters - 1}/{args.max_iters}", flush=True)
-    print("[sprint] training complete", flush=True)
+    print(f"Optimization iteration {args.max_iters - 1}/{args.max_iters}", flush=True)
+    print("[sprint] optimization canary complete", flush=True)
 
 
 if __name__ == "__main__":

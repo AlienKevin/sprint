@@ -22,7 +22,7 @@ CLOUD_CONTROL_PLANE_NAMES = frozenset(
         "AZURE_TENANT_ID",
     }
 )
-OPTIONAL_AGENT_NAMES = frozenset({"OPENAI_BASE_URL", "SPRINT_CODEX_PROVIDER"})
+OPTIONAL_AGENT_NAMES = frozenset({"OPENAI_BASE_URL"})
 NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
 

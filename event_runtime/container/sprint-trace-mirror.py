@@ -63,7 +63,6 @@ def discover_sources(
     *,
     agent_kind: str,
     codex_home: pathlib.Path,
-    claude_home: pathlib.Path,
     agent_log_dir: pathlib.Path,
 ) -> Iterable[tuple[pathlib.Path, pathlib.Path]]:
     if agent_kind == "codex":
@@ -71,18 +70,10 @@ def discover_sources(
             if path.is_file() and not path.is_symlink():
                 yield path, codex_home
         return
-    if agent_kind == "claude-code":
-        for path in sorted((claude_home / "projects").rglob("*.jsonl")):
-            if path.is_file() and not path.is_symlink():
-                yield path, claude_home
-        path = agent_log_dir / "claude-code.txt"
-        if path.is_file() and not path.is_symlink():
-            yield path, agent_log_dir
-        return
     if agent_kind == "deepseek-harness":
         # The SDK's authoritative session JSONL already lives on /durable.
         # Mirror its real-time notification stream so the existing timeline
-        # exporter sees progress before the next restic snapshot.
+        # exporter sees progress while the sandbox is still running.
         path = agent_log_dir / "deepseek-harness-events.jsonl"
         if path.is_file() and not path.is_symlink():
             yield path, agent_log_dir
@@ -149,7 +140,6 @@ def mirror_once(args: argparse.Namespace) -> list[dict[str, Any]]:
     for source, source_root in discover_sources(
         agent_kind=args.agent_kind,
         codex_home=pathlib.Path(args.codex_home),
-        claude_home=pathlib.Path(args.claude_home),
         agent_log_dir=pathlib.Path(args.agent_log_dir),
     ):
         rows.append(
@@ -170,12 +160,11 @@ def parser() -> argparse.ArgumentParser:
     out.add_argument("--run-id", required=True)
     out.add_argument(
         "--agent-kind",
-        choices=("codex", "claude-code", "deepseek-harness"),
+        choices=("codex", "deepseek-harness"),
         required=True,
     )
     out.add_argument("--cpu-attempt", type=int, default=1)
     out.add_argument("--codex-home", default="/tmp/codex-home")
-    out.add_argument("--claude-home", default="/root/.claude")
     out.add_argument("--agent-log-dir", default="/logs/agent")
     out.add_argument("--durable-dir", default="/durable")
     out.add_argument("--interval-seconds", type=float, default=5.0)

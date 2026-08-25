@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Sourced by non-interactive Bash through BASH_ENV.
 #
 # Harbor installs Codex before this function becomes active. Once the real

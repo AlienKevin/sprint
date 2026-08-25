@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Host-side GPU worker dispatch for CPU-agent durable lane runs.
 
-Claims jobs written by in-sandbox ``event gpu`` under
-``/durable/runs/<run_id>/gpu-jobs/queue/`` and starts a preemptible A10G
-Modal Sandbox that mounts the same volume. The Codex/agent sandbox stays on
-CPU (gpus=0) so GPU preemption cannot kill the harness.
+Claims jobs published by in-sandbox ``event gpu`` through the run's exact-name
+dispatch index and starts a preemptible A10G Modal Sandbox that mounts the same
+volume. The Codex/agent sandbox stays on CPU (gpus=0) so GPU preemption cannot
+kill the harness.
 """
 
 from __future__ import annotations
@@ -283,56 +283,29 @@ def read_durable_agent_cancel_requests(
     *,
     indexed: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Read the committed Volume copy used for controller-restart recovery."""
+    """Read cancellation requests from the exact agent-published index."""
     if not str(run.get("volume_name") or "").strip():
         return []
-    prefix = f"{jobs_prefix(str(run['run_id']))}/cancel"
     requests: list[dict[str, Any]] = []
     if indexed is None:
         indexed = indexed_agent_jobs(run)
-    if indexed is not None or run.get("gpu_job_index_required"):
-        embedded_requests = [
-            detail.get("cancel_request")
-            for _job_id, detail in sorted((indexed or {}).items())
-            if detail.get("cancel_state") == "requested"
-        ]
-        for request in embedded_requests[:AGENT_GPU_CONTROL_MAX_REQUESTS]:
-            if not isinstance(request, dict):
-                continue
-            job_id = str(request.get("job_id") or "")
-            request_id = str(request.get("request_id") or "")
-            if (
-                str(request.get("run_id") or "") == str(run["run_id"])
-                and re.fullmatch(r"[A-Za-z0-9_-]+", job_id)
-                and re.fullmatch(r"[0-9a-f]{32}", request_id)
-                and request.get("reason") == "agent_cancelled"
-            ):
-                requests.append(dict(request))
-        return requests
-    job_ids = [
-        Path(name).stem
-        for name in volume_ls_json_names(run, prefix)
-        if name.endswith(".json")
+    embedded_requests = [
+        detail.get("cancel_request")
+        for _job_id, detail in sorted((indexed or {}).items())
+        if detail.get("cancel_state") == "requested"
     ]
-    for job_id in job_ids[:AGENT_GPU_CONTROL_MAX_REQUESTS]:
-        if not re.fullmatch(r"[A-Za-z0-9_-]+", job_id):
+    for request in embedded_requests[:AGENT_GPU_CONTROL_MAX_REQUESTS]:
+        if not isinstance(request, dict):
             continue
-        raw = sprintctl.volume_get_text(run, f"{prefix}/{job_id}.json")
-        if not raw:
-            continue
-        try:
-            request = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
+        job_id = str(request.get("job_id") or "")
         request_id = str(request.get("request_id") or "")
         if (
-            isinstance(request, dict)
-            and str(request.get("run_id") or "") == str(run["run_id"])
-            and request.get("job_id") == job_id
+            str(request.get("run_id") or "") == str(run["run_id"])
+            and re.fullmatch(r"[A-Za-z0-9_-]+", job_id)
             and re.fullmatch(r"[0-9a-f]{32}", request_id)
             and request.get("reason") == "agent_cancelled"
         ):
-            requests.append(request)
+            requests.append(dict(request))
     return requests
 
 
@@ -783,11 +756,11 @@ def mirror_agent_job(
     """Push canonical GPU state into the long-lived CPU container.
 
     Modal Volume mounts are snapshots: a long-lived CPU container does not see
-    host uploads until its mount is reloaded.  Reloading the whole mount is a
-    poor fit here because the agent and snapshot loop may have open files.  A
-    small host-owned mirror under /run gives the agent fresh status and a
-    diagnostic log tail without weakening the no-control-plane-credentials
-    boundary.  The complete log remains on the durable Volume.
+    host uploads until its mount is reloaded. Reloading the whole mount can
+    disrupt open agent files. A small host-owned mirror under /run gives the
+    agent fresh status and a diagnostic log tail without weakening the
+    no-control-plane-credentials boundary. The complete log remains on the
+    durable Volume.
     """
     container_id = str(run.get("agent_container_id") or "")
     job_id = str(job.get("job_id") or "")
@@ -1060,7 +1033,7 @@ def mirror_gpu_budget(
     Target discovery is deliberately host-local.  A claimed job is persisted
     in the controller-owned registry before ``Sandbox.create`` and gains its
     sandbox ID before the dispatch lock is released.  Consulting the remote
-    queue/status delivery mirrors here would put the budget-critical pulse
+    agent-facing status delivery mirrors here would put the budget-critical pulse
     behind Modal Volume latency for jobs that were never allocated.  The
     dispatch startup barrier and stale-heartbeat shutdown cover the narrow
     crash window before a new sandbox ID is published locally.
@@ -1451,9 +1424,8 @@ def indexed_agent_jobs(run: dict[str, Any]) -> dict[str, dict[str, Any]] | None:
 def host_job_path(run: dict[str, Any], job_id: str) -> Path | None:
     """Return the host-owned canonical record for a logical GPU job.
 
-    The agent can legitimately remove its queue/status mirrors after ``wait``
-    returns.  Keeping the controller's copy outside the agent sandbox avoids a
-    race where that cleanup happens before the next host reconciliation pass.
+    Keeping the controller's copy outside the agent sandbox makes job state
+    independent from the agent-facing status mirror.
     """
     state_dir = str(run.get("state_dir") or "").strip()
     if not state_dir or not re.fullmatch(r"[A-Za-z0-9_-]+", job_id):
@@ -1619,46 +1591,6 @@ def utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def volume_ls_json_names(run: dict[str, Any], remote_path: str) -> list[str]:
-    result = sprintctl.run_command(
-        sprintctl.modal_command(
-            "volume", "ls", "--json", str(run["volume_name"]), remote_path
-        ),
-        run=run,
-        check=False,
-        timeout=60,
-    )
-    if result.returncode == 0 and result.stdout.strip().startswith("["):
-        try:
-            rows = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            rows = []
-        names = []
-        for row in rows:
-            if isinstance(row, dict):
-                path = str(row.get("path") or row.get("filename") or "")
-            else:
-                path = str(row)
-            base = Path(path.rstrip("/")).name
-            if base.endswith(".json"):
-                names.append(base)
-        return sorted(set(names))
-
-    # Fallback: plain / table text.
-    result = sprintctl.run_command(
-        sprintctl.modal_command("volume", "ls", str(run["volume_name"]), remote_path),
-        run=run,
-        check=False,
-        timeout=60,
-    )
-    names = []
-    for line in result.stdout.splitlines():
-        for token in line.replace("│", " ").split():
-            if token.endswith(".json"):
-                names.append(Path(token).name)
-    return sorted(set(names))
-
-
 def put_json(run: dict[str, Any], remote_path: str, payload: dict[str, Any]) -> None:
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
         handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
@@ -1704,11 +1636,8 @@ def load_job(
     """Load the canonical host record or an unclaimed enqueue snapshot.
 
     Once claimed, the host registry wins over every agent-visible mirror, so a
-    stale queue file cannot respawn the job.  Before claim there is no host
-    record and the immutable queue document is authoritative.  Read that
-    before the mutable status mirror: a slow status writer must not prevent a
-    newly submitted job from entering the dispatcher.  Status remains a
-    recovery fallback for legacy/status-only jobs.
+    stale delivery mirror cannot respawn the job. Before claim, the job embedded
+    in the exact agent-published index is authoritative.
     """
     # Once claimed, the host registry is authoritative.  Volume status and
     # queue files are agent-visible delivery mirrors and may disappear before
@@ -1729,18 +1658,7 @@ def load_job(
             ):
                 raise RuntimeError("agent GPU dispatch index job identity mismatch")
             return dict(embedded)
-    if run.get("gpu_job_index_required"):
-        return None
-    prefix = jobs_prefix(str(run["run_id"]))
-    text = sprintctl.volume_get_text(run, f"{prefix}/queue/{job_id}.json")
-    if text is None:
-        text = sprintctl.volume_get_text(run, f"{prefix}/status/{job_id}.json")
-    if text is None:
-        return None
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return None
+    return None
 
 
 def load_job_from_index_snapshot(
@@ -1748,7 +1666,7 @@ def load_job_from_index_snapshot(
     job_id: str,
     indexed: dict[str, dict[str, Any]] | None,
 ) -> dict[str, Any] | None:
-    """Use one tick snapshot while preserving the legacy call contract."""
+    """Load a job while reusing one exact-index snapshot for this tick."""
     if indexed is None:
         return load_job(run, job_id)
     return load_job(run, job_id, indexed=indexed)
@@ -2348,7 +2266,6 @@ def persist_job(run: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]:
             )
         sprintctl.atomic_write_json(local_path, job, mode=0o600)
     put_json(run, f"{prefix}/status/{job_id}.json", job)
-    put_json(run, f"{prefix}/queue/{job_id}.json", job)
     mirror_agent_job(run, job)
     return job
 
@@ -2861,19 +2778,11 @@ def reconcile_terminal_attempt_before_stop(
 
 
 def list_pending_job_ids(run: dict[str, Any]) -> list[str]:
-    prefix = jobs_prefix(str(run["run_id"]))
-    indexed = indexed_agent_jobs(run)
-    if indexed is not None or run.get("gpu_job_index_required"):
-        return sorted(
-            job_id
-            for job_id, detail in (indexed or {}).items()
-            if detail.get("cancel_state") != "cancelled_before_dispatch"
-        )
-    return [
-        Path(name).stem
-        for name in volume_ls_json_names(run, f"{prefix}/queue")
-        if name.endswith(".json") and re.fullmatch(r"[A-Za-z0-9_-]+", Path(name).stem)
-    ]
+    return sorted(
+        job_id
+        for job_id, detail in (indexed_agent_jobs(run) or {}).items()
+        if detail.get("cancel_state") != "cancelled_before_dispatch"
+    )
 
 
 def list_agent_cancelled_job_ids(
@@ -2893,21 +2802,11 @@ def list_agent_cancelled_job_ids(
         return []
     if indexed is None:
         indexed = indexed_agent_jobs(run)
-    if indexed is not None or run.get("gpu_job_index_required"):
-        return sorted(
-            job_id
-            for job_id, detail in (indexed or {}).items()
-            if detail.get("cancel_state") == "cancelled_before_dispatch"
-        )
-    prefix = jobs_prefix(str(run["run_id"]))
-    cancelled: set[str] = set()
-    pattern = re.compile(r"^\.cancelled-([A-Za-z0-9_-]+)\.json$")
-    for remote_dir in (f"{prefix}/queue", f"{prefix}/status"):
-        for name in volume_ls_json_names(run, remote_dir):
-            match = pattern.fullmatch(Path(name).name)
-            if match:
-                cancelled.add(match.group(1))
-    return sorted(cancelled)
+    return sorted(
+        job_id
+        for job_id, detail in (indexed or {}).items()
+        if detail.get("cancel_state") == "cancelled_before_dispatch"
+    )
 
 
 def reconcile_agent_cancelled_jobs(
@@ -3050,19 +2949,14 @@ def list_job_ids(
     *,
     indexed: dict[str, dict[str, Any]] | None = None,
 ) -> list[str]:
-    prefix = jobs_prefix(str(run["run_id"]))
     names = {f"{job_id}.json" for job_id in list_host_job_ids(run)}
     if indexed is None:
         indexed = indexed_agent_jobs(run)
-    if indexed is not None or run.get("gpu_job_index_required"):
-        names.update(
-            f"{job_id}.json"
-            for job_id, detail in (indexed or {}).items()
-            if detail.get("cancel_state") != "cancelled_before_dispatch"
-        )
-    else:
-        names.update(volume_ls_json_names(run, f"{prefix}/queue"))
-        names.update(volume_ls_json_names(run, f"{prefix}/status"))
+    names.update(
+        f"{job_id}.json"
+        for job_id, detail in (indexed or {}).items()
+        if detail.get("cancel_state") != "cancelled_before_dispatch"
+    )
     return sorted(
         Path(name).stem
         for name in names
@@ -3404,9 +3298,7 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
         # One exact-file snapshot is shared by every reconciliation phase in
         # this dispatch tick.  Without this, cancellation, orphan, and queue
         # checks each re-read the same index independently.
-        indexed = indexed_agent_jobs(run)
-        if indexed is None and run.get("gpu_job_index_required"):
-            indexed = {}
+        indexed = indexed_agent_jobs(run) or {}
 
         actions.extend(cleanup_orphaned_training_sandboxes(run, indexed=indexed))
         try:

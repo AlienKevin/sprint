@@ -4,9 +4,8 @@
 
 This ships through ``event check`` and ``event archive`` runs it before
 queueing anything, so an interface mistake costs a second rather than a scoring
-round.  The verifier does not run it: by the time a policy reaches the rollout,
-``verifier.policy.load_policy`` has already checked the shapes and raises with
-the same information.
+round. The verifier independently loads the same TorchScript bytes and checks
+the action width before the rollout.
 
 This source is installed into the agent image as ``event check``, so the agent
 and verifier enforce one portable policy ABI.

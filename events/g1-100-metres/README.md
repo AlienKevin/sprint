@@ -10,9 +10,8 @@ agent-facing contract is in `environment/README.md`.
 
 ## Difficulty Explanation
 
-The policy must learn locomotion, keep its entire collision envelope within the
-lane, and avoid geometric self-collision. No training method, reward, terrain,
-or architecture is prescribed.
+The policy must move the robot quickly, keep its entire collision envelope
+within the lane, and avoid geometric self-collision.
 
 ## Verification Explanation
 

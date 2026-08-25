@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Publish performance readouts for an active or completed event batch.
 
-Trusted verifier captures provide the trajectory used to reconstruct the
-first lane or self-collision DQ, maximum legal forward distance, time to that
+Trusted verifier captures provide the trajectory and explicit disqualification
+provenance used to reconstruct maximum legal forward distance, time to that
 distance, and the continuous score::
 
     completion_adjusted_speed_mps = distance_m ** 2 / (100 * elapsed_s)
@@ -13,7 +13,6 @@ Official validity and failed-gate fields remain unchanged.
 from __future__ import annotations
 
 import argparse
-import ast
 import hashlib
 import importlib.util
 import json
@@ -21,7 +20,6 @@ import math
 import os
 import re
 import sys
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterable
@@ -39,8 +37,6 @@ from event_runtime.event import load_event  # noqa: E402
 
 EVENT = load_event(repository_root=ROOT)
 COURSE_DISTANCE_M = 100.0
-LANE_HALF_WIDTH_M = 0.61
-SELF_COLLISION_THRESHOLD_M = 0.01
 
 
 def utc_now() -> str:
@@ -84,61 +80,6 @@ def completion_adjusted_speed(distance_m: float, elapsed_s: float) -> float:
     return distance_m * distance_m / (COURSE_DISTANCE_M * elapsed_s)
 
 
-def contract_constants() -> tuple[dict[str, str | None], int, float, float]:
-    """Read collision constants from the scorer without importing Isaac/Torch."""
-
-    source = EVENT.verifier / "verifier/rollout.py"
-    tree = ast.parse(source.read_text())
-    wanted = {
-        "G1_BODY_PARENT",
-        "SELF_COLLISION_ANCESTRY",
-        "SELF_COLLISION_RADIUS_PAD_M",
-        "SELF_COLLISION_SPHERE_MARGIN_M",
-    }
-    values: dict[str, Any] = {}
-    for node in tree.body:
-        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
-            continue
-        target = node.target if isinstance(node, ast.AnnAssign) else node.targets[0]
-        if isinstance(target, ast.Name) and target.id in wanted:
-            values[target.id] = ast.literal_eval(node.value)
-    missing = wanted - values.keys()
-    if missing:
-        raise RuntimeError(f"scorer collision constants missing: {sorted(missing)}")
-    return (
-        values["G1_BODY_PARENT"],
-        int(values["SELF_COLLISION_ANCESTRY"]),
-        float(values["SELF_COLLISION_RADIUS_PAD_M"]),
-        float(values["SELF_COLLISION_SPHERE_MARGIN_M"]),
-    )
-
-
-def is_chain_neighbor(
-    a: str, b: str, parents: dict[str, str | None], ancestry: int
-) -> bool:
-    for start, other in ((a, b), (b, a)):
-        current: str | None = start
-        distance = 0
-        while current is not None and distance <= ancestry:
-            if current == other:
-                return True
-            current = parents.get(current)
-            distance += 1
-    return False
-
-
-def is_sibling(a: str, b: str, parents: dict[str, str | None]) -> bool:
-    pa, pb = parents.get(a), parents.get(b)
-    return pa is not None and pa == pb
-
-
-def is_digit_link(name: str) -> bool:
-    return any(
-        f"_{digit}_link" in name
-        for digit in ("zero", "one", "two", "three", "four", "five", "six")
-    )
-
-
 def rotate_xyzw(quaternion: np.ndarray, vectors: np.ndarray) -> np.ndarray:
     """Rotate vectors by normalized xyzw quaternions with NumPy broadcasting."""
 
@@ -151,90 +92,6 @@ def rotate_xyzw(quaternion: np.ndarray, vectors: np.ndarray) -> np.ndarray:
     first = np.cross(qvec, vectors)
     second = np.cross(qvec, first)
     return vectors + 2.0 * (scalar * first + second)
-
-
-@dataclass(frozen=True)
-class BodyGeometry:
-    name: str
-    capture_index: int
-    points: np.ndarray
-    radii: np.ndarray
-    center: np.ndarray
-    sphere_radius: float
-
-
-@dataclass(frozen=True)
-class CollisionModel:
-    bodies: tuple[BodyGeometry, ...]
-    pairs: tuple[tuple[int, int], ...]
-    sphere_margin_m: float
-
-
-def collision_model(names: list[str]) -> CollisionModel:
-    parents, ancestry, radius_pad, sphere_margin = contract_constants()
-    geometry_path = EVENT.verifier / "verifier/collision_geometry.json"
-    geometry = load_json(geometry_path)
-    bodies: list[BodyGeometry] = []
-    for name, entry in geometry["bodies"].items():
-        if name not in names:
-            continue
-        points = np.asarray(entry["points"], dtype=np.float64)
-        radii = np.asarray(entry["radii"], dtype=np.float64) + radius_pad
-        center = points.mean(axis=0)
-        sphere_radius = float(np.max(np.linalg.norm(points - center, axis=1) + radii))
-        bodies.append(
-            BodyGeometry(
-                name=name,
-                capture_index=names.index(name),
-                points=points,
-                radii=radii,
-                center=center,
-                sphere_radius=sphere_radius,
-            )
-        )
-    pairs: list[tuple[int, int]] = []
-    for left, a in enumerate(bodies):
-        for right in range(left + 1, len(bodies)):
-            b = bodies[right]
-            if is_digit_link(a.name) or is_digit_link(b.name):
-                continue
-            if a.name in parents and b.name in parents:
-                if is_chain_neighbor(a.name, b.name, parents, ancestry) or is_sibling(
-                    a.name, b.name, parents
-                ):
-                    continue
-            pairs.append((left, right))
-    if not bodies or not pairs:
-        raise RuntimeError("capture has no usable official collision geometry")
-    return CollisionModel(tuple(bodies), tuple(pairs), sphere_margin)
-
-
-def exact_pair_penetration(
-    body_a: BodyGeometry,
-    body_b: BodyGeometry,
-    positions: np.ndarray,
-    quaternions: np.ndarray,
-) -> float:
-    qa, qb = quaternions[body_a.capture_index], quaternions[body_b.capture_index]
-    pa, pb = positions[body_a.capture_index], positions[body_b.capture_index]
-    world_a = (
-        rotate_xyzw(np.broadcast_to(qa, (len(body_a.points), 4)), body_a.points) + pa
-    )
-    world_b = (
-        rotate_xyzw(np.broadcast_to(qb, (len(body_b.points), 4)), body_b.points) + pb
-    )
-    minimum = math.inf
-    # Block one point cloud to keep pathological collision hulls memory-bounded.
-    for start in range(0, len(world_a), 96):
-        chunk = world_a[start : start + 96]
-        distance = np.linalg.norm(chunk[:, None, :] - world_b[None, :, :], axis=-1)
-        separation = (
-            distance
-            - body_a.radii[start : start + len(chunk), None]
-            - body_b.radii[None, :]
-        )
-        minimum = min(minimum, float(np.min(separation)))
-    return max(0.0, -minimum)
 
 
 def frame_poses(frames: list[list[float]], body_count: int) -> tuple[np.ndarray, ...]:
@@ -282,56 +139,6 @@ def interpolated_crossing(
     return time, index, fraction
 
 
-def first_self_collision(
-    model: CollisionModel,
-    times: np.ndarray,
-    positions: np.ndarray,
-    quaternions: np.ndarray,
-) -> tuple[float, int, float] | None:
-    compact = np.asarray([body.capture_index for body in model.bodies], dtype=int)
-    local_centers = np.asarray([body.center for body in model.bodies])
-    sphere_radii = np.asarray([body.sphere_radius for body in model.bodies])
-    q = quaternions[:, compact]
-    p = positions[:, compact]
-    centers = rotate_xyzw(q, np.broadcast_to(local_centers, q.shape[:-1] + (3,))) + p
-    pair_a = np.asarray([pair[0] for pair in model.pairs], dtype=int)
-    pair_b = np.asarray([pair[1] for pair in model.pairs], dtype=int)
-    gaps = (
-        np.linalg.norm(centers[:, pair_a] - centers[:, pair_b], axis=-1)
-        - sphere_radii[pair_a]
-        - sphere_radii[pair_b]
-    )
-    previous = 0.0
-    for frame_index in range(len(times)):
-        candidates = np.flatnonzero(gaps[frame_index] < model.sphere_margin_m)
-        if len(candidates) > 64:
-            candidates = candidates[np.argsort(gaps[frame_index, candidates])[:64]]
-        deepest = 0.0
-        for pair_index in candidates:
-            left, right = model.pairs[int(pair_index)]
-            deepest = max(
-                deepest,
-                exact_pair_penetration(
-                    model.bodies[left],
-                    model.bodies[right],
-                    positions[frame_index],
-                    quaternions[frame_index],
-                ),
-            )
-        if deepest > SELF_COLLISION_THRESHOLD_M:
-            if frame_index == 0 or deepest == previous:
-                return float(times[frame_index]), frame_index, 0.0
-            fraction = (SELF_COLLISION_THRESHOLD_M - previous) / (deepest - previous)
-            fraction = min(max(fraction, 0.0), 1.0)
-            time = float(
-                times[frame_index - 1]
-                + fraction * (times[frame_index] - times[frame_index - 1])
-            )
-            return time, frame_index, fraction
-        previous = deepest
-    return None
-
-
 def interpolate(values: np.ndarray, index: int, fraction: float) -> float:
     if index <= 0:
         return float(values[0])
@@ -375,28 +182,12 @@ def score_capture(path: Path) -> dict[str, Any]:
             )
             fraction = min(max(fraction, 0.0), 1.0)
         candidates.append((explicit_dq_time, str(explicit_dq_gate), index, fraction))
-    else:
-        # Legacy captures predate explicit DQ provenance. Their contract judged
-        # the pelvis centre, so preserve that historical rule rather than
-        # retroactively applying today's whole-body lane gate.
-        pelvis_index = names.index("pelvis")
-        lateral = np.abs(positions[:, pelvis_index, 1])
-        lane = interpolated_crossing(lateral, times, LANE_HALF_WIDTH_M)
-        if lane is not None:
-            candidates.append((lane[0], "in_lane", lane[1], lane[2]))
-        if "self_collision" in failed:
-            self_collision = first_self_collision(
-                collision_model(names), times, positions, quaternions
-            )
-            if self_collision is not None:
-                candidates.append(
-                    (
-                        self_collision[0],
-                        "self_collision",
-                        self_collision[1],
-                        self_collision[2],
-                    )
-                )
+    elif (
+        explicit_dq_time is not None
+        or explicit_dq_gate is not None
+        or failed.intersection({"in_lane", "self_collision"})
+    ):
+        raise ValueError("capture lacks required disqualification provenance")
     if finish_time is not None:
         candidates = [item for item in candidates if item[0] <= finish_time]
     first_dq = min(candidates, default=None)

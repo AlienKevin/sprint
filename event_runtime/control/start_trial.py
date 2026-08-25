@@ -164,10 +164,7 @@ def main() -> int:
         parser.error("unsafe batch id")
     secret_envs = list(dict.fromkeys(args.secret_env))
     allowed_secret_envs = {
-        "OPENAI_API_KEY",
         "OPENROUTER_API_KEY",
-        "CLAUDE_CODE_OAUTH_TOKEN",
-        "SPRINT_DEEPSEEK_PRICING_SNAPSHOT",
     }
     unsupported_secrets = sorted(set(secret_envs) - allowed_secret_envs)
     if unsupported_secrets:
@@ -177,8 +174,6 @@ def main() -> int:
     launch_envs = list(dict.fromkeys(args.launch_env))
     allowed_launch_envs = {
         "OPENROUTER_MODEL",
-        "SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW",
-        "SPRINT_CODEX_DEEPSEEK_MODEL",
         "SPRINT_OPENROUTER_PROVIDER_ENDPOINT",
         "SPRINT_OPENROUTER_QUANTIZATION",
     }

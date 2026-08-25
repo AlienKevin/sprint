@@ -790,11 +790,6 @@ class ClaimSelectionTests(unittest.TestCase):
                     gpu_worker.modal.Sandbox, "from_id", return_value=Sandbox()
                 ) as from_id,
                 mock.patch.object(
-                    gpu_worker,
-                    "volume_ls_json_names",
-                    side_effect=AssertionError("remote job listing must not run"),
-                ),
-                mock.patch.object(
                     gpu_worker.sprintctl,
                     "volume_get_text",
                     side_effect=AssertionError("remote job fetch must not run"),
@@ -1525,10 +1520,7 @@ class HostJobRegistryTests(unittest.TestCase):
             self.assertEqual(json.loads(local.read_text()), job)
             self.assertEqual(
                 writes,
-                [
-                    "runs/run-1/gpu-jobs/status/job-1.json",
-                    "runs/run-1/gpu-jobs/queue/job-1.json",
-                ],
+                ["runs/run-1/gpu-jobs/status/job-1.json"],
             )
 
     def test_load_survives_agent_removing_volume_mirrors(self) -> None:
@@ -1546,42 +1538,18 @@ class HostJobRegistryTests(unittest.TestCase):
 
             self.assertEqual(payload["status"], "retry_wait")
 
-    def test_unclaimed_job_prefers_immutable_queue_over_status_mirror(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            run = {"run_id": "run-1", "state_dir": raw}
-            requested: list[str] = []
-
-            def get(_run: dict, remote: str) -> str | None:
-                requested.append(remote)
-                if "/queue/" in remote:
-                    return json.dumps({"job_id": "job-1", "status": "pending"})
-                raise AssertionError("status mirror must not delay an unclaimed job")
-
-            with mock.patch.object(
-                gpu_worker.sprintctl, "volume_get_text", side_effect=get
-            ):
-                payload = gpu_worker.load_job(run, "job-1")
-
-        self.assertEqual(payload, {"job_id": "job-1", "status": "pending"})
-        self.assertEqual(
-            requested,
-            ["runs/run-1/gpu-jobs/queue/job-1.json"],
-        )
-
     def test_list_retains_host_job_after_agent_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             run = {"run_id": "run-1", "state_dir": raw}
             path = Path(raw) / "gpu-job-registry" / "job-1.json"
             path.parent.mkdir()
             path.write_text(json.dumps({"job_id": "job-1", "status": "running"}))
-            with mock.patch.object(gpu_worker, "volume_ls_json_names", return_value=[]):
-                self.assertEqual(gpu_worker.list_job_ids(run), ["job-1"])
+            self.assertEqual(gpu_worker.list_job_ids(run), ["job-1"])
 
     def test_exact_job_index_replaces_queue_and_status_directory_scans(self) -> None:
         run = {
             "run_id": "run-1",
             "volume_name": "run-volume",
-            "gpu_job_index_required": True,
         }
         index = json.dumps(
             {
@@ -1598,11 +1566,6 @@ class HostJobRegistryTests(unittest.TestCase):
                 gpu_worker.sprintctl, "volume_get_text", return_value=index
             ) as reader,
             mock.patch.object(gpu_worker, "list_host_job_ids", return_value=["hosted"]),
-            mock.patch.object(
-                gpu_worker,
-                "volume_ls_json_names",
-                side_effect=AssertionError("indexed runs must not list directories"),
-            ),
         ):
             self.assertEqual(gpu_worker.list_job_ids(run), ["hosted", "queued"])
             self.assertEqual(gpu_worker.list_pending_job_ids(run), ["queued"])
@@ -1648,7 +1611,6 @@ class HostJobRegistryTests(unittest.TestCase):
         run = {
             "run_id": "run-1",
             "volume_name": "run-volume",
-            "gpu_job_index_required": True,
         }
         with mock.patch.object(
             gpu_worker.sprintctl, "volume_get_text", return_value=index
@@ -1665,22 +1627,16 @@ class HostJobRegistryTests(unittest.TestCase):
             )
         )
 
-    def test_required_index_missing_is_empty_without_legacy_scan(self) -> None:
+    def test_missing_index_is_empty(self) -> None:
         run = {
             "run_id": "run-1",
             "volume_name": "run-volume",
-            "gpu_job_index_required": True,
         }
         with (
             mock.patch.object(
                 gpu_worker.sprintctl, "volume_get_text", return_value=None
             ),
             mock.patch.object(gpu_worker, "list_host_job_ids", return_value=[]),
-            mock.patch.object(
-                gpu_worker,
-                "volume_ls_json_names",
-                side_effect=AssertionError("missing required index must not fall back"),
-            ),
         ):
             self.assertEqual(gpu_worker.list_job_ids(run), [])
             self.assertEqual(gpu_worker.list_pending_job_ids(run), [])
@@ -2040,7 +1996,6 @@ class GpuConcurrencyLimitTests(unittest.TestCase):
                     "state_dir": str(state),
                     "volume_name": f"volume-{run_id}",
                     "cpu_agent_gpu_worker": True,
-                    "gpu_job_index_required": True,
                 }
 
             with (
@@ -2050,13 +2005,6 @@ class GpuConcurrencyLimitTests(unittest.TestCase):
                 mock.patch.object(
                     gpu_worker, "indexed_agent_jobs", return_value={}
                 ) as index_read,
-                mock.patch.object(
-                    gpu_worker,
-                    "volume_ls_json_names",
-                    side_effect=AssertionError(
-                        "indexed fleet must not list directories"
-                    ),
-                ),
                 mock.patch.object(
                     gpu_worker, "reconcile_live_agent_cancel_requests", return_value=[]
                 ),
@@ -2153,7 +2101,7 @@ class GpuConcurrencyLimitTests(unittest.TestCase):
                 mock.patch.object(
                     gpu_worker,
                     "load_job",
-                    side_effect=lambda _run, job_id: dict(jobs[job_id]),
+                    side_effect=lambda _run, job_id, **_kwargs: dict(jobs[job_id]),
                 ),
                 mock.patch.object(
                     gpu_worker,
@@ -2214,46 +2162,6 @@ class GpuConcurrencyLimitTests(unittest.TestCase):
         )
         self.assertEqual(persisted[0]["fenced_lease_id"], "old-lease")
         self.assertEqual(persisted[0]["fence_epoch"], 1)
-
-    def test_agent_cancel_markers_are_discovered_from_delivery_directories(
-        self,
-    ) -> None:
-        with mock.patch.object(
-            gpu_worker,
-            "volume_ls_json_names",
-            side_effect=[
-                [".cancelled-job-a.json", "live.json"],
-                [".cancelled-job-a.json", ".cancelled-job-b.json"],
-            ],
-        ):
-            self.assertEqual(
-                gpu_worker.list_agent_cancelled_job_ids(
-                    {"run_id": "unit", "volume_name": "unit-volume"}
-                ),
-                ["job-a", "job-b"],
-            )
-
-    def test_hidden_cancel_markers_are_not_enumerated_as_jobs(self) -> None:
-        run = {"run_id": "unit", "state_dir": "/tmp/unit"}
-        with (
-            mock.patch.object(gpu_worker, "list_host_job_ids", return_value=[]),
-            mock.patch.object(
-                gpu_worker,
-                "volume_ls_json_names",
-                side_effect=[
-                    ["live.json", ".cancelled-dead.json"],
-                    ["live.json", ".cancelled-dead.json"],
-                ],
-            ),
-        ):
-            self.assertEqual(gpu_worker.list_job_ids(run), ["live"])
-
-        with mock.patch.object(
-            gpu_worker,
-            "volume_ls_json_names",
-            return_value=["live.json", ".cancelled-dead.json"],
-        ):
-            self.assertEqual(gpu_worker.list_pending_job_ids(run), ["live"])
 
     def test_agent_cancel_marker_does_not_terminate_allocated_worker(self) -> None:
         job = {
@@ -2435,7 +2343,7 @@ class GpuConcurrencyLimitTests(unittest.TestCase):
                 mock.patch.object(
                     gpu_worker,
                     "load_job",
-                    side_effect=lambda _run, job_id: dict(jobs[job_id]),
+                    side_effect=lambda _run, job_id, **_kwargs: dict(jobs[job_id]),
                 ),
                 mock.patch.object(gpu_worker.ModalSandboxProvider, "start") as start,
             ):
@@ -2453,12 +2361,11 @@ class AgentCredentialBoundaryTests(unittest.TestCase):
             path.write_text(
                 "OPENAI_API_KEY=secret\n"
                 "OPENAI_BASE_URL=https://api.example.test\n"
-                "SPRINT_CODEX_PROVIDER=example\n"
             )
             names = validate_agent_env.validate(path, "OPENAI_API_KEY")
         self.assertEqual(
             names,
-            {"OPENAI_API_KEY", "OPENAI_BASE_URL", "SPRINT_CODEX_PROVIDER"},
+            {"OPENAI_API_KEY", "OPENAI_BASE_URL"},
         )
 
     def test_agent_env_rejects_modal_control_plane_credentials(self) -> None:
@@ -2510,10 +2417,10 @@ class NetworkIsolationTests(unittest.TestCase):
     def test_launcher_allows_only_one_audited_model_host(self) -> None:
         launcher = (ROOT / "event_runtime/control/launch.sh").read_text()
         self.assertIn('--allow-agent-host "$MODEL_API_HOST"', launcher)
-        self.assertIn(
-            "api.anthropic.com|api.deepseek.com|api.openai.com|openrouter.ai",
-            launcher,
-        )
+        self.assertIn("openrouter.ai) ;;", launcher)
+        self.assertNotIn("api.anthropic.com", launcher)
+        self.assertNotIn("api.deepseek.com", launcher)
+        self.assertNotIn("api.openai.com", launcher)
         self.assertNotIn("modal.com|", launcher)
         self.assertNotIn("modal.run|", launcher)
 
@@ -2577,9 +2484,7 @@ class NetworkIsolationTests(unittest.TestCase):
         image_source = (ROOT / "event_runtime" / "image.py").read_text()
         launcher = (ROOT / "event_runtime/control/launch.sh").read_text()
         self.assertIn('CODEX_VERSION = "0.149.1"', image_source)
-        self.assertIn('CLAUDE_CODE_VERSION = "2.1.220"', image_source)
         self.assertIn("BAKED_CODEX_VERSION=0.149.1", launcher)
-        self.assertIn("BAKED_CLAUDE_VERSION=2.1.220", launcher)
 
 
 class RetryAndFencingTests(unittest.TestCase):
@@ -2775,7 +2680,7 @@ class RetryAndFencingTests(unittest.TestCase):
                 }
             }
 
-            def load_job(_run, job_id):
+            def load_job(_run, job_id, **_kwargs):
                 return dict(jobs[job_id])
 
             def persist_job(_run, payload):
@@ -3434,7 +3339,7 @@ class LauncherWiringTests(unittest.TestCase):
         self.assertNotIn("cpu_supervised", launcher)
 
     def test_all_model_launchers_use_non_restarting_trial_unit(self) -> None:
-        for name in ("openai.sh", "deepseek.sh", "deepseek_harness.sh"):
+        for name in ("openai.sh", "deepseek_harness.sh"):
             text = (ROOT / "event_runtime/control/providers" / name).read_text()
             self.assertIn("start_trial.py", text)
             self.assertNotIn("--supervised-launch", text)
@@ -3449,8 +3354,6 @@ class LauncherWiringTests(unittest.TestCase):
             "--launch-env SPRINT_OPENROUTER_PROVIDER_ENDPOINT",
             deepseek_harness,
         )
-        luna = (ROOT / "event_runtime/control/providers/luna.sh").read_text()
-        self.assertIn("providers/openai.sh", luna)
         for name in ("run-opus.sh", "run-terra.sh", "run-lane.sh"):
             self.assertFalse((ROOT / "runs" / name).exists())
         starter = (ROOT / "event_runtime/control/start_trial.py").read_text()
@@ -3487,11 +3390,7 @@ class LauncherWiringTests(unittest.TestCase):
                 "--launch-argv-json",
                 json.dumps(launch),
                 "--secret-env",
-                "OPENAI_API_KEY",
-                "--secret-env",
                 "OPENROUTER_API_KEY",
-                "--secret-env",
-                "SPRINT_DEEPSEEK_PRICING_SNAPSHOT",
                 "--launch-env",
                 "SPRINT_OPENROUTER_PROVIDER_ENDPOINT",
                 "--batch-id",
@@ -3504,9 +3403,7 @@ class LauncherWiringTests(unittest.TestCase):
                 mock.patch.dict(
                     "os.environ",
                     {
-                        "OPENAI_API_KEY": "secret-value",
                         "OPENROUTER_API_KEY": "openrouter-secret-value",
-                        "SPRINT_DEEPSEEK_PRICING_SNAPSHOT": "pricing-secret-value",
                         "SPRINT_OPENROUTER_PROVIDER_ENDPOINT": "baidu/fp8",
                         "UV": "/test/bin/uv",
                         "PATH": "/usr/bin",
@@ -3526,9 +3423,7 @@ class LauncherWiringTests(unittest.TestCase):
             command = run.call_args.args[0]
             self.assertIn("--property=Restart=no", command)
             self.assertIn("--property=KillMode=control-group", command)
-            self.assertIn("--setenv=OPENAI_API_KEY", command)
             self.assertIn("--setenv=OPENROUTER_API_KEY", command)
-            self.assertIn("--setenv=SPRINT_DEEPSEEK_PRICING_SNAPSHOT", command)
             self.assertIn("--setenv=SPRINT_OPENROUTER_PROVIDER_ENDPOINT", command)
             self.assertIn("--setenv=UV=/test/bin/uv", command)
             self.assertIn(
@@ -3536,8 +3431,7 @@ class LauncherWiringTests(unittest.TestCase):
                 command,
             )
             self.assertIn("--setenv=SPRINT_BATCH_ID=eval-batch", command)
-            self.assertNotIn("secret-value", command)
-            self.assertNotIn("pricing-secret-value", command)
+            self.assertNotIn("openrouter-secret-value", command)
             self.assertNotIn("baidu/fp8", command)
             metadata = json.loads(
                 (Path(raw) / "unit-run" / "trial-launch.json").read_text()
@@ -3557,9 +3451,7 @@ class LauncherWiringTests(unittest.TestCase):
                 metadata["cpu_execution_policy"], "single_process_no_resume"
             )
 
-    def test_goal_templates_are_launchable_and_synced(self) -> None:
-        smoke = (ROOT / "event_runtime/control/templates/recovery-smoke.j2").read_text()
-        self.assertIn("{{ instruction }}", smoke)
+    def test_goal_template_is_launchable(self) -> None:
         live = (ROOT / "event_runtime/control/templates/codex.j2").read_text()
         self.assertIn("{{ instruction }}", live)
 

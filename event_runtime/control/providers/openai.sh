@@ -30,7 +30,6 @@ if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
   echo "OPENROUTER_API_KEY is required" >&2
   exit 1
 fi
-export OPENAI_API_KEY="$OPENROUTER_API_KEY"
 export SPRINT_CODEX_OPENAI_MODEL="$OPENROUTER_PRESET"
 export SPRINT_OPENROUTER_PRESET="$OPENROUTER_PRESET"
 
@@ -45,7 +44,7 @@ echo "provider: OpenRouter preset -> OpenAI standard only (no fallback)"
 echo "preset:   $OPENROUTER_PRESET"
 echo "goal:     $GOAL"
 echo "profile:  $MODAL_PROFILE"
-echo "auth:     OPENAI_API_KEY=[OpenRouter key] via durable env-file (not --ae)"
+echo "auth:     OPENROUTER_API_KEY via env-file"
 
 DRY_ARGS=(
   --dry-run
@@ -80,5 +79,5 @@ python3 "$ROOT/event_runtime/control/start_trial.py" \
   --run-id "$RUN_ID" \
   --batch-id "${SPRINT_BATCH_ID:-}" \
   --launch-argv-json "$LAUNCH_JSON" \
-  --secret-env OPENAI_API_KEY
+  --secret-env OPENROUTER_API_KEY
 echo "trial unit=sprint-trial-${RUN_ID}.service log=/data/sprint-launch-${RUN_ID}.log"

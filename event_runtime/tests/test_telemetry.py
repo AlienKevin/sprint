@@ -305,7 +305,6 @@ class TelemetrySamplerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             out = Path(raw)
             env = os.environ.copy()
-            env["SPRINT_CPU_LAUNCH_ATTEMPT"] = "7"
             completed = subprocess.run(
                 [
                     sys.executable,
@@ -341,7 +340,7 @@ class TelemetrySamplerTests(unittest.TestCase):
             out = Path(raw)
             env = os.environ.copy()
             env["OPENAI_API_KEY"] = secret
-            env["CLAUDE_CODE_OAUTH_TOKEN"] = secret
+            env["OPENROUTER_API_KEY"] = secret
             completed = subprocess.run(
                 [
                     sys.executable,
@@ -386,7 +385,7 @@ class TelemetrySamplerTests(unittest.TestCase):
     def test_durable_dry_run_keepalive_includes_telemetry(self) -> None:
         run_id = "dry-telem-check"
         env = os.environ.copy()
-        env["OPENAI_API_KEY"] = "fake-openai-key-that-must-never-print-123456789"
+        env["OPENROUTER_API_KEY"] = "fake-openrouter-key-that-must-never-print-123456789"
         completed = subprocess.run(
             [
                 "bash",
@@ -398,6 +397,8 @@ class TelemetrySamplerTests(unittest.TestCase):
                 "codex",
                 "--model",
                 "openai/test-model",
+                "--endpoint",
+                "https://openrouter.ai/api/v1",
             ],
             env=env,
             text=True,
@@ -421,8 +422,8 @@ class TelemetrySamplerTests(unittest.TestCase):
         command = keepalive[2]
         self.assertIn("/opt/sprint-telemetry.sh", command)
         self.assertIn("/logs/artifacts/telemetry", command)
-        self.assertIn("/opt/sprint-snapshot-loop.sh", command)
-        self.assertNotIn(env["OPENAI_API_KEY"], completed.stdout)
+        self.assertIn("/opt/sprint-agent-supervisor.sh", command)
+        self.assertNotIn(env["OPENROUTER_API_KEY"], completed.stdout)
 
     def test_host_redaction(self) -> None:
         text = (

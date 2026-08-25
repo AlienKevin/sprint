@@ -33,7 +33,6 @@ from event_runtime.sync_verifier import materialize_public_verifier  # noqa: E40
 
 
 EVENT = load_event(repository_root=ROOT)
-VERIFIER_CONTEXT = EVENT.verifier
 MANIFEST = ROOT / "runs/ops/modal-image-warmup.json"
 APP_NAME = "sprint-image-warmup"
 VOLUME_NAME = "sprint-image-warmup-artifacts"
@@ -297,9 +296,7 @@ def main() -> int:
                 "if (v !== process.argv[1]) throw new Error(`unexpected DeepSeek Harness version ${v}`)' 0.1.1-rc.2 && "
                 "python3 -c \"import importlib.metadata; assert importlib.metadata.version('deepseek-harness-sdk') == '0.1.1rc1'\" && "
                 "python3 /opt/event_runtime/container/sprint-deepseek-harness-probe.py && "
-                "test -x /opt/sprint-apply-deepseek-codex-config.sh && "
                 "test -x /opt/sprint-apply-openai-codex-config.sh && "
-                "test -x /opt/sprint-apply-luna-codex-config.sh && "
                 "test -x /opt/sprint-agent-shell-env.sh && "
                 "echo AGENT_SHELL_ENTRYPOINTS_EXECUTABLE && "
                 "mkdir -p /tmp/cpu-telemetry && "

@@ -24,7 +24,7 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
 from types import FrameType
-from typing import Any, Callable, Iterator, Mapping, Protocol, TypeVar
+from typing import Any, Callable, Iterator, Mapping, TypeVar
 
 SCHEMA_VERSION = 1
 STATE_DIR_NAME = ".sprint-resilience"
@@ -151,20 +151,6 @@ class ProbeResult:
     state: ProbeState
     exit_code: int | None = None
     error: str | None = None
-
-
-class ExecutionProvider(Protocol):
-    """Minimal backend boundary used by a durable logical-job controller."""
-
-    name: str
-
-    def start(
-        self, job: Mapping[str, Any], lease: Lease
-    ) -> ProviderHandle: ...
-
-    def probe(self, handle: ProviderHandle) -> ProbeResult: ...
-
-    def terminate(self, handle: ProviderHandle) -> str | None: ...
 
 
 @dataclass(frozen=True)

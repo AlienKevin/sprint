@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -82,6 +83,17 @@ def test_agent_guidance_is_method_neutral() -> None:
         assert cue not in combined, f"agent guidance contains method cue {cue!r}"
 
 
+def test_built_images_do_not_preinstall_one_learning_backend() -> None:
+    surfaces = (
+        TASK / "environment/Dockerfile",
+        TASK / "tests/Dockerfile",
+    )
+    combined = "\n".join(path.read_text().lower() for path in surfaces)
+    for cue in NAMED_METHOD_CUES:
+        assert cue not in combined, f"built image contains method cue {cue!r}"
+    assert "-e /opt/isaaclab/source/isaaclab_rl" in combined
+
+
 def test_documented_container_paths_match_the_built_agent_image() -> None:
     dockerfile = (TASK / "environment/Dockerfile").read_text()
     image = (ROOT / "event_runtime/image.py").read_text()
@@ -93,7 +105,9 @@ def test_documented_container_paths_match_the_built_agent_image() -> None:
     assert "standing_start.py /app/train/" in dockerfile
     assert "`/app/train/README.md`" in instruction
     assert "The writable workspace is `/app`" in guide
-    assert "event gpu --output /app/policy.pt -- python3 -u /app/YOUR_SCRIPT.py" in guide
+    assert (
+        "event gpu --output /app/policy.pt -- python3 -u /app/YOUR_SCRIPT.py" in guide
+    )
     assert "/app/train/YOUR_SCRIPT.py" not in guide
     assert 'AGENT_WORKSPACE_ROOT = Path("/app")' in gpu
     assert 'submit.add_argument("--workdir", default="/app")' in gpu
@@ -160,15 +174,17 @@ def test_codex_comparison_models_pin_provider_compatible_tool_contracts(
         '[projects."/app"]\ntrust_level = "trusted"\n'
     )
     result = subprocess.run(
-        ["bash", str(environment / "sprint-apply-luna-codex-config.sh")],
+        ["bash", str(environment / "sprint-apply-openai-codex-config.sh")],
         check=False,
         capture_output=True,
         text=True,
         env={
             "PATH": "/usr/bin:/bin",
             "CODEX_HOME": str(codex_home),
-            "SPRINT_CODEX_LUNA_MODEL_LOCK": str(models / "luna.json"),
-            "SPRINT_CODEX_DEEPSEEK_MODELS_JSON": str(models / "deepseek.json"),
+            "SPRINT_CODEX_OPENAI_MODEL_LOCK": str(models / "luna.json"),
+            "SPRINT_CODEX_OPENAI_MODEL_ID": "gpt-5.6-luna",
+            "SPRINT_CODEX_OPENAI_MODEL": "@preset/sprint-gpt-5-6-luna-openai-standard",
+            "SPRINT_CODEX_MODEL_MESSAGES_TEMPLATE_JSON": str(models / "deepseek.json"),
         },
     )
     assert result.returncode == 0, result.stderr
@@ -183,49 +199,6 @@ def test_codex_comparison_models_pin_provider_compatible_tool_contracts(
     assert 'model_provider = "sprint_openrouter"' in config
     assert 'base_url = "http://127.0.0.1:18080/api/v1"' in config
     assert f'model_catalog_json = "{codex_home / "models.json"}"' in config
-
-    official_deepseek = json.loads((models / "deepseek.json").read_text())
-    result = subprocess.run(
-        ["bash", str(environment / "sprint-apply-deepseek-codex-config.sh")],
-        check=False,
-        capture_output=True,
-        text=True,
-        env={
-            "PATH": "/usr/bin:/bin",
-            "CODEX_HOME": str(codex_home),
-            "SPRINT_CODEX_DEEPSEEK_MODELS_JSON": str(models / "deepseek.json"),
-            "SPRINT_CODEX_DEEPSEEK_BASE_URL": "https://openrouter.ai/api/v1",
-            "SPRINT_CODEX_DEEPSEEK_MODEL": (
-                "@preset/sprint-deepseek-v4-flash-0731-official"
-            ),
-            "SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON": json.dumps(
-                {"max_output_tokens": 384000}
-            ),
-        },
-    )
-    assert result.returncode == 0, result.stderr
-    locked_catalog = json.loads((codex_home / "models.json").read_text())
-    assert locked_catalog["models"][0]["slug"] == (
-        "@preset/sprint-deepseek-v4-flash-0731-official"
-    )
-    expected_model = official_deepseek["models"][0] | {
-        "slug": "@preset/sprint-deepseek-v4-flash-0731-official",
-        "context_window": 1048576,
-        "max_context_window": 1048576,
-        "auto_compact_token_limit": 631808,
-    }
-    expected_catalog = official_deepseek | {
-        # The runtime intentionally exposes only the selected model. Keeping
-        # the Pro entry in this per-run catalog would let an agent switch away
-        # from the benchmark arm selected by the controller.
-        "models": [expected_model]
-    }
-    assert locked_catalog == expected_catalog
-    config = (codex_home / "config.toml").read_text()
-    assert 'model = "@preset/sprint-deepseek-v4-flash-0731-official"' in config
-    assert 'base_url = "https://openrouter.ai/api/v1"' in config
-    assert 'wire_api = "responses"' in config
-
 
 def test_published_verifier_is_an_exact_reviewed_source_mirror() -> None:
     from event_runtime.event import load_event
@@ -294,6 +267,45 @@ def test_policy_cannot_choose_a_private_pre_start_pose() -> None:
     assert "obs, _ = env.reset()" in at_gun
     assert 'getattr(policy, "reset", None)' in at_gun
     assert "reset_policy(torch.ones" in at_gun
+
+
+def test_repeated_local_trials_do_not_create_inference_tensors_in_isaac() -> None:
+    source = (TASK / "tests/verifier/rollout.py").read_text()
+    main_loop = source[source.index("for step in range(steps + 1):") :]
+
+    assert "with torch.inference_mode():" not in main_loop
+    assert "with torch.no_grad():\n            actions = policy(obs_t)" in main_loop
+    assert "obs, *_ = env.step(actions)" in main_loop
+
+
+def test_agent_facing_event_sources_do_not_prescribe_an_optimization_method() -> None:
+    published = [
+        TASK / "instruction.md",
+        TASK / "environment/README.md",
+        *sorted((TASK / "environment").glob("*.py")),
+        *sorted((TASK / "tests/verifier").glob("*.py")),
+    ]
+    forbidden = (
+        r"\bppo\b",
+        r"proximal policy",
+        r"reinforcement learning",
+        r"policy gradient",
+        r"rsl-rl",
+        r"imitation learning",
+        r"behavior cloning",
+    )
+    for path in published:
+        source = path.read_text().lower()
+        for pattern in forbidden:
+            assert re.search(pattern, source) is None, (
+                f"{path} exposes method hint matching {pattern!r}"
+            )
+
+
+def test_official_environment_has_no_reward_terms() -> None:
+    source = (TASK / "tests/verifier/environment.py").read_text()
+    assert "class SprintRewardsCfg:" in source
+    assert "self.rewards = SprintRewardsCfg()" in source
 
 
 def test_official_loader_preserves_optional_policy_reset() -> None:

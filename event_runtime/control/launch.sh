@@ -17,13 +17,9 @@ DEPLOY_DEBOUNCE_SECONDS=300
 # These exact CLI versions are baked into the task image. Harbor verifies them
 # locally during offline agent setup and skips installation.
 CODEX_VERSION=${CODEX_VERSION:-0.149.1}
-# The optional Claude Code adapter remains pinned for reproducibility even
-# though the active comparison uses Codex for both model families.
-CLAUDE_VERSION=${CLAUDE_VERSION:-2.1.220}
 DEEPSEEK_HARNESS_VERSION=${DEEPSEEK_HARNESS_VERSION:-0.1.1-rc.2}
 DEEPSEEK_HARNESS_SDK_VERSION=${DEEPSEEK_HARNESS_SDK_VERSION:-0.1.1rc1}
 BAKED_CODEX_VERSION=0.149.1
-BAKED_CLAUDE_VERSION=2.1.220
 BAKED_DEEPSEEK_HARNESS_VERSION=0.1.1-rc.2
 export DEEPSEEK_HARNESS_VERSION
 export DEEPSEEK_HARNESS_SDK_VERSION
@@ -34,14 +30,13 @@ export DEEPSEEK_HARNESS_SDK_VERSION
 STANDING_GPU=${STANDING_GPU:-0}
 BATCH_ID=${SPRINT_BATCH_ID:-}
 RUN_ID=""
-AGENT_KIND=claude-code
+AGENT_KIND=codex
 MODEL=""
 ENDPOINT=""
 REASONING_EFFORT=""
 PROMPT_TEMPLATE_OVERRIDE=""
 DRY_RUN=0
 START_MONITOR=1
-DEEPSEEK_OPENROUTER_MODEL=${DEEPSEEK_OPENROUTER_MODEL:-deepseek/deepseek-v4-flash-0731}
 OPENAI_OPENROUTER_PRESET=${SPRINT_OPENROUTER_PRESET:-}
 
 usage() {
@@ -50,8 +45,8 @@ Usage: event_runtime/control/launch.sh [options]
 
 Options:
   --run-id ID                Explicit unique run ID.
-  --agent-kind KIND          claude-code, codex, or deepseek-harness.
-  --model MODEL              Agent model; required except for claude-code.
+  --agent-kind KIND          codex or deepseek-harness.
+  --model MODEL              Agent model (required).
   --endpoint HTTPS_URL       Optional Codex API endpoint (no credentials/query).
   --reasoning-effort VALUE   Agent reasoning effort.
   --codex-version VERSION    Pin @openai/codex npm version (codex only; default 0.149.1).
@@ -98,21 +93,16 @@ if [[ -n "$BATCH_ID" && ! "$BATCH_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{2,48}$ ]]; t
   echo "SPRINT_BATCH_ID must be 3-49 safe filename characters" >&2
   exit 2
 fi
-if [[ "$AGENT_KIND" != "claude-code" && "$AGENT_KIND" != "codex" \
-      && "$AGENT_KIND" != "deepseek-harness" ]]; then
-  echo "--agent-kind must be claude-code, codex, or deepseek-harness" >&2
+if [[ "$AGENT_KIND" != "codex" && "$AGENT_KIND" != "deepseek-harness" ]]; then
+  echo "--agent-kind must be codex or deepseek-harness" >&2
   exit 2
 fi
 if [[ -z "$MODEL" ]]; then
-  if [[ "$AGENT_KIND" == "claude-code" ]]; then
-    MODEL=claude-opus-5
-  else
-    echo "--model is required for $AGENT_KIND" >&2
-    exit 2
-  fi
+  echo "--model is required for $AGENT_KIND" >&2
+  exit 2
 fi
 if [[ -z "$REASONING_EFFORT" ]]; then
-  if [[ "$AGENT_KIND" == "claude-code" || "$AGENT_KIND" == "deepseek-harness" ]]; then
+  if [[ "$AGENT_KIND" == "deepseek-harness" ]]; then
     REASONING_EFFORT=max
   else
     REASONING_EFFORT=high
@@ -128,6 +118,9 @@ if [[ "$AGENT_KIND" == "deepseek-harness" ]]; then
     exit 2
   }
   ENDPOINT=${ENDPOINT:-https://openrouter.ai/api/v1}
+elif [[ "${MODEL#*/}" == deepseek-* ]]; then
+  echo "DeepSeek models must use the pinned deepseek-harness adapter" >&2
+  exit 2
 fi
 if [[ "$MODEL" == -* || "$MODEL" =~ [[:space:][:cntrl:]] ]]; then
   echo "--model must be one non-option value" >&2
@@ -168,13 +161,12 @@ if (
 print(url.hostname.lower())
 PY
   )
-elif [[ "$AGENT_KIND" == "claude-code" ]]; then
-  MODEL_API_HOST=api.anthropic.com
 else
-  MODEL_API_HOST=api.openai.com
+  echo "--endpoint is required and must use the audited OpenRouter gateway" >&2
+  exit 2
 fi
 case "$MODEL_API_HOST" in
-  api.anthropic.com|api.deepseek.com|api.openai.com|openrouter.ai) ;;
+  openrouter.ai) ;;
   *)
     echo "model endpoint host is not in the audited egress allowlist: $MODEL_API_HOST" >&2
     exit 2
@@ -192,10 +184,6 @@ if [[ "$CODEX_VERSION" != "$BAKED_CODEX_VERSION" ]]; then
   echo "Codex $CODEX_VERSION is not baked into the offline image (expected $BAKED_CODEX_VERSION)" >&2
   exit 2
 fi
-if [[ "$CLAUDE_VERSION" != "$BAKED_CLAUDE_VERSION" ]]; then
-  echo "Claude Code $CLAUDE_VERSION is not baked into the offline image (expected $BAKED_CLAUDE_VERSION)" >&2
-  exit 2
-fi
 if [[ "$DEEPSEEK_HARNESS_VERSION" != "$BAKED_DEEPSEEK_HARNESS_VERSION" ]]; then
   echo "DeepSeek Harness $DEEPSEEK_HARNESS_VERSION is not baked into the offline image (expected $BAKED_DEEPSEEK_HARNESS_VERSION)" >&2
   exit 2
@@ -207,31 +195,11 @@ fi
 export SPRINT_SHARED_STATE_DIR="$ROOT/runs/ops/feedback-verifier/${BATCH_ID:-standalone}"
 export SPRINT_SHARED_CACHE_DIR="$ROOT/runs/ops/feedback-verifier/result-cache"
 
-if [[ "$AGENT_KIND" == "claude-code" ]]; then
-  if [[ -n "$ENDPOINT" ]]; then
-    echo "--endpoint is supported only for codex and deepseek-harness" >&2
-    exit 2
-  fi
-  AGENT_SECRET_NAME=CLAUDE_CODE_OAUTH_TOKEN
-  AGENT_SECRET=${CLAUDE_CODE_OAUTH_TOKEN:-}
-  if [[ -z "$AGENT_SECRET" ]]; then
-    echo "CLAUDE_CODE_OAUTH_TOKEN is required; API-key fallback is disabled" >&2
-    exit 1
-  fi
-elif [[ "$AGENT_KIND" == "codex" ]]; then
-  AGENT_SECRET_NAME=OPENAI_API_KEY
-  AGENT_SECRET=${OPENAI_API_KEY:-}
-  if [[ -z "$AGENT_SECRET" ]]; then
-    echo "OPENAI_API_KEY is required for codex" >&2
-    exit 1
-  fi
-else
-  AGENT_SECRET_NAME=OPENROUTER_API_KEY
-  AGENT_SECRET=${OPENROUTER_API_KEY:-}
-  if [[ -z "$AGENT_SECRET" ]]; then
-    echo "OPENROUTER_API_KEY is required for deepseek-harness" >&2
-    exit 1
-  fi
+AGENT_SECRET_NAME=OPENROUTER_API_KEY
+AGENT_SECRET=${OPENROUTER_API_KEY:-}
+if [[ -z "$AGENT_SECRET" ]]; then
+  echo "OPENROUTER_API_KEY is required" >&2
+  exit 1
 fi
 if [[ "$AGENT_SECRET" == *$'\n'* ]]; then
   echo "$AGENT_SECRET_NAME contains a newline" >&2
@@ -249,9 +217,7 @@ VERIFIER_APP_NAME="sprint-$RUN_ID-verifier"
 VOLUME_NAME="sprint-$RUN_ID-volume"
 JOBS_ROOT="$STATE_DIR/harbor-jobs"
 SECRET_DIR="/data/sprint-run-secrets/$RUN_ID"
-PASSWORD_FILE="$SECRET_DIR/restic-password"
 ENV_FILE="$SECRET_DIR/harbor.env"
-REMOTE_PASSWORD="/durable/runs/$RUN_ID/secrets/restic-password"
 
 WARMUP_MANIFEST_PATH="$ROOT/runs/ops/modal-image-warmup.json"
 if [[ -f "$STATE_DIR/run.json" ]]; then
@@ -260,8 +226,7 @@ if [[ -f "$STATE_DIR/run.json" ]]; then
   exit 1
 fi
 
-# Vision Exp is currently available only from DeepSeek's official OpenRouter
-# endpoint.  Keep it separate from the legacy Flash/Baidu comparison below.
+# Vision Exp is available only from DeepSeek's official OpenRouter endpoint.
 if [[ "$AGENT_KIND" == "deepseek-harness" ]]; then
   if [[ -n "${SPRINT_OPENROUTER_PROVIDER_ENDPOINT:-}" \
         && "$SPRINT_OPENROUTER_PROVIDER_ENDPOINT" != "deepseek" ]]; then
@@ -276,57 +241,6 @@ if [[ "$AGENT_KIND" == "deepseek-harness" ]]; then
   export SPRINT_OPENROUTER_PROVIDER_ENDPOINT=deepseek
   unset SPRINT_OPENROUTER_QUANTIZATION
 
-# New Vision Exp evaluations use Codex through the official DeepSeek endpoint.
-# Keep this before the legacy wildcard so Vision Exp cannot be rewritten to
-# V4 Flash 0731/Baidu.
-elif [[ "$AGENT_KIND" == "codex" \
-  && "$MODEL_API_HOST" == "openrouter.ai" \
-  && "${MODEL#*/}" == "deepseek-v4-flash-vision-exp" ]]; then
-  if [[ -n "${SPRINT_OPENROUTER_PROVIDER_ENDPOINT:-}" \
-        && "$SPRINT_OPENROUTER_PROVIDER_ENDPOINT" != "deepseek" ]]; then
-    echo "DeepSeek V4 Flash Vision Exp is locked to the official DeepSeek endpoint" >&2
-    exit 2
-  fi
-  if [[ -n "${SPRINT_OPENROUTER_QUANTIZATION:-}" ]]; then
-    echo "DeepSeek V4 Flash Vision Exp official endpoint has no sealed quantization" >&2
-    exit 2
-  fi
-  if [[ -n "${SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW:-}" \
-        && "$SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW" != "1048576" ]]; then
-    echo "DeepSeek V4 Flash Vision Exp context window is locked to 1048576" >&2
-    exit 2
-  fi
-  export SPRINT_OPENROUTER_PROVIDER_ENDPOINT=deepseek
-  unset SPRINT_OPENROUTER_QUANTIZATION
-  export SPRINT_CODEX_DEEPSEEK_MODEL="$MODEL"
-  export SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW=1048576
-
-# Every new legacy V4 Flash evaluation uses one sealed Baidu Qianfan FP8 endpoint.
-# The proxy replaces caller routing on every request, disables fallback, and
-# independently captures that endpoint's request-time promotion for billing.
-elif [[ "$AGENT_KIND" == "codex" \
-  && "$MODEL_API_HOST" == "openrouter.ai" \
-  && "${MODEL#*/}" == deepseek-v4-flash* ]]; then
-  if [[ -n "${SPRINT_OPENROUTER_PROVIDER_ENDPOINT:-}" \
-        && "$SPRINT_OPENROUTER_PROVIDER_ENDPOINT" != "baidu/fp8" ]]; then
-    echo "DeepSeek V4 Flash provider is locked to baidu/fp8" >&2
-    exit 2
-  fi
-  if [[ -n "${SPRINT_OPENROUTER_QUANTIZATION:-}" \
-        && "$SPRINT_OPENROUTER_QUANTIZATION" != "fp8" ]]; then
-    echo "DeepSeek V4 Flash quantization is locked to fp8" >&2
-    exit 2
-  fi
-  if [[ -n "${SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW:-}" \
-        && "$SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW" != "1048576" ]]; then
-    echo "DeepSeek V4 Flash context window is locked to 1048576" >&2
-    exit 2
-  fi
-  MODEL=deepseek/deepseek-v4-flash-0731
-  export SPRINT_OPENROUTER_PROVIDER_ENDPOINT=baidu/fp8
-  export SPRINT_OPENROUTER_QUANTIZATION=fp8
-  export SPRINT_CODEX_DEEPSEEK_MODEL="$MODEL"
-  export SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW=1048576
 fi
 
 # OpenAI comparison arms use the official OpenAI provider with no fallback.
@@ -536,19 +450,18 @@ print(json.dumps(
 PY
 )
 make_keepalive_json() {
-python3 - "$RUN_ID" "$AGENT_KIND" "$REMOTE_PASSWORD" <<'PY'
+python3 - "$RUN_ID" "$AGENT_KIND" <<'PY'
 import json
 import shlex
 import sys
 
-run_id, agent_kind, password = sys.argv[1:]
+run_id, agent_kind = sys.argv[1:]
 watcher = [
-    "/opt/sprint-snapshot-loop.sh",
+    "/opt/sprint-agent-supervisor.sh",
     "--run-id", run_id,
     "--agent-kind", agent_kind,
-    "--password-file", password,
 ]
-# Start GPU/CPU telemetry before the durable snapshot loop. Snapshot-loop also
+# Start GPU/CPU telemetry before the agent supervisor. The supervisor also
 # starts telemetry idempotently; this covers the sleep-infinity fallback path.
 telemetry = (
     "umask 077; mkdir -p /logs/artifacts/telemetry /run; "
@@ -571,7 +484,7 @@ telemetry = (
 )
 command = (
     telemetry
-    + "if [ -x /opt/sprint-snapshot-loop.sh ]; then exec "
+    + "if [ -x /opt/sprint-agent-supervisor.sh ]; then exec "
     + " ".join(shlex.quote(part) for part in watcher)
     + "; else exec sleep infinity; fi"
 )
@@ -696,10 +609,6 @@ payload = {
     "auth": f"{auth_name}=[configured]",
     "launch": False,
 }
-if endpoint and "api.deepseek.com" in endpoint:
-    payload["sprint_codex_provider"] = "deepseek"
-    payload["codex_wire_api"] = "responses"
-    payload["codex_model_catalog"] = "deepseek-official-models.json"
 print(json.dumps(payload, indent=2, sort_keys=True))
 PY
 }
@@ -738,7 +647,7 @@ if [[ -e "$SECRET_DIR" || -e "$JOBS_ROOT" ]]; then
   echo "partial run state already exists: $RUN_ID" >&2
   exit 1
 fi
-# The Modal keepalive is the snapshot watcher's process environment, separate
+# The Modal keepalive is the agent supervisor's process environment, separate
 # from Harbor's agent-exec environment. Rebuild it after determining the
 # generation so a replacement cannot reuse attempt 1's first-seen sentinel.
 KEEPALIVE_JSON=$(make_keepalive_json)
@@ -752,22 +661,14 @@ printf '%s=%s\n' "$AGENT_SECRET_NAME" "$AGENT_SECRET" >"$ENV_FILE"
 if [[ -n "$ENDPOINT" && "$AGENT_KIND" == "codex" ]]; then
   printf 'OPENAI_BASE_URL=%s\n' "$ENDPOINT" >>"$ENV_FILE"
 fi
-# DeepSeek Codex provider+catalog (not Harbor openai_base_url alone).
-# Luna / default OpenAI endpoints leave this unset.
-if [[ "$AGENT_KIND" == "codex" && "${MODEL#*/}" == deepseek-v4-flash* ]]; then
-  printf 'SPRINT_CODEX_PROVIDER=deepseek\n' >>"$ENV_FILE"
-fi
-openssl rand -hex 32 >"$PASSWORD_FILE"
-chmod 0600 "$ENV_FILE" "$PASSWORD_FILE"
+chmod 0600 "$ENV_FILE"
 
 # The host needs Modal credentials to create the sandbox, but the untrusted
 # agent must never receive a cloud control-plane credential. Keep its env file
 # on an explicit allowlist rather than relying on ambient inheritance.
 python3 "$ROOT/event_runtime/control/credentials.py" "$ENV_FILE" "$AGENT_SECRET_NAME"
 
-if [[ "$AGENT_KIND" == "claude-code" ]]; then
-  PROMPT_TEMPLATE="${PROMPT_TEMPLATE_OVERRIDE:-$SOURCE_ROOT/event_runtime/control/templates/claude.j2}"
-elif [[ "$AGENT_KIND" == "deepseek-harness" ]]; then
+if [[ "$AGENT_KIND" == "deepseek-harness" ]]; then
   PROMPT_TEMPLATE="${PROMPT_TEMPLATE_OVERRIDE:-$SOURCE_ROOT/event_runtime/control/templates/deepseek-harness.j2}"
 else
   PROMPT_TEMPLATE="${PROMPT_TEMPLATE_OVERRIDE:-$SOURCE_ROOT/event_runtime/control/templates/codex.j2}"
@@ -924,7 +825,6 @@ payload = {
     "cpu_agent_gpu_worker": True,
     # New runs publish one exact-name index for job/cancellation discovery.
     # This avoids account-wide Modal VolumeListFiles polling by every lane.
-    "gpu_job_index_required": True,
     "standing_gpu_worker": standing_gpu,
     "agent_cpu_instances": 1,
     "training_max_concurrent_per_run": 1,
@@ -1024,22 +924,7 @@ SHARED_AGENT_ENV=(
   --ae "SPRINT_REQUESTED_CPU_CORES=2"
   --ae "SPRINT_REQUESTED_MEMORY_MIB=8192"
 )
-if [[ "$AGENT_KIND" == "claude-code" ]]; then
-  AGENT_HARBOR_ARGS=(
-    --ak "version=$CLAUDE_VERSION"
-    # The codex branch captures a full agent transcript to /logs/agent; this
-    # branch did not, so a claude-code arm that dies leaves nothing to read.
-    # lane-opus-20260803T081650Z exited ~8 min after launch, repeatedly, and
-    # could not be diagnosed at all for exactly this reason -- while Luna's
-    # codex arm produced a 2.9 MB codex.txt that made last week's root cause
-    # analysis possible. Two arms with different forensic capability is itself
-    # a fairness problem.
-    --ae "SPRINT_AGENT_KIND=claude-code"
-    --ae "SPRINT_AGENT_LOG_DIR=/logs/agent"
-    --ae "SPRINT_RUNTIME_DIR=/run"
-    "${SHARED_AGENT_ENV[@]}"
-  )
-elif [[ "$AGENT_KIND" == "codex" ]]; then
+if [[ "$AGENT_KIND" == "codex" ]]; then
   AGENT_HARBOR_ARGS=(
     --ak "version=$CODEX_VERSION"
     # Hosted search has a separate per-call price and would also bypass the
@@ -1074,22 +959,6 @@ elif [[ "$AGENT_KIND" == "codex" ]]; then
     AGENT_HARBOR_ARGS+=(
       --ae "SPRINT_OPENROUTER_ALLOWED_INFERENCE_PATH=$SPRINT_OPENROUTER_ALLOWED_INFERENCE_PATH"
     )
-  fi
-  if [[ "${MODEL#*/}" == deepseek-v4-flash* || "${MODEL#*/}" == deepseek-v4-pro* ]]; then
-    AGENT_HARBOR_ARGS+=(
-      --ae "SPRINT_CODEX_PROVIDER=deepseek"
-      --ae "SPRINT_CODEX_DEEPSEEK_BASE_URL=$ENDPOINT"
-      --ae "SPRINT_CODEX_DEEPSEEK_MODEL=${SPRINT_CODEX_DEEPSEEK_MODEL:-$DEEPSEEK_OPENROUTER_MODEL}"
-      --ae "SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW=${SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW:-1048576}"
-      --ae "CODEX_GOAL_BOOTSTRAP_MODEL=${SPRINT_CODEX_DEEPSEEK_MODEL:-$DEEPSEEK_OPENROUTER_MODEL}"
-      --ae "CODEX_GOAL_BOOTSTRAP_EXPECTED_PROVIDER=deepseek"
-      --ae "CODEX_GOAL_BOOTSTRAP_PREPARE_SCRIPT=/opt/sprint-apply-deepseek-codex-config.sh"
-    )
-    if [[ -n "$DEEPSEEK_PRICING_SNAPSHOT_JSON" ]]; then
-      AGENT_HARBOR_ARGS+=(
-        --ae "SPRINT_DEEPSEEK_PRICING_SNAPSHOT=$DEEPSEEK_PRICING_SNAPSHOT_JSON"
-      )
-    fi
   fi
   case "${MODEL#*/}" in
     gpt-5.6-luna)
@@ -1133,12 +1002,9 @@ else
   )
 fi
 
-unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN \
-  CLAUDE_FORCE_OAUTH OPENAI_API_KEY OPENAI_BASE_URL HARBOR_API_KEY AGENT_SECRET
+unset OPENROUTER_API_KEY OPENAI_API_KEY OPENAI_BASE_URL HARBOR_API_KEY AGENT_SECRET
 export MODAL_PROFILE
 python3 -m modal volume create --version 1 "$VOLUME_NAME"
-python3 -m modal volume put "$VOLUME_NAME" "$PASSWORD_FILE" \
-  "runs/$RUN_ID/secrets/restic-password"
 python3 -m modal volume put "$VOLUME_NAME" "$STATE_DIR/run.json" \
   "runs/$RUN_ID/state/run.json"
 

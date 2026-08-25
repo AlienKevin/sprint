@@ -1,17 +1,10 @@
 # Copyright (c) 2026 Sprint contributors.
 # SPDX-License-Identifier: BSD-3-Clause
-"""A fixed forward-motion command rather than a sampler.
+"""Deterministic internal command state for verifier diagnostics.
 
-The training environment resamples a random velocity every ten seconds; that is
-what makes the policy general, and it is also what makes a time trial
-unrepeatable.  Here every environment is handed one fixed forward speed for the
-whole run, taken from a schedule so a single simulation launch measures the
-whole speed sweep at once, and the heading target is pinned to +x.
-
-Pinning the heading is not a correction applied on top of the policy.  The
-policy was trained with ``heading_command=True``, meaning the yaw-rate element
-of its command is already derived from heading error; holding the target at
-zero simply uses that interface to keep the robot in its lane.
+Every environment receives one fixed forward speed for the whole run.  The
+submitted policy does not receive this target as an observation; official
+scoring depends only on measured legal progress.
 """
 
 from __future__ import annotations

@@ -51,7 +51,6 @@ HOST_COST_MIRROR_RELATIVE_PATH = Path("sprint-gpu-mirror/cost.json")
 HOST_COST_MIRROR_MAX_AGE_SECONDS = 60.0
 HOST_COST_MIRROR_MAX_CLOCK_SKEW_SECONDS = 60.0
 OPENROUTER_PROXY_STARTUP_GRACE_SECONDS = 30.0
-OPENROUTER_PROXY_RECOVERY_GRACE_SECONDS = 300.0
 
 
 class BudgetTelemetryError(RuntimeError):
@@ -924,7 +923,7 @@ def check_once(
         # the durable proxy ledger and need no credential. An interrupted
         # response still fails closed here until the credentialed controller
         # can recover its exact OpenRouter generation charge.
-        raw_api_key = os.environ.get("OPENAI_API_KEY", "")
+        raw_api_key = os.environ.get("OPENROUTER_API_KEY", "")
         api_key = raw_api_key if len(raw_api_key) >= 16 else None
         awaiting_proxy_recovery = (
             api_key is None

@@ -120,7 +120,7 @@ start_openrouter_proxy() {
     echo "OpenRouter ledger proxy missing: $OPENROUTER_PROXY_BIN" >&2
     exit 1
   }
-  local upstream_api_key=${OPENROUTER_API_KEY:-${OPENAI_API_KEY:-}}
+  local upstream_api_key=${OPENROUTER_API_KEY:-}
   [[ ${#upstream_api_key} -ge 16 ]] || {
     echo "OpenRouter ledger proxy requires a sealed upstream key" >&2
     exit 1
@@ -155,8 +155,8 @@ start_openrouter_proxy() {
   export OPENAI_API_KEY=sprint-local-proxy-token
   printf '%s\n' "$proxy_pid" >"$AGENT_STATE_DIR/openrouter-proxy.pid"
   local ready=0
-  # A legacy run may need one bounded ledger migration before the proxy can
-  # serve health checks. New rollup-backed restarts are constant-time.
+  # Bound proxy startup so malformed or unavailable durable ledger state fails
+  # closed instead of leaving an unmetered agent alive.
   local recovery_deadline=$((SECONDS + OPENROUTER_PROXY_RECOVERY_TIMEOUT_SECONDS))
   while ((SECONDS < recovery_deadline)); do
     if ! kill -0 "$proxy_pid" 2>/dev/null; then
@@ -184,8 +184,6 @@ PY
     echo "OpenRouter ledger proxy failed to become ready" >&2
     exit 1
   fi
-  export SPRINT_CODEX_DEEPSEEK_BASE_URL="$OPENROUTER_PROXY_BASE_URL"
-  export SPRINT_CODEX_LUNA_BASE_URL="$OPENROUTER_PROXY_BASE_URL"
   export SPRINT_CODEX_OPENAI_BASE_URL="$OPENROUTER_PROXY_BASE_URL"
   export OPENAI_BASE_URL="$OPENROUTER_PROXY_BASE_URL"
 }
@@ -194,18 +192,9 @@ if [[ "${SPRINT_OPENROUTER_LEDGER_REQUIRED:-0}" == "1" ]]; then
   start_openrouter_proxy
 fi
 
-# Install a static model catalog for every controlled comparison model.
-# DeepSeek needs its custom provider definition; OpenAI models use their exact
-# Codex 0.149.1 entries so backend refreshes cannot change tool or collaboration
-# semantics during the experiment.
-want_deepseek=0
+# Install a static model catalog for controlled OpenAI comparison models so
+# backend refreshes cannot change tool or collaboration semantics mid-run.
 want_openai=0
-case "${SPRINT_CODEX_PROVIDER:-}" in
-  deepseek|DeepSeek|DEEPSEEK) want_deepseek=1 ;;
-esac
-case "${OPENAI_BASE_URL:-}" in
-  *api.deepseek.com*) want_deepseek=1 ;;
-esac
 case "${SPRINT_MODEL:-}" in
   */gpt-5.6-luna|gpt-5.6-luna|*/gpt-5.6-sol|gpt-5.6-sol) want_openai=1 ;;
 esac
@@ -221,42 +210,7 @@ for argument in "$@"; do
     --model|-m) previous=$argument ;;
   esac
 done
-if ((want_deepseek)); then
-  if [[ -n "${SPRINT_CODEX_DEEPSEEK_MODEL:-}" ]]; then
-    rewritten=()
-    replace_next_model=0
-    for argument in "$@"; do
-      if ((replace_next_model)); then
-        rewritten+=("$SPRINT_CODEX_DEEPSEEK_MODEL")
-        replace_next_model=0
-        continue
-      fi
-      case "$argument" in
-        --model|-m)
-          rewritten+=("$argument")
-          replace_next_model=1
-          ;;
-        --model=*) rewritten+=("--model=$SPRINT_CODEX_DEEPSEEK_MODEL") ;;
-        *) rewritten+=("$argument") ;;
-      esac
-    done
-    set -- "${rewritten[@]}"
-  fi
-  apply=${SPRINT_APPLY_DEEPSEEK_CODEX_CONFIG:-/opt/sprint-apply-deepseek-codex-config.sh}
-  if [[ ! -x "$apply" && -f "$apply" ]]; then
-    chmod +x "$apply" 2>/dev/null || true
-  fi
-  if [[ -f "$apply" ]]; then
-    # shellcheck disable=SC1090
-    bash "$apply" || {
-      echo "failed to apply DeepSeek Codex config via $apply" >&2
-      exit 1
-    }
-  else
-    echo "DeepSeek Codex apply script missing: $apply" >&2
-    exit 1
-  fi
-elif ((want_openai)); then
+if ((want_openai)); then
   # Harbor selects the public model id on the command line.  The pinned Codex
   # catalog deliberately stores the same contract under a private preset slug,
   # so rewrite only the local CLI selector.  The trusted OpenRouter proxy still
@@ -425,7 +379,7 @@ except (OSError, json.JSONDecodeError):
 valid = (
     payload.get("run_id") == sys.argv[2]
     and payload.get("reason") == sys.argv[3]
-    and bool(payload.get("final_snapshot_id"))
+    and bool(payload.get("acknowledged_at"))
 )
 raise SystemExit(0 if valid else 1)
 PY

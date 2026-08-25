@@ -439,7 +439,7 @@ def test_proxy_sanitizes_binary_terminal_text_before_provider_request() -> None:
                 "messages": [
                     {
                         "role": "tool",
-                        "content": "restic:\udf8b\u0000\u001b[31m\ufffd",
+                        "content": "binary:\udf8b\u0000\u001b[31m\ufffd",
                     }
                 ],
             }
@@ -450,7 +450,7 @@ def test_proxy_sanitizes_binary_terminal_text_before_provider_request() -> None:
 
     assert json.loads(body) == payload
     content = payload["messages"][0]["content"]
-    assert content == "restic:\ufffd\\x00\\x1b[31m\ufffd"
+    assert content == "binary:\ufffd\\x00\\x1b[31m\ufffd"
     assert not any(0xD800 <= ord(character) <= 0xDFFF for character in content)
     assert all(ord(character) >= 0x20 or character in "\t\n\r" for character in content)
 

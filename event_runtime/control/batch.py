@@ -66,9 +66,7 @@ HARBOR_REVISION = "dafb1387151e1c32702963d44fe6c3cea66cf8cb"
 CODEX_VERSION = "0.149.1"
 TRIALS_PER_MODEL = 3
 DEFAULT_FAMILIES = ("deepseek", "luna")
-# Production experiments must use OpenRouter with the model author's official
-# provider. Historical Baidu/Alibaba arms remain in the specs so archived runs
-# can still be rendered, but they are deliberately not launchable.
+# Production experiments use OpenRouter with the model author's official provider.
 SUPPORTED_FAMILIES = ("deepseek", "luna", "sol")
 OPENAI_FAMILY_SPECS: dict[str, dict[str, str]] = {
     "luna": {
@@ -91,10 +89,7 @@ OPENAI_FAMILY_SPECS: dict[str, dict[str, str]] = {
     },
 }
 DEEPSEEK_ROUTED_FAMILY_SPECS: dict[str, dict[str, str]] = {
-    # `deepseek` is the current public/default family and uses DeepSeek's own
-    # pinned minimal benchmark harness with its native persisted goal mode.
-    # Keep the older provider comparisons on Codex so historical arms remain
-    # reproducible rather than silently changing harnesses.
+    # DeepSeek uses its pinned minimal benchmark harness and native goal mode.
     "deepseek": {
         "model": "deepseek/deepseek-v4-flash-vision-exp",
         "resolved_model": "deepseek/deepseek-v4-flash-vision-exp-20260821",
@@ -106,30 +101,6 @@ DEEPSEEK_ROUTED_FAMILY_SPECS: dict[str, dict[str, str]] = {
         "wire_api": "chat_completions",
         "agent_kind": "deepseek-harness",
         "goal_mode": "deepseek_native_goal",
-    },
-    "flash-baidu": {
-        "model": "deepseek/deepseek-v4-flash-0731",
-        "resolved_model": "Baidu | deepseek/deepseek-v4-flash-20260731",
-        "provider": "Baidu",
-        "provider_endpoint": "baidu/fp8",
-        "quantization": "fp8",
-        "context_window": "1048576",
-        "wrapper": "deepseek.sh",
-        "wire_api": "responses",
-        "agent_kind": "codex",
-        "goal_mode": "codex_session_goal",
-    },
-    "pro-alibaba": {
-        "model": "deepseek/deepseek-v4-pro-0813",
-        "resolved_model": "Alibaba | deepseek/deepseek-v4-pro-20260813",
-        "provider": "Alibaba",
-        "provider_endpoint": "alibaba",
-        "quantization": "unknown",
-        "context_window": "1000000",
-        "wrapper": "deepseek.sh",
-        "wire_api": "responses",
-        "agent_kind": "codex",
-        "goal_mode": "codex_session_goal",
     },
 }
 REASONING_EFFORT = "max"
@@ -230,7 +201,6 @@ def load_env(path: Path) -> dict[str, str]:
         if (
             name.strip()
             in {
-                "OPENAI_API_KEY",
                 "OPENROUTER_API_KEY",
                 "OPENROUTER_MANAGEMENT_KEY",
             }
@@ -1467,8 +1437,6 @@ def preflight(
         "deepseek": "OPENROUTER_API_KEY",
         "luna": "OPENROUTER_API_KEY",
         "sol": "OPENROUTER_API_KEY",
-        "flash-baidu": "OPENROUTER_API_KEY",
-        "pro-alibaba": "OPENROUTER_API_KEY",
     }
     for family in families:
         name = required_keys[family]
@@ -1926,6 +1894,59 @@ def retire_batch_control_services(batch_id: str) -> None:
     )
 
 
+def run_control_units(run_id: str) -> tuple[str, ...]:
+    """Return every host-side systemd unit owned by one trial."""
+
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{2,48}", run_id):
+        raise ValueError(f"unsafe run id: {run_id!r}")
+    return (
+        f"sprint-trial-{run_id}.service",
+        f"sprint-monitor-{run_id}.service",
+        f"sprint-pulse-{run_id}.service",
+        f"sprint-gpu-dispatch-{run_id}.service",
+    )
+
+
+def retire_run_control_services(run_id: str) -> None:
+    """Stop host controllers and verify that none remain active.
+
+    A provider-side acknowledgement proves that paid sandboxes are gone, but
+    it does not terminate a Harbor wrapper or a finalizer blocked in a Modal
+    CLI read.  Batch state may say ``stopped`` only after both sides of that
+    boundary are down.
+    """
+
+    units = run_control_units(run_id)
+    completed = subprocess.run(
+        ["systemctl", "--user", "stop", *units],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"failed to stop host controllers for {run_id}: "
+            f"{completed.stderr.strip() or f'exit {completed.returncode}'}"
+        )
+    active = [
+        unit
+        for unit in units
+        if subprocess.run(
+            ["systemctl", "--user", "is-active", "--quiet", unit],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        ).returncode
+        == 0
+    ]
+    if active:
+        raise RuntimeError(
+            f"host controllers still active for {run_id}: {', '.join(active)}"
+        )
+
+
 def start_batch_control_services(
     batch_id: str, env_file: Path, modal_profile: str
 ) -> None:
@@ -2191,7 +2212,6 @@ def launch(
             env = dict(base_env)
             child_key = credentials_by_run[arm["run_id"]].api_key
             env["OPENROUTER_API_KEY"] = child_key
-            env["OPENAI_API_KEY"] = child_key
             env["RUN_ID"] = arm["run_id"]
             env["MODEL"] = arm["model"]
             if arm.get("openrouter_preset"):
@@ -2201,8 +2221,6 @@ def launch(
                 env["SPRINT_OPENROUTER_PROVIDER_ENDPOINT"] = arm["provider_endpoint"]
                 if arm.get("quantization") not in {None, "unknown"}:
                     env["SPRINT_OPENROUTER_QUANTIZATION"] = arm["quantization"]
-                if arm["wrapper"].endswith("deepseek.sh"):
-                    env["SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW"] = arm["context_window"]
             output = run_checked([arm["wrapper"]], env=env)
             arm["status"] = "launched"
             arm["launch_output_sha256"] = hashlib.sha256(output.encode()).hexdigest()
@@ -3317,6 +3335,8 @@ def stop_batch(batch_id: str, *, env_file: Path | None = None) -> dict[str, Any]
                 wait_for_termination=True,
             )
             status = str(result.get("status") or "teardown_failed")
+            if status == "acknowledged":
+                retire_run_control_services(run_id)
             output = {"status": status}
             if status != "acknowledged":
                 output["error"] = str(

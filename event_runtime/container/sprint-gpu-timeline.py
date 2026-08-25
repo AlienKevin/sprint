@@ -32,11 +32,6 @@ PHASES = (
     "gpu_idle_assigned",
 )
 
-WAIT_PHASES = frozenset({"gpu_queue_wait"})
-STARTUP_PHASES = frozenset({"gpu_worker_starting", "isaac_starting"})
-ACTIVE_PHASES = frozenset({"gpu_active"})
-
-
 def utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 

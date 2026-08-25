@@ -50,9 +50,7 @@ def test_agent_image_marks_codex_shell_entrypoints_executable() -> None:
     source = (ROOT / "event_runtime" / "image.py").read_text()
     for name in (
         "sprint-codex-exec-wrapper.sh",
-        "sprint-apply-deepseek-codex-config.sh",
         "sprint-apply-openai-codex-config.sh",
-        "sprint-apply-luna-codex-config.sh",
         "sprint-agent-shell-env.sh",
         "sprint-trace-mirror.py",
     ):
@@ -74,9 +72,7 @@ def test_warmup_checks_agent_shell_entrypoints() -> None:
     source = (PREFLIGHT / "warm_images.py").read_text()
     for name in (
         "sprint-codex-exec-wrapper.sh",
-        "sprint-apply-deepseek-codex-config.sh",
         "sprint-apply-openai-codex-config.sh",
-        "sprint-apply-luna-codex-config.sh",
         "sprint-agent-shell-env.sh",
     ):
         assert f"test -x /opt/{name}" in source
@@ -139,13 +135,25 @@ def test_functional_canary_uses_pinned_repo_owned_training_fixture() -> None:
     assert "training_fixture_sha256" in source
 
 
+def test_functional_canary_reuses_the_published_rollout_in_one_process() -> None:
+    canary = load_script("canary.py")
+    source = (PREFLIGHT / "canary.py").read_text()
+    fixture = canary.REPEATED_VERIFIER_FIXTURE.read_text()
+
+    assert canary.REPEATED_VERIFIER_FIXTURE == (PREFLIGHT / "repeat_verifier_trial.py")
+    assert canary.REPEATED_VERIFIER_FIXTURE.is_file()
+    assert 'geometry="/opt/event-verifier/verifier/collision_geometry.json"' in fixture
+    assert "repeat_verifier_trial.py --headless --device=cuda:0" in source
+    assert 'repeat-verifier.log)" = 3' in source
+
+
 def test_functional_canary_uses_trainer_owned_final_checkpoint() -> None:
     source = (PREFLIGHT / "canary.py").read_text()
 
     assert "export SPRINT_GPU_CHECKPOINT_DIR=/warm{remote_root}/checkpoints" in source
     assert "export SPRINT_GPU_PROGRESS_FILE=/warm{remote_root}/progress.json" in source
     assert "cp /app/policy_train.pt" not in source
-    assert '"[sprint] training complete"' in source
+    assert '"[sprint] optimization canary complete"' in source
     assert '"EXPORTED /app/policy_train.pt"' not in source
 
 

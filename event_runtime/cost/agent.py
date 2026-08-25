@@ -18,9 +18,6 @@ from typing import Any
 
 
 SCHEMA_VERSION = 1
-AGENT_ROLES = ("cpu_agent", "training_gpu")
-
-
 def _terminal_provider_summary(
     state_dir: Path | None, run_id: str
 ) -> dict[str, Any] | None:
@@ -532,26 +529,19 @@ def build_snapshot(
             prior.get("cost_components_usd"),
             remote.get("cost_components_usd"),
         )
-        if name != "model_api":
-            merged["allocated_seconds"] = max(
-                float(host.get("allocated_seconds") or 0.0),
-                float(prior.get("allocated_seconds") or 0.0),
-                float(remote.get("allocated_seconds") or 0.0),
-            )
-        else:
-            merged["tokens"] = cumulative_numeric_map(
-                host.get("tokens"), prior.get("tokens"), remote.get("tokens")
-            )
-            merged["request_count"] = max(
-                int(host.get("request_count") or 0),
-                int(prior.get("request_count") or 0),
-                int(remote.get("request_count") or 0),
-            )
-            merged["priced_request_count"] = max(
-                int(host.get("priced_request_count") or 0),
-                int(prior.get("priced_request_count") or 0),
-                int(remote.get("priced_request_count") or 0),
-            )
+        merged["tokens"] = cumulative_numeric_map(
+            host.get("tokens"), prior.get("tokens"), remote.get("tokens")
+        )
+        merged["request_count"] = max(
+            int(host.get("request_count") or 0),
+            int(prior.get("request_count") or 0),
+            int(remote.get("request_count") or 0),
+        )
+        merged["priced_request_count"] = max(
+            int(host.get("priced_request_count") or 0),
+            int(prior.get("priced_request_count") or 0),
+            int(remote.get("priced_request_count") or 0),
+        )
         return merged
 
     components = {

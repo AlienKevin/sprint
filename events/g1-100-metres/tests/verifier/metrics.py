@@ -239,25 +239,3 @@ def evaluate_run(
         tracking_error_mps=round(abs(commanded_speed - achieved), 4),
         checks=checks,
     )
-
-
-def format_table(results: list[RunResult]) -> str:
-    """Compact official result summary for local diagnostics."""
-
-    header = (
-        f"{'100 m':>8}  {'dist':>7}  {'lane':>8}  {'self':>8}  "
-        f"{'valid':>5}  failed gates"
-    )
-    lines = [header, "-" * len(header)]
-    for result in results:
-        checks = {check.name: check for check in result.checks}
-        finish = f"{result.finish_time_s:.2f}s" if result.finish_time_s else "DNF"
-        failed = [check.name for check in result.checks if not check.passed]
-        lines.append(
-            f"{finish:>8}  {result.distance_m:7.1f}  "
-            f"{checks['in_lane'].value:8.3f}  "
-            f"{checks['self_collision'].value * 100:7.2f}cm  "
-            f"{'yes' if result.valid else 'no':>5}  "
-            f"{', '.join(failed) if failed else '-'}"
-        )
-    return "\n".join(lines)

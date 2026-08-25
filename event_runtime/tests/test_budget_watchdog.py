@@ -192,7 +192,6 @@ def test_live_watchdog_prices_api_cpu_and_gpu(tmp_path: Path, monkeypatch) -> No
     codex_home = tmp_path / "codex"
     root = write_run(durable, "unit")
     write_codex_request(codex_home)
-    monkeypatch.setenv("SPRINT_CPU_LAUNCH_ATTEMPT", "1")
     watchdog.ensure_cpu_start(root, 1, 1_000)
     events = root / "telemetry/gpu_timeline/events"
     events.mkdir(parents=True)
@@ -315,7 +314,6 @@ def test_live_watchdog_merges_fresh_host_training_cost_and_stops(
     runtime = tmp_path / "run"
     codex_home = tmp_path / "codex"
     root = write_run(durable, "unit")
-    monkeypatch.setenv("SPRINT_CPU_LAUNCH_ATTEMPT", "1")
     watchdog.ensure_cpu_start(root, 1, 1_000)
     write_host_cost_mirror(runtime, checked_at=1_099)
 
@@ -344,7 +342,6 @@ def test_fresh_host_mirror_is_authoritative_over_idle_gap_fallbacks(
     runtime = tmp_path / "run"
     codex_home = tmp_path / "codex"
     root = write_run(durable, "unit")
-    monkeypatch.setenv("SPRINT_CPU_LAUNCH_ATTEMPT", "1")
     watchdog.ensure_cpu_start(root, 1, 1_000)
     events = root / "telemetry/gpu_timeline/events"
     events.mkdir(parents=True)
@@ -395,7 +392,6 @@ def test_live_watchdog_fails_closed_when_host_cost_mirror_is_stale(
     runtime = tmp_path / "run"
     codex_home = tmp_path / "codex"
     root = write_run(durable, "unit")
-    monkeypatch.setenv("SPRINT_CPU_LAUNCH_ATTEMPT", "1")
     watchdog.ensure_cpu_start(root, 1, 1_000)
     write_host_cost_mirror(runtime, checked_at=1_000)
 
@@ -423,7 +419,6 @@ def test_live_watchdog_prices_pinned_luna_default_tier(
         service_tier="default",
     )
     write_codex_request(codex_home, model="gpt-5.6-luna")
-    monkeypatch.setenv("SPRINT_CPU_LAUNCH_ATTEMPT", "1")
     watchdog.ensure_cpu_start(root, 1, 1_000)
 
     payload = watchdog.check_once(
@@ -451,7 +446,7 @@ def test_live_watchdog_uses_openrouter_undiscounted_cost_for_budget(
         api_cost_source="openrouter_reported_per_request",
     )
     write_openrouter_cost(root, cost=0.75, undiscounted_cost=1.5)
-    monkeypatch.setenv("OPENAI_API_KEY", "test-openrouter-key-long-enough")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key-long-enough")
     watchdog.ensure_cpu_start(root, 1, 1_000)
 
     payload = watchdog.check_once(
@@ -487,7 +482,7 @@ def test_openrouter_watchdog_bootstraps_without_agent_scoped_api_key(
         api_cost_source="openrouter_reported_per_request",
     )
     write_openrouter_cost(root, cost=0.75)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     watchdog.ensure_cpu_start(root, 1, 1_000)
 
     payload = watchdog.check_once(
@@ -535,7 +530,7 @@ def test_openrouter_watchdog_allows_live_proxy_to_recover_charge_without_key(
     process.parent.mkdir(parents=True)
     process.write_text(f"{os.getpid()} {os.getpid()} 1\n")
     (process.parent / "openrouter-proxy.pid").write_text(f"{os.getpid()}\n")
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
     payload = watchdog.check_once(
         run_id="unit",
@@ -584,8 +579,7 @@ def test_openrouter_watchdog_fails_closed_when_recovery_proxy_disappears(
     proxy_pid = runtime / "sprint-agent/openrouter-proxy.pid"
     proxy_pid.parent.mkdir(parents=True)
     proxy_pid.write_text(f"{os.getpid()}\n")
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.setenv("SPRINT_CPU_LAUNCH_ATTEMPT", "1")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     watchdog.ensure_cpu_start(root, 1, 1_000)
 
     payload = watchdog.check_once(
@@ -632,7 +626,7 @@ def test_live_watchdog_fails_closed_if_codex_outlives_cost_proxy(
     process = runtime / "sprint-agent/codex-process"
     process.parent.mkdir(parents=True)
     process.write_text("123 123 1\n")
-    monkeypatch.setenv("OPENAI_API_KEY", "test-openrouter-key-long-enough")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key-long-enough")
     watchdog.ensure_cpu_start(root, 1, 1_000)
 
     with pytest.raises(
@@ -666,7 +660,7 @@ def test_openrouter_watchdog_supports_deepseek_harness_ledger(
     process.parent.mkdir(parents=True)
     process.write_text(f"{os.getpid()} {os.getpid()} 1\n")
     (process.parent / "openrouter-proxy.pid").write_text(f"{os.getpid()}\n")
-    monkeypatch.setenv("OPENAI_API_KEY", "sprint-local-proxy-token")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     watchdog.ensure_cpu_start(root, 1, 1_000)
 
     payload = watchdog.check_once(
@@ -984,7 +978,6 @@ def test_live_watchdog_stops_before_cap_using_shutdown_reserve(
     runtime = tmp_path / "run"
     codex_home = tmp_path / "codex"
     root = write_run(durable, "unit")
-    monkeypatch.setenv("SPRINT_CPU_LAUNCH_ATTEMPT", "1")
     watchdog.ensure_cpu_start(root, 1, 1_000)
     (root / "BUDGET_STOP_REQUESTED.json").write_text(
         '{"reason":"agent_cost_budget_exhausted"}\n'

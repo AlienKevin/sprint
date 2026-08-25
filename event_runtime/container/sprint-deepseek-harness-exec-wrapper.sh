@@ -17,7 +17,6 @@ PROXY_PROCESS_FILE="$AGENT_STATE_DIR/openrouter-proxy.pid"
 EXPECTED_INTERRUPT="$AGENT_STATE_DIR/expected-interrupt"
 STOP_ACK_TIMEOUT_SECONDS=${SPRINT_STOP_ACK_TIMEOUT_SECONDS:-600}
 PROXY_DRAIN_TIMEOUT_SECONDS=${SPRINT_OPENROUTER_PROXY_DRAIN_TIMEOUT_SECONDS:-900}
-PROXY_RECOVERY_TIMEOUT_SECONDS=${SPRINT_OPENROUTER_PROXY_RECOVERY_TIMEOUT_SECONDS:-300}
 
 EXPECTED_MODEL=deepseek/deepseek-v4-flash-vision-exp
 REQUEST_CONTRACT='{"model":"deepseek/deepseek-v4-flash-vision-exp","stream":true,"temperature":1.0,"top_p":0.95,"max_tokens":384000,"reasoning_effort":"max"}'
@@ -47,12 +46,10 @@ REQUEST_CONTRACT='{"model":"deepseek/deepseek-v4-flash-vision-exp","stream":true
   echo "SPRINT_STOP_ACK_TIMEOUT_SECONDS must be a positive integer" >&2
   exit 2
 }
-for timeout_name in PROXY_DRAIN_TIMEOUT_SECONDS PROXY_RECOVERY_TIMEOUT_SECONDS; do
-  [[ "${!timeout_name}" =~ ^[1-9][0-9]*$ ]] || {
-    echo "$timeout_name must be a positive integer" >&2
-    exit 2
-  }
-done
+[[ "$PROXY_DRAIN_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || {
+  echo "PROXY_DRAIN_TIMEOUT_SECONDS must be a positive integer" >&2
+  exit 2
+}
 
 umask 077
 mkdir -p "$AGENT_STATE_DIR" "$AGENT_LOG_DIR"
@@ -230,7 +227,7 @@ except (OSError, json.JSONDecodeError):
 valid = (
     payload.get("run_id") == sys.argv[2]
     and payload.get("reason") == sys.argv[3]
-    and bool(payload.get("final_snapshot_id"))
+    and bool(payload.get("acknowledged_at"))
 )
 raise SystemExit(0 if valid else 1)
 PY

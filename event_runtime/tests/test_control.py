@@ -1288,11 +1288,11 @@ class DurableOpsTests(unittest.TestCase):
 
     def test_redacted_dry_run_does_not_create_state(self) -> None:
         run_id = f"dry-{uuid.uuid4().hex[:12]}"
-        token = "fake-oauth-value-that-must-never-print-123456789"
+        token = "fake-openrouter-value-that-must-never-print-123456789"
         state = OPS / run_id
         env = os.environ.copy()
         env.pop("AGENT_COST_BUDGET_USD", None)
-        env["CLAUDE_CODE_OAUTH_TOKEN"] = token
+        env["OPENROUTER_API_KEY"] = token
         completed = subprocess.run(
             [
                 "bash",
@@ -1300,6 +1300,12 @@ class DurableOpsTests(unittest.TestCase):
                 "--dry-run",
                 "--run-id",
                 run_id,
+                "--agent-kind",
+                "codex",
+                "--model",
+                "openai/gpt-5.6-luna",
+                "--endpoint",
+                "https://openrouter.ai/api/v1",
             ],
             env=env,
             text=True,
@@ -1308,22 +1314,22 @@ class DurableOpsTests(unittest.TestCase):
             check=True,
         )
         self.assertNotIn(token, completed.stdout + completed.stderr)
-        self.assertIn("CLAUDE_CODE_OAUTH_TOKEN=[configured]", completed.stdout)
+        self.assertIn("OPENROUTER_API_KEY=[configured]", completed.stdout)
         config = json.loads(completed.stdout)
-        self.assertEqual(config["agent_kind"], "claude-code")
+        self.assertEqual(config["agent_kind"], "codex")
         self.assertTrue(config["automatic_stop"])
         self.assertEqual(config["automatic_stop_reason"], "agent_cost_budget_exhausted")
         self.assertEqual(config["agent_cost_budget_usd"], 10.0)
         self.assertNotIn("stop_after_seconds", config)
         self.assertFalse(state.exists())
 
-    def test_codex_dry_run_is_redacted_and_manual_only(self) -> None:
+    def test_native_codex_endpoint_is_rejected(self) -> None:
         run_id = f"dry-{uuid.uuid4().hex[:12]}"
         key = "fake-openai-key-that-must-never-print-123456789"
         state = OPS / run_id
         env = os.environ.copy()
         env.pop("AGENT_COST_BUDGET_USD", None)
-        env["OPENAI_API_KEY"] = key
+        env["OPENROUTER_API_KEY"] = key
         completed = subprocess.run(
             [
                 "bash",
@@ -1342,27 +1348,18 @@ class DurableOpsTests(unittest.TestCase):
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            check=True,
+            check=False,
         )
         self.assertNotIn(key, completed.stdout + completed.stderr)
-        config = json.loads(completed.stdout)
-        self.assertEqual(config["agent_kind"], "codex")
-        self.assertEqual(config["model"], "openai/test-codex-model")
-        self.assertEqual(config["agent_allowed_host"], "api.openai.com")
-        self.assertEqual(config["hosted_model_tools_policy"], "disabled")
-        self.assertIsNone(config["service_tier"])
-        self.assertFalse(config["usage_audit_required"])
-        self.assertTrue(config["automatic_stop"])
-        self.assertEqual(config["automatic_stop_reason"], "agent_cost_budget_exhausted")
-        self.assertEqual(config["agent_cost_budget_usd"], 10.0)
-        self.assertNotIn("stop_after_seconds", config)
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("not in the audited egress allowlist", completed.stderr)
         self.assertFalse(state.exists())
 
     def test_any_codex_model_on_openrouter_uses_exact_shared_ledger(self) -> None:
         run_id = f"dry-{uuid.uuid4().hex[:12]}"
         key = "fake-openrouter-key-that-must-never-print-123456789"
         env = os.environ.copy()
-        env["OPENAI_API_KEY"] = key
+        env["OPENROUTER_API_KEY"] = key
         completed = subprocess.run(
             [
                 "bash",
@@ -1400,9 +1397,7 @@ class DurableOpsTests(unittest.TestCase):
     def test_dry_run_accepts_one_global_budget_override(self) -> None:
         run_id = f"dry-{uuid.uuid4().hex[:12]}"
         env = os.environ.copy()
-        env["CLAUDE_CODE_OAUTH_TOKEN"] = (
-            "fake-oauth-value-that-must-never-print-123456789"
-        )
+        env["OPENROUTER_API_KEY"] = "fake-openrouter-key-that-must-never-print-123456789"
         env["AGENT_COST_BUDGET_USD"] = "12.5"
         completed = subprocess.run(
             [
@@ -1411,6 +1406,12 @@ class DurableOpsTests(unittest.TestCase):
                 "--dry-run",
                 "--run-id",
                 run_id,
+                "--agent-kind",
+                "codex",
+                "--model",
+                "openai/gpt-5.6-luna",
+                "--endpoint",
+                "https://openrouter.ai/api/v1",
             ],
             env=env,
             text=True,
@@ -1424,7 +1425,7 @@ class DurableOpsTests(unittest.TestCase):
     def test_terra_dry_run_pins_reconstructible_cost_policy(self) -> None:
         run_id = f"dry-{uuid.uuid4().hex[:12]}"
         env = os.environ.copy()
-        env["OPENAI_API_KEY"] = "fake-openai-key-that-must-never-print-123456789"
+        env["OPENROUTER_API_KEY"] = "fake-openrouter-key-that-must-never-print-123456789"
         completed = subprocess.run(
             [
                 "bash",
@@ -1436,6 +1437,8 @@ class DurableOpsTests(unittest.TestCase):
                 "codex",
                 "--model",
                 "openai/gpt-5.6-terra",
+                "--endpoint",
+                "https://openrouter.ai/api/v1",
             ],
             env=env,
             text=True,
@@ -1453,7 +1456,6 @@ class DurableOpsTests(unittest.TestCase):
         env = os.environ.copy()
         key = "fake-openrouter-key-that-must-never-print-123456789"
         env["OPENROUTER_API_KEY"] = key
-        env["OPENAI_API_KEY"] = key
         completed = subprocess.run(
             [
                 "bash",
@@ -1515,51 +1517,10 @@ class DurableOpsTests(unittest.TestCase):
         )
         self.assertTrue(config["usage_audit_required"])
 
-    def test_deepseek_vision_codex_dry_run_seals_benchmark_contract(self) -> None:
-        run_id = f"dry-{uuid.uuid4().hex[:12]}"
-        env = os.environ.copy()
-        key = "fake-openrouter-key-that-must-never-print-123456789"
-        env["OPENROUTER_API_KEY"] = key
-        env["OPENAI_API_KEY"] = key
-        completed = subprocess.run(
-            [
-                "bash",
-                str(ROOT / "event_runtime/control/launch.sh"),
-                "--dry-run",
-                "--run-id",
-                run_id,
-                "--agent-kind",
-                "codex",
-                "--model",
-                "deepseek/deepseek-v4-flash-vision-exp",
-                "--endpoint",
-                "https://openrouter.ai/api/v1",
-                "--reasoning-effort",
-                "max",
-            ],
-            env=env,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=True,
-        )
-        config = json.loads(completed.stdout)
-        self.assertEqual(config["openrouter_route"]["only"], ["deepseek"])
-        self.assertEqual(
-            config["openrouter_request_contract"],
-            {
-                "model": "deepseek/deepseek-v4-flash-vision-exp",
-                "temperature": 1.0,
-                "top_p": 0.95,
-                "max_output_tokens": 384_000,
-                "reasoning": {"effort": "max"},
-            },
-        )
-
     def test_sol_dry_run_pins_reconstructible_cost_policy(self) -> None:
         run_id = f"dry-{uuid.uuid4().hex[:12]}"
         env = os.environ.copy()
-        env["OPENAI_API_KEY"] = "fake-openai-key-that-must-never-print-123456789"
+        env["OPENROUTER_API_KEY"] = "fake-openrouter-key-that-must-never-print-123456789"
         completed = subprocess.run(
             [
                 "bash",
@@ -1573,6 +1534,8 @@ class DurableOpsTests(unittest.TestCase):
                 "openai/gpt-5.6-sol",
                 "--reasoning-effort",
                 "high",
+                "--endpoint",
+                "https://openrouter.ai/api/v1",
             ],
             env=env,
             text=True,
@@ -1585,54 +1548,10 @@ class DurableOpsTests(unittest.TestCase):
         self.assertEqual(config["reasoning_effort"], "high")
         self.assertTrue(config["usage_audit_required"])
 
-    def test_deepseek_dry_run_pins_baidu_and_peak_normalized_cost_policy(self) -> None:
+    def test_codex_cannot_launch_a_deepseek_model(self) -> None:
         run_id = f"dry-{uuid.uuid4().hex[:12]}"
         env = os.environ.copy()
-        env["OPENAI_API_KEY"] = "fake-deepseek-key-that-must-never-print-123456789"
-        completed = subprocess.run(
-            [
-                "bash",
-                str(ROOT / "event_runtime/control/launch.sh"),
-                "--dry-run",
-                "--run-id",
-                run_id,
-                "--agent-kind",
-                "codex",
-                "--model",
-                "deepseek/deepseek-v4-flash",
-                "--endpoint",
-                "https://openrouter.ai/api/v1",
-            ],
-            env=env,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=True,
-        )
-        config = json.loads(completed.stdout)
-        self.assertEqual(config["agent_allowed_host"], "openrouter.ai")
-        self.assertEqual(config["model"], "deepseek/deepseek-v4-flash-0731")
-        self.assertEqual(
-            config["openrouter_route"],
-            {
-                "only": ["baidu/fp8"],
-                "order": ["baidu/fp8"],
-                "allow_fallbacks": False,
-                "require_parameters": True,
-                "quantizations": ["fp8"],
-            },
-        )
-        self.assertEqual(
-            config["budget_enforcement"]["api_budget_cost_basis"],
-            "openrouter_list_price_with_deepseek_peak_floor",
-        )
-        self.assertTrue(config["usage_audit_required"])
-
-    def test_deepseek_dry_run_rejects_provider_override(self) -> None:
-        run_id = f"dry-{uuid.uuid4().hex[:12]}"
-        env = os.environ.copy()
-        env["OPENAI_API_KEY"] = "fake-deepseek-key-that-must-never-print-123456789"
-        env["SPRINT_OPENROUTER_PROVIDER_ENDPOINT"] = "deepinfra"
+        env["OPENROUTER_API_KEY"] = "fake-deepseek-key-that-must-never-print-123456789"
 
         completed = subprocess.run(
             [
@@ -1656,7 +1575,7 @@ class DurableOpsTests(unittest.TestCase):
         )
 
         self.assertEqual(completed.returncode, 2)
-        self.assertIn("locked to baidu/fp8", completed.stderr)
+        self.assertIn("must use the pinned deepseek-harness adapter", completed.stderr)
 
     def test_deepseek_harness_dry_run_seals_official_vision_contract(self) -> None:
         run_id = f"dry-{uuid.uuid4().hex[:12]}"
@@ -1714,116 +1633,11 @@ class DurableOpsTests(unittest.TestCase):
             },
         )
 
-    def test_stop_watcher_signals_only_dummy_claude_and_acks(self) -> None:
+    def test_codex_group_escalation_trace_mirror_and_ack_order(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             durable = root / "durable"
             runtime = root / "run"
-            app = root / "app"
-            agent_logs = root / "agent"
-            artifact_logs = root / "artifacts"
-            fake_root = root / "root"
-            for path in (durable, runtime, app, agent_logs, artifact_logs, fake_root):
-                path.mkdir()
-            password = durable / "runs/test-watch/secrets/restic-password"
-            password.parent.mkdir(parents=True)
-            password.write_text("test-password-with-enough-entropy\n")
-            password.chmod(0o600)
-
-            fake_restic = root / "fake-restic"
-            fake_restic.write_text(
-                """#!/usr/bin/env bash
-set -e
-repo=""
-for ((i=1;i<=$#;i++)); do
-  if [[ "${!i}" == "-r" ]]; then j=$((i+1)); repo="${!j}"; fi
-done
-if [[ " $* " == *" init "* ]]; then
-  mkdir -p "$repo"; printf config > "$repo/config"; exit 0
-fi
-if [[ " $* " == *" backup "* ]]; then
-  printf '%s\n' '{"message_type":"summary","snapshot_id":"deadbeef"}'; exit 0
-fi
-exit 0
-"""
-            )
-            fake_restic.chmod(0o755)
-
-            signal_file = root / "dummy-signal"
-            dummy = root / "sprint-dummy-claude.sh"
-            dummy.write_text(
-                f"""#!/usr/bin/env bash
-trap 'printf INT > "{signal_file}"; exit 0' INT
-while true; do sleep 1; done
-"""
-            )
-            dummy.chmod(0o755)
-            dummy_process = subprocess.Popen([str(dummy)])
-            watcher = subprocess.Popen(
-                [
-                    "bash",
-                    str(ROOT / "event_runtime/container/sprint-snapshot-loop.sh"),
-                    "--run-id",
-                    "test-watch",
-                    "--agent-kind",
-                    "claude-code",
-                    "--snapshot-seconds",
-                    "300",
-                    "--poll-seconds",
-                    "1",
-                    "--term-grace-seconds",
-                    "3",
-                    "--durable-dir",
-                    str(durable),
-                    "--runtime-dir",
-                    str(runtime),
-                    "--app-dir",
-                    str(app),
-                    "--agent-log-dir",
-                    str(agent_logs),
-                    "--artifact-log-dir",
-                    str(artifact_logs),
-                    "--root-dir",
-                    str(fake_root),
-                    "--restic-bin",
-                    str(fake_restic),
-                    "--budget-watchdog-bin",
-                    "/bin/true",
-                    "--claude-pattern",
-                    str(dummy).replace(".", r"\."),
-                    "--exit-after-ack",
-                ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            try:
-                first_seen = (
-                    durable / "runs/test-watch/snapshot/first-claude-seen"
-                )
-                deadline = time.time() + 15
-                while not first_seen.exists() and time.time() < deadline:
-                    time.sleep(0.1)
-                self.assertTrue(first_seen.exists())
-                (runtime / "sprint-stop").touch()
-                watcher.wait(timeout=20)
-                dummy_process.wait(timeout=10)
-                ack = json.loads((durable / "runs/test-watch/STOP_ACK").read_text())
-                self.assertEqual(ack["reason"], "operator_stop")
-                self.assertEqual(ack["final_snapshot_id"], "deadbeef")
-                self.assertEqual(signal_file.read_text(), "INT")
-            finally:
-                watcher.kill()
-                dummy_process.kill()
-                watcher.communicate()
-                dummy_process.wait()
-
-    def test_codex_group_escalation_snapshot_and_ack_order(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw)
-            durable = root / "durable"
-            runtime = root / "run"
-            app = root / "app"
             agent_logs = root / "agent"
             artifact_logs = root / "artifacts"
             fake_root = root / "root"
@@ -1831,7 +1645,6 @@ while true; do sleep 1; done
             for path in (
                 durable,
                 runtime,
-                app,
                 agent_logs,
                 artifact_logs,
                 fake_root,
@@ -1848,37 +1661,6 @@ while true; do sleep 1; done
             (codex_home / "cache/large.bin").write_bytes(b"cache")
             (fake_root / ".ssh").mkdir()
             (fake_root / ".ssh/id_test").write_text("raw-private-key\n")
-
-            password = durable / "runs/test-codex/secrets/restic-password"
-            password.parent.mkdir(parents=True)
-            password.write_text("test-password-with-enough-entropy\n")
-            password.chmod(0o600)
-
-            args_log = root / "restic-args.log"
-            failed_final = root / "failed-final"
-            fake_restic = root / "fake-restic"
-            fake_restic.write_text(
-                f"""#!/usr/bin/env bash
-set -e
-repo=""
-for ((i=1;i<=$#;i++)); do
-  printf 'ARG:%s\\n' "${{!i}}" >> "{args_log}"
-  if [[ "${{!i}}" == "-r" ]]; then j=$((i+1)); repo="${{!j}}"; fi
-done
-printf 'CALL-END\\n' >> "{args_log}"
-if [[ " $* " == *" init "* ]]; then
-  mkdir -p "$repo"; printf config > "$repo/config"; exit 0
-fi
-if [[ " $* " == *" backup "* ]]; then
-  if [[ " $* " == *" reason:operator_stop "* && ! -e "{failed_final}" ]]; then
-    : > "{failed_final}"
-    exit 1
-  fi
-  printf '%s\\n' '{{"message_type":"summary","snapshot_id":"codex-snapshot"}}'
-fi
-"""
-            )
-            fake_restic.chmod(0o755)
 
             signal_file = root / "codex-signals"
             package_root = root / "codex-package"
@@ -1947,13 +1729,11 @@ while True:
             watcher = subprocess.Popen(
                 [
                     "bash",
-                    str(ROOT / "event_runtime/container/sprint-snapshot-loop.sh"),
+                    str(ROOT / "event_runtime/container/sprint-agent-supervisor.sh"),
                     "--run-id",
                     "test-codex",
                     "--agent-kind",
                     "codex",
-                    "--snapshot-seconds",
-                    "300",
                     "--poll-seconds",
                     "1",
                     "--term-grace-seconds",
@@ -1962,18 +1742,12 @@ while True:
                     str(durable),
                     "--runtime-dir",
                     str(runtime),
-                    "--app-dir",
-                    str(app),
                     "--agent-log-dir",
                     str(agent_logs),
                     "--artifact-log-dir",
                     str(artifact_logs),
-                    "--root-dir",
-                    str(fake_root),
                     "--codex-home-dir",
                     str(codex_home),
-                    "--restic-bin",
-                    str(fake_restic),
                     "--budget-watchdog-bin",
                     "/bin/true",
                     "--codex-pattern",
@@ -1986,19 +1760,13 @@ while True:
             )
             try:
                 first_seen = (
-                    durable / "runs/test-codex/snapshot/first-codex-seen"
+                    durable / "runs/test-codex/supervisor/first-codex-seen"
                 )
                 deadline = time.time() + 15
                 while not first_seen.exists() and time.time() < deadline:
                     time.sleep(0.1)
                 self.assertTrue(first_seen.exists())
                 (runtime / "sprint-stop").touch()
-
-                deadline = time.time() + 15
-                while not failed_final.exists() and time.time() < deadline:
-                    time.sleep(0.1)
-                self.assertTrue(failed_final.exists())
-                self.assertFalse((durable / "runs/test-codex/STOP_ACK").exists())
 
                 watcher.wait(timeout=25)
                 wrapper.wait(timeout=10)
@@ -2009,7 +1777,7 @@ while True:
                 ack = json.loads((durable / "runs/test-codex/STOP_ACK").read_text())
                 self.assertEqual(ack["agent_kind"], "codex")
                 self.assertEqual(ack["reason"], "operator_stop")
-                self.assertEqual(ack["final_snapshot_id"], "codex-snapshot")
+                self.assertNotIn("final_snapshot_id", ack)
 
                 copied = agent_logs / "codex-state"
                 self.assertEqual(
@@ -2021,22 +1789,6 @@ while True:
                 self.assertFalse((copied / "auth.json").exists())
                 self.assertFalse((copied / "cache").exists())
 
-                arguments = [
-                    line.removeprefix("ARG:")
-                    for line in args_log.read_text().splitlines()
-                    if line.startswith("ARG:")
-                ]
-                excluded = {
-                    arguments[index + 1]
-                    for index, value in enumerate(arguments[:-1])
-                    if value == "--exclude"
-                }
-                self.assertIn(str(codex_home / "sessions"), arguments)
-                self.assertIn(str(codex_home / "history.jsonl"), arguments)
-                self.assertIn(str(codex_home / "config.toml"), arguments)
-                self.assertIn(str(codex_home / "auth.json"), excluded)
-                self.assertIn(str(codex_home / "cache"), excluded)
-                self.assertNotIn(str(fake_root), arguments)
             finally:
                 watcher.kill()
                 monitor.kill()

@@ -234,17 +234,6 @@ def test_history_shows_sanitized_acceptance_without_score(
     assert "reward" not in output
 
 
-def test_finalization_requires_nonempty_host_frozen_policy(tmp_path: Path) -> None:
-    trial = tmp_path / "trial"
-    final_dir = trial / "artifacts" / "app" / "submission"
-    final_dir.mkdir(parents=True)
-    policy = final_dir / "policy.pt"
-    policy.write_bytes(b"final-policy")
-    assert sprintctl.final_policy_frozen_ready(trial) is True
-    policy.write_bytes(b"")
-    assert sprintctl.final_policy_frozen_ready(trial) is False
-
-
 def test_all_submission_finalization_needs_no_final_policy_or_verifier(
     tmp_path: Path,
 ) -> None:

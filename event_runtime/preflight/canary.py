@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run real Isaac Lab PPO iterations in the sealed training image."""
+"""Run a method-neutral Isaac Lab optimization in the sealed training image."""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ import modal
 ROOT = Path(__file__).resolve().parents[2]
 REPORT = ROOT / "runs/ops/training-gpu-canary.json"
 POLICY_ADAPTER = Path(__file__).with_name("canary_policy_adapter.py")
+REPEATED_VERIFIER_FIXTURE = Path(__file__).with_name("repeat_verifier_trial.py")
 TRAINING_FIXTURE = Path(__file__).with_name("training_canary") / "train_sprint.py"
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
@@ -368,6 +369,11 @@ def main() -> int:
             f"{remote_root}/canary_policy_adapter.py",
             mode=0o444,
         )
+        upload.put_file(
+            REPEATED_VERIFIER_FIXTURE,
+            f"{remote_root}/repeat_verifier_trial.py",
+            mode=0o444,
+        )
 
     command = (
         "set -euo pipefail; "
@@ -383,6 +389,12 @@ def main() -> int:
         f"export SPRINT_GPU_CHECKPOINT_DIR=/warm{remote_root}/checkpoints; "
         f"export SPRINT_GPU_PROGRESS_FILE=/warm{remote_root}/progress.json; "
         "export PYTHONPATH=/opt/event-verifier:/app; "
+        "timeout --signal=TERM --kill-after=30 180 "
+        "python3 /opt/sprint-isaac-bootstrap.py "
+        f"/warm{remote_root}/repeat_verifier_trial.py --headless --device=cuda:0 "
+        f"2>&1 | tee /warm{remote_root}/repeat-verifier.log; "
+        f"test \"$(grep -cE '^repeat [123]: ok$' "
+        f'/warm{remote_root}/repeat-verifier.log)" = 3; '
         "timeout --signal=TERM --kill-after=30 900 "
         "python3 /opt/sprint-isaac-bootstrap.py /app/train_sprint.py "
         f"{TRAINING_CANARY_CLI} "
@@ -392,7 +404,7 @@ def main() -> int:
         f"python3 -c \"import json; assert json.load(open('/warm{remote_root}/progress.json'))['finished'] is True\"; "
         f"python3 /warm{remote_root}/canary_policy_adapter.py "
         f"/warm{remote_root}/checkpoints/policy_final.pt; "
-        f"grep -F 'Learning iteration 9/10' /warm{remote_root}/training.log; "
+        f"grep -F 'Optimization iteration 9/10' /warm{remote_root}/training.log; "
         f'python3 -c "import json; rows=[json.loads(x) for x in '
         f"open('/warm{remote_root}/telemetry/samples.jsonl') if x.strip()]; "
         "gpus=[g for p in rows for g in p['gpus']]; "
@@ -467,7 +479,7 @@ def main() -> int:
                 command=command,
                 timeout=1200,
                 required_output_substrings=(
-                    "[sprint] training complete",
+                    "[sprint] optimization canary complete",
                     "AGENT_PUBLISHED_VERIFIER_COMPLETED",
                 ),
             )

@@ -10,9 +10,10 @@ Usage:
   event gpu wait [JOB_ID] [--timeout SEC]
   event gpu logs [JOB_ID]
 
-Jobs land under $SPRINT_GPU_JOBS_ROOT (default
-/durable/runs/$SPRINT_RUN_ID/gpu-jobs/). The host monitor claims pending jobs and
-starts an A10G sandbox with the same image + volume.
+Jobs are published through the exact-name dispatch index under
+$SPRINT_GPU_JOBS_ROOT (default /durable/runs/$SPRINT_RUN_ID/gpu-jobs/). The host
+monitor claims pending jobs and starts an A10G sandbox with the same image and
+volume.
 """
 
 from __future__ import annotations
@@ -101,9 +102,7 @@ def update_dispatch_index(
 ) -> None:
     """Publish exact-name job discovery without directory polling.
 
-    The host reads ``index.json`` with Modal's exact-file RPC.  Keeping the
-    immutable queue/status documents remains useful for recovery, but they no
-    longer have to be enumerated every five seconds.  The local lock also
+    The host reads ``index.json`` with Modal's exact-file RPC. The local lock
     preserves concurrent tool submissions from the same agent sandbox.
     """
     lock = root / ".dispatch-index.lock"
@@ -457,11 +456,9 @@ def cmd_submit(args: argparse.Namespace) -> int:
         # drains immutable archive requests over the sandbox control channel.
         "submission_bridge_enabled": True,
     }
-    # The exact-name index carries the complete immutable enqueue transaction.
-    # Queue/status remain compatibility mirrors, but a crash between separate
-    # filesystem writes cannot hide an accepted job from the host.
+    # The exact-name index carries the complete immutable enqueue transaction;
+    # status.json is only the agent-facing mutable status view.
     update_dispatch_index(root, run_id, job_id, job=job)
-    atomic_write_json(root / "queue" / f"{job_id}.json", job)
     atomic_write_json(root / "status" / f"{job_id}.json", job)
     # Timeline: waiting for host to allocate a GPU worker.
     try:
@@ -733,15 +730,12 @@ def cmd_cancel(args: argparse.Namespace) -> int:
         "terminated_at": utc_now(),
         "terminated_at_epoch_s": time.time(),
     }
-    for directory in (root / "queue", root / "status"):
-        visible = directory / f"{job_id}.json"
-        marker = directory / f".cancelled-{job_id}.json"
-        atomic_write_json(marker, cancelled)
-        visible.unlink(missing_ok=True)
+    atomic_write_json(root / "status" / f"{job_id}.json", cancelled)
     update_dispatch_index(
         root,
         run_id_from_env(root),
         job_id,
+        job=cancelled,
         cancel_state="cancelled_before_dispatch",
     )
     flush_durable(root)

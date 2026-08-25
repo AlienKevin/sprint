@@ -67,7 +67,6 @@ def test_launcher_forbids_same_trial_cpu_resume() -> None:
 
 def test_launcher_requires_exact_gpu_job_index_and_paces_dispatch() -> None:
     launcher = (ROOT / "event_runtime/control/launch.sh").read_text()
-    assert '"gpu_job_index_required": True' in launcher
     assert 'gpu-dispatch-loop --run-id "$RUN_ID" --poll-seconds 10' in launcher
 
 
@@ -476,7 +475,7 @@ def test_generic_openai_catalog_installer_supports_sol(tmp_path: Path) -> None:
         "SPRINT_CODEX_OPENAI_MODEL_ID": "gpt-5.6-sol",
         "SPRINT_CODEX_OPENAI_MODEL": "@preset/test-sol",
         "SPRINT_CODEX_OPENAI_BASE_URL": "http://127.0.0.1:18080/api/v1",
-        "SPRINT_CODEX_DEEPSEEK_MODELS_JSON": str(
+        "SPRINT_CODEX_MODEL_MESSAGES_TEMPLATE_JSON": str(
             ROOT / "event_runtime/models/deepseek.json"
         ),
     }
@@ -578,39 +577,6 @@ def test_codex_wrapper_selects_pinned_openai_catalog_slug(
         assert args[selector + 1] == "@preset/sprint-gpt-5-6-luna-openai-standard"
 
 
-def test_generic_deepseek_catalog_installer_supports_pro(tmp_path: Path) -> None:
-    codex_home = tmp_path / "codex-home"
-    env = {
-        **os.environ,
-        "CODEX_HOME": str(codex_home),
-        "SPRINT_CODEX_DEEPSEEK_MODELS_JSON": str(
-            ROOT / "event_runtime/models/deepseek.json"
-        ),
-        "SPRINT_CODEX_DEEPSEEK_MODEL": "deepseek/deepseek-v4-pro-0813",
-        "SPRINT_CODEX_DEEPSEEK_CONTEXT_WINDOW": "1000000",
-        "SPRINT_CODEX_DEEPSEEK_BASE_URL": "http://127.0.0.1:18080/api/v1",
-    }
-    subprocess.run(
-        [
-            "bash",
-            str(ROOT / "event_runtime/container/sprint-apply-deepseek-codex-config.sh"),
-        ],
-        env=env,
-        check=True,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    catalog = json.loads((codex_home / "models.json").read_text())
-    assert len(catalog["models"]) == 1
-    model = catalog["models"][0]
-    assert model["slug"] == "deepseek/deepseek-v4-pro-0813"
-    assert model["context_window"] == 1_000_000
-    assert model["max_context_window"] == 1_000_000
-    assert model["display_name"] == "DeepSeek-V4-Pro"
-    assert model["support_verbosity"] is False
-
-
 def test_deepseek_catalog_never_emits_unsupported_verbosity() -> None:
     catalog = json.loads((ROOT / "event_runtime/models/deepseek.json").read_text())
     assert catalog["models"]
@@ -643,13 +609,11 @@ def test_batch_matrix_rejects_invalid_trial_counts(trials_per_model: int) -> Non
 def test_env_loader_reads_only_required_model_keys(tmp_path: Path) -> None:
     path = tmp_path / ".env"
     path.write_text(
-        "OPENAI_API_KEY='openai-secret'\n"
         'OPENROUTER_API_KEY="openrouter-secret"\n'
         "OPENROUTER_MANAGEMENT_KEY=management-secret\n"
         "MODAL_TOKEN_SECRET=must-not-load\n"
     )
     assert batch_eval.load_env(path) == {
-        "OPENAI_API_KEY": "openai-secret",
         "OPENROUTER_API_KEY": "openrouter-secret",
         "OPENROUTER_MANAGEMENT_KEY": "management-secret",
     }
@@ -2055,6 +2019,59 @@ def test_batches_are_operator_stopped_without_a_fixed_deadline() -> None:
     assert batch_eval.RUN_HOURS is None
 
 
+def test_run_control_units_cover_every_host_process_for_one_trial() -> None:
+    assert batch_eval.run_control_units("eval-luna-1") == (
+        "sprint-trial-eval-luna-1.service",
+        "sprint-monitor-eval-luna-1.service",
+        "sprint-pulse-eval-luna-1.service",
+        "sprint-gpu-dispatch-eval-luna-1.service",
+    )
+
+
+def test_batch_stop_fails_closed_when_host_controllers_survive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    batch_id = "host-survives"
+    run_id = "host-survives-luna-1"
+    monkeypatch.setattr(batch_eval, "SCRIPT_DIR", tmp_path / "ops")
+    monkeypatch.setattr(batch_eval, "BATCH_ROOT", tmp_path / "batches")
+    run_dir = batch_eval.SCRIPT_DIR / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.json").write_text("{}\n")
+    batch_eval.atomic_json(
+        batch_eval.batch_path(batch_id),
+        {
+            "batch_id": batch_id,
+            "arms": [{"run_id": run_id, "status": "running"}],
+            "alerts": [],
+            "credential_status": "revoked",
+        },
+    )
+
+    with (
+        mock.patch.object(
+            batch_eval.sprintctl,
+            "persist_stop_request",
+            lambda *_args, **_kwargs: None,
+        ),
+        mock.patch.object(
+            batch_eval.sprintctl,
+            "request_stop",
+            lambda *_args, **_kwargs: {"status": "acknowledged"},
+        ),
+        mock.patch.object(
+            batch_eval,
+            "retire_run_control_services",
+            side_effect=RuntimeError("monitor still active"),
+        ),
+    ):
+        result = batch_eval.stop_batch(batch_id)
+
+    assert result["status"] == "stop_failed"
+    assert result["arms"][0]["status"] == "stop_failed"
+    assert "monitor still active" in result["arms"][0]["stop_dispatch_error"]
+
+
 def test_batch_stop_persists_all_intents_before_slow_dispatch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2122,6 +2139,9 @@ def test_batch_stop_persists_all_intents_before_slow_dispatch(
     with (
         mock.patch.object(batch_eval.sprintctl, "persist_stop_request", persist),
         mock.patch.object(batch_eval.sprintctl, "request_stop", dispatch),
+        mock.patch.object(
+            batch_eval, "retire_run_control_services", lambda _run_id: None
+        ),
         mock.patch.object(batch_eval, "revoke_batch_credentials", revoke),
         mock.patch.object(batch_eval.frontier_update, "file_lock", recording_lock),
     ):
@@ -2180,6 +2200,9 @@ def test_batch_stop_dispatches_lanes_concurrently(
             batch_eval.sprintctl, "persist_stop_request", lambda *_args, **_kwargs: None
         ),
         mock.patch.object(batch_eval.sprintctl, "request_stop", dispatch),
+        mock.patch.object(
+            batch_eval, "retire_run_control_services", lambda _run_id: None
+        ),
     ):
         result = batch_eval.stop_batch(batch_id)
 
@@ -2222,6 +2245,9 @@ def test_batch_stop_journals_transition_when_monitor_holds_state_lock(
             batch_eval.sprintctl,
             "request_stop",
             lambda *_args, **_kwargs: {"status": "acknowledged"},
+        ),
+        mock.patch.object(
+            batch_eval, "retire_run_control_services", lambda _run_id: None
         ),
         mock.patch.object(batch_eval.frontier_update, "file_lock", busy_lock),
     ):
@@ -2388,6 +2414,9 @@ def test_hung_website_deploy_does_not_block_operator_stop(
             batch_eval.sprintctl,
             "request_stop",
             lambda *_args, **_kwargs: {"status": "acknowledged"},
+        ),
+        mock.patch.object(
+            batch_eval, "retire_run_control_services", lambda _run_id: None
         ),
     ):
         worker = threading.Thread(target=monitor, daemon=True)

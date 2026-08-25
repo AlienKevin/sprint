@@ -40,9 +40,8 @@ RUN git clone --depth 1 --branch v2.3.2 \
  && pip3 install --no-cache-dir --no-build-isolation -e /opt/IsaacLab/source/isaaclab \
  && pip3 install --no-cache-dir --no-build-isolation -e /opt/IsaacLab/source/isaaclab_assets \
  && pip3 install --no-cache-dir --no-build-isolation -e /opt/IsaacLab/source/isaaclab_mimic \
- && pip3 install --no-cache-dir --no-build-isolation -e '/opt/IsaacLab/source/isaaclab_rl[rsl-rl]' \
- && pip3 install --no-cache-dir --no-build-isolation -e /opt/IsaacLab/source/isaaclab_tasks \
- && pip3 install --no-cache-dir rsl-rl-lib==3.1.2
+ && pip3 install --no-cache-dir --no-build-isolation -e /opt/IsaacLab/source/isaaclab_rl \
+ && pip3 install --no-cache-dir --no-build-isolation -e /opt/IsaacLab/source/isaaclab_tasks
 
 # Isaac Lab 2.3.2's application manifest pins the URDF importer from a newer
 # extension cache than the Isaac Sim 5.1.0 wheel actually ships.  Online Kit
@@ -56,9 +55,5 @@ RUN python3 -c 'from pathlib import Path; p=Path("/opt/IsaacLab/apps/isaaclab.py
 # durability, telemetry, model adapters, assets, and the public verifier are
 # composed into this base image by event_runtime.image.
 COPY README.md __init__.py asset_probe.py robot.py spec.py standing_start.py /app/train/
-
-# Keep this late: changing the durability watcher must not rebuild Isaac Sim.
-RUN apt-get update && apt-get install -y --no-install-recommends restic \
-    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

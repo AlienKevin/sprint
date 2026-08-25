@@ -9,7 +9,7 @@
 # held-out seeds are all rebuilt from this image, and exactly one file crosses
 # the boundary: the TorchScript policy named in `artifacts`.
 #
-# KEEP IN SYNC with ../environment/Dockerfile down to the rsl-rl install: the
+# KEEP IN SYNC with ../environment/Dockerfile down to the Isaac Lab install: the
 # agent has to be able to measure itself against the same stack it is scored on,
 # or the benchmark is a guessing game.  The two diverge only below that line,
 # where this image bakes in /tests and the agent's image stages /app.
@@ -50,9 +50,8 @@ RUN git clone --depth 1 --branch v2.3.2 \
  && pip3 install --no-cache-dir --no-build-isolation -e /opt/IsaacLab/source/isaaclab \
  && pip3 install --no-cache-dir --no-build-isolation -e /opt/IsaacLab/source/isaaclab_assets \
  && pip3 install --no-cache-dir --no-build-isolation -e /opt/IsaacLab/source/isaaclab_mimic \
- && pip3 install --no-cache-dir --no-build-isolation -e '/opt/IsaacLab/source/isaaclab_rl[rsl-rl]' \
- && pip3 install --no-cache-dir --no-build-isolation -e /opt/IsaacLab/source/isaaclab_tasks \
- && pip3 install --no-cache-dir rsl-rl-lib==3.1.2
+ && pip3 install --no-cache-dir --no-build-isolation -e /opt/IsaacLab/source/isaaclab_rl \
+ && pip3 install --no-cache-dir --no-build-isolation -e /opt/IsaacLab/source/isaaclab_tasks
 
 # --- verifier only, below this line -----------------------------------------
 # Separate-mode verifiers skip the tests upload, so the image owns /tests.

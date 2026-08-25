@@ -602,7 +602,7 @@ def _container_role_probe(run: dict[str, Any], container_id: str) -> str:
         run,
         container_id,
         "if [ -f /run/sprint-role ]; then cat /run/sprint-role; "
-        "elif [ -x /opt/sprint-snapshot-loop.sh ]; then echo cpu-agent; "
+        "elif [ -x /opt/sprint-agent-supervisor.sh ]; then echo cpu-agent; "
         "elif command -v nvidia-smi >/dev/null 2>&1 && "
         "[ -f /opt/sprint-gpu-worker-run.py ]; then echo training-gpu; "
         "else echo verifier-gpu; fi",
@@ -690,17 +690,6 @@ def gpu_job_metadata(run: dict[str, Any], container_id: str) -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         pass
     return {}
-
-
-def discover_verifier_containers(
-    state_dir: pathlib.Path, run: dict[str, Any]
-) -> list[str]:
-    """Best-effort: app containers that are not the durable agent sandbox."""
-    return [
-        cid
-        for role, cid in discover_sidecar_containers(state_dir, run)
-        if role == "verifier-gpu"
-    ]
 
 
 def poll_once(run_id: str) -> dict[str, Any]:

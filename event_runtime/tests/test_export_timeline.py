@@ -804,43 +804,6 @@ def test_training_billing_uses_provider_exit_observation_during_volume_lag(
     assert training["intervals"][0]["end_epoch_ms"] == 1786104020000
 
 
-def test_training_cost_legacy_falls_back_to_worker_starting(
-    tmp_path: Path,
-) -> None:
-    state = fixture_run(tmp_path)
-    lifecycle_path = state / "telemetry" / "gpu_timeline.jsonl"
-    lifecycle = [json.loads(line) for line in lifecycle_path.read_text().splitlines()]
-    lifecycle.extend(
-        [
-            {
-                "event_id": "legacy-billing-start-1",
-                "epoch_s": 1786104002,
-                "phase": "gpu_worker_starting",
-                "action": "enter",
-                "job_id": "job-1",
-                "attempt": 1,
-                "lease_id": "lease-1",
-            },
-            {
-                "event_id": "legacy-billing-start-2",
-                "epoch_s": 1786104021,
-                "phase": "gpu_worker_starting",
-                "action": "enter",
-                "job_id": "job-1",
-                "attempt": 2,
-                "lease_id": "lease-2",
-            },
-        ]
-    )
-    write_jsonl(lifecycle_path, lifecycle)
-
-    payload = unified_timeline.build_timeline(state)
-
-    assert payload["resource_usage_summary"]["training_gpu"][
-        "billing_upper_bound_allocated_ms"
-    ] == 37_000
-
-
 def test_stop_ack_closes_single_cpu_allocation(
     tmp_path: Path,
 ) -> None:
@@ -1322,79 +1285,16 @@ def test_all_submission_result_set_has_no_privileged_primary(
     tmp_path: Path,
 ) -> None:
     state = fixture_run(tmp_path)
-    run_path = state / "run.json"
-    run = json.loads(run_path.read_text())
-    run["evaluation_result_policy"] = "all_blind_submissions"
-    run_path.write_text(json.dumps(run))
 
     payload = unified_timeline.build_timeline(state)
 
     assert payload["comparison_summary"]["best_100m_s"] == 48.0
     assert payload["comparison_summary"]["evaluation_result_policy"] == (
-        "all_blind_submissions"
+        "all_blind_archival_submissions"
     )
     assert "primary_score_policy" not in payload["comparison_summary"]
     assert "primary_final_100m_s" not in payload["comparison_summary"]
     assert all("primary_final" not in item for item in payload["artifacts"])
-
-
-def test_primary_score_uses_frozen_final_artifact_not_retrospective_best(
-    tmp_path: Path,
-) -> None:
-    state = fixture_run(tmp_path)
-    run_path = state / "run.json"
-    run = json.loads(run_path.read_text())
-    run["primary_score_policy"] = "frozen_final_artifact"
-    run_path.write_text(json.dumps(run))
-    trial = next(state.glob("harbor-jobs/*/*"))
-    ledger_path = trial / "artifacts" / "continuous" / "ledger.jsonl"
-    rows = [json.loads(line) for line in ledger_path.read_text().splitlines()]
-    final_row = rows[0]
-    final_policy = trial / "artifacts" / final_row["artifact_path"]
-    final_dir = trial / "artifacts" / "app" / "submission"
-    final_dir.mkdir(parents=True)
-    (final_dir / "policy.pt").write_bytes(final_policy.read_bytes())
-    result_path = trial / "result.json"
-    result = json.loads(result_path.read_text())
-    result["verifier_result"] = {"rewards": {"valid_run": 1, "best_100m_s": 55.0}}
-    result_path.write_text(json.dumps(result))
-
-    payload = unified_timeline.build_timeline(state)
-
-    assert payload["comparison_summary"]["best_100m_s"] == 55.0
-    assert payload["comparison_summary"]["primary_final_100m_s"] == 55.0
-    assert payload["comparison_summary"]["retrospective_best_100m_s"] == 48.0
-    primary = [item for item in payload["artifacts"] if item["primary_final"]]
-    assert len(primary) == 1
-    assert primary[0]["name"] == "policy-1.pt"
-
-
-def test_unsubmitted_frozen_final_is_still_exported_as_primary(
-    tmp_path: Path,
-) -> None:
-    state = fixture_run(tmp_path)
-    run_path = state / "run.json"
-    run = json.loads(run_path.read_text())
-    run["primary_score_policy"] = "frozen_final_artifact"
-    run_path.write_text(json.dumps(run))
-    trial = next(state.glob("harbor-jobs/*/*"))
-    final_dir = trial / "artifacts" / "app" / "submission"
-    final_dir.mkdir(parents=True)
-    (final_dir / "policy.pt").write_bytes(b"never-in-continuous-queue")
-    result_path = trial / "result.json"
-    result = json.loads(result_path.read_text())
-    result["verifier_result"] = {"rewards": {"valid_run": 1, "best_100m_s": 57.0}}
-    result_path.write_text(json.dumps(result))
-
-    payload = unified_timeline.build_timeline(state)
-
-    primary = [item for item in payload["artifacts"] if item["primary_final"]]
-    assert len(primary) == 1
-    assert primary[0]["name"] == "policy.pt"
-    assert primary[0]["submission_origin"] == "host_frozen_final"
-    assert primary[0]["rewards"]["best_100m_s"] == 57.0
-    assert payload["comparison_summary"]["best_100m_s"] == 57.0
-
 
 def test_provider_billing_is_selected_and_error_text_is_not_published(
     tmp_path: Path,
@@ -1764,113 +1664,6 @@ def test_host_registry_drops_allocation_published_after_terminal_attempt(
     )
 
 
-def test_legacy_training_lifecycle_uses_worker_exit_and_durable_attempt(
-    tmp_path: Path,
-) -> None:
-    state = fixture_run(tmp_path)
-    lifecycle_path = state / "telemetry" / "gpu_timeline.jsonl"
-    rows = [
-        {
-            "event_id": "one-start",
-            "epoch_s": 1786104005,
-            "phase": "gpu_lifecycle",
-            "action": "instant",
-            "job_id": "job-one",
-            "attempt": 1,
-            "detail": {"event": "gpu_allocated"},
-        },
-        {
-            "event_id": "one-exit",
-            "epoch_s": 1786104020,
-            "phase": "gpu_active",
-            "action": "exit",
-            "job_id": "job-one",
-            "attempt": 1,
-            "detail": {},
-        },
-        {
-            "event_id": "two-start",
-            "epoch_s": 1786104022,
-            "phase": "gpu_lifecycle",
-            "action": "instant",
-            "job_id": "job-two",
-            "attempt": 1,
-            "detail": {"event": "gpu_allocated"},
-        },
-        {
-            "event_id": "three-start",
-            "epoch_s": 1786104040,
-            "phase": "gpu_lifecycle",
-            "action": "instant",
-            "job_id": "job-three",
-            "attempt": 1,
-            "detail": {"event": "gpu_allocated"},
-        },
-        {
-            "event_id": "three-end",
-            "epoch_s": 1786104050,
-            "phase": "gpu_lifecycle",
-            "action": "instant",
-            "job_id": "job-three",
-            "attempt": 1,
-            "detail": {"event": "gpu_released"},
-        },
-    ]
-    write_jsonl(lifecycle_path, rows)
-    attempt = state / "telemetry" / "durable-gpu-attempts" / "job-two" / "1.json"
-    attempt.parent.mkdir(parents=True)
-    attempt.write_text(
-        json.dumps(
-            {
-                "job_id": "job-two",
-                "attempt": 1,
-                "lease_id": "lease-two",
-                "status": "succeeded",
-                "exit_code": 0,
-                "finished_at": "2026-08-07T12:00:39Z",
-            }
-        )
-    )
-    by_job = state / "telemetry" / "durable-by-job"
-    for job, times in {
-        "job-one": (1786104010, 1786104019),
-        "job-two": (1786104025, 1786104039),
-        "job-three": (1786104042, 1786104049),
-    }.items():
-        write_jsonl(
-            by_job / job / "samples.jsonl",
-            [
-                {
-                    "epoch_s": epoch,
-                    "role": "training-gpu",
-                    "job_id": job,
-                    "attempt": 1,
-                    "sample_index": index,
-                    "gpus": [{"gpu_index": 0, "util_gpu_pct": 10}],
-                }
-                for index, epoch in enumerate(times)
-            ],
-        )
-
-    payload = unified_timeline.build_timeline(state)
-
-    releases = {
-        event.get("gpu_job_id"): event
-        for event in payload["events"]
-        if event["kind"] == "gpu_released"
-    }
-    assert releases["job-one"]["lifecycle_recovery_source"] == (
-        "worker_reported_active_exit"
-    )
-    assert releases["job-one"]["end_is_upper_bound"] is False
-    assert releases["job-two"]["lifecycle_recovery_source"] == (
-        "durable_worker_attempt"
-    )
-    training = payload["coverage"]["gpu_metric_coverage"]["training"]
-    assert len(training) == 3
-    assert all(item["covered"] for item in training)
-
-
 def test_training_gpu_samples_do_not_satisfy_verifier_coverage(tmp_path: Path) -> None:
     state = fixture_run(tmp_path)
     for path in state.rglob("verifier/telemetry/samples.jsonl"):
@@ -2071,31 +1864,6 @@ def test_cpu_only_agent_gpu_sample_is_not_inferred_as_verifier(tmp_path: Path) -
     assert sample["role"] == "unknown"
     assert sample["reported_role"] == "cpu-agent"
     assert payload["coverage"]["counts"]["impossible_cpu_agent_gpu_samples"] == 1
-
-
-def test_claude_tool_use_is_counted_without_exporting_input(tmp_path: Path) -> None:
-    builder = unified_timeline.Builder(
-        tmp_path, {"run_id": "r", "agent_kind": "claude-code"}, 60
-    )
-    record = {
-        "timestamp": "2026-08-07T12:00:00Z",
-        "type": "assistant",
-        "message": {
-            "role": "assistant",
-            "content": [
-                {
-                    "type": "tool_use",
-                    "id": "t1",
-                    "name": "Bash",
-                    "input": {"token": "secret"},
-                }
-            ],
-        },
-    }
-    kind, data = builder._trace_shape(record)
-    assert kind == "tool_call"
-    assert data["tool"] == "Bash"
-    assert "secret" not in json.dumps(data)
 
 
 def load_trace_mirror():

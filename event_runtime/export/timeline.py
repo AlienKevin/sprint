@@ -207,8 +207,6 @@ class Builder:
         self._metric_keys: set[str] = set()
         self._artifact_ids: set[str] = set()
         self._gpu_registry_bounds: dict[tuple[str, int], dict[str, Any]] = {}
-        self.final_verifier_rewards: dict[str, Any] = {}
-        self.final_verifier_finished_at: str | None = None
 
     def relative(self, path: pathlib.Path) -> str:
         try:
@@ -592,7 +590,6 @@ class Builder:
 
         self.add_gpu_attempt_lifecycle()
         self.add_gpu_registry_lifecycle()
-        self.close_orphaned_gpu_lifecycle()
 
     def add_gpu_attempt_lifecycle(self) -> None:
         """Recover exact worker terminal boundaries from durable attempts."""
@@ -793,10 +790,9 @@ class Builder:
     ) -> list[dict[str, Any]]:
         """Use provider-backed registry bounds to remove controller overhead.
 
-        Legacy controllers emitted ``gpu_allocated`` before ``Sandbox.create``
-        and could emit ``gpu_released`` well after the sandbox had exited.  The
-        append-only host registry records the tighter post-create dispatch and
-        terminal timestamps, so it is authoritative when it narrows (never
+        Controller lifecycle events can bracket ``Sandbox.create`` and cleanup.
+        The append-only host registry records the tighter post-create dispatch
+        and terminal timestamps, so it is authoritative when it narrows (never
         widens) a paired lifecycle interval.
         """
         result: list[dict[str, Any]] = []
@@ -843,66 +839,6 @@ class Builder:
                 )
             result.append(item)
         return result
-
-    def close_orphaned_gpu_lifecycle(self) -> None:
-        """Conservatively close legacy pre-registry allocation intervals.
-
-        Older workers could lose their canonical release record. A matching
-        worker-reported active exit is still an exact terminal boundary.
-        """
-        starts = sorted(
-            (
-                event
-                for event in self.events
-                if event["kind"] in {"gpu_allocated", "gpu_reallocated"}
-            ),
-            key=lambda event: event["epoch_ms"],
-        )
-        terminal_kinds = {"gpu_preempted", "gpu_released"}
-        terminal_keys = {
-            (event.get("gpu_job_id"), event.get("gpu_attempt"))
-            for event in self.events
-            if event["kind"] in terminal_kinds
-        }
-        active_exits: dict[tuple[Any, Any], list[dict[str, Any]]] = defaultdict(list)
-        for event in self.events:
-            if event["kind"] == "gpu_active_exit":
-                active_exits[
-                    (event.get("gpu_job_id"), event.get("gpu_attempt"))
-                ].append(event)
-        for start in starts:
-            key = (start.get("gpu_job_id"), start.get("gpu_attempt"))
-            if key in terminal_keys:
-                continue
-            exits = [
-                event
-                for event in active_exits.get(key, [])
-                if event["epoch_ms"] >= start["epoch_ms"]
-            ]
-            if exits:
-                end = min(exits, key=lambda event: event["epoch_ms"])
-                boundary = "worker_reported_active_exit"
-            else:
-                continue
-            self.add_event(
-                epoch_ms=end["epoch_ms"],
-                category="infrastructure",
-                kind="gpu_released",
-                source=end["source"],
-                identity=(
-                    f"recovered-release:{key[0]}:{key[1]}:{end['epoch_ms']}:{boundary}"
-                ),
-                data={
-                    "gpu_job_id": key[0],
-                    "gpu_attempt": key[1],
-                    "reason": "legacy_lifecycle_recovery",
-                    "lifecycle_recovered": True,
-                    "lifecycle_recovery_source": boundary,
-                    "end_is_upper_bound": False,
-                },
-            )
-            terminal_keys.add(key)
-            self.counts["gpu_inferred_terminal_events"] += 1
 
     @staticmethod
     def _record_timestamp(record: dict[str, Any]) -> int | None:
@@ -1056,7 +992,7 @@ class Builder:
             else:
                 # Stdout is a fallback. It often contains protocol/status
                 # records without timestamps in addition to the native trace.
-                for name in ("claude-code.txt", "codex.txt"):
+                for name in ("codex.txt",):
                     path = trial / "agent" / name
                     if path.is_file():
                         candidates.append(path)
@@ -1439,43 +1375,11 @@ class Builder:
     def add_submissions(self, trials: list[pathlib.Path]) -> None:
         for trial in trials:
             attempt = cpu_attempt_for(trial, self.state_dir)
-            uses_frozen_final = (
-                self.run.get("primary_score_policy") == "frozen_final_artifact"
-            )
-            final_policy = trial / "artifacts" / "app" / "submission" / "policy.pt"
-            try:
-                final_policy_digest = (
-                    sha256_file(final_policy) if uses_frozen_final else None
-                )
-            except OSError:
-                final_policy_digest = None
             ledger = trial / "artifacts" / "continuous" / "ledger.jsonl"
             rows, malformed = read_jsonl(ledger) if ledger.is_file() else ([], 0)
             self.counts["malformed_ledger_lines"] += malformed
             if ledger.is_file():
                 self.source_counts["ledger_files"] += 1
-            matching_final_rows = []
-            for candidate in rows:
-                relative = candidate.get("artifact_path")
-                candidate_path = (
-                    trial / "artifacts" / str(relative)
-                    if isinstance(relative, str)
-                    else None
-                )
-                if (
-                    final_policy_digest
-                    and candidate_path is not None
-                    and candidate_path.is_file()
-                    and sha256_file(candidate_path) == final_policy_digest
-                    and isinstance(candidate.get("rewards"), dict)
-                    and not candidate.get("error")
-                ):
-                    matching_final_rows.append(candidate)
-            primary_row = (
-                max(matching_final_rows, key=lambda row: int(row.get("index") or 0))
-                if matching_final_rows
-                else None
-            )
             for row in rows:
                 row.pop("_line_number", None)
                 relative = row.get("artifact_path")
@@ -1493,9 +1397,6 @@ class Builder:
                 )
                 digest = (
                     sha256_file(artifact_path) if exists and artifact_path else None
-                )
-                primary_final = bool(
-                    primary_row is row and digest == final_policy_digest
                 )
                 artifact_id = hashlib.sha256(
                     f"{self.relative(trial)}:{attempt}:{row.get('index')}:{row.get('name')}:{digest or 'missing'}".encode()
@@ -1536,8 +1437,6 @@ class Builder:
                         else {},
                         "error": row.get("error"),
                     }
-                    if uses_frozen_final:
-                        artifact["primary_final"] = primary_final
                     self.artifacts.append(artifact)
                     self.counts["submission_artifacts"] += 1
                     if ingestion_failed:
@@ -1572,8 +1471,6 @@ class Builder:
                     "source_evaluation_id": row.get("source_evaluation_id"),
                     "verification_attempts": int(row.get("verification_attempts") or 0),
                 }
-                if uses_frozen_final:
-                    common["primary_final"] = primary_final
                 start_key = (
                     "scheduler_acquired_at"
                     if row.get("cache_hit")
@@ -1644,36 +1541,6 @@ class Builder:
                             ),
                             data=data,
                         )
-            if uses_frozen_final and final_policy_digest and primary_row is None:
-                artifact_id = hashlib.sha256(
-                    f"{self.relative(trial)}:{attempt}:host-final:{final_policy_digest}".encode()
-                ).hexdigest()
-                if artifact_id not in self._artifact_ids:
-                    self._artifact_ids.add(artifact_id)
-                    self.artifacts.append(
-                        {
-                            "id": artifact_id,
-                            "cpu_attempt": attempt,
-                            "submission_index": None,
-                            "name": "policy.pt",
-                            "sha256": final_policy_digest,
-                            "bytes": final_policy.stat().st_size,
-                            "internal_path": self.relative(final_policy),
-                            "captured": True,
-                            "submitted_at": None,
-                            "finished_at": None,
-                            "artifact_sha256_recorded": final_policy_digest,
-                            "evaluation_fingerprint": None,
-                            "cache_hit": False,
-                            "source_evaluation_id": None,
-                            "submission_origin": "host_frozen_final",
-                            "primary_final": True,
-                            "rewards": {},
-                            "error": None,
-                        }
-                    )
-                    self.counts["submission_artifacts"] += 1
-
     def add_final_verification(self, trials: list[pathlib.Path]) -> None:
         """Add the sealed final verifier as a distinct verifier-GPU interval."""
         for trial in trials:
@@ -1685,23 +1552,6 @@ class Builder:
             verifier = result.get("verifier")
             if not isinstance(verifier, dict):
                 continue
-            finished_at = verifier.get("finished_at")
-            if isinstance(finished_at, str) and (
-                self.final_verifier_finished_at is None
-                or finished_at > self.final_verifier_finished_at
-            ):
-                verifier_result = result.get("verifier_result") or {}
-                rewards = verifier_result.get("rewards")
-                if isinstance(rewards, dict):
-                    self.final_verifier_rewards = rewards
-                    self.final_verifier_finished_at = finished_at
-                    agent = result.get("agent") or {}
-                    for artifact in self.artifacts:
-                        if artifact.get("primary_final"):
-                            artifact["rewards"] = rewards
-                            artifact["finished_at"] = finished_at
-                            if artifact.get("submitted_at") is None:
-                                artifact["submitted_at"] = agent.get("finished_at")
             evaluation_id = f"final:{self.relative(trial)}"
             common = {
                 "evaluation_id": evaluation_id,
@@ -2294,26 +2144,6 @@ class Builder:
             (interval.get("gpu_job_id"), interval.get("gpu_attempt"))
             for interval in training_billing_intervals
         }
-        # Legacy controllers have no immediate pre-create boundary. Preserve
-        # their conservative pre-create interval rather than silently
-        # undercounting historical or in-flight runs created before this
-        # event existed.
-        legacy_billing_intervals = self._paired_intervals(
-            self.events,
-            start_kinds={"gpu_worker_starting_enter"},
-            end_kinds={"gpu_preempted", "gpu_released"},
-            key_fields=("gpu_job_id", "gpu_attempt"),
-        )
-        training_billing_intervals.extend(
-            dict(interval)
-            for interval in legacy_billing_intervals
-            if (interval.get("gpu_job_id"), interval.get("gpu_attempt"))
-            not in billing_keys
-        )
-        billing_keys = {
-            (interval.get("gpu_job_id"), interval.get("gpu_attempt"))
-            for interval in training_billing_intervals
-        }
         training_billing_intervals.extend(
             dict(interval)
             for interval in training_intervals
@@ -2842,7 +2672,7 @@ class Builder:
                 ],
                 # Preserve the provider-registry-clamped intervals used for
                 # billing so downstream cost curves cannot reconstruct a
-                # larger provisional lifecycle from raw legacy events.
+                # larger provisional lifecycle from controller events.
                 "intervals": [
                     {
                         key: interval.get(key)
@@ -2915,33 +2745,7 @@ class Builder:
         best_result_ms = (
             parse_epoch_ms(best_artifact.get("finished_at")) if best_artifact else None
         ) or best_submitted_ms
-        uses_frozen_final = (
-            self.run.get("primary_score_policy") == "frozen_final_artifact"
-        )
-        evaluation_result_policy = self.run.get("evaluation_result_policy") or (
-            "frozen_final_artifact" if uses_frozen_final else "all_feedback_submissions"
-        )
-        primary_artifacts = (
-            [artifact for artifact in self.artifacts if artifact.get("primary_final")]
-            if uses_frozen_final
-            else []
-        )
-        primary_artifact = primary_artifacts[-1] if primary_artifacts else None
-        primary_rewards = self.final_verifier_rewards
-        primary_time_raw = primary_rewards.get("best_100m_s")
-        primary_time = (
-            float(primary_time_raw)
-            if primary_rewards.get("valid_run")
-            and isinstance(primary_time_raw, (int, float))
-            and not isinstance(primary_time_raw, bool)
-            else None
-        )
-        primary_submitted_ms = (
-            parse_epoch_ms(primary_artifact.get("submitted_at"))
-            if primary_artifact
-            else None
-        )
-        primary_result_ms = parse_epoch_ms(self.final_verifier_finished_at)
+        evaluation_result_policy = "all_blind_archival_submissions"
 
         def costs_at(cutoff_ms: int | None) -> dict[str, Any] | None:
             if cutoff_ms is None:
@@ -3005,7 +2809,6 @@ class Builder:
                 parse_epoch_ms(artifact.get("finished_at"))
             )
         best_cost = costs_at(best_result_ms)
-        primary_cost = costs_at(primary_submitted_ms) if uses_frozen_final else None
         modal_estimate_at_best = None
         api_cost_at_best = None
         if best_cost is not None:
@@ -3017,7 +2820,7 @@ class Builder:
             "disqualified_submission_count": len(self.artifacts)
             - len(scored_artifacts),
             "evaluation_result_policy": evaluation_result_policy,
-            "best_100m_s": primary_time if uses_frozen_final else best_time,
+            "best_100m_s": best_time,
             "best_submission_epoch_ms": best_submitted_ms,
             "best_result_epoch_ms": best_result_ms,
             "time_to_best_ms": (
@@ -3066,27 +2869,6 @@ class Builder:
             "tool_call_count": sum(tool_call_counts.values()),
             "timed_tool_call_count": self.counts["timed_tool_calls"],
         }
-        if uses_frozen_final:
-            comparison_summary.update(
-                {
-                    "primary_score_policy": self.run.get("primary_score_policy"),
-                    "primary_final_100m_s": primary_time,
-                    "primary_final_valid": bool(primary_rewards.get("valid_run")),
-                    "primary_final_submission_epoch_ms": primary_submitted_ms,
-                    "primary_final_result_epoch_ms": primary_result_ms,
-                    "retrospective_best_100m_s": best_time,
-                    "primary_final_agent_cost_at_submission_usd": (
-                        primary_cost.get("total_estimated_usd")
-                        if primary_cost is not None
-                        else None
-                    ),
-                    "verifier_measurement_overhead_at_primary_submission_estimated_usd": (
-                        primary_cost.get("verifier_measurement_overhead_estimated_usd")
-                        if primary_cost is not None
-                        else None
-                    ),
-                }
-            )
         return {
             "schema_version": SCHEMA_VERSION,
             "generated_at": dt.datetime.now(dt.timezone.utc)

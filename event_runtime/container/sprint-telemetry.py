@@ -899,16 +899,6 @@ def append_csv_rows(
         os.fsync(handle.fileno())
 
 
-def mirror_file(src: pathlib.Path, dest: pathlib.Path) -> None:
-    if not src.exists():
-        return
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_name(f".{dest.name}.{os.getpid()}.tmp")
-    shutil.copy2(src, tmp)
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, dest)
-
-
 def flush_durable_mount(durable_dir: str) -> None:
     """Best-effort volume flush so a preemption loses at most one interval."""
     root = pathlib.Path(durable_dir)
@@ -981,7 +971,7 @@ class TelemetryWriter:
                 directory / "latest.json",
                 json.dumps(sample, indent=2, sort_keys=True) + "\n",
             )
-        # Live durable write: do not wait for restic (~5 min).
+        # Live durable write keeps telemetry independent of the sandbox lifetime.
         flush_durable_mount(self.durable_dir)
 
 

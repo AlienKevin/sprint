@@ -12,8 +12,5 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{environment.__name__}:G1100MetresEnvCfg",
-        # the training task this environment is the evaluation twin of; a
-        # checkpoint from anywhere else has to match its observation contract
-        "trained_on": "Isaac-Velocity-Flat-G1-v0",
     },
 )

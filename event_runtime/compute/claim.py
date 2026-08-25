@@ -10,16 +10,10 @@ from typing import Any, Iterator
 
 TERMINAL = frozenset({"succeeded", "failed", "terminated"})
 OWNED = frozenset({"claiming", "dispatched", "running", "death_observed"})
-CLAIMABLE = frozenset({"pending", "retry_wait"})
-
 DEFAULT_CLAIM_STALE_SEC = 900
 DEFAULT_HEARTBEAT_TIMEOUT_SEC = 45
 DEFAULT_STARTUP_GRACE_SEC = 600
 DEFAULT_DEAD_GRACE_SEC = 20
-DEFAULT_MAX_ATTEMPTS = 3
-DEFAULT_RETRY_BACKOFF_SEC = 10
-DEFAULT_RETRY_BACKOFF_MAX_SEC = 120
-
 CLAIM_RESTORE_KEYS = (
     "status",
     "attempt",
@@ -269,22 +263,6 @@ def ownership_matches(job: dict[str, Any] | None, claim_id: str) -> bool:
         and str(job.get("lease_id") or "") == claim_id
         and str(job.get("status") or "") in OWNED
     )
-
-
-def retry_delay_s(
-    completed_attempt: int,
-    *,
-    base_sec: float = DEFAULT_RETRY_BACKOFF_SEC,
-    max_sec: float = DEFAULT_RETRY_BACKOFF_MAX_SEC,
-) -> float:
-    completed_attempt = max(1, int(completed_attempt))
-    return min(float(max_sec), float(base_sec) * (2 ** (completed_attempt - 1)))
-
-
-def retry_allowed(job: dict[str, Any]) -> bool:
-    attempt = int(job.get("attempt") or 0)
-    max_attempts = int(job.get("max_attempts") or DEFAULT_MAX_ATTEMPTS)
-    return attempt < max(1, max_attempts)
 
 
 @contextmanager

@@ -88,7 +88,7 @@ def load_run(run_id: str) -> tuple[Path, dict[str, Any]]:
     if state.get("run_id") != run_id:
         raise ValueError(f"{path} does not match requested run ID")
     kind = state.get("agent_kind")
-    if kind not in {"claude-code", "codex", "deepseek-harness"}:
+    if kind not in {"codex", "deepseek-harness"}:
         raise ValueError(f"{path} has unsupported agent_kind: {kind!r}")
     return state_dir, state
 
@@ -96,7 +96,7 @@ def load_run(run_id: str) -> tuple[Path, dict[str, Any]]:
 def agent_kind(run: dict[str, Any]) -> str:
     """Return the required agent kind from the current run schema."""
     kind = run.get("agent_kind")
-    if kind not in {"claude-code", "codex", "deepseek-harness"}:
+    if kind not in {"codex", "deepseek-harness"}:
         raise ValueError(f"run has unsupported agent_kind: {kind!r}")
     return str(kind)
 
@@ -319,7 +319,7 @@ def is_agent_container(
         result = exec_container(
             run,
             container_id,
-            "test -x /opt/sprint-snapshot-loop.sh && printf SPRINT_AGENT",
+            "test -x /opt/sprint-agent-supervisor.sh && printf SPRINT_AGENT",
             check=False,
             timeout=timeout,
         )
@@ -1286,27 +1286,6 @@ def archive_completed_attempts(
     return manifest
 
 
-def verify_attempt_archives(path: Path) -> dict[str, Any]:
-    checksums = sorted(path.rglob("*.tar.sha256"))
-    errors: list[str] = []
-    verified = 0
-    for checksum in checksums:
-        parts = checksum.read_text().split()
-        if len(parts) < 2:
-            errors.append(f"malformed checksum: {checksum}")
-            continue
-        archive = checksum.parent / parts[1]
-        if not archive.is_file():
-            errors.append(f"missing archive: {archive}")
-            continue
-        actual = sha256_file(archive)
-        if actual != parts[0]:
-            errors.append(f"checksum mismatch: {archive}")
-            continue
-        verified += 1
-    return {"verified": verified, "errors": errors, "valid": not errors}
-
-
 def sync_frontier_artifacts(
     state_dir: Path, run: dict[str, Any], *, upload: bool = True
 ) -> list[Path]:
@@ -1556,7 +1535,7 @@ def status_snapshot(
             heartbeat = fetch_remote_json(
                 state_dir,
                 run,
-                "snapshot/heartbeat.json",
+                "supervisor/heartbeat.json",
                 "snapshot-heartbeat.json",
             )
             ack = fetch_remote_json(state_dir, run, "STOP_ACK", "STOP_ACK.json")
@@ -2065,27 +2044,10 @@ def provider_usage_ledger_settled(
     return not details, details
 
 
-def final_policy_frozen_ready(trial: Path) -> bool:
-    """Verify that Harbor collected a non-empty final policy after agent exit."""
-    final_policy = trial / "artifacts" / "app" / "submission" / "policy.pt"
-    try:
-        return final_policy.is_file() and final_policy.stat().st_size > 0
-    except OSError:
-        return False
-
-
 def final_conditions(
     state_dir: Path, run: dict[str, Any]
 ) -> tuple[bool, dict[str, bool], list[str]]:
     job, trial = discover_job_and_trial(state_dir, run)
-    evaluation_result_policy = run.get("evaluation_result_policy")
-    archival_submissions = evaluation_result_policy == "all_blind_archival_submissions"
-    all_submissions = evaluation_result_policy in {
-        "all_blind_submissions",
-        "all_blind_archival_submissions",
-        # Retained while the stopped 2026-08-08 batch finishes draining.
-        "all_blind_submissions_by_deadline",
-    }
     stop_was_requested = (state_dir / "STOP_REQUESTED.json").is_file()
     conditions: dict[str, bool] = {
         # Natural completion has no controller stop to acknowledge. A run that
@@ -2113,18 +2075,14 @@ def final_conditions(
         # record instead of certifying a still-unwinding process.
         "cpu_process_exited": (state_dir / "CPU_TRIAL_EXIT.json").is_file(),
     }
-    if all_submissions:
-        conditions["continuous_result_set"] = False
-    else:
-        # Retained while already-running frozen-final trials finish.
-        conditions["final_verifier"] = False
+    conditions["continuous_result_set"] = False
     if run.get("unified_timeline_required"):
         conditions["unified_timeline_ready"] = False
     if run.get("usage_audit_required"):
         conditions["usage_audit_complete"] = False
-    if run.get("primary_score_policy") == "frozen_final_artifact":
-        conditions["final_policy_frozen"] = False
     details: list[str] = []
+    if run.get("evaluation_result_policy") != "all_blind_archival_submissions":
+        details.append("run does not use the current archival scoring policy")
     if not job or not trial:
         return False, conditions, ["job or trial path is not available"]
 
@@ -2179,40 +2137,10 @@ def final_conditions(
             + ", ".join(nonforwarded_bridge)
         )
 
-    if run.get("primary_score_policy") == "frozen_final_artifact":
-        conditions["final_policy_frozen"] = final_policy_frozen_ready(trial)
-
     manifest_path = trial / "artifacts" / "manifest.json"
     try:
         manifest = json.loads(manifest_path.read_text())
-        entries = manifest if isinstance(manifest, list) else []
-        if all_submissions:
-            conditions["artifact_manifest"] = bool(
-                isinstance(manifest, list)
-                and (
-                    archival_submissions
-                    or all(
-                        isinstance(entry, dict) and entry.get("status") != "failed"
-                        for entry in entries
-                    )
-                )
-            )
-        else:
-            policy_entries = [
-                entry
-                for entry in entries
-                if isinstance(entry, dict)
-                and entry.get("destination") == "artifacts/app/submission/policy.pt"
-            ]
-            conditions["artifact_manifest"] = bool(
-                entries
-                and all(
-                    isinstance(entry, dict) and entry.get("status") != "failed"
-                    for entry in entries
-                )
-                and len(policy_entries) == 1
-                and policy_entries[0].get("status") == "ok"
-            )
+        conditions["artifact_manifest"] = isinstance(manifest, list)
     except (OSError, json.JSONDecodeError):
         pass
 
@@ -2221,27 +2149,13 @@ def final_conditions(
         job_result = json.loads((job / "result.json").read_text())
     except (OSError, json.JSONDecodeError):
         trial_result, job_result = {}, {}
-    if all_submissions:
-        summary = trial_result.get("continuous_verification")
-        conditions["continuous_result_set"] = bool(
-            isinstance(summary, dict)
-            and isinstance(summary.get("submissions"), list)
-            and conditions["ledger_parseable"]
-            and conditions["ledger_terminal"]
-        )
-    else:
-        verifier_file = any(
-            path.is_file()
-            for path in (
-                trial / "verifier" / "reward.json",
-                trial / "verifier" / "reward.txt",
-            )
-        )
-        conditions["final_verifier"] = bool(
-            verifier_file
-            and trial_result.get("verifier_result") is not None
-            and (trial_result.get("verifier") or {}).get("finished_at")
-        )
+    summary = trial_result.get("continuous_verification")
+    conditions["continuous_result_set"] = bool(
+        isinstance(summary, dict)
+        and isinstance(summary.get("submissions"), list)
+        and conditions["ledger_parseable"]
+        and conditions["ledger_terminal"]
+    )
     conditions["finished_at"] = bool(
         trial_result.get("finished_at") and job_result.get("finished_at")
     )
@@ -2279,21 +2193,11 @@ def final_conditions(
             pass
     if run.get("usage_audit_required"):
         run_audit_ready, run_audit_details = run_usage_audit_ready(state_dir, run)
-        try:
-            run_audit = json.loads(
-                (state_dir / "usage" / "run-usage-audit.json").read_text()
-            )
-        except (OSError, json.JSONDecodeError):
-            run_audit = {}
         # The archival policy intentionally survives CPU-container teardown.
         # Its all-attempt host reconstruction is authoritative because it
         # attests every raw chunk, request, cost, and reconstructed ATIF
-        # checksum. The legacy policies still require the independent Harbor
-        # audit -> ATIF -> result reconciliation, except for attested
-        # zero-request provider rejections.
-        if run_audit_ready and (
-            archival_submissions or run_audit.get("request_count") == 0
-        ):
+        # checksum.
+        if run_audit_ready:
             trial_audit_ready, trial_audit_details = True, []
         else:
             trial_audit_ready, trial_audit_details = usage_audit_ready(trial, run)
@@ -2850,113 +2754,6 @@ def gpu_dispatch_loop(run_id: str, poll_seconds: int) -> int:
                 pid_path.unlink(missing_ok=True)
 
 
-def download_run_volume(
-    state_dir: Path, run: dict[str, Any], destination: Path
-) -> Path:
-    destination.mkdir(parents=True, exist_ok=True)
-    run_command(
-        modal_command(
-            "volume",
-            "get",
-            "--force",
-            str(run["volume_name"]),
-            f"runs/{run['run_id']}",
-            str(destination),
-        ),
-        run=run,
-        timeout=1800,
-    )
-    candidates = [
-        path.parent for path in destination.rglob("restic/config") if path.is_file()
-    ]
-    if len(candidates) != 1:
-        raise RuntimeError("downloaded run does not contain one restic repository")
-    return candidates[0].parent
-
-
-def restic_command(
-    run_root: Path, *args: str, timeout: int = 7200
-) -> subprocess.CompletedProcess[str]:
-    repo = run_root / "restic"
-    password = run_root / "secrets" / "restic-password"
-    if not repo.is_dir() or not password.is_file():
-        raise RuntimeError("restic repository or password file is missing")
-    command = [
-        "run-heavy",
-        "restic",
-        "-r",
-        str(repo),
-        "--password-file",
-        str(password),
-        *args,
-    ]
-    return run_command(command, timeout=timeout)
-
-
-def check_recovery(run_id: str, cache: Path | None = None) -> dict[str, Any]:
-    state_dir, run = load_run(run_id)
-    if cache is None:
-        cache = (
-            state_dir
-            / "recovery"
-            / dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        )
-        run_root = download_run_volume(state_dir, run, cache)
-    else:
-        matches = [
-            path.parent.parent
-            for path in cache.rglob("restic/config")
-            if path.is_file()
-        ]
-        if len(matches) != 1:
-            raise RuntimeError("cache does not contain one downloaded run")
-        run_root = matches[0]
-    restic = restic_command(run_root, "check")
-    archives = verify_attempt_archives(run_root / "host-archives")
-    return {
-        "run_id": run_id,
-        "agent_kind": agent_kind(run),
-        "run_root": str(run_root),
-        "restic_check": restic.stdout.strip(),
-        "archives": archives,
-        "valid": restic.returncode == 0 and archives["valid"],
-    }
-
-
-def recover_run(
-    run_id: str,
-    destination: Path,
-    *,
-    snapshot: str = "latest",
-    force: bool = False,
-) -> dict[str, Any]:
-    state_dir, run = load_run(run_id)
-    if destination.exists() and any(destination.iterdir()) and not force:
-        raise RuntimeError("restore destination is not empty; pass --force to use it")
-    destination.mkdir(parents=True, exist_ok=True)
-    cache = (
-        state_dir
-        / "recovery"
-        / dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    )
-    run_root = download_run_volume(state_dir, run, cache)
-    check = restic_command(run_root, "check")
-    restic_command(run_root, "restore", snapshot, "--target", str(destination))
-    archives = verify_attempt_archives(run_root / "host-archives")
-    payload = {
-        "run_id": run_id,
-        "agent_kind": agent_kind(run),
-        "restored_at": utc_now(),
-        "snapshot": snapshot,
-        "destination": str(destination.resolve()),
-        "volume_cache": str(run_root),
-        "restic_check": check.stdout.strip(),
-        "attempt_archives": archives,
-    }
-    atomic_write_json(state_dir / "last-recovery.json", payload, mode=0o600)
-    return payload
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
@@ -2968,8 +2765,6 @@ def build_parser() -> argparse.ArgumentParser:
         "budget-pulse",
         "gpu-dispatch-loop",
         "wait",
-        "check",
-        "recover",
         "gpu-dispatch",
         "gpu-terminate",
         "modal-cost",
@@ -2984,12 +2779,6 @@ def build_parser() -> argparse.ArgumentParser:
             )
         if name == "status":
             command.add_argument("--offline", action="store_true")
-        if name == "check":
-            command.add_argument("--cache", type=Path)
-        if name == "recover":
-            command.add_argument("--destination", type=Path, required=True)
-            command.add_argument("--snapshot", default="latest")
-            command.add_argument("--force", action="store_true")
         if name == "gpu-terminate":
             command.add_argument("--job-id", required=True)
     return parser
@@ -3015,8 +2804,6 @@ def main() -> int:
             complete, payload = finalize(args.run_id)
             print(json.dumps(payload, indent=2, sort_keys=True))
             return 0 if complete else 2
-        elif args.command == "check":
-            payload = check_recovery(args.run_id, args.cache)
         elif args.command == "gpu-dispatch":
             from event_runtime.compute import worker as gpu_worker
 
@@ -3030,12 +2817,7 @@ def main() -> int:
             state_dir, _run = load_run(args.run_id)
             payload = modal_cost.collect_provider_billing(state_dir)
         else:
-            payload = recover_run(
-                args.run_id,
-                args.destination,
-                snapshot=args.snapshot,
-                force=args.force,
-            )
+            raise AssertionError(f"unhandled command: {args.command}")
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

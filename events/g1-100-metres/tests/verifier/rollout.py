@@ -417,8 +417,15 @@ def run_trial(
             break
         if step == steps:
             break
-        with torch.inference_mode():
-            obs, *_ = env.step(policy(obs_t))
+        # Restrict gradient suppression to candidate inference.  Isaac keeps
+        # tensors produced by ``env.step`` and mutates them during the next
+        # reset.  Creating those tensors under ``inference_mode`` makes a
+        # second run_trial() in the same process fail when Isaac resets them
+        # in place.  ``no_grad`` avoids autograd work without changing tensor
+        # semantics, and the simulator step stays outside either context.
+        with torch.no_grad():
+            actions = policy(obs_t)
+        obs, *_ = env.step(actions)
         obs_t = obs["policy"] if isinstance(obs, dict) else obs
         t += dt
 
