@@ -22,6 +22,7 @@ STOP_ACK_TIMEOUT_SECONDS=${SPRINT_STOP_ACK_TIMEOUT_SECONDS:-600}
 OPENROUTER_PROXY_DRAIN_TIMEOUT_SECONDS=${SPRINT_OPENROUTER_PROXY_DRAIN_TIMEOUT_SECONDS:-900}
 OPENROUTER_PROXY_RECOVERY_TIMEOUT_SECONDS=${SPRINT_OPENROUTER_PROXY_RECOVERY_TIMEOUT_SECONDS:-300}
 CODEX_EXECUTABLE=${SPRINT_CODEX_EXECUTABLE:-}
+GOAL_RUNNER_BIN=${SPRINT_CODEX_GOAL_RUNNER_BIN:-/opt/sprint-codex-goal-runner.py}
 OPENROUTER_PROXY_BIN=${SPRINT_OPENROUTER_PROXY_BIN:-/opt/sprint-openrouter-ledger-proxy.py}
 OPENROUTER_PROXY_BASE_URL=${SPRINT_OPENROUTER_PROXY_BASE_URL:-http://127.0.0.1:18080/api/v1}
 OPENROUTER_UPSTREAM_URL=${SPRINT_OPENROUTER_UPSTREAM_URL:-https://openrouter.ai/api/v1}
@@ -309,9 +310,32 @@ if [[ -z "$CODEX_EXECUTABLE" ]]; then
   unset CODEX_MANAGED_BY_BUN CODEX_MANAGED_BY_PNPM
 fi
 
-# Run the native CLI as the group leader. This retains npm's package metadata
-# while avoiding an extra signal-relay process between the watcher and Codex.
-setsid "$CODEX_EXECUTABLE" "$@" &
+# A persistent Codex goal spans multiple successful `codex exec` turns. Keep a
+# stable runner as the process-group leader so the supervisor never mistakes a
+# normal turn boundary for an agent exit and the proxy remains alive throughout.
+launch=("$CODEX_EXECUTABLE" "$@")
+if [[ "${SPRINT_CODEX_GOAL_PERSIST:-0}" == "1" ]]; then
+  [[ -x "$GOAL_RUNNER_BIN" ]] || {
+    echo "Codex goal runner missing: $GOAL_RUNNER_BIN" >&2
+    exit 1
+  }
+  [[ -n "${SPRINT_CODEX_GOAL_THREAD_ID:-}" ]] || {
+    echo "persistent Codex goal requires SPRINT_CODEX_GOAL_THREAD_ID" >&2
+    exit 1
+  }
+  [[ -n "${SPRINT_CODEX_GOAL_RECEIPT:-}" ]] || {
+    echo "persistent Codex goal requires SPRINT_CODEX_GOAL_RECEIPT" >&2
+    exit 1
+  }
+  launch=(
+    python3 "$GOAL_RUNNER_BIN"
+    --codex-executable "$CODEX_EXECUTABLE"
+    --thread-id "$SPRINT_CODEX_GOAL_THREAD_ID"
+    --receipt "$SPRINT_CODEX_GOAL_RECEIPT"
+    -- "${@:1}"
+  )
+fi
+setsid "${launch[@]}" &
 codex_pid=$!
 
 # The shell can resume before the new child has executed setsid(2).  Reading

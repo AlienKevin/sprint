@@ -110,6 +110,9 @@ async def test_first_goal_is_bootstrapped_before_codex_exec(
     assert "--expected-provider sprint_openrouter" in execution
     assert "codex exec resume " in execution
     assert '"$sprint_codex_thread_id"' in execution
+    assert "SPRINT_CODEX_GOAL_PERSIST=1" in execution
+    assert "SPRINT_CODEX_GOAL_THREAD_ID" in execution
+    assert "SPRINT_CODEX_GOAL_RECEIPT" in execution
     assert "/logs/agent/goal-bootstrap.json" in execution
     assert "/goal deterministic objective" not in execution
 

@@ -167,6 +167,9 @@ pid_is_codex() {
   mapfile -d '' -t args <"/proc/$pid/cmdline"
   ((${#args[@]} >= 2)) || return 1
   base=${args[0]##*/}
+  if [[ "$base" == python* && "${args[1]}" == */sprint-codex-goal-runner.py ]]; then
+    return 0
+  fi
   if [[ "$base" == "codex" && "${args[1]}" == "exec" ]]; then
     return 0
   fi

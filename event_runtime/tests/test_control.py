@@ -1976,6 +1976,146 @@ while True:
                 monitor.wait()
                 wrapper.communicate()
 
+    def test_codex_goal_runner_keeps_one_supervised_allocation_across_turns(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            durable = root / "durable"
+            runtime = root / "run"
+            agent_logs = root / "agent"
+            artifact_logs = root / "artifacts"
+            codex_home = root / "codex-home"
+            for path in (durable, runtime, agent_logs, artifact_logs, codex_home):
+                path.mkdir()
+
+            turn_count = root / "turn-count"
+            fake_codex = root / "fake-codex.py"
+            fake_codex.write_text(
+                f'''#!/usr/bin/env python3
+import json
+from pathlib import Path
+import sys
+import time
+
+counter = Path({str(turn_count)!r})
+if sys.argv[1:3] == ["app-server", "--stdio"]:
+    for line in sys.stdin:
+        message = json.loads(line)
+        if "id" not in message:
+            continue
+        if message["method"] == "initialize":
+            result = {{}}
+        elif message["method"] == "thread/goal/get":
+            turns = int(counter.read_text()) if counter.exists() else 0
+            result = {{"goal": {{
+                "threadId": "thread-1",
+                "objective": "objective",
+                "status": "complete" if turns >= 2 else "active",
+            }}}}
+        else:
+            result = {{}}
+        print(json.dumps({{"id": message["id"], "result": result}}), flush=True)
+    raise SystemExit(0)
+if sys.argv[1] == "exec":
+    turns = int(counter.read_text()) + 1 if counter.exists() else 1
+    counter.write_text(str(turns))
+    time.sleep(0.4)
+    print(json.dumps({{"type": "turn.completed", "turn": turns}}), flush=True)
+    raise SystemExit(0)
+raise SystemExit(2)
+'''
+            )
+            fake_codex.chmod(0o755)
+            receipt = agent_logs / "goal-bootstrap.json"
+            receipt.write_text(
+                json.dumps({"thread_id": "thread-1", "objective": "objective"})
+            )
+
+            wrapper_env = os.environ.copy()
+            wrapper_env.update(
+                {
+                    "CODEX_HOME": str(codex_home),
+                    "SPRINT_RUNTIME_DIR": str(runtime),
+                    "SPRINT_AGENT_LOG_DIR": str(agent_logs),
+                    "SPRINT_DURABLE_DIR": str(durable),
+                    "SPRINT_RUN_ID": "test-goal-loop",
+                    "SPRINT_CODEX_EXECUTABLE": str(fake_codex),
+                    "SPRINT_CODEX_GOAL_PERSIST": "1",
+                    "SPRINT_CODEX_GOAL_THREAD_ID": "thread-1",
+                    "SPRINT_CODEX_GOAL_RECEIPT": str(receipt),
+                    "SPRINT_CODEX_GOAL_RUNNER_BIN": str(
+                        ROOT
+                        / "event_runtime/container/sprint-codex-goal-runner.py"
+                    ),
+                    "SPRINT_CODEX_APP_SERVER_ARGS_JSON": "[]",
+                }
+            )
+            wrapper = subprocess.Popen(
+                [
+                    "bash",
+                    str(ROOT / "event_runtime/container/sprint-codex-exec-wrapper.sh"),
+                    str(fake_codex),
+                    "exec",
+                    "resume",
+                    "thread-1",
+                    "--",
+                    "objective",
+                ],
+                env=wrapper_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            watcher = subprocess.Popen(
+                [
+                    "bash",
+                    str(ROOT / "event_runtime/container/sprint-agent-supervisor.sh"),
+                    "--run-id",
+                    "test-goal-loop",
+                    "--agent-kind",
+                    "codex",
+                    "--poll-seconds",
+                    "1",
+                    "--durable-dir",
+                    str(durable),
+                    "--runtime-dir",
+                    str(runtime),
+                    "--agent-log-dir",
+                    str(agent_logs),
+                    "--artifact-log-dir",
+                    str(artifact_logs),
+                    "--codex-home-dir",
+                    str(codex_home),
+                    "--budget-watchdog-bin",
+                    "/bin/true",
+                    "--exit-after-ack",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                wrapper.wait(timeout=20)
+                watcher.wait(timeout=20)
+                self.assertEqual(
+                    wrapper.returncode,
+                    0,
+                    wrapper.stderr.read() if wrapper.stderr else "",
+                )
+                self.assertEqual(turn_count.read_text(), "2")
+                first_seen = (
+                    durable / "runs/test-goal-loop/supervisor/first-codex-seen"
+                )
+                self.assertTrue(first_seen.exists())
+                ack = json.loads(
+                    (durable / "runs/test-goal-loop/STOP_ACK").read_text()
+                )
+                self.assertEqual(ack["reason"], "agent_exit")
+            finally:
+                watcher.kill()
+                wrapper.kill()
+                watcher.communicate()
+                wrapper.communicate()
+
     def test_agent_exit_ack_keeps_harbor_sandbox_alive_for_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

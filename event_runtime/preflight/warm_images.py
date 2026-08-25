@@ -320,6 +320,7 @@ def main() -> int:
                 "test \"$(codex --version)\" = 'codex-cli 0.149.1' && "
                 "test -x /opt/sprint-agent-supervisor.sh && "
                 "test -x /opt/sprint-codex-exec-wrapper.sh && "
+                "test -x /opt/sprint-codex-goal-runner.py && "
                 "test -x /opt/sprint-deepseek-harness-exec-wrapper.sh && "
                 "test -x /opt/sprint-deepseek-harness-runner.py && "
                 "test -r /opt/event_runtime/container/sprint-deepseek-goal-bootstrap.mjs && "

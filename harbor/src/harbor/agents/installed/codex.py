@@ -1396,8 +1396,10 @@ class Codex(BaseInstalledAgent):
                 f"--receipt {shlex.quote((EnvironmentPaths.agent_dir / 'goal-bootstrap.json').as_posix())}"
                 f"{goal_provider_arg}"
                 ")\n"
-                "unset SPRINT_CODEX_GOAL_OBJECTIVE "
-                "SPRINT_CODEX_APP_SERVER_ARGS_JSON\n"
+                "export SPRINT_CODEX_GOAL_PERSIST=1\n"
+                'export SPRINT_CODEX_GOAL_THREAD_ID="$sprint_codex_thread_id"\n'
+                f"export SPRINT_CODEX_GOAL_RECEIPT={shlex.quote((EnvironmentPaths.agent_dir / 'goal-bootstrap.json').as_posix())}\n"
+                "unset SPRINT_CODEX_GOAL_OBJECTIVE\n"
             )
             explicit_resume_id = '"$sprint_codex_thread_id" '
 
