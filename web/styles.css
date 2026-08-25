@@ -333,11 +333,6 @@ main {
   font-weight: 700;
   text-decoration: none;
 }
-.tracker-note {
-  margin: 14px 2px 0;
-  color: var(--muted);
-  font: 10px/1.5 var(--mono);
-}
 .chart-card {
   background: linear-gradient(180deg, #111, #090909);
   border: 1px solid var(--line);
