@@ -472,6 +472,9 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert 'id="rollout-outline"' in trajectory_page
     assert "function deriveChapters" in trajectory_app
     assert "function rolloutSynopsis" in trajectory_app
+    assert "Phase beginning at step" not in trajectory_app
+    assert "Choosing direct PPO training" not in trajectory_app
+    assert "Choosing a PPO training stack" not in trajectory_app
     assert "let observedVersion = null" in app
     assert "state.timelineUpdatedAt=tIndex.updated_at||null" in app
     assert "Date.parse(snapshotUpdatedAt(batch)||'')" in app
