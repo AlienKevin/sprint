@@ -8,6 +8,7 @@ import errno
 import json
 import os
 import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import unquote, urlsplit
@@ -99,6 +100,93 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
     os.chmod(path, 0o644)
+
+
+def _epoch_ms(value: Any) -> int | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return int(parsed.timestamp() * 1000)
+    except ValueError:
+        return None
+
+
+def _synthesized_index_entry(
+    family: str, payload: dict[str, Any], run_id: str
+) -> dict[str, Any] | None:
+    """Rebuild observer-cache metadata from one immutable public artifact."""
+
+    if family == "policies":
+        policies = payload.get("policies") or []
+        return {
+            "run_id": run_id,
+            "model": payload.get("model"),
+            "resolved_model_version": payload.get("resolved_model_version"),
+            "reasoning_effort": payload.get("reasoning_effort"),
+            "created_at": payload.get("created_at"),
+            "updated_at": payload.get("updated_at"),
+            "policy_count": len(policies),
+            "valid_count": sum(bool(row.get("valid_run")) for row in policies),
+            "replay_count": sum(bool(row.get("replay_ready")) for row in policies),
+            "path": f"/data/policies/{run_id}.json",
+        }
+    if family == "timelines":
+        run = payload.get("run") or {}
+        coverage = payload.get("coverage") or {}
+        clock = payload.get("clock") or {}
+        artifacts = payload.get("artifacts") or []
+        return {
+            "run_id": run_id,
+            "model": run.get("model"),
+            "agent_kind": run.get("agent_kind"),
+            "reasoning_effort": run.get("reasoning_effort"),
+            "resolved_model_version": run.get("resolved_model_version"),
+            "created_at": run.get("created_at"),
+            "generated_at": payload.get("generated_at"),
+            "path": f"/data/timelines/{run_id}.json",
+            "overview_path": f"/data/timeline-overviews/{run_id}.json",
+            "ready": coverage.get("ready"),
+            "origin_epoch_ms": clock.get("origin_epoch_ms"),
+            "end_epoch_ms": clock.get("end_epoch_ms"),
+            "artifact_count": len(artifacts),
+            "event_count": len(payload.get("events") or []),
+            "usage_summary": payload.get("usage_summary") or {},
+            "comparison_summary": payload.get("comparison_summary") or {},
+            "resource_usage_summary": payload.get("resource_usage_summary") or {},
+            "dashboard_artifacts": [
+                {
+                    "submission_index": artifact.get("submission_index"),
+                    "finished_epoch_ms": _epoch_ms(artifact.get("finished_at")),
+                    "rewards": {
+                        key: (artifact.get("rewards") or {}).get(key)
+                        for key in (
+                            "valid_run",
+                            "best_100m_s",
+                            "gate_finished",
+                            "gate_in_lane",
+                            "gate_self_collision",
+                            "peak_speed_mps",
+                        )
+                    },
+                    "cost_at_result": artifact.get("cost_at_result"),
+                }
+                for artifact in artifacts
+                if isinstance(artifact, dict)
+            ],
+        }
+    if family == "trajectories":
+        run = payload.get("run") or {}
+        return {
+            "run_id": run_id,
+            "model": run.get("model"),
+            "created_at": run.get("created_at"),
+            "generated_at": payload.get("generated_at"),
+            "path": f"/data/trajectories/{run_id}.json",
+            "summary": payload.get("summary") or {},
+            "attempts": payload.get("attempts") or [],
+        }
+    return None
 
 
 def _run_ids(batch: dict[str, Any]) -> tuple[str, ...]:
@@ -202,7 +290,29 @@ def _copy_current_dynamic_tree(
                 for row in index_payload.get("runs", [])
                 if isinstance(row, dict) and str(row.get("run_id") or "") in selected
             ]
-            filtered = dict(index_payload)
+
+        indexed = {str(row.get("run_id")): row for row in entries}
+        if family in {"policies", "timelines", "trajectories"}:
+            for run_id in run_ids:
+                if run_id in indexed:
+                    continue
+                artifact = source / "data" / family / f"{run_id}.json"
+                if not artifact.is_file():
+                    continue
+                entry = _synthesized_index_entry(family, _read_json(artifact), run_id)
+                if entry is not None:
+                    indexed[run_id] = entry
+            entries = sorted(
+                indexed.values(),
+                key=lambda row: (
+                    row.get("created_at") or row.get("updated_at") or "",
+                    row["run_id"],
+                ),
+                reverse=True,
+            )
+
+        if index_payload is not None or entries:
+            filtered = dict(index_payload or {"schema_version": 1})
             filtered["runs"] = entries
             _write_json(destination / "data" / family / "index.json", filtered)
             copied_payloads.append(filtered)
@@ -224,7 +334,7 @@ def _copy_current_dynamic_tree(
             if not item.is_file():
                 continue
             payload = _read_json(item)
-            declared = payload.get("run_id")
+            declared = payload.get("run_id") or (payload.get("run") or {}).get("run_id")
             if declared is not None and str(declared) not in selected:
                 raise RuntimeError(f"selected artifact declares another run: {item}")
             _link_or_copy(item, destination / relative, root=source)

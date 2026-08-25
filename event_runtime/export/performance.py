@@ -540,10 +540,36 @@ def build(
     timeline_by_run = {row["run_id"]: row for row in timeline_index["runs"]}
     policy_by_run = {row["run_id"]: row for row in policy_index["runs"]}
     requested_run_ids = set(run_ids or ())
+
+    # Explicit run IDs come from the authoritative current-batch manifest. The
+    # public indexes are only observer caches and may briefly lag or be pruned by
+    # an older monitor, so recover metadata from the immutable per-run artifacts.
+    for run_id in requested_run_ids:
+        if run_id not in timeline_by_run:
+            path = WEB / "data" / "timelines" / f"{run_id}.json"
+            if path.is_file():
+                timeline = load_json(path)
+                run = timeline.get("run") or {}
+                timeline_by_run[run_id] = {
+                    "run_id": run_id,
+                    "model": run.get("model"),
+                    "created_at": run.get("created_at"),
+                    "path": f"/data/timelines/{run_id}.json",
+                }
+        if run_id not in policy_by_run:
+            path = WEB / "data" / "policies" / f"{run_id}.json"
+            if path.is_file():
+                policy = load_json(path)
+                policy_by_run[run_id] = {
+                    "run_id": run_id,
+                    "path": f"/data/policies/{run_id}.json",
+                    "model": policy.get("model"),
+                    "created_at": policy.get("created_at"),
+                }
     selected = sorted(
         (
             row
-            for row in timeline_index["runs"]
+            for row in timeline_by_run.values()
             if (
                 row["run_id"] in requested_run_ids
                 if requested_run_ids

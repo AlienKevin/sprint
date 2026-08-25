@@ -111,12 +111,8 @@ def test_bundle_contains_only_current_batch_results(tmp_path: Path) -> None:
         assert [row["run_id"] for row in index["runs"]] == ["batch-current-luna-1"]
         assert (bundle / "data" / family / "batch-current-luna-1.json").is_file()
         assert not (bundle / "data" / family / "batch-old-deepseek-1.json").exists()
-    assert (
-        bundle / "data/timeline-overviews/batch-current-luna-1.json"
-    ).is_file()
-    assert not (
-        bundle / "data/timeline-overviews/batch-old-deepseek-1.json"
-    ).exists()
+    assert (bundle / "data/timeline-overviews/batch-current-luna-1.json").is_file()
+    assert not (bundle / "data/timeline-overviews/batch-old-deepseek-1.json").exists()
 
 
 def test_bundle_fails_closed_on_missing_current_replay(tmp_path: Path) -> None:
@@ -125,6 +121,26 @@ def test_bundle_fails_closed_on_missing_current_replay(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="references a missing asset"):
         build_site_bundle(web, bundle, require_current=True)
+
+
+def test_bundle_recovers_current_run_omitted_from_observer_indexes(
+    tmp_path: Path,
+) -> None:
+    web, bundle = build_fixture(tmp_path)
+    current_run = "batch-current-luna-1"
+
+    for family in ("policies", "timelines", "trajectories"):
+        index_path = web / "data" / family / "index.json"
+        index = json.loads(index_path.read_text())
+        index["runs"] = [row for row in index["runs"] if row["run_id"] != current_run]
+        write_json(index_path, index)
+
+    report = build_site_bundle(web, bundle, require_current=True)
+
+    assert report["run_ids"] == [current_run]
+    for family in ("policies", "timelines", "trajectories"):
+        index = json.loads((bundle / "data" / family / "index.json").read_text())
+        assert [row["run_id"] for row in index["runs"]] == [current_run]
 
 
 def test_bundle_falls_back_for_static_site_without_batch(tmp_path: Path) -> None:
