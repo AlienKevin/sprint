@@ -1262,7 +1262,7 @@ def provider_inference_probe(
 
 
 def run_checked(command: list[str], *, env: dict[str, str] | None = None) -> str:
-    completed = subprocess.run(
+    subprocess.run(
         command,
         cwd=ROOT,
         env=env,
@@ -1943,6 +1943,50 @@ def retire_run_control_services(run_id: str) -> None:
     if active:
         raise RuntimeError(
             f"host controllers still active for {run_id}: {', '.join(active)}"
+        )
+
+    # Modal keeps zero-task Apps in ``deployed`` state after their sandboxes
+    # terminate.  They do not consume compute, but leaving them behind makes a
+    # clean-room preflight correctly refuse the next evaluation.  Stop every
+    # exact app owned by this run and verify the provider-side postcondition.
+    _state_dir, run = sprintctl.load_run(run_id)
+    app_names = tuple(
+        name
+        for key in ("app_name", "training_app_name", "verifier_app_name")
+        if isinstance((name := run.get(key)), str)
+        and re.fullmatch(r"sprint-[A-Za-z0-9][A-Za-z0-9._-]{2,80}", name)
+    )
+    if not app_names:
+        return
+    stop_errors: list[str] = []
+    for name in app_names:
+        stopped = sprintctl.run_command(
+            sprintctl.modal_command("app", "stop", "-y", name),
+            run=run,
+            check=False,
+            timeout=60,
+        )
+        if stopped.returncode != 0:
+            stop_errors.append(
+                f"{name}: {(stopped.stderr or stopped.stdout).strip() or stopped.returncode}"
+            )
+
+    listed = sprintctl.run_command(
+        sprintctl.modal_command("app", "list", "--json"),
+        run=run,
+        timeout=60,
+    )
+    active_apps = [
+        str(item.get("description"))
+        for item in json.loads(listed.stdout)
+        if isinstance(item, dict)
+        and item.get("description") in app_names
+        and str(item.get("state") or "").lower() != "stopped"
+    ]
+    if active_apps:
+        detail = f"; stop errors: {' | '.join(stop_errors)}" if stop_errors else ""
+        raise RuntimeError(
+            f"Modal apps still deployed for {run_id}: {', '.join(active_apps)}{detail}"
         )
 
 

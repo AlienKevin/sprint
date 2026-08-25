@@ -2029,8 +2029,14 @@ def test_run_control_units_cover_every_host_process_for_one_trial() -> None:
 
 
 def test_retire_run_control_services_accepts_units_already_absent(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(batch_eval.sprintctl, "OPS_ROOT", tmp_path)
+    run_dir = tmp_path / "eval-luna-1"
+    run_dir.mkdir()
+    (run_dir / "run.json").write_text(
+        '{"run_id":"eval-luna-1","agent_kind":"codex"}\n'
+    )
     completed = mock.Mock(returncode=5, stderr="Unit not loaded")
     absent = mock.Mock(returncode=3)
     monkeypatch.setattr(
@@ -2040,6 +2046,50 @@ def test_retire_run_control_services_accepts_units_already_absent(
     )
 
     batch_eval.retire_run_control_services("eval-luna-1")
+
+
+def test_retire_run_control_services_stops_zero_task_modal_apps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(batch_eval.sprintctl, "OPS_ROOT", tmp_path)
+    run_dir = tmp_path / "eval-luna-1"
+    run_dir.mkdir()
+    (run_dir / "run.json").write_text(
+        json.dumps(
+                {
+                    "run_id": "eval-luna-1",
+                    "agent_kind": "codex",
+                "app_name": "sprint-eval-luna-1",
+                "training_app_name": "sprint-eval-luna-1-training",
+                "verifier_app_name": "sprint-eval-luna-1-verifier",
+            }
+        )
+        + "\n"
+    )
+    systemctl = mock.Mock(returncode=0, stderr="")
+    absent = mock.Mock(returncode=3)
+    monkeypatch.setattr(
+        batch_eval.subprocess,
+        "run",
+        mock.Mock(side_effect=[systemctl, absent, absent, absent, absent]),
+    )
+    modal_calls: list[list[str]] = []
+
+    def run_command(argv, **_kwargs):
+        modal_calls.append(argv)
+        if argv[-2:] == ["list", "--json"]:
+            return mock.Mock(returncode=0, stdout="[]", stderr="")
+        return mock.Mock(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(batch_eval.sprintctl, "run_command", run_command)
+
+    batch_eval.retire_run_control_services("eval-luna-1")
+
+    assert [call[-1] for call in modal_calls[:-1]] == [
+        "sprint-eval-luna-1",
+        "sprint-eval-luna-1-training",
+        "sprint-eval-luna-1-verifier",
+    ]
 
 
 def test_batch_stop_fails_closed_when_host_controllers_survive(
