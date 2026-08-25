@@ -14,12 +14,21 @@ from typing import Any
 
 import modal
 
+from event_runtime.control.openrouter_credentials import (
+    OpenRouterManagementClient,
+    TrialCredentialSpec,
+    provision_trial_credentials,
+    revoke_trial_credentials,
+)
 from event_runtime.preflight.warm_images import stop_warmup_app
 
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MANIFEST = ROOT / "runs/ops/modal-image-warmup.json"
 DEFAULT_REPORT = ROOT / "runs/ops/luna-codex-live-smoke.json"
+GOAL_BOOTSTRAP = (
+    ROOT / "harbor/src/harbor/agents/installed/codex_goal_bootstrap.py"
+)
 APP_NAME = "sprint-image-warmup"
 SUCCESS_MARKER = "LIVE-SMOKE-OK"
 MODEL = "openai/gpt-5.6-luna"
@@ -30,6 +39,11 @@ CONTRACT = {
     "reasoning": {"effort": "max", "summary": "auto"},
     "service_tier": "default",
 }
+GOAL_OBJECTIVE = """Exercise persistent goal continuation in one sandbox.
+Use exec_command to inspect /tmp/luna-goal-canary-turn. If it does not exist,
+create it with the text 1, respond with CANARY-FIRST-TURN, and leave this goal
+active. If it already exists, mark this goal complete with update_goal and make
+the final response include LIVE-SMOKE-OK. Do not perform any other work."""
 
 
 def atomic_json(path: Path, payload: dict[str, Any]) -> None:
@@ -45,17 +59,35 @@ def main() -> int:
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)
     args = parser.parse_args()
-    key = os.environ.get("OPENROUTER_API_KEY")
-    if not key:
-        parser.error("OPENROUTER_API_KEY is required")
+    management_key = os.environ.get("OPENROUTER_MANAGEMENT_KEY")
+    if not management_key:
+        parser.error("OPENROUTER_MANAGEMENT_KEY is required")
     manifest = json.loads(args.manifest.read_text())
     if manifest.get("completed") is not True:
         parser.error("the immutable image warmup is not complete")
     image_id = manifest["contexts"]["agent_training"]["image_id"]
     app = modal.App.lookup(APP_NAME, create_if_missing=True)
     sandbox: modal.Sandbox | None = None
+    credential = None
     started = time.monotonic()
     run_id = "luna-codex-live-smoke"
+    client = OpenRouterManagementClient(management_key)
+    credential_journal = args.report.with_name("luna-codex-live-smoke-key.json")
+    credential = provision_trial_credentials(
+        client,
+        [
+            TrialCredentialSpec(
+                run_id=run_id,
+                model=MODEL,
+                resolved_model=RESOLVED_MODEL,
+                provider="openai",
+                budget_usd=1.0,
+            )
+        ],
+        journal_path=credential_journal,
+        lifetime_hours=1,
+    )[0]
+    key = credential.api_key
     contract_json = json.dumps(CONTRACT, separators=(",", ":"))
     env = {
         "CODEX_HOME": "/tmp/codex-home",
@@ -97,12 +129,17 @@ def main() -> int:
     run = json.loads(launch_contract.stdout)
     run["standing_gpu_worker"] = False
     try:
+        smoke_image = modal.Image.from_id(image_id).add_local_file(
+            GOAL_BOOTSTRAP,
+            "/opt/sprint-codex-goal-bootstrap.py",
+            copy=True,
+        )
         sandbox = modal.Sandbox.create(
             "python3",
             "-c",
             "import time; time.sleep(900)",
             app=app,
-            image=modal.Image.from_id(image_id),
+            image=smoke_image,
             cpu=2,
             memory=8192,
             timeout=900,
@@ -111,9 +148,7 @@ def main() -> int:
             secrets=[modal.Secret.from_dict({"OPENROUTER_API_KEY": key})],
             tags={"sprint.role": "luna-codex-live-smoke"},
         )
-        process = sandbox.exec(
-            "bash",
-            "-lc",
+        shell_command = (
             "mkdir -p /app /tmp/durable/runs/"
             + run_id
             + "/state /tmp/runtime /tmp/logs/agent; "
@@ -127,15 +162,29 @@ def main() -> int:
                 + "))"
             )
             + "; "
+            + "bash /opt/sprint-apply-openai-codex-config.sh >/dev/null; "
+            + "export SPRINT_CODEX_GOAL_OBJECTIVE="
+            + shlex.quote(GOAL_OBJECTIVE)
+            + "; "
+            + "sprint_codex_thread_id=$(python3 /opt/sprint-codex-goal-bootstrap.py "
+            + "--model gpt-5.6-luna --cwd /app "
+            + "--receipt /tmp/logs/agent/goal-bootstrap.json "
+            + "--expected-provider sprint_openrouter); "
+            + "export SPRINT_CODEX_GOAL_PERSIST=1; "
+            + 'export SPRINT_CODEX_GOAL_THREAD_ID="$sprint_codex_thread_id"; '
+            + "export SPRINT_CODEX_GOAL_RECEIPT=/tmp/logs/agent/goal-bootstrap.json; "
+            + "unset SPRINT_CODEX_GOAL_OBJECTIVE; "
             + "/opt/sprint-codex-exec-wrapper.sh \"$(command -v codex)\" "
-            + "exec --dangerously-bypass-approvals-and-sandbox "
-            + "--skip-git-repo-check --model gpt-5.6-luna --json -- "
-            + shlex.quote(
-                "Without calling a tool, solve this internally: find the least "
-                "positive integer n such that n modulo 7 is 3 and n modulo 11 "
-                "is 5. Your final response must include LIVE-SMOKE-OK."
-            )
-            + " </dev/null",
+            + "exec resume --dangerously-bypass-approvals-and-sandbox "
+            + "--skip-git-repo-check --model gpt-5.6-luna --json "
+            + '"$sprint_codex_thread_id" -- '
+            + shlex.quote(GOAL_OBJECTIVE)
+            + " </dev/null"
+        )
+        process = sandbox.exec(
+            "bash",
+            "-lc",
+            shell_command,
             env=env,
             timeout=720,
         )
@@ -206,6 +255,8 @@ def main() -> int:
             == len(records),
             "no_pending_request": summary.get("pending_request_count") == 0,
             "reasoning_summary_preserved": trace_reasoning["summary_count"] > 0,
+            "persistent_goal_crossed_turn_boundary": len(records) >= 2,
+            "first_turn_marker_preserved": "CANARY-FIRST-TURN" in stdout,
         }
         if not all(checks.values()):
             raise RuntimeError(f"live smoke checks failed: {checks}")
@@ -239,6 +290,14 @@ def main() -> int:
     finally:
         if sandbox is not None:
             sandbox.terminate(wait=True)
+        if credential is not None:
+            errors = revoke_trial_credentials(
+                client,
+                [credential.public_metadata()],
+                journal_path=credential_journal,
+            )
+            if errors:
+                raise RuntimeError("; ".join(errors))
         stop_warmup_app(required=False)
 
 
