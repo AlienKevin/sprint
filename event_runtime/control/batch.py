@@ -2511,6 +2511,37 @@ def live_run_monitor_status(run_id: str) -> dict[str, Any] | None:
     return payload
 
 
+def local_run_status(run_id: str) -> dict[str, Any]:
+    """Read a lane's last durable host snapshot without any remote I/O."""
+
+    state_dir = SCRIPT_DIR / run_id
+    try:
+        payload = json.loads((state_dir / "status.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        payload = {}
+    if isinstance(payload, dict) and payload.get("run_id") == run_id:
+        return payload
+    try:
+        _, run = sprintctl.load_run(run_id)
+        return sprintctl.status_snapshot(state_dir, run, include_remote=False)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {"run_id": run_id}
+
+
+def request_run_monitor_recovery(run_id: str) -> bool:
+    """Ask systemd to recover one lane monitor without blocking this cycle."""
+
+    monitor_unit = run_control_units(run_id)[1]
+    completed = subprocess.run(
+        ["systemctl", "--user", "restart", "--no-block", monitor_unit],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        timeout=10,
+    )
+    return completed.returncode == 0
+
+
 def arm_terminal(arm: dict[str, Any]) -> bool:
     """Return whether the arm's single CPU execution has ended."""
     run_id = str(arm.get("run_id") or "")
@@ -3020,7 +3051,34 @@ def monitor_cycle(batch_id: str, *, env_file: Path | None = None) -> dict[str, A
             try:
                 status = live_run_monitor_status(run_id)
                 if status is None:
-                    status = sprintctl.monitor_once(run_id, upload=True)
+                    # The batch process is an observer, never a substitute
+                    # lane monitor. A synchronous fallback here can block all
+                    # other arms behind Modal Volume I/O. Retain the last
+                    # local snapshot and ask the restartable lane service to
+                    # recover asynchronously instead.
+                    status = local_run_status(run_id)
+                    recovered = request_run_monitor_recovery(run_id)
+                    arm["monitor_recovery_requested_at"] = utc_now()
+                    cycle_alerts.append(
+                        {
+                            "run_id": run_id,
+                            "kind": "run_monitor_unavailable",
+                            "source": (
+                                "systemd_restart_requested"
+                                if recovered
+                                else "systemd_restart_failed"
+                            ),
+                            "count_in_tail": "1",
+                        }
+                    )
+                else:
+                    arm.pop("monitor_recovery_requested_at", None)
+                    resolve_alerts(
+                        payload,
+                        run_id=run_id,
+                        kind="run_monitor_unavailable",
+                        resolution="independent run monitor recovered",
+                    )
                 if arm.get("status") == "missing_run_state":
                     arm["status"] = "running"
                 for key in (
@@ -3105,22 +3163,15 @@ def monitor_cycle(batch_id: str, *, env_file: Path | None = None) -> dict[str, A
                 except (OSError, ValueError, json.JSONDecodeError):
                     finalized_current = False
             if not finalized_current and arm_terminal(arm):
-                try:
-                    complete, result = sprintctl.finalize(run_id)
-                    arm["finalization_conditions"] = result.get("conditions", {})
-                    if complete:
-                        arm["status"] = "finalized"
-                        finalized_marker = result
-                        finalized_current = True
-                except Exception as exc:  # noqa: BLE001
-                    cycle_alerts.append(
-                        {
-                            "run_id": run_id,
-                            "kind": "finalization",
-                            "source": type(exc).__name__,
-                            "count_in_tail": "1",
-                        }
-                    )
+                # The independent per-run monitor is the sole finalizer. It
+                # owns all recursive Volume imports and provider billing
+                # reconciliation. The batch observer must not acquire that
+                # lease: doing so serializes every active arm behind one
+                # terminal lane and creates a control-plane blind spot.
+                arm["status"] = "finalizing"
+                arm["finalization_conditions"] = {
+                    "independent_run_finalizer_complete": False
+                }
             if finalized_current:
                 integrity = finalized_marker.get("integrity", {})
                 arm["integrity"] = integrity

@@ -3560,6 +3560,119 @@ def test_health_monitor_completes_without_any_site_publication(
     assert cleanup_attempts == [batch_eval.ROOT / ".env"]
 
 
+def test_batch_observer_never_finalizes_terminal_lane_inline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    batch_id = "terminal-finalizing"
+    run_id = "terminal-finalizing-sol-1"
+    ops = tmp_path / "ops"
+    run_dir = ops / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.json").write_text("{}\n")
+    monkeypatch.setattr(batch_eval, "SCRIPT_DIR", ops)
+    monkeypatch.setattr(batch_eval, "BATCH_ROOT", ops / "batches")
+    batch_eval.atomic_json(
+        batch_eval.batch_path(batch_id),
+        {
+            "batch_id": batch_id,
+            "status": "running",
+            "reasoning_effort": "max",
+            "codex_version": "0.149.1",
+            "run_hours": None,
+            "arms": [{"run_id": run_id, "family": "sol", "status": "running"}],
+            "alerts": [],
+            "credential_status": "revoked",
+        },
+    )
+    monkeypatch.setattr(
+        batch_eval,
+        "live_run_monitor_status",
+        lambda _run_id: {"harbor_alive": False, "ledger": {}, "stop_ack": {}},
+    )
+    monkeypatch.setattr(batch_eval, "log_alerts", lambda _run_id: [])
+    monkeypatch.setattr(
+        batch_eval, "verifier_lane_stall_alerts", lambda *_args, **_kwargs: []
+    )
+    monkeypatch.setattr(
+        batch_eval, "continuous_ledger_error_alerts", lambda _payload: []
+    )
+    monkeypatch.setattr(
+        batch_eval.sprintctl,
+        "finalize",
+        lambda *_args, **_kwargs: pytest.fail("batch observer ran finalization"),
+    )
+
+    result = batch_eval.monitor_cycle(batch_id)
+
+    arm = result["arms"][0]
+    assert arm["status"] == "finalizing"
+    assert arm["finalization_conditions"] == {
+        "independent_run_finalizer_complete": False
+    }
+
+
+def test_batch_observer_recovers_missing_lane_monitor_without_remote_poll(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    batch_id = "recover-monitor"
+    run_id = "recover-monitor-luna-1"
+    ops = tmp_path / "ops"
+    run_dir = ops / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.json").write_text("{}\n")
+    monkeypatch.setattr(batch_eval, "SCRIPT_DIR", ops)
+    monkeypatch.setattr(batch_eval, "BATCH_ROOT", ops / "batches")
+    batch_eval.atomic_json(
+        batch_eval.batch_path(batch_id),
+        {
+            "batch_id": batch_id,
+            "status": "running",
+            "reasoning_effort": "max",
+            "codex_version": "0.149.1",
+            "run_hours": None,
+            "arms": [{"run_id": run_id, "family": "luna", "status": "running"}],
+            "alerts": [],
+            "credential_status": "revoked",
+        },
+    )
+    monkeypatch.setattr(batch_eval, "live_run_monitor_status", lambda _run_id: None)
+    monkeypatch.setattr(
+        batch_eval,
+        "local_run_status",
+        lambda _run_id: {
+            "run_id": run_id,
+            "harbor_alive": True,
+            "ledger": {},
+            "snapshot_heartbeat_ok": True,
+        },
+    )
+    recovered: list[str] = []
+    monkeypatch.setattr(
+        batch_eval,
+        "request_run_monitor_recovery",
+        lambda candidate: recovered.append(candidate) is None or True,
+    )
+    monkeypatch.setattr(
+        batch_eval.sprintctl,
+        "monitor_once",
+        lambda *_args, **_kwargs: pytest.fail("batch observer performed remote poll"),
+    )
+    monkeypatch.setattr(batch_eval, "log_alerts", lambda _run_id: [])
+    monkeypatch.setattr(
+        batch_eval, "verifier_lane_stall_alerts", lambda *_args, **_kwargs: []
+    )
+    monkeypatch.setattr(
+        batch_eval, "continuous_ledger_error_alerts", lambda _payload: []
+    )
+
+    result = batch_eval.monitor_cycle(batch_id)
+
+    assert recovered == [run_id]
+    assert result["arms"][0]["last_monitor_at"]
+    assert result["arms"][0]["monitor_recovery_requested_at"]
+    assert result["alerts"][0]["kind"] == "run_monitor_unavailable"
+
+
 def test_resolved_website_alert_leaves_active_list_but_preserves_history() -> None:
     payload = {
         "alerts": [
