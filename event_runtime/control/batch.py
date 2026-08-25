@@ -203,6 +203,7 @@ def load_env(path: Path) -> dict[str, str]:
             in {
                 "OPENROUTER_API_KEY",
                 "OPENROUTER_MANAGEMENT_KEY",
+                "SPRINT_OPENROUTER_AUTO_RECHARGE_CONFIRMED",
             }
             and value
         ):
@@ -1453,8 +1454,9 @@ def preflight(
             provider_errors["openrouter_management"] = str(exc)
     else:
         checks["openrouter_management_access"] = not check_providers
-    auto_recharge_confirmed = os.environ.get(
-        "SPRINT_OPENROUTER_AUTO_RECHARGE_CONFIRMED", ""
+    auto_recharge_confirmed = keys.get(
+        "SPRINT_OPENROUTER_AUTO_RECHARGE_CONFIRMED",
+        os.environ.get("SPRINT_OPENROUTER_AUTO_RECHARGE_CONFIRMED", ""),
     ).strip().lower() in {"1", "true", "yes"}
     if check_providers and checks.get("secret_openrouter_api_key"):
         requirement = openrouter_credit_requirement(len(planned))

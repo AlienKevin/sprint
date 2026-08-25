@@ -606,16 +606,18 @@ def test_batch_matrix_rejects_invalid_trial_counts(trials_per_model: int) -> Non
         batch_eval.matrix("eval-invalid", trials_per_model=trials_per_model)
 
 
-def test_env_loader_reads_only_required_model_keys(tmp_path: Path) -> None:
+def test_env_loader_reads_only_required_launch_settings(tmp_path: Path) -> None:
     path = tmp_path / ".env"
     path.write_text(
         'OPENROUTER_API_KEY="openrouter-secret"\n'
         "OPENROUTER_MANAGEMENT_KEY=management-secret\n"
+        "SPRINT_OPENROUTER_AUTO_RECHARGE_CONFIRMED=1\n"
         "MODAL_TOKEN_SECRET=must-not-load\n"
     )
     assert batch_eval.load_env(path) == {
         "OPENROUTER_API_KEY": "openrouter-secret",
         "OPENROUTER_MANAGEMENT_KEY": "management-secret",
+        "SPRINT_OPENROUTER_AUTO_RECHARGE_CONFIRMED": "1",
     }
 
 
