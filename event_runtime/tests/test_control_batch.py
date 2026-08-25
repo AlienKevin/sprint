@@ -1958,6 +1958,48 @@ def test_write_public_batch_tracks_explicitly_coexisting_runs(
     ]
 
 
+def test_tracking_batch_prefers_newer_duplicate_model_effort_trial_slot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(batch_eval, "BATCH_ROOT", tmp_path / "batches")
+    (tmp_path / "batches").mkdir()
+    base = {
+        "batch_id": "base",
+        "updated_at": "2026-08-19T00:00:00Z",
+        "status": "complete",
+        "reasoning_effort": "max",
+        "codex_version": "0.149.1",
+        "run_hours": None,
+        "arms": [
+            {
+                "run_id": "base-sol-1",
+                "family": "sol",
+                "reasoning_effort": "max",
+                "trial": 1,
+            }
+        ],
+    }
+    tracking = {
+        **base,
+        "batch_id": "tracking",
+        "status": "running",
+        "coexist_batch_ids": ["base"],
+        "arms": [
+            {
+                "run_id": "tracking-sol-1",
+                "family": "sol",
+                "reasoning_effort": "max",
+                "trial": 1,
+            }
+        ],
+    }
+    batch_eval.atomic_json(batch_eval.batch_path("base"), base)
+
+    current = batch_eval.public_tracking_batch(tracking)
+
+    assert [arm["run_id"] for arm in current["arms"]] == ["tracking-sol-1"]
+
+
 def test_write_public_batch_can_leave_active_pointer_to_tracking_owner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

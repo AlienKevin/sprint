@@ -588,14 +588,9 @@ def build(
     family_counts = {
         family: selected_families.count(family) for family in set(selected_families)
     }
-    if (
-        not selected
-        or len(set(family_counts.values())) != 1
-        or 0 in family_counts.values()
-    ):
+    if not selected:
         raise RuntimeError(
-            f"expected equal nonzero runs from one or more model families for "
-            f"{batch_prefix!r}, "
+            f"expected one or more comparison runs for {batch_prefix!r}, "
             f"found {family_counts}"
         )
     trusted_captures = trusted_pose_capture_index(

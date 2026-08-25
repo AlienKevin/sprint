@@ -2683,6 +2683,7 @@ def public_tracking_batch(payload: dict[str, Any]) -> dict[str, Any]:
     batch_payloads.append(payload)
 
     arms_by_run: dict[str, dict[str, Any]] = {}
+    run_by_slot: dict[tuple[str, str, int], str] = {}
     excluded_arms: list[dict[str, Any]] = []
     alerts: list[dict[str, Any]] = []
     for batch_payload in batch_payloads:
@@ -2713,6 +2714,22 @@ def public_tracking_batch(payload: dict[str, Any]) -> dict[str, Any]:
                         }
                     )
                     continue
+                family = str(arm.get("family") or "")
+                effort = str(
+                    arm.get("reasoning_effort")
+                    or batch.get("reasoning_effort")
+                    or ""
+                )
+                trial = int(arm.get("trial") or 0)
+                slot = (family, effort, trial)
+                # Only fully specified benchmark slots are replaceable. Older
+                # comparison manifests and ad-hoc replacement lanes may omit
+                # effort/trial metadata and must remain additive.
+                if family and arm.get("reasoning_effort") and trial > 0:
+                    previous_run_id = run_by_slot.get(slot)
+                    if previous_run_id:
+                        arms_by_run.pop(previous_run_id, None)
+                    run_by_slot[slot] = run_id
                 arms_by_run[run_id] = arm
         for alert in batch.get("alerts", []):
             alert_run_id = alert.get("run_id")
