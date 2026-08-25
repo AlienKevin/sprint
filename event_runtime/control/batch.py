@@ -205,7 +205,6 @@ def load_env(path: Path) -> dict[str, str]:
         if (
             name.strip()
             in {
-                "OPENROUTER_API_KEY",
                 "OPENROUTER_MANAGEMENT_KEY",
                 "SPRINT_OPENROUTER_AUTO_RECHARGE_CONFIRMED",
             }
@@ -1461,6 +1460,9 @@ def preflight(
     provider_errors: dict[str, str] = {}
     openrouter_credit_snapshot: dict[str, Any] | None = None
     sprint_resource_report: dict[str, Any] | None = None
+    preflight_key_client: OpenRouterManagementClient | None = None
+    preflight_key_hash: str | None = None
+    preflight_api_key: str | None = None
     keys = load_env(env_file)
     planned = matrix(
         batch_id,
@@ -1469,14 +1471,6 @@ def preflight(
         reasoning_effort=reasoning_effort,
         trial_numbers=trial_numbers,
     )
-    required_keys = {
-        "deepseek": "OPENROUTER_API_KEY",
-        "luna": "OPENROUTER_API_KEY",
-        "sol": "OPENROUTER_API_KEY",
-    }
-    for family in families:
-        name = required_keys[family]
-        checks[f"secret_{name.lower()}"] = len(keys.get(name, "")) >= 16
     checks["secret_openrouter_management_key"] = (
         len(keys.get("OPENROUTER_MANAGEMENT_KEY", "")) >= 16
     )
@@ -1489,15 +1483,52 @@ def preflight(
             provider_errors["openrouter_management"] = str(exc)
     else:
         checks["openrouter_management_access"] = not check_providers
+    if check_providers and checks.get("openrouter_management_access"):
+        try:
+            preflight_key_client = OpenRouterManagementClient(
+                keys["OPENROUTER_MANAGEMENT_KEY"]
+            )
+            probe_spec = TrialCredentialSpec(
+                run_id=f"{batch_id}-preflight",
+                model="openai/gpt-5.6-sol",
+                resolved_model="openai/gpt-5.6-sol-20260709",
+                provider="openai",
+                # Sol advertises a 128k response allowance. OpenRouter checks
+                # the key ceiling against that worst case before serving even
+                # a tiny probe, so use the same ceiling as a real trial.
+                budget_usd=configured_agent_budget_usd(),
+            )
+            expires_at = (
+                (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=1))
+                .replace(microsecond=0)
+                .isoformat()
+                .replace("+00:00", "Z")
+            )
+            key_data, preflight_api_key = preflight_key_client.create_key(
+                probe_spec,
+                f"sprint-{batch_id}-preflight-key",
+                expires_at,
+            )
+            preflight_key_hash = str(key_data["hash"])
+            checks["ephemeral_openrouter_probe_key"] = True
+        except (OpenRouterManagementError, ValueError, KeyError) as exc:
+            checks["ephemeral_openrouter_probe_key"] = False
+            provider_errors["openrouter_probe_key"] = str(exc)
+    else:
+        checks["ephemeral_openrouter_probe_key"] = not check_providers
+    # Retain this compatibility field for existing preflight consumers. It now
+    # means a disposable host-only inference credential was provisioned; a
+    # reusable OPENROUTER_API_KEY is no longer required in the env file.
+    checks["secret_openrouter_api_key"] = bool(preflight_api_key) or not check_providers
     auto_recharge_confirmed = keys.get(
         "SPRINT_OPENROUTER_AUTO_RECHARGE_CONFIRMED",
         os.environ.get("SPRINT_OPENROUTER_AUTO_RECHARGE_CONFIRMED", ""),
     ).strip().lower() in {"1", "true", "yes"}
-    if check_providers and checks.get("secret_openrouter_api_key"):
+    if check_providers and checks.get("secret_openrouter_management_key"):
         requirement = openrouter_credit_requirement(len(planned))
         try:
             openrouter_credit_snapshot = {
-                **fetch_openrouter_credit(keys["OPENROUTER_API_KEY"]),
+                **fetch_openrouter_credit(keys["OPENROUTER_MANAGEMENT_KEY"]),
                 **requirement,
                 "auto_recharge_confirmed": auto_recharge_confirmed,
             }
@@ -1613,7 +1644,7 @@ def preflight(
         and checks["secret_openrouter_api_key"]
     ):
         models = provider_models(
-            "https://openrouter.ai/api/v1/models", keys["OPENROUTER_API_KEY"]
+            "https://openrouter.ai/api/v1/models", str(preflight_api_key)
         )
         for family in selected_openai_families:
             spec = OPENAI_FAMILY_SPECS[family]
@@ -1622,7 +1653,7 @@ def preflight(
             try:
                 provider_probes[key] = provider_inference_probe(
                     "https://openrouter.ai/api/v1/responses",
-                    keys["OPENROUTER_API_KEY"],
+                    str(preflight_api_key),
                     {
                         # Exercise the raw model route exactly as the trusted
                         # proxy does. A preset probe can hide unsupported
@@ -1685,7 +1716,7 @@ def preflight(
         and checks["secret_openrouter_api_key"]
     ):
         models = provider_models(
-            "https://openrouter.ai/api/v1/models", keys["OPENROUTER_API_KEY"]
+            "https://openrouter.ai/api/v1/models", str(preflight_api_key)
         )
         for family in selected_routed_deepseek_families:
             spec = DEEPSEEK_ROUTED_FAMILY_SPECS[family]
@@ -1760,7 +1791,7 @@ def preflight(
             try:
                 provider_probes[key] = provider_inference_probe(
                     inference_url,
-                    keys["OPENROUTER_API_KEY"],
+                    str(preflight_api_key),
                     inference_payload,
                     generation_audit_url="https://openrouter.ai/api/v1/generation",
                 )
@@ -1794,6 +1825,13 @@ def preflight(
         )
     if require_fresh:
         checks["fresh_batch_id"] = not batch_path(batch_id).exists()
+    if preflight_key_client is not None and preflight_key_hash is not None:
+        try:
+            preflight_key_client.delete_key(preflight_key_hash)
+            checks["ephemeral_openrouter_probe_key_revoked"] = True
+        except OpenRouterManagementError as exc:
+            checks["ephemeral_openrouter_probe_key_revoked"] = False
+            provider_errors["openrouter_probe_key_cleanup"] = str(exc)
     ready = all(bool(value) for value in checks.values())
     return {
         "schema_version": 1,

@@ -654,7 +654,6 @@ def test_env_loader_reads_only_required_launch_settings(tmp_path: Path) -> None:
         "MODAL_TOKEN_SECRET=must-not-load\n"
     )
     assert batch_eval.load_env(path) == {
-        "OPENROUTER_API_KEY": "openrouter-secret",
         "OPENROUTER_MANAGEMENT_KEY": "management-secret",
         "SPRINT_OPENROUTER_AUTO_RECHARGE_CONFIRMED": "1",
     }
