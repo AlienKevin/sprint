@@ -178,6 +178,15 @@ def test_functional_canary_uses_trainer_owned_final_checkpoint() -> None:
     assert '"EXPORTED /app/policy_train.pt"' not in source
 
 
+def test_functional_canary_accepts_any_authoritative_gpu_activity_signal() -> None:
+    source = (PREFLIGHT / "canary.py").read_text()
+
+    assert "g.get('util_gpu_pct', 0) >= 1" in source
+    assert "g.get('sm_active_pct', 0) >= 0.1" in source
+    assert "g.get('sm_occupancy_pct', 0) >= 1" in source
+    assert "g.get('dram_throughput_pct', 0) >= 0.1" in source
+
+
 def test_successful_sandbox_uses_returncode_after_wait(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
