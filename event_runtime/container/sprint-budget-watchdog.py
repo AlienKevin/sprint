@@ -51,6 +51,8 @@ HOST_COST_MIRROR_RELATIVE_PATH = Path("sprint-gpu-mirror/cost.json")
 HOST_COST_MIRROR_MAX_AGE_SECONDS = 60.0
 HOST_COST_MIRROR_MAX_CLOCK_SKEW_SECONDS = 60.0
 OPENROUTER_PROXY_STARTUP_GRACE_SECONDS = 30.0
+BUDGET_TELEMETRY_CHECK_ATTEMPTS = 3
+BUDGET_TELEMETRY_RETRY_DELAY_SECONDS = 0.25
 
 
 class BudgetTelemetryError(RuntimeError):
@@ -75,6 +77,15 @@ def atomic_json(path: Path, payload: dict[str, Any]) -> None:
         os.fsync(handle.fileno())
     os.chmod(temporary, 0o600)
     os.replace(temporary, path)
+
+
+def append_watchdog_error(path: Path, payload: dict[str, Any]) -> None:
+    """Durably retain transient accounting failures for post-run diagnosis."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, sort_keys=True) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 def recover_openrouter_generation(
@@ -130,12 +141,8 @@ def _recover_record_cost(
     expected_cost_basis: str,
 ) -> tuple[float, float]:
     try:
-        list_cost = undiscounted_cost_usd(
-            charged, record.get("promotion_snapshot")
-        )
-        benchmark = benchmark_cost_usd(
-            charged, record.get("promotion_snapshot"), usage
-        )
+        list_cost = undiscounted_cost_usd(charged, record.get("promotion_snapshot"))
+        benchmark = benchmark_cost_usd(charged, record.get("promotion_snapshot"), usage)
     except OpenRouterPricingError as exc:
         if record.get("schema_version") in {None, 1}:
             list_cost = benchmark = charged
@@ -352,9 +359,7 @@ def openrouter_api_cost(
         existing = _record_costs(record)
         if existing is not None:
             if record.get("cost_basis") != expected_cost_basis:
-                raise BudgetTelemetryError(
-                    "OpenRouter request cost basis mismatch"
-                )
+                raise BudgetTelemetryError("OpenRouter request cost basis mismatch")
             benchmark_cost, provider_cost = existing
             total += benchmark_cost
             provider_total += provider_cost
@@ -365,11 +370,7 @@ def openrouter_api_cost(
             continue
         generation_id = record.get("generation_id")
         state = record.get("state")
-        if (
-            state == "cost_recovery_required"
-            and not api_key
-            and not allow_unrecovered
-        ):
+        if state == "cost_recovery_required" and not api_key and not allow_unrecovered:
             raise BudgetTelemetryError(
                 "OpenRouter charge recovery requires controller credentials"
             )
@@ -1110,11 +1111,61 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def check_with_retries(
+    *,
+    run_id: str,
+    durable_dir: Path,
+    runtime_dir: Path,
+    codex_home: Path,
+    pricing_path: Path,
+    attempts: int = BUDGET_TELEMETRY_CHECK_ATTEMPTS,
+) -> dict[str, Any]:
+    """Retry a transient local accounting read before irreversibly stopping.
+
+    The OpenRouter proxy serializes paid requests and independently gates them
+    against the last complete ledger, while the host budget pulse supplies a
+    second exact-$10 circuit breaker.  A short bounded retry therefore cannot
+    admit an unbounded number of requests, but it avoids killing a valid trial
+    because one atomic mirror or proxy snapshot was momentarily unavailable.
+    """
+    if attempts < 1:
+        raise ValueError("budget telemetry attempts must be positive")
+    errors: list[str] = []
+    error_path = durable_dir / "runs" / run_id / "budget/watchdog-errors.jsonl"
+    for attempt in range(1, attempts + 1):
+        try:
+            return check_once(
+                run_id=run_id,
+                durable_dir=durable_dir,
+                runtime_dir=runtime_dir,
+                codex_home=codex_home,
+                pricing_path=pricing_path,
+            )
+        except Exception as exc:  # noqa: BLE001 - final failure remains fail closed
+            detail = f"{type(exc).__name__}: {exc}"
+            errors.append(detail)
+            diagnostic = {
+                "schema_version": 1,
+                "run_id": run_id,
+                "checked_at_epoch_s": time.time(),
+                "attempt": attempt,
+                "max_attempts": attempts,
+                "error": detail,
+            }
+            append_watchdog_error(error_path, diagnostic)
+            print(json.dumps(diagnostic, sort_keys=True), file=sys.stderr, flush=True)
+            if attempt < attempts:
+                time.sleep(BUDGET_TELEMETRY_RETRY_DELAY_SECONDS)
+    raise BudgetTelemetryError(
+        f"budget telemetry failed {attempts} consecutive checks: " + " | ".join(errors)
+    )
+
+
 def main() -> int:
     args = parse_args()
     run_root = args.durable_dir / "runs" / args.run_id
     try:
-        payload = check_once(
+        payload = check_with_retries(
             run_id=args.run_id,
             durable_dir=args.durable_dir,
             runtime_dir=args.runtime_dir,

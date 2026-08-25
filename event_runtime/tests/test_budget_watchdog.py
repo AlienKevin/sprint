@@ -144,6 +144,69 @@ def write_codex_request(codex_home: Path, *, model: str = "deepseek-v4-flash") -
     session.write_text("".join(json.dumps(row) + "\n" for row in rows))
 
 
+def test_budget_watchdog_retries_transient_snapshot_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = 0
+
+    def flaky_check_once(**_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise watchdog.BudgetTelemetryError("atomic mirror changed")
+        return {"status": "within_budget", "total_usd": 1.25}
+
+    monkeypatch.setattr(watchdog, "check_once", flaky_check_once)
+    monkeypatch.setattr(watchdog.time, "sleep", lambda _seconds: None)
+
+    payload = watchdog.check_with_retries(
+        run_id="unit",
+        durable_dir=tmp_path,
+        runtime_dir=tmp_path / "runtime",
+        codex_home=tmp_path / "codex",
+        pricing_path=PRICING,
+    )
+
+    assert payload == {"status": "within_budget", "total_usd": 1.25}
+    assert calls == 2
+    diagnostics = (
+        (tmp_path / "runs/unit/budget/watchdog-errors.jsonl").read_text().splitlines()
+    )
+    assert len(diagnostics) == 1
+    assert json.loads(diagnostics[0])["error"] == (
+        "BudgetTelemetryError: atomic mirror changed"
+    )
+    assert not (tmp_path / "runs/unit/BUDGET_STOP_REQUESTED.json").exists()
+
+
+def test_budget_watchdog_fails_after_consecutive_snapshot_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unavailable(**_kwargs):
+        raise watchdog.BudgetTelemetryError("mirror unavailable")
+
+    monkeypatch.setattr(watchdog, "check_once", unavailable)
+    monkeypatch.setattr(watchdog.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(
+        watchdog.BudgetTelemetryError,
+        match="failed 3 consecutive checks",
+    ):
+        watchdog.check_with_retries(
+            run_id="unit",
+            durable_dir=tmp_path,
+            runtime_dir=tmp_path / "runtime",
+            codex_home=tmp_path / "codex",
+            pricing_path=PRICING,
+        )
+
+    diagnostics = (
+        (tmp_path / "runs/unit/budget/watchdog-errors.jsonl").read_text().splitlines()
+    )
+    assert len(diagnostics) == 3
+    assert [json.loads(row)["attempt"] for row in diagnostics] == [1, 2, 3]
+
+
 def write_host_cost_mirror(
     runtime: Path,
     *,
@@ -264,9 +327,9 @@ def test_gpu_cost_ignores_late_allocation_after_same_lease_terminal(
     for row in rows:
         (events / f"{row['event_id']}.json").write_text(json.dumps(row))
 
-    assert watchdog.gpu_allocated_seconds(
-        root, 2_000, standing=False, cpu_seconds=0
-    ) == 0
+    assert (
+        watchdog.gpu_allocated_seconds(root, 2_000, standing=False, cpu_seconds=0) == 0
+    )
 
 
 def test_gpu_cost_closes_missing_release_from_terminal_attempt_record(
@@ -302,9 +365,9 @@ def test_gpu_cost_closes_missing_release_from_terminal_attempt_record(
         )
     )
 
-    assert watchdog.gpu_allocated_seconds(
-        root, 2_000, standing=False, cpu_seconds=0
-    ) == 20
+    assert (
+        watchdog.gpu_allocated_seconds(root, 2_000, standing=False, cpu_seconds=0) == 20
+    )
 
 
 def test_live_watchdog_merges_fresh_host_training_cost_and_stops(
@@ -395,7 +458,9 @@ def test_live_watchdog_fails_closed_when_host_cost_mirror_is_stale(
     watchdog.ensure_cpu_start(root, 1, 1_000)
     write_host_cost_mirror(runtime, checked_at=1_000)
 
-    with pytest.raises(watchdog.BudgetTelemetryError, match="host cost mirror is stale"):
+    with pytest.raises(
+        watchdog.BudgetTelemetryError, match="host cost mirror is stale"
+    ):
         watchdog.check_once(
             run_id="unit",
             durable_dir=durable,
@@ -513,9 +578,9 @@ def test_openrouter_watchdog_allows_live_proxy_to_recover_charge_without_key(
     record.parent.mkdir(parents=True)
     record.write_text(
         json.dumps(
-                {
-                    "ledger_request_id": request_id,
-                    "run_id": "unit",
+            {
+                "ledger_request_id": request_id,
+                "run_id": "unit",
                 "state": "cost_recovery_required",
                 "generation_id": "gen-recover",
                 "provider_reported_cost_usd": None,
@@ -1037,9 +1102,10 @@ def test_gpu_cost_ignores_release_for_never_allocated_queued_attempt(
         + "\n"
     )
 
-    assert watchdog.gpu_allocated_seconds(
-        run_root, 1_100, standing=False, cpu_seconds=0
-    ) == 0
+    assert (
+        watchdog.gpu_allocated_seconds(run_root, 1_100, standing=False, cpu_seconds=0)
+        == 0
+    )
 
 
 def load_gpu_worker():
@@ -1077,9 +1143,12 @@ def test_gpu_worker_accepts_fresh_budget_snapshot(tmp_path: Path) -> None:
     runtime_snapshot = tmp_path / "runtime-budget.json"
     write_budget_snapshot(runtime_snapshot, checked_at=1_000)
 
-    assert worker.refresh_budget_stop(
-        "unit", str(tmp_path), now=1_010, runtime_snapshot=runtime_snapshot
-    ) is None
+    assert (
+        worker.refresh_budget_stop(
+            "unit", str(tmp_path), now=1_010, runtime_snapshot=runtime_snapshot
+        )
+        is None
+    )
     assert not (tmp_path / "runs/unit/BUDGET_STOP_REQUESTED.json").exists()
 
 
@@ -1106,9 +1175,12 @@ def test_gpu_worker_ignores_agent_writable_durable_stop_and_snapshot(
         )
     )
 
-    assert worker.refresh_budget_stop(
-        "unit", str(tmp_path), now=1_010, runtime_snapshot=runtime_snapshot
-    ) is None
+    assert (
+        worker.refresh_budget_stop(
+            "unit", str(tmp_path), now=1_010, runtime_snapshot=runtime_snapshot
+        )
+        is None
+    )
     # Within-budget verification does not need to mutate the audit artifact.
     assert json.loads(marker.read_text())["total_usd"] == pytest.approx(9.9)
 
@@ -1136,12 +1208,13 @@ def test_gpu_worker_fails_closed_on_stale_budget_snapshot(tmp_path: Path) -> Non
     runtime_snapshot = tmp_path / "runtime-budget.json"
     write_budget_snapshot(runtime_snapshot, checked_at=1_000)
 
-    assert worker.refresh_budget_stop(
-        "unit", str(tmp_path), now=1_121, runtime_snapshot=runtime_snapshot
-    ) == "budget_telemetry_unavailable"
-    marker = json.loads(
-        (tmp_path / "runs/unit/BUDGET_STOP_REQUESTED.json").read_text()
+    assert (
+        worker.refresh_budget_stop(
+            "unit", str(tmp_path), now=1_121, runtime_snapshot=runtime_snapshot
+        )
+        == "budget_telemetry_unavailable"
     )
+    marker = json.loads((tmp_path / "runs/unit/BUDGET_STOP_REQUESTED.json").read_text())
     assert marker["reason"] == "budget_telemetry_unavailable"
     assert "stale" in marker["error"]
 
@@ -1151,11 +1224,12 @@ def test_gpu_worker_propagates_fresh_budget_stop(tmp_path: Path) -> None:
     runtime_snapshot = tmp_path / "runtime-budget.json"
     write_budget_snapshot(runtime_snapshot, checked_at=1_000, total=9.9)
 
-    assert worker.refresh_budget_stop(
-        "unit", str(tmp_path), now=1_010, runtime_snapshot=runtime_snapshot
-    ) == "agent_cost_budget_exhausted"
-    marker = json.loads(
-        (tmp_path / "runs/unit/BUDGET_STOP_REQUESTED.json").read_text()
+    assert (
+        worker.refresh_budget_stop(
+            "unit", str(tmp_path), now=1_010, runtime_snapshot=runtime_snapshot
+        )
+        == "agent_cost_budget_exhausted"
     )
+    marker = json.loads((tmp_path / "runs/unit/BUDGET_STOP_REQUESTED.json").read_text())
     assert marker["reason"] == "agent_cost_budget_exhausted"
     assert marker["total_usd"] == pytest.approx(9.9)

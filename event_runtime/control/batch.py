@@ -955,16 +955,24 @@ def audit_openrouter_child_usage(
 ) -> list[dict[str, str]]:
     """Detect use of a child key that bypassed the trusted ledger proxy."""
     alerts: list[dict[str, str]] = []
-    keyed_arms = {
-        str((arm.get("openrouter_credential") or {}).get("key_hash")): arm
+    audit_arms = [
+        arm
         for arm in payload.get("arms", [])
         if (arm.get("openrouter_credential") or {}).get("key_hash")
+        and not arm.get("stop_ack")
+        and arm.get("status") not in {"stopping", "stopped", "finalized"}
+    ]
+    keyed_arms = {
+        str((arm.get("openrouter_credential") or {}).get("key_hash")): arm
+        for arm in audit_arms
     }
+    if not keyed_arms:
+        return alerts
     # One paginated control-plane snapshot is both cheaper and internally more
     # coherent than six independent per-key requests. A failed snapshot is a
     # batch health problem and is intentionally propagated once to the caller.
     usage_by_hash = client.keys_usage(set(keyed_arms))
-    for arm in payload.get("arms", []):
+    for arm in audit_arms:
         credential = arm.get("openrouter_credential") or {}
         key_hash = credential.get("key_hash")
         if not key_hash:

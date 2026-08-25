@@ -750,6 +750,60 @@ def test_child_key_usage_audit_does_not_call_missing_ledger_a_bypass(
     assert "openrouter_usage_audit" not in payload["arms"][0]
 
 
+@pytest.mark.parametrize("status", ["stopping", "stopped", "finalized"])
+def test_child_key_usage_audit_skips_terminal_credentials(status: str) -> None:
+    payload = {
+        "arms": [
+            {
+                "run_id": "eval-luna-1",
+                "status": status,
+                "openrouter_credential": {"key_hash": "revoked-hash"},
+            }
+        ],
+        "alerts": [],
+    }
+
+    class Client:
+        def keys_usage(self, _key_hashes: set[str]):
+            raise AssertionError("terminal credentials must not be audited")
+
+    assert (
+        batch_eval.audit_openrouter_child_usage(
+            payload,
+            Client(),
+            now=dt.datetime(2026, 8, 23, tzinfo=dt.timezone.utc),
+        )
+        == []
+    )
+
+
+def test_child_key_usage_audit_skips_acknowledged_stop() -> None:
+    payload = {
+        "arms": [
+            {
+                "run_id": "eval-luna-1",
+                "status": "running",
+                "stop_ack": {"reason": "budget_telemetry_unavailable"},
+                "openrouter_credential": {"key_hash": "revoked-hash"},
+            }
+        ],
+        "alerts": [],
+    }
+
+    class Client:
+        def keys_usage(self, _key_hashes: set[str]):
+            raise AssertionError("acknowledged stop credentials must not be audited")
+
+    assert (
+        batch_eval.audit_openrouter_child_usage(
+            payload,
+            Client(),
+            now=dt.datetime(2026, 8, 23, tzinfo=dt.timezone.utc),
+        )
+        == []
+    )
+
+
 def test_child_key_usage_audit_defers_missing_ledger_during_startup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2031,14 +2085,13 @@ def test_run_control_units_cover_every_host_process_for_one_trial() -> None:
 
 
 def test_retire_run_control_services_accepts_units_already_absent(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(batch_eval.sprintctl, "OPS_ROOT", tmp_path)
     run_dir = tmp_path / "eval-luna-1"
     run_dir.mkdir()
-    (run_dir / "run.json").write_text(
-        '{"run_id":"eval-luna-1","agent_kind":"codex"}\n'
-    )
+    (run_dir / "run.json").write_text('{"run_id":"eval-luna-1","agent_kind":"codex"}\n')
     completed = mock.Mock(returncode=5, stderr="Unit not loaded")
     absent = mock.Mock(returncode=3)
     monkeypatch.setattr(
@@ -2062,16 +2115,17 @@ def test_batch_run_checked_returns_captured_stdout(
 
 
 def test_retire_run_control_services_stops_zero_task_modal_apps(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(batch_eval.sprintctl, "OPS_ROOT", tmp_path)
     run_dir = tmp_path / "eval-luna-1"
     run_dir.mkdir()
     (run_dir / "run.json").write_text(
         json.dumps(
-                {
-                    "run_id": "eval-luna-1",
-                    "agent_kind": "codex",
+            {
+                "run_id": "eval-luna-1",
+                "agent_kind": "codex",
                 "app_name": "sprint-eval-luna-1",
                 "training_app_name": "sprint-eval-luna-1-training",
                 "verifier_app_name": "sprint-eval-luna-1-verifier",
