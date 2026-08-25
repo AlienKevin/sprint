@@ -20,10 +20,11 @@ import re
 from pathlib import Path
 from typing import Any
 
+from event_runtime.export.config import PUBLIC_RUN_LIMIT
+
 SCHEMA_VERSION = 1
 DEEPSEEK_ATIF_TRANSFORM_VERSION = 3
 PUBLIC_SANITIZER_VERSION = 3
-PUBLIC_RUN_LIMIT = 6
 MAX_PUBLIC_STRING_CHARS = 200_000
 
 _ATTEMPT_RE = re.compile(r"cpu-attempt-(\d+)")

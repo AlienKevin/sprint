@@ -635,7 +635,10 @@ def test_unified_timeline_is_joined_deduplicated_and_public_safe(
     ]
 
 
-def test_public_timeline_index_keeps_only_six_newest_runs(tmp_path: Path) -> None:
+def test_public_timeline_index_keeps_only_configured_newest_runs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(unified_timeline, "PUBLIC_RUN_LIMIT", 6)
     web = tmp_path / "web"
     index_path = web / "data" / "timelines" / "index.json"
     index_path.parent.mkdir(parents=True)

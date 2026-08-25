@@ -26,6 +26,7 @@ ROOT = Path(__file__).resolve().parents[2]
 WEB_DEFAULT = ROOT / "web"
 sys.path.insert(0, str(ROOT))
 from event_runtime.event import load_event  # noqa: E402
+from event_runtime.export.config import PUBLIC_RUN_LIMIT  # noqa: E402
 from event_runtime.export.site_bundle import build_site_bundle  # noqa: E402
 
 EVENT = load_event(repository_root=ROOT)
@@ -37,7 +38,6 @@ PLAYER_TEMPLATE = ROOT / "web/replay-template.html"
 PROJECT_ID = "prj_dgvTovRNwdSDcefYmo6oXfju9M3p"
 ORG_ID = "team_SNgoAcFfHYXYdUIXhj16bGek"
 VERCEL_SCOPE = "alienkevins-projects"
-PUBLIC_RUN_LIMIT = 6
 TIME_TOLERANCE_SECONDS = 0.001
 DEPLOY_DEBOUNCE_SECONDS = 300
 # Vercel may spend several minutes retrieving and building a large replay-heavy

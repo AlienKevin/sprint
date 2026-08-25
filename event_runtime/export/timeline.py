@@ -28,10 +28,10 @@ from event_runtime.cost import modal as modal_cost  # noqa: E402
 from event_runtime.container.sprint_openrouter_usage import (  # noqa: E402
     validate_token_usage_totals,
 )
+from event_runtime.export.config import PUBLIC_RUN_LIMIT  # noqa: E402
 
 SCHEMA_VERSION = 6
 DEFAULT_BUCKET_SECONDS = 60
-PUBLIC_RUN_LIMIT = 6
 DEFAULT_GPU_MAX_GAP_SECONDS = 45
 DEFAULT_GPU_TERMINAL_TAIL_GRACE_SECONDS = 180
 ISO_KEYS = ("timestamp", "ts_utc", "created_at", "at", "submitted_at")

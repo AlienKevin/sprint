@@ -2935,7 +2935,10 @@ def test_dq_replay_is_queued_and_public_index_is_path_safe(tmp_path: Path) -> No
     )
 
 
-def test_public_policy_index_keeps_only_six_newest_runs(tmp_path: Path) -> None:
+def test_public_policy_index_keeps_only_configured_newest_runs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(frontier_update, "PUBLIC_RUN_LIMIT", 6)
     web = tmp_path / "web"
     index_path = web / "data" / "policies" / "index.json"
     index_path.parent.mkdir(parents=True)
