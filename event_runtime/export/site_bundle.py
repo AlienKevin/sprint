@@ -40,6 +40,10 @@ def _link_or_copy(source: Path, destination: Path, *, root: Path) -> None:
     if not source.is_file():
         raise FileNotFoundError(source)
     destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        if destination.is_file() and os.path.samefile(source, destination):
+            return
+        raise FileExistsError(destination)
     try:
         os.link(source, destination)
     except OSError as exc:

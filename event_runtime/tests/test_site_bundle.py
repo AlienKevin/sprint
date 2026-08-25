@@ -60,7 +60,12 @@ def build_fixture(tmp_path: Path) -> tuple[Path, Path]:
         )
         current_payload: dict = {"schema_version": 1, "run_id": current_run}
         if family == "policies":
-            current_payload["policies"] = [{"replay_url": "/replay/frontier-current"}]
+            current_payload["policies"] = [
+                {
+                    "replay_url": "/replay/frontier-current",
+                    "web_html": "/replay/frontier-current.html",
+                }
+            ]
         write_json(web / "data" / family / f"{current_run}.json", current_payload)
         write_json(
             web / "data" / family / f"{stale_run}.json",
