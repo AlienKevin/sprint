@@ -31,3 +31,19 @@ Run the shared tests with:
 ```bash
 uv run --project harbor pytest -q event_runtime/tests tests
 ```
+
+## Website trajectory outlines
+
+`web/trajectory.js` derives the rollout table of contents from each run's own
+public trace at render time. Keep that generator deterministic and
+trace-local:
+
+- split chapters from topic changes in the current trace;
+- use a short action-and-topic phrase for each title, never a raw sentence or
+  question from the model;
+- synthesize chapter summaries separately from titles;
+- synthesize the rollout synopsis from the ordered chapter activities;
+- do not add model-, method-, or run-specific title/summary templates.
+
+The website is an observer. Outline generation and publishing must never
+control, restart, stop, or otherwise affect an experiment.

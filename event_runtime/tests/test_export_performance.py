@@ -468,10 +468,16 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "meta.append(el('b','',`#" in trajectory_app
     assert "fmtClock(step.timestamp)" not in trajectory_app
     assert 'class="right-rail"' not in trajectory_page
-    assert "trajectory.js?v=20260825-10" in trajectory_page
+    assert "trajectory.js?v=20260825-11" in trajectory_page
     assert 'id="rollout-outline"' in trajectory_page
+    assert 'class="utilization-footer"' not in trajectory_page
     assert "function deriveChapters" in trajectory_app
     assert "function rolloutSynopsis" in trajectory_app
+    assert "function chapterTopics" in trajectory_app
+    assert "function phaseFor" in trajectory_app
+    assert ".replace(/[.!?]+$/,'')" in trajectory_app
+    assert "The agent inspected ${objects}" in trajectory_app
+    assert "traceSentences" not in trajectory_app
     assert "Phase beginning at step" not in trajectory_app
     assert "Choosing direct PPO training" not in trajectory_app
     assert "Choosing a PPO training stack" not in trajectory_app
