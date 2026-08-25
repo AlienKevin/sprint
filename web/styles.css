@@ -250,6 +250,10 @@ main {
   font-size: 12px;
   line-height: 1.4;
   vertical-align: middle;
+  transition: background .16s ease;
+}
+.experiment-model.experiment-model-hover {
+  background: color-mix(in srgb, var(--model-accent) 10%, var(--panel));
 }
 .trial-dot {
   display: inline-block;

@@ -500,11 +500,12 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "class:'submission-target'" in app
     assert "el.getScreenCTM()" in app
     assert "nearest.distance<=22**2" in app
-    assert "styles.css?v=20260825-9" in page
-    assert "app.js?v=20260825-9" in page
-    assert '"version":"20260825-9"' in (ROOT / "web/version.json").read_text()
+    assert "styles.css?v=20260825-10" in page
+    assert "app.js?v=20260825-10" in page
+    assert '"version":"20260825-10"' in (ROOT / "web/version.json").read_text()
     assert "AI AGENTS · ONE HUMANOID · ONE FINISH LINE" not in page
-    assert "We give each agent a simulated Unitree G1 humanoid" in page
+    assert "Can agents train a humanoid to run?" in page
+    assert "We give each agent an A10G GPU and $10 total budget to train their runner." in page
     assert 'class="experiment-table"' in app
     assert 'scope="rowgroup"' in app
     assert '<th scope="col">Effort</th>' in app
@@ -517,6 +518,9 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "highest Effective Speed for this model across all efforts" in app
     assert ".experiment-row.experiment-best" in styles
     assert ".experiment-row:hover:not(:has(.experiment-model:hover))" in styles
+    assert ".experiment-model.experiment-model-hover" in styles
+    assert "data-family=\"${esc(key)}\"" in app
+    assert "experiment-model-hover" in app
     assert "best_continuous_score_mps" in app
     preview = trajectory_app.split("function stepPreview", 1)[1].split(
         "function matchesFilter", 1
@@ -619,7 +623,7 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "background: var(--text)" in styles
     assert 'id="live"' not in page
     assert "$('#live')" not in app
-    assert "Which agent runs the fastest?" in page
+    assert "Can agents train a humanoid to run?" in page
     assert "Agents' 100m · Race control" in timeline_page
     assert page.index("Performance vs cost") < page.index("Performance over time")
     assert "The Time-Adjusted Effective Speed compares competitors" in page

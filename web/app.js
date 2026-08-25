@@ -112,7 +112,7 @@
       const familyBest=Math.max(-Infinity,...familyRows.map(row=>row.bestScore));
       return familyRows.map((row,index)=>{
         const label=MODEL[key]?.label||row.arm.model,href=`/trajectory?run=${encodeURIComponent(row.arm.run_id)}`,isBest=row.bestScore===familyBest,bestLabel=isBest?', highest Effective Speed for this model across all efforts':'';
-        return `<tr class="experiment-row ${esc(key)}${isBest?' experiment-best':''}" data-run-href="${href}" tabindex="0" aria-label="Open ${esc(label)} ${esc(row.effort)} trial ${esc(row.arm.trial)} trace${bestLabel}">${index===0?`<th class="experiment-model" scope="rowgroup" rowspan="${familyRows.length}"><span class="trial-dot"></span><strong>${esc(label)}</strong></th>`:''}<td><strong>${esc(row.effort||'—')}</strong></td><td><a href="${href}" aria-label="Open trial ${esc(row.arm.trial)} trace">${esc(row.arm.trial)}</a></td><td><b>${fmtScore(row.bestScore)} m/s</b></td><td data-experiment-elapsed="${esc(row.arm.run_id)}">${fmtDuration(row.elapsed)}</td><td>${fmtMoney(row.totalCost)}</td><td>${row.submitted}</td></tr>`;
+        return `<tr class="experiment-row ${esc(key)}${isBest?' experiment-best':''}" data-family="${esc(key)}" data-run-href="${href}" tabindex="0" aria-label="Open ${esc(label)} ${esc(row.effort)} trial ${esc(row.arm.trial)} trace${bestLabel}">${index===0?`<th class="experiment-model" data-family="${esc(key)}" scope="rowgroup" rowspan="${familyRows.length}"><span class="trial-dot"></span><strong>${esc(label)}</strong></th>`:''}<td><strong>${esc(row.effort||'—')}</strong></td><td><a href="${href}" aria-label="Open trial ${esc(row.arm.trial)} trace">${esc(row.arm.trial)}</a></td><td><b>${fmtScore(row.bestScore)} m/s</b></td><td data-experiment-elapsed="${esc(row.arm.run_id)}">${fmtDuration(row.elapsed)}</td><td>${fmtMoney(row.totalCost)}</td><td>${row.submitted}</td></tr>`;
       }).join('');
     }).join('');
     target.innerHTML=`<div class="experiment-table-wrap"><table class="experiment-table"><thead><tr><th scope="col">Model</th><th scope="col">Effort</th><th scope="col">Trial</th><th scope="col">Effective Speed</th><th scope="col">Elapsed</th><th scope="col">Total cost</th><th scope="col">Policies submitted</th></tr></thead><tbody>${body||'<tr><td colspan="7" class="empty">Trials are waiting to launch.</td></tr>'}</tbody></table></div>`;
@@ -121,6 +121,14 @@
       row.addEventListener('click',event=>{if(!event.target.closest('a'))open()});
       row.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();open()}});
     }
+    const clearModelHover=()=>target.querySelectorAll('.experiment-model-hover').forEach(node=>node.classList.remove('experiment-model-hover'));
+    target.onpointerover=event=>{
+      clearModelHover();
+      const row=event.target.closest('tr[data-run-href]');
+      if(!row||event.target.closest('.experiment-model'))return;
+      target.querySelector(`.experiment-model[data-family="${row.dataset.family}"]`)?.classList.add('experiment-model-hover');
+    };
+    target.onpointerleave=clearModelHover;
   }
   function updateExperimentClocks(){const target=$('#experiment-tracker'),batch=state.batch;if(!target||!batch)return;const arms=Object.fromEntries((batch.arms||[]).map(arm=>[arm.run_id,arm])),runs=Object.fromEntries(state.runs.map(run=>[run.run_id,run]));for(const node of target.querySelectorAll('[data-experiment-elapsed]')){const runId=node.dataset.experimentElapsed,arm=arms[runId];if(!arm)continue;node.textContent=fmtDuration(experimentElapsed(arm,runs[runId]||{}))}}
   function render(){renderExperimentTracker();renderCards();const performanceModels=state.performance?.models||[];continuousChart('#cost-chart',performanceModels,'cumulative_agent_cost_usd','cost within each independent trial (API + CPU + training; verifier excluded)',state.performance?.cost?.common_auc_cap_usd);continuousChart('#time-chart',performanceModels,'hours_since_agent_launch','hours since agent launch',state.performance?.time?.common_auc_cap_hours);const legend=performanceModels.map(model=>{const f=family(model.model);return `<span><i style="background:${MODEL[f].color}"></i>${MODEL[f].label}</span>`}).join('');$('#cost-legend').innerHTML=legend;$('#time-legend').innerHTML=legend;renderPerformanceScores('#time-scores','time');renderResources();const updated=snapshotUpdatedAt();$('#updated').textContent=updated?`Updated ${new Date(updated).toLocaleString()}`:'No race data deployed yet'}
