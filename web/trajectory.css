@@ -11,6 +11,7 @@
   --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
   --deepseek: #4d6bff;
   --luna: #66d693;
+  --sol: #239057;
   --tool: #e5b45c;
   --observation: #7fc8c0;
   --reasoning: #b6a3ff;

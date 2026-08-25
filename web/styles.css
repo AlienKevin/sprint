@@ -9,7 +9,7 @@
   --luna: #66D693;
   --deep: #4D6BFF;
   --pro: #ff9f43;
-  --sol: #bdbdb9;
+  --sol: #239057;
   --valid: #f4f4f1;
   --cost-cpu: #8d8d8a;
   --cost-training: #d2d2cf;
@@ -308,8 +308,8 @@ main {
 }
 .experiment-model {
   width: 28%;
-  border-right: 1px solid var(--line);
-  border-bottom-color: color-mix(in srgb, var(--model-accent) 35%, var(--line)) !important;
+  border-right: 2px solid color-mix(in srgb, var(--model-accent) 72%, var(--line));
+  border-bottom-color: var(--line) !important;
   font-size: 12px;
   line-height: 1.4;
   vertical-align: middle;
@@ -629,6 +629,9 @@ main {
 }
 .cost-trial-row.luna {
   --model-accent: var(--luna);
+}
+.cost-trial-row.sol {
+  --model-accent: var(--sol);
 }
 .cost-trial-label {
   min-width: 0;

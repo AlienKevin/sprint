@@ -53,6 +53,7 @@ dist/
 node_modules/
 .modal/
 .agents/
+.artifacts/
 
 # Sprint-web heavy capture/replay blobs (site HTML kept)
 web/captures/*.json

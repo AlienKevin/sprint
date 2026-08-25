@@ -498,8 +498,8 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "class:'submission-target'" in app
     assert "el.getScreenCTM()" in app
     assert "nearest.distance<=22**2" in app
-    assert "app.js?v=20260825-3" in page
-    assert '"version":"20260825-3"' in (ROOT / "web/version.json").read_text()
+    assert "app.js?v=20260825-4" in page
+    assert '"version":"20260825-4"' in (ROOT / "web/version.json").read_text()
     assert 'class="experiment-table"' in app
     assert 'scope="rowgroup"' in app
     assert '<th scope="col">Effort</th>' in app
@@ -514,19 +514,17 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "meta.append(el('b','',`#" in trajectory_app
     assert "fmtClock(step.timestamp)" not in trajectory_app
     assert 'class="right-rail"' not in trajectory_page
-    assert "trajectory.js?v=20260825-12" in trajectory_page
+    assert "trajectory.js?v=20260825-16" in trajectory_page
     assert 'id="rollout-outline"' in trajectory_page
     assert 'class="utilization-footer"' not in trajectory_page
-    assert "function deriveChapters" in trajectory_app
-    assert "function rolloutSynopsis" in trajectory_app
-    assert "function chapterTopics" in trajectory_app
-    assert "function phaseFor" in trajectory_app
-    assert ".replace(/[.!?]+$/,'')" in trajectory_app
-    assert "The agent inspected ${objects}" in trajectory_app
-    assert "traceSentences" not in trajectory_app
-    assert "Phase beginning at step" not in trajectory_app
-    assert "Choosing direct PPO training" not in trajectory_app
-    assert "Choosing a PPO training stack" not in trajectory_app
+    assert "function authoredChapters" in trajectory_app
+    assert "trajectory-outline/v1" in trajectory_app
+    assert "generator.model!=='gpt-5.6-sol'" in trajectory_app
+    assert "outlinePath=`/data/trajectories/" in trajectory_app
+    assert "Promise.all([fetch(path" in trajectory_app
+    assert "function deriveChapters" not in trajectory_app
+    assert "function chapterTopics" not in trajectory_app
+    assert "phaseSignals" not in trajectory_app
     assert "let observedVersion = null" in app
     assert "state.timelineUpdatedAt=tIndex.updated_at||null" in app
     assert "Date.parse(snapshotUpdatedAt(batch)||'')" in app
@@ -545,14 +543,15 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "auc-bar-row" in app
     assert "color:'#4D6BFF'" in app
     assert "color:'#66D693'" in app
-    assert "color:'#f1c35b'" in app
+    assert "color:'#239057'" in app
     assert "--deep: #4D6BFF" in styles
     assert "--luna: #66D693" in styles
+    assert "border-right: 2px solid color-mix(in srgb, var(--model-accent) 72%, var(--line))" in styles
     assert "background: var(--cost-cpu)" in styles
     assert "background: var(--cost-training)" in styles
     assert "--deepseek:#4D6BFF" in timeline_page
     assert "--luna:#66D693" in timeline_page
-    assert "--sol:#bdbdb9" in timeline_page
+    assert "--sol:#239057" in timeline_page
     assert 'id="policy-cost-chart"' in timeline_page
     assert 'id="policy-replay-frame"' in timeline_page
     assert "/data/performance/current.json" in timeline_app
@@ -633,6 +632,70 @@ def test_trajectory_exec_parser_preserves_escaped_shell_quotes() -> None:
     )
     parsed = json.loads(completed.stdout)
     assert parsed == {"names": ["exec_command", "write_stdin"], "command": command}
+
+
+def test_trajectory_exec_parser_hides_orchestration_separators() -> None:
+    trajectory_app = (ROOT / "web/trajectory.js").read_text()
+    helper = next(
+        line.strip()
+        for line in trajectory_app.splitlines()
+        if line.startswith("  function isExecDivider")
+    )
+    script = "\n".join(
+        [
+            helper,
+            "console.log(JSON.stringify([",
+            "  isExecDivider('\\n---RESULT---\\n'),",
+            "  isExecDivider('\\\\n---RESULT---\\\\n'),",
+            "  isExecDivider('--- exit=0 ---'),",
+            "  isExecDivider('real command output')",
+            "]));",
+        ]
+    )
+    completed = subprocess.run(
+        ["node", "--input-type=module", "--eval", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(completed.stdout) == [True, True, True, False]
+
+
+def test_trajectory_exec_pairs_parallel_outputs_with_command_cards() -> None:
+    trajectory_app = (ROOT / "web/trajectory.js").read_text()
+
+    assert "outputs.length===operationCards.length" in trajectory_app
+    assert "operationCards[index].append(panel)" in trajectory_app
+
+
+def test_trajectory_exec_parser_distinguishes_wrapper_status() -> None:
+    trajectory_app = (ROOT / "web/trajectory.js").read_text()
+    helper = next(
+        line.strip()
+        for line in trajectory_app.splitlines()
+        if line.startswith("  function normalizeExecOutput")
+    )
+    script = "\n".join(
+        [
+            helper,
+            "console.log(JSON.stringify([",
+            "  normalizeExecOutput('Script completed\\nWall time 0.2 seconds\\nOutput:\\n'),",
+            "  normalizeExecOutput('Script failed\\nWall time 1.4 seconds\\nOutput:\\n'),",
+            "  normalizeExecOutput('Script running with cell ID abc123\\n')",
+            "]));",
+        ]
+    )
+    completed = subprocess.run(
+        ["node", "--input-type=module", "--eval", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(completed.stdout) == [
+        {"status": "Completed · 0.2s", "content": ""},
+        {"status": "Failed · 1.4s", "content": ""},
+        {"status": "Running · cell abc123", "content": ""},
+    ]
 
 
 def test_trusted_pose_capture_index_recovers_renderer_failure_and_cache_hit(

@@ -34,16 +34,30 @@ uv run --project harbor pytest -q event_runtime/tests tests
 
 ## Website trajectory outlines
 
-`web/trajectory.js` derives the rollout table of contents from each run's own
-public trace at render time. Keep that generator deterministic and
-trace-local:
+Rollout tables of contents are authored offline by a read-only Codex agent and
+published beside the sanitized trajectory as
+`web/data/trajectories/<run-id>.outline.json`. Run:
 
-- split chapters from topic changes in the current trace;
-- use a short action-and-topic phrase for each title, never a raw sentence or
-  question from the model;
-- synthesize chapter summaries separately from titles;
-- synthesize the rollout synopsis from the ordered chapter activities;
-- do not add model-, method-, or run-specific title/summary templates.
+```bash
+python -m event_runtime.export.trajectory_outline \
+  --trajectory web/data/trajectories/<run-id>.json
+```
+
+Each Codex synthesis attempt is retained under
+`.artifacts/trajectory-outlines/<run-id>/<timestamp>-<pid>/`. The directory
+contains the complete `codex exec --json` event stream, the final structured
+response, stderr, and a manifest recording success or the validation error.
+These review traces remain local and are not included in the website bundle.
+
+The command pins the authoring model to GPT-5.6 Sol and lets it browse the exact
+already-public trajectory with read-only file-inspection tools. There is no
+projection or preprocessing step. The response is schema-constrained JSON,
+every chapter is validated against immutable step IDs, and the result is cached
+by trace fingerprint and SHA-256.
+Generate outlines after a trial is complete; never invoke the model
+from the recurring timeline refresh path. A missing or stale outline simply
+hides the table of contents—the browser must not fabricate replacement prose
+with keyword or regex templates.
 
 The website is an observer. Outline generation and publishing must never
 control, restart, stop, or otherwise affect an experiment.

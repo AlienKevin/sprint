@@ -6,7 +6,7 @@
     'flash-baidu': {label:'DeepSeek V4 Flash 0731 · Baidu', color:'#4D6BFF', cls:'flash-baidu'},
     'pro-alibaba': {label:'DeepSeek V4 Pro 0813 · Alibaba', color:'#ff9f43', cls:'pro-alibaba'},
     luna: {label:'GPT‑5.6 Luna', color:'#66D693', cls:'luna'},
-    sol: {label:'GPT‑5.6 Sol', color:'#f1c35b', cls:'sol'}
+    sol: {label:'GPT‑5.6 Sol', color:'#239057', cls:'sol'}
   };
   const DISPLAY_FAMILIES = ['deepseek','flash-baidu','pro-alibaba','luna','sol'];
   const state = {runs:[], performance:null, batch:null, timelineUpdatedAt:null, refreshing:false};

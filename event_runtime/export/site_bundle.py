@@ -320,6 +320,11 @@ def _copy_current_dynamic_tree(
         paths: set[Path] = {
             Path("data") / family / f"{run_id}.json" for run_id in run_ids
         }
+        if family == "trajectories":
+            paths.update(
+                Path("data") / family / f"{run_id}.outline.json"
+                for run_id in run_ids
+            )
         for entry in entries:
             path = entry.get("path")
             if isinstance(path, str):

@@ -79,6 +79,22 @@ def build_fixture(tmp_path: Path) -> tuple[Path, Path]:
         web / "data/timeline-overviews" / f"{stale_run}.json",
         {"schema_version": 1, "run_id": stale_run},
     )
+    write_json(
+        web / "data/trajectories" / f"{current_run}.outline.json",
+        {
+            "schema_version": "trajectory-outline/v1",
+            "run_id": current_run,
+            "chapters": [],
+        },
+    )
+    write_json(
+        web / "data/trajectories" / f"{stale_run}.outline.json",
+        {
+            "schema_version": "trajectory-outline/v1",
+            "run_id": stale_run,
+            "chapters": [],
+        },
+    )
 
     (web / "replay").mkdir()
     (web / "replay/frontier-current.html").write_text("current replay\n")
@@ -113,6 +129,12 @@ def test_bundle_contains_only_current_batch_results(tmp_path: Path) -> None:
         assert not (bundle / "data" / family / "batch-old-deepseek-1.json").exists()
     assert (bundle / "data/timeline-overviews/batch-current-luna-1.json").is_file()
     assert not (bundle / "data/timeline-overviews/batch-old-deepseek-1.json").exists()
+    assert (
+        bundle / "data/trajectories/batch-current-luna-1.outline.json"
+    ).is_file()
+    assert not (
+        bundle / "data/trajectories/batch-old-deepseek-1.outline.json"
+    ).exists()
 
 
 def test_bundle_fails_closed_on_missing_current_replay(tmp_path: Path) -> None:
