@@ -29,9 +29,7 @@ def write_codex_goal_files(
         (agent_dir / "goal-lifecycle.json").write_text(json.dumps(lifecycle))
 
 
-def write_deepseek_goal_file(
-    state_dir: Path, *, lifecycle: dict[str, object]
-) -> None:
+def write_deepseek_goal_file(state_dir: Path, *, lifecycle: dict[str, object]) -> None:
     agent_dir = state_dir / "harbor-jobs" / "run-1" / "task-1" / "agent"
     agent_dir.mkdir(parents=True)
     (agent_dir / "goal-lifecycle.json").write_text(json.dumps(lifecycle))
@@ -180,9 +178,7 @@ def test_gpu_retry_and_unconfirmed_termination_are_invalid(tmp_path: Path) -> No
         )
     )
 
-    report = build_integrity_report(
-        tmp_path, run_contract("gpu-retry")
-    )
+    report = build_integrity_report(tmp_path, run_contract("gpu-retry"))
 
     assert {reason["code"] for reason in report["reasons"]} == {
         "gpu_worker_retried",
@@ -214,6 +210,31 @@ def test_gpu_budget_feed_failure_is_invalid_even_when_attributed(
     }
 
 
+def test_provider_gpu_initialization_failure_is_invalid(tmp_path: Path) -> None:
+    registry = tmp_path / "gpu-job-registry"
+    registry.mkdir()
+    (registry / "job-1.json").write_text(
+        json.dumps(
+            {
+                "job_id": "job-1",
+                "attempt": 1,
+                "status": "failed",
+                "provider_terminal_error": (
+                    "Isaac GPU/Vulkan initialization failed before required "
+                    "outputs were produced"
+                ),
+            }
+        )
+    )
+
+    report = build_integrity_report(tmp_path, run_contract("gpu-init"))
+
+    assert report["benchmark_valid"] is False
+    assert {reason["code"] for reason in report["reasons"]} == {
+        "provider_gpu_initialization_failed"
+    }
+
+
 def test_expected_idempotent_teardown_error_is_not_an_integrity_failure(
     tmp_path: Path,
 ) -> None:
@@ -229,9 +250,7 @@ def test_expected_idempotent_teardown_error_is_not_an_integrity_failure(
         )
     )
 
-    report = build_integrity_report(
-        tmp_path, run_contract("expected-stop")
-    )
+    report = build_integrity_report(tmp_path, run_contract("expected-stop"))
 
     assert report["benchmark_valid"] is True
 
@@ -243,9 +262,7 @@ def test_unattributed_gpu_termination_requires_replacement(tmp_path: Path) -> No
         json.dumps({"job_id": "job-1", "attempt": 1, "status": "terminated"})
     )
 
-    report = build_integrity_report(
-        tmp_path, run_contract("unknown-stop")
-    )
+    report = build_integrity_report(tmp_path, run_contract("unknown-stop"))
 
     assert report["benchmark_valid"] is False
     assert report["reasons"][0]["code"] == "gpu_termination_unattributed"
@@ -267,9 +284,7 @@ def test_worker_budget_stop_is_attributed_without_legacy_reason_field(
         )
     )
 
-    report = build_integrity_report(
-        tmp_path, run_contract("budget-stop")
-    )
+    report = build_integrity_report(tmp_path, run_contract("budget-stop"))
 
     assert report["benchmark_valid"] is True
 
@@ -286,9 +301,7 @@ def test_unacknowledged_control_request_requires_replacement(tmp_path: Path) -> 
         + "\n"
     )
 
-    report = build_integrity_report(
-        tmp_path, run_contract("lost-cancel")
-    )
+    report = build_integrity_report(tmp_path, run_contract("lost-cancel"))
 
     assert report["benchmark_valid"] is False
     assert report["reasons"][0]["code"] == "gpu_cancellation_unacknowledged"

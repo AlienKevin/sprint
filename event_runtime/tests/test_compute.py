@@ -534,6 +534,48 @@ class ClaimSelectionTests(unittest.TestCase):
             )
         )
 
+    def test_missing_outputs_plus_vulkan_abort_is_provider_failure(self) -> None:
+        stderr = "\n".join(
+            (
+                "VkResult: ERROR_INITIALIZATION_FAILED",
+                "vkCreateDevice failed",
+                "No device could be created",
+            )
+        )
+        self.assertEqual(
+            gpu_worker.provider_terminal_error_for_job(
+                {
+                    "status": "failed",
+                    "error": "required GPU output missing or invalid: /app/policy.pt",
+                },
+                "",
+                stderr,
+            ),
+            "Isaac GPU/Vulkan initialization failed before required outputs were produced",
+        )
+
+    def test_vulkan_warning_does_not_mask_agent_traceback(self) -> None:
+        stderr = "\n".join(
+            (
+                "VkResult: ERROR_INITIALIZATION_FAILED",
+                "vkCreateDevice failed",
+                "No device could be created",
+                "Traceback (most recent call last):",
+                "AttributeError: bad reward term",
+            )
+        )
+        self.assertEqual(
+            gpu_worker.provider_terminal_error_for_job(
+                {
+                    "status": "failed",
+                    "error": "required GPU output missing or invalid: /app/policy.pt",
+                },
+                "",
+                stderr,
+            ),
+            "AttributeError: bad reward term",
+        )
+
     def test_physx_software_fallback_overrides_false_zero_exit(self) -> None:
         output = "PhysX warning: GPU solver pipeline failed, switching to software"
         self.assertEqual(gpu_worker.provider_terminal_error(output), output)
@@ -619,6 +661,40 @@ class ClaimSelectionTests(unittest.TestCase):
         self.assertEqual(audited["status"], "failed")
         self.assertTrue(audited["provider_terminal_error_detected"])
         self.assertEqual(detail["provider_logs"], "audited")
+
+    def test_audit_classifies_archived_vulkan_output_loss(self) -> None:
+        job = {
+            "run_id": "run-1",
+            "job_id": "job-1",
+            "attempt": 1,
+            "status": "failed",
+            "exit_code": 2,
+            "error": "required GPU output missing or invalid: /app/policy.pt",
+            "provider_logs_archived_at": "earlier",
+            "provider_logs_path": "runs/run-1/gpu-jobs/out/job-1/worker.log",
+        }
+        text = (
+            "== Modal stdout ==\nlauncher output\n"
+            "== Modal stderr ==\n"
+            "VkResult: ERROR_INITIALIZATION_FAILED\n"
+            "vkCreateDevice failed\n"
+            "No device could be created\n"
+        )
+        with (
+            mock.patch.object(
+                gpu_worker.sprintctl, "volume_get_text", return_value=text
+            ),
+            mock.patch.object(
+                gpu_worker, "mirror_agent_job", return_value={"agent_mirror": "updated"}
+            ),
+        ):
+            audited, detail = gpu_worker.audit_archived_provider_logs(
+                {"run_id": "run-1"}, job
+            )
+
+        self.assertTrue(audited["provider_terminal_error_detected"])
+        self.assertIn("GPU/Vulkan", audited["provider_terminal_error"])
+        self.assertIn("GPU/Vulkan", detail["provider_terminal_error"])
 
     def test_pushes_fresh_status_and_log_to_cpu_agent_mirror(self) -> None:
         job = {
@@ -2107,7 +2183,9 @@ class SingleCpuTrialTests(unittest.TestCase):
                 )
             self.assertEqual(code, 17)
             state = Path(raw) / "unit-single-failure"
-            lifecycle = (state / "telemetry/cpu_lifecycle.jsonl").read_text().splitlines()
+            lifecycle = (
+                (state / "telemetry/cpu_lifecycle.jsonl").read_text().splitlines()
+            )
             self.assertEqual(len(lifecycle), 2)
             exit_record = json.loads((state / "CPU_TRIAL_EXIT.json").read_text())
             self.assertEqual(exit_record["raw_exit_code"], 17)
@@ -2524,13 +2602,13 @@ class GpuConcurrencyLimitTests(unittest.TestCase):
             self.assertEqual(result[0]["decision"], "cancel_retry_required")
             self.assertFalse((Path(raw) / "control-acks" / f"{'c' * 32}.json").exists())
 
+
 class AgentCredentialBoundaryTests(unittest.TestCase):
     def test_agent_env_allows_only_model_auth_and_endpoint_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             path = Path(raw) / "agent.env"
             path.write_text(
-                "OPENAI_API_KEY=secret\n"
-                "OPENAI_BASE_URL=https://api.example.test\n"
+                "OPENAI_API_KEY=secret\nOPENAI_BASE_URL=https://api.example.test\n"
             )
             names = validate_agent_env.validate(path, "OPENAI_API_KEY")
         self.assertEqual(
@@ -2684,7 +2762,9 @@ class RetryAndFencingTests(unittest.TestCase):
                 side_effect=lambda _run, payload: (payload, {}),
             ),
             mock.patch.object(
-                gpu_worker, "archive_provider_logs", side_effect=lambda _run, payload: (payload, {})
+                gpu_worker,
+                "archive_provider_logs",
+                side_effect=lambda _run, payload: (payload, {}),
             ),
             mock.patch.object(
                 gpu_worker, "persist_job", side_effect=lambda _run, payload: payload
@@ -3257,9 +3337,7 @@ class RetryAndFencingTests(unittest.TestCase):
         ):
             repaired = gpu_worker.reconcile_terminal_attempt_before_stop(run, job)
         self.assertEqual(repaired["status"], "terminated")
-        self.assertEqual(
-            repaired["termination_reason"], "agent_cost_budget_exhausted"
-        )
+        self.assertEqual(repaired["termination_reason"], "agent_cost_budget_exhausted")
 
     def test_reconcile_reports_lost_running_worker_as_preempted(self) -> None:
         job = {
@@ -3516,14 +3594,18 @@ class AgentGpuCliTests(unittest.TestCase):
 
     def test_declared_submission_is_archived_only_after_success(self) -> None:
         completed = mock.Mock(returncode=0, stdout="staged locally abc\n", stderr="")
-        with mock.patch.object(worker_run.subprocess, "run", return_value=completed) as run:
+        with mock.patch.object(
+            worker_run.subprocess, "run", return_value=completed
+        ) as run:
             results = worker_run.submit_declared_policies(
                 {"job_id": "job-1", "submission_paths": ["/app/policy.pt"]}
             )
 
         self.assertEqual(results[0]["state"], "staged")
         command = run.call_args.args[0]
-        self.assertEqual(command[:3], ["/usr/local/bin/event", "archive", "/app/policy.pt"])
+        self.assertEqual(
+            command[:3], ["/usr/local/bin/event", "archive", "/app/policy.pt"]
+        )
 
     def test_terminal_status_requires_explicit_artifact_retrieval(self) -> None:
         payload = {
@@ -3741,9 +3823,7 @@ class LauncherWiringTests(unittest.TestCase):
                 ),
                 mock.patch.object(Path, "is_file", return_value=True),
                 mock.patch("os.access", return_value=True),
-                mock.patch.object(
-                    start_cpu_trial.shutil, "which", return_value=None
-                ),
+                mock.patch.object(start_cpu_trial.shutil, "which", return_value=None),
                 mock.patch.object(
                     start_cpu_trial.subprocess, "run", return_value=completed
                 ) as run,

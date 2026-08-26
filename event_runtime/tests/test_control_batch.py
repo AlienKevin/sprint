@@ -130,9 +130,7 @@ def test_batch_matrix_accepts_exact_replacement_trial_slots() -> None:
         trial_numbers=(3,),
     )
 
-    assert [row["run_id"] for row in rows] == [
-        "eval-sol-medium-replacement-sol-3"
-    ]
+    assert [row["run_id"] for row in rows] == ["eval-sol-medium-replacement-sol-3"]
     assert [row["trial"] for row in rows] == [3]
 
 
@@ -229,8 +227,10 @@ def test_high_effort_is_propagated_to_deepseek_and_sol_contracts() -> None:
         ROOT / "event_runtime/control/providers/deepseek_harness.sh"
     ).read_text()
     assert '--ae "SPRINT_REASONING_EFFORT=$REASONING_EFFORT"' in launcher
-    assert "DeepSeek Harness benchmark reasoning effort is sealed to max" not in launcher
-    assert '\"reasoning_effort\":\"' in launcher
+    assert (
+        "DeepSeek Harness benchmark reasoning effort is sealed to max" not in launcher
+    )
+    assert '"reasoning_effort":"' in launcher
     assert 'REASONING_EFFORT="${REASONING_EFFORT:-max}"' in deepseek_wrapper
     assert "REASONING_EFFORT=max" not in deepseek_wrapper
     assert batch_eval.agent_adapter_contract_ready(rows)
@@ -1478,11 +1478,12 @@ def test_training_gpu_fleet_probe_requires_every_exact_worker_and_image(
         return subprocess.CompletedProcess(command, 0, stdout="ok")
 
     monkeypatch.setattr(batch_eval.subprocess, "run", successful_run)
+    planned_workers = [f"eval-{index}" for index in range(1, 16)]
     ready, report = batch_eval.training_gpu_fleet_probe(
-        batch_id="eval", modal_profile="test", worker_ids=["eval-1", "eval-2"]
+        batch_id="eval", modal_profile="test", worker_ids=planned_workers
     )
     assert ready
-    assert [row["worker_id"] for row in report["workers"]] == ["eval-1", "eval-2"]
+    assert [row["worker_id"] for row in report["workers"]] == planned_workers
 
     def incomplete_run(command, **kwargs):
         result = successful_run(command, **kwargs)
@@ -1494,7 +1495,7 @@ def test_training_gpu_fleet_probe_requires_every_exact_worker_and_image(
 
     monkeypatch.setattr(batch_eval.subprocess, "run", incomplete_run)
     ready, _ = batch_eval.training_gpu_fleet_probe(
-        batch_id="eval", modal_profile="test", worker_ids=["eval-1", "eval-2"]
+        batch_id="eval", modal_profile="test", worker_ids=planned_workers
     )
     assert not ready
 
@@ -3972,7 +3973,10 @@ def test_recovered_log_alert_is_archived() -> None:
         }
     ]
     assert payload["resolved_alerts"][0]["kind"] == "provider_auth"
-    assert payload["resolved_alerts"][0]["resolution"] == "matching log condition recovered"
+    assert (
+        payload["resolved_alerts"][0]["resolution"]
+        == "matching log condition recovered"
+    )
 
 
 def test_website_javascript_parses_and_has_no_legacy_opus_copy() -> None:

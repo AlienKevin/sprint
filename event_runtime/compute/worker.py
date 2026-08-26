@@ -431,10 +431,7 @@ def read_durable_submission_outbox(
             declared_size = int(receipt.get("policy_size_bytes") or 0)
         except (TypeError, ValueError):
             continue
-        if (
-            declared_size <= 0
-            or declared_size > GPU_SUBMISSION_BRIDGE_MAX_POLICY_BYTES
-        ):
+        if declared_size <= 0 or declared_size > GPU_SUBMISSION_BRIDGE_MAX_POLICY_BYTES:
             continue
         if total_bytes + declared_size > GPU_SUBMISSION_BRIDGE_MAX_BATCH_BYTES:
             break
@@ -2119,12 +2116,58 @@ def provider_terminal_error(stream_text: str) -> str | None:
     return None
 
 
+def provider_terminal_error_for_job(
+    job: dict[str, Any], stdout: str, stderr: str
+) -> str | None:
+    """Classify terminal provider output using the trusted worker outcome.
+
+    Headless Isaac can emit Vulkan diagnostics and still run a CUDA simulation,
+    so the diagnostics alone are not terminal.  They *are* definitive when the
+    worker also reports that every explicitly requested output is missing: in
+    that case Kit returned before the agent program could do useful work.
+    Prefer an ordinary traceback when one exists because that remains an
+    agent-authored program failure even if Kit printed unrelated warnings.
+    """
+    terminal_error = provider_terminal_error(stderr)
+    if terminal_error:
+        return terminal_error
+    worker_error = str(job.get("error") or "")
+    vulkan_startup_failed = all(
+        marker in stderr
+        for marker in (
+            "VkResult: ERROR_INITIALIZATION_FAILED",
+            "vkCreateDevice failed",
+            "No device could be created",
+        )
+    )
+    if (
+        worker_error.startswith("required GPU output missing or invalid:")
+        and vulkan_startup_failed
+    ):
+        return "Isaac GPU/Vulkan initialization failed before required outputs were produced"
+    return None
+
+
+def split_archived_provider_streams(stream_text: str) -> tuple[str, str]:
+    """Recover Modal's separate streams from the canonical archived envelope."""
+    stdout_header = "== Modal stdout ==\n"
+    stderr_header = "== Modal stderr ==\n"
+    if stdout_header in stream_text and stderr_header in stream_text:
+        stdout, stderr = stream_text.split(stdout_header, 1)[1].rsplit(stderr_header, 1)
+        return stdout, stderr
+    return "", stream_text
+
+
 def apply_provider_terminal_error(
     job: dict[str, Any], terminal_error: str | None
 ) -> dict[str, Any]:
     payload = dict(job)
     payload["provider_terminal_error_checked_at"] = utc_now()
     payload["provider_terminal_error_detected"] = bool(terminal_error)
+    if terminal_error:
+        payload["provider_terminal_error"] = terminal_error
+    else:
+        payload.pop("provider_terminal_error", None)
     worker_error = str(payload.get("error") or "").strip()
     if worker_error and str(payload.get("status") or "") == "succeeded":
         payload["worker_reported_status"] = "succeeded"
@@ -2153,7 +2196,8 @@ def audit_archived_provider_logs(
     text = sprintctl.volume_get_text(run, path)
     if text is None:
         return job, {"provider_logs": "audit_retry", "provider_logs_path": path}
-    terminal_error = provider_terminal_error(text)
+    stdout, stderr = split_archived_provider_streams(text)
+    terminal_error = provider_terminal_error_for_job(job, stdout, stderr)
     payload = apply_provider_terminal_error(job, terminal_error)
     payload, artifact_name, artifact_content, policy_detail = (
         fetch_agent_policy_artifact(run, payload)
@@ -2241,7 +2285,7 @@ def archive_provider_logs(
             "provider_logs_source": "modal-sandbox-streams",
         }
     )
-    terminal_error = provider_terminal_error(stderr)
+    terminal_error = provider_terminal_error_for_job(payload, stdout, stderr)
     payload = apply_provider_terminal_error(payload, terminal_error)
     payload, artifact_name, artifact_content, policy_detail = (
         fetch_agent_policy_artifact(run, payload)

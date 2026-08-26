@@ -68,7 +68,8 @@ def main() -> int:
         'export SPRINT_APP_LAUNCHER_STATE_FILE="$state"; '
         "timeout --signal=TERM --kill-after=20 150 "
         "python3 /opt/sprint-isaac-bootstrap.py "
-        "/app/train/asset_probe.py --headless --device cuda:0; "
+        "/opt/event_runtime/container/sprint-isaac-runtime-probe.py "
+        "--headless --device cuda:0; "
         'python3 -c "import json; p=json.load(open('
         "'/tmp/sprint-app-launcher-state.json')); "
         "assert p == {'schema_version': 1, 'state': 'completed'}, p\"; "
@@ -86,6 +87,7 @@ def main() -> int:
             required_output_substrings=(
                 "LOCAL_G1=/opt/assets/",
                 "LOCAL_DEBUG_MARKERS=ok",
+                "LOCAL_SIMULATION=ok",
                 "SPRINT_FLEET_WORKER_READY",
             ),
         )

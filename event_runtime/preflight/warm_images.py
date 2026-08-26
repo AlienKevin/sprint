@@ -226,7 +226,9 @@ def build_warmup_policy(path: Path) -> None:
     scripted = torch.jit.script(WarmupPolicy(action_dim).eval())
     probe = scripted(torch.zeros((2, observation_dim), dtype=torch.float32))
     if tuple(probe.shape) != (2, action_dim):
-        raise RuntimeError(f"warmup policy has unexpected output shape {tuple(probe.shape)}")
+        raise RuntimeError(
+            f"warmup policy has unexpected output shape {tuple(probe.shape)}"
+        )
     torch.jit.save(scripted, path)
     torch.jit.load(path, map_location="cpu").eval()
 
@@ -240,6 +242,7 @@ def main() -> int:
     build_warmup_policy(policy)
 
     app = modal.App.lookup(APP_NAME, create_if_missing=True)
+
     # Modal image builds leave their owning App in deployed/zero-task state.
     # Register a failure-path cleanup immediately, then perform and verify the
     # same cleanup synchronously before reporting successful completion.
@@ -324,7 +327,7 @@ def main() -> int:
                 "test -x /opt/sprint-deepseek-harness-exec-wrapper.sh && "
                 "test -x /opt/sprint-deepseek-harness-runner.py && "
                 "test -r /opt/event_runtime/container/sprint-deepseek-goal-bootstrap.mjs && "
-                "node -e 'const v=require(\"/opt/deepseek-harness/node_modules/@deepseek-ai/dsh-sdk-jsonrpc-demo/package.json\").version; "
+                'node -e \'const v=require("/opt/deepseek-harness/node_modules/@deepseek-ai/dsh-sdk-jsonrpc-demo/package.json").version; '
                 "if (v !== process.argv[1]) throw new Error(`unexpected DeepSeek Harness version ${v}`)' 0.1.1-rc.2 && "
                 "python3 -c \"import importlib.metadata; assert importlib.metadata.version('deepseek-harness-sdk') == '0.1.1rc1'\" && "
                 "python3 /opt/event_runtime/container/sprint-deepseek-harness-probe.py && "
@@ -371,11 +374,13 @@ def main() -> int:
                 "assert isinstance(g['dram_throughput_pct'], float)\" && "
                 "timeout --signal=TERM --kill-after=10 120 "
                 "python3 /opt/sprint-isaac-bootstrap.py "
-                "/app/train/asset_probe.py --headless --device cuda:0"
+                "/opt/event_runtime/container/sprint-isaac-runtime-probe.py "
+                "--headless --device cuda:0"
             ),
             required_output_substrings=(
                 "LOCAL_G1=/opt/assets/",
                 "LOCAL_DEBUG_MARKERS=ok",
+                "LOCAL_SIMULATION=ok",
             ),
         )
 

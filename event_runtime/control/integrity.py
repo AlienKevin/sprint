@@ -18,8 +18,10 @@ EXPECTED_TEARDOWN_MARKERS = (
 
 INFRA_RETRY_REASONS = {
     "activity_watchdog",
+    "app_launcher_initialization_failed",
     "graceful_preemption",
     "heartbeat_stale",
+    "provider_gpu_initialization_failed",
     "provider_probe_unknown",
     "spawn_failed",
     "worker_lost",
@@ -45,9 +47,7 @@ def _reason(
     }
 
 
-def build_integrity_report(
-    state_dir: Path, run: dict[str, Any]
-) -> dict[str, Any]:
+def build_integrity_report(state_dir: Path, run: dict[str, Any]) -> dict[str, Any]:
     """Return a conservative certificate independent of archival completion."""
     reasons: list[dict[str, str]] = []
     observations: dict[str, Any] = {}
@@ -138,10 +138,7 @@ def build_integrity_report(
             lifecycle = _read_json(lifecycle_paths[0])
             goal_status = str(lifecycle.get("goal_status") or "")
             runner_state = str(lifecycle.get("runner_state") or "")
-            if (
-                goal_status not in {"complete", "blocked"}
-                or runner_state != "terminal"
-            ):
+            if goal_status not in {"complete", "blocked"} or runner_state != "terminal":
                 reasons.append(
                     _reason(
                         "codex_goal_active_at_agent_exit",
@@ -163,10 +160,7 @@ def build_integrity_report(
             lifecycle = _read_json(lifecycle_paths[0])
             goal_status = str(lifecycle.get("goal_status") or "")
             runner_state = str(lifecycle.get("runner_state") or "")
-            if (
-                goal_status not in {"complete", "blocked"}
-                or runner_state != "terminal"
-            ):
+            if goal_status not in {"complete", "blocked"} or runner_state != "terminal":
                 reasons.append(
                     _reason(
                         "deepseek_goal_active_at_agent_exit",
@@ -233,6 +227,14 @@ def build_integrity_report(
                 )
             )
         provider_error = str(job.get("provider_terminal_error") or "").strip()
+        if "GPU/Vulkan initialization failed" in provider_error:
+            reasons.append(
+                _reason(
+                    "provider_gpu_initialization_failed",
+                    path.name,
+                    provider_error[-500:],
+                )
+            )
         if "context" in provider_error.lower() and "token" in provider_error.lower():
             reasons.append(
                 _reason(
