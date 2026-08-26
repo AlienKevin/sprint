@@ -8,7 +8,10 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+
+
+DEFAULT_MIN_BUDGET_UTILIZATION_FOR_REVIEW = 0.90
 
 
 EXPECTED_TEARDOWN_MARKERS = (
@@ -269,6 +272,22 @@ def build_integrity_report(state_dir: Path, run: dict[str, Any]) -> dict[str, An
     observations["codex_goal_lifecycle_count"] = len(lifecycle_paths)
     if lifecycle_paths:
         observations["codex_goal_lifecycle"] = _read_json(lifecycle_paths[-1]) or None
+        lifecycle = observations["codex_goal_lifecycle"]
+        if terminal_evidence and isinstance(lifecycle, dict) and (
+            str(lifecycle.get("runner_state") or "") == "invalid_infrastructure"
+            or str(lifecycle.get("failure_code") or "")
+        ):
+            reasons.append(
+                _reason(
+                    "agent_goal_runner_invalid",
+                    str(lifecycle_paths[-1].relative_to(state_dir)),
+                    str(
+                        lifecycle.get("detail")
+                        or lifecycle.get("failure_code")
+                        or "persistent-goal runner recorded an infrastructure failure"
+                    ),
+                )
+            )
     if agent_kind == "codex" and stop_reason == "agent_exit" and bootstrap_paths:
         if len(bootstrap_paths) != 1 or len(lifecycle_paths) != 1:
             reasons.append(
@@ -434,6 +453,53 @@ def build_integrity_report(state_dir: Path, run: dict[str, Any]) -> dict[str, An
     observations["cancel_requests"] = len(requested_cancels)
     observations["cancel_requests_acknowledged"] = len(acknowledged_cancels)
 
+    # These outcomes are suspicious, but not sufficient by themselves to call
+    # a benchmark run invalid: a capable agent may intentionally withhold every
+    # locally-invalid policy, and an operator may deliberately stop a run early.
+    # Surface both conditions so final trial selection requires an explicit
+    # trace review instead of silently treating them as ordinary clean runs.
+    review_reasons: list[dict[str, str]] = []
+    status = _read_json(state_dir / "status.json")
+    ledger = status.get("ledger") if isinstance(status.get("ledger"), dict) else {}
+    accepted_submissions = ledger.get("accepted")
+    observations["accepted_submissions"] = accepted_submissions
+    if terminal_evidence and accepted_submissions == 0:
+        review_reasons.append(
+            _reason(
+                "zero_accepted_submissions",
+                "status.json",
+                "terminal trial has no structurally valid accepted policy submissions",
+                severity="review",
+            )
+        )
+
+    budget = run.get("agent_cost_budget_usd")
+    cost = _read_json(state_dir / "telemetry" / "agent-cost.json")
+    total = cost.get("total_usd")
+    utilization: float | None = None
+    try:
+        if float(budget) > 0 and float(total) >= 0:
+            utilization = float(total) / float(budget)
+    except (TypeError, ValueError):
+        pass
+    observations["budget_utilization"] = utilization
+    threshold = float(
+        run.get(
+            "integrity_min_budget_utilization",
+            DEFAULT_MIN_BUDGET_UTILIZATION_FOR_REVIEW,
+        )
+    )
+    observations["min_budget_utilization_for_review"] = threshold
+    if terminal_evidence and utilization is not None and utilization < threshold:
+        review_reasons.append(
+            _reason(
+                "low_budget_utilization",
+                "telemetry/agent-cost.json",
+                f"terminal trial used {utilization:.1%} of its configured budget",
+                severity="review",
+            )
+        )
+
     # Collapse duplicate reason codes while retaining every affected source.
     unique: list[dict[str, str]] = []
     seen: set[tuple[str, str, str]] = set()
@@ -451,6 +517,8 @@ def build_integrity_report(state_dir: Path, run: dict[str, Any]) -> dict[str, An
         "leaderboard_eligible": not invalid,
         "replacement_required": invalid,
         "reasons": unique,
+        "review_recommended": bool(review_reasons),
+        "review_reasons": review_reasons,
         "observations": observations,
         "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }

@@ -241,6 +241,61 @@ def test_deepseek_agent_exit_after_terminal_goal_is_clean(tmp_path: Path) -> Non
     assert report["benchmark_valid"] is True
 
 
+def test_terminal_goal_runner_failure_is_invalid_even_after_operator_stop(
+    tmp_path: Path,
+) -> None:
+    run = run_contract("deepseek-goal-runner-failed")
+    run["agent_kind"] = "deepseek-harness"
+    (tmp_path / "STOP_ACK.json").write_text(
+        json.dumps({"reason": "operator_batch_stop"})
+    )
+    write_clean_exit(tmp_path / "CPU_TRIAL_EXIT.json")
+    write_deepseek_goal_file(
+        tmp_path,
+        lifecycle={
+            "goal_status": "active",
+            "runner_state": "invalid_infrastructure",
+            "failure_code": "goal_continuation_timeout",
+            "detail": "goal-round driver did not start the next turn",
+        },
+    )
+
+    report = build_integrity_report(tmp_path, run)
+
+    assert report["benchmark_valid"] is False
+    assert {reason["code"] for reason in report["reasons"]} == {
+        "agent_goal_runner_invalid"
+    }
+
+
+def test_zero_submissions_and_low_spend_require_review_not_replacement(
+    tmp_path: Path,
+) -> None:
+    run = run_contract("suspicious-clean-run")
+    run["agent_cost_budget_usd"] = 10.0
+    (tmp_path / "STOP_ACK.json").write_text(
+        json.dumps({"reason": "operator_batch_stop"})
+    )
+    write_clean_exit(tmp_path / "CPU_TRIAL_EXIT.json")
+    (tmp_path / "status.json").write_text(
+        json.dumps({"ledger": {"accepted": 0}})
+    )
+    telemetry = tmp_path / "telemetry"
+    telemetry.mkdir()
+    (telemetry / "agent-cost.json").write_text(json.dumps({"total_usd": 7.5}))
+
+    report = build_integrity_report(tmp_path, run)
+
+    assert report["benchmark_valid"] is True
+    assert report["replacement_required"] is False
+    assert report["review_recommended"] is True
+    assert {reason["code"] for reason in report["review_reasons"]} == {
+        "zero_accepted_submissions",
+        "low_budget_utilization",
+    }
+    assert report["observations"]["budget_utilization"] == 0.75
+
+
 def test_gpu_retry_and_unconfirmed_termination_are_invalid(tmp_path: Path) -> None:
     registry = tmp_path / "gpu-job-registry"
     registry.mkdir()
