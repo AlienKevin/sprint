@@ -1240,6 +1240,63 @@ def test_gpu_worker_fails_closed_on_stale_budget_snapshot(tmp_path: Path) -> Non
     assert "stale" in marker["error"]
 
 
+def test_gpu_worker_waits_for_fresh_startup_budget_snapshot(tmp_path: Path) -> None:
+    worker = load_gpu_worker()
+    runtime_snapshot = tmp_path / "runtime-budget.json"
+    clock = {"wall": 1_121.0, "monotonic": 0.0, "waits": 0}
+    write_budget_snapshot(runtime_snapshot, checked_at=1_000)
+
+    def sleep(seconds: float) -> None:
+        clock["wall"] += seconds
+        clock["monotonic"] += seconds
+        write_budget_snapshot(runtime_snapshot, checked_at=clock["wall"])
+
+    assert (
+        worker.wait_for_initial_budget_stop(
+            "unit",
+            str(tmp_path),
+            timeout_seconds=5,
+            poll_seconds=1,
+            runtime_snapshot=runtime_snapshot,
+            now_fn=lambda: clock["wall"],
+            monotonic_fn=lambda: clock["monotonic"],
+            sleep_fn=sleep,
+            on_wait=lambda: clock.__setitem__("waits", clock["waits"] + 1),
+        )
+        is None
+    )
+    assert clock["waits"] == 1
+    assert not (tmp_path / "runs/unit/BUDGET_STOP_REQUESTED.json").exists()
+
+
+def test_gpu_worker_startup_budget_wait_remains_fail_closed(tmp_path: Path) -> None:
+    worker = load_gpu_worker()
+    runtime_snapshot = tmp_path / "runtime-budget.json"
+    clock = {"wall": 1_121.0, "monotonic": 0.0}
+    write_budget_snapshot(runtime_snapshot, checked_at=1_000)
+
+    def sleep(seconds: float) -> None:
+        clock["wall"] += seconds
+        clock["monotonic"] += seconds
+
+    assert (
+        worker.wait_for_initial_budget_stop(
+            "unit",
+            str(tmp_path),
+            timeout_seconds=2,
+            poll_seconds=1,
+            runtime_snapshot=runtime_snapshot,
+            now_fn=lambda: clock["wall"],
+            monotonic_fn=lambda: clock["monotonic"],
+            sleep_fn=sleep,
+        )
+        == "budget_telemetry_unavailable"
+    )
+    marker = json.loads((tmp_path / "runs/unit/BUDGET_STOP_REQUESTED.json").read_text())
+    assert marker["reason"] == "budget_telemetry_unavailable"
+    assert "stale" in marker["error"]
+
+
 def test_gpu_worker_propagates_fresh_budget_stop(tmp_path: Path) -> None:
     worker = load_gpu_worker()
     runtime_snapshot = tmp_path / "runtime-budget.json"

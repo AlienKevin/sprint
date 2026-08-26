@@ -41,13 +41,18 @@ MAX_ARCHIVE_MEMBERS = 20_000
 MAX_ARCHIVE_EXPANDED_BYTES = 512 * 1024 * 1024
 MAX_OUTPUT_ARTIFACT_BYTES = 128 * 1024 * 1024
 MAX_OUTPUT_ARTIFACT_TOTAL_BYTES = 512 * 1024 * 1024
-# Modal Volume commits from the CPU sandbox are not guaranteed to become
-# visible in a separately mounted GPU sandbox within 30 seconds.  The $0.10
-# shutdown reserve covers more than 160 seconds of one configured A10G worker;
-# keep the propagation allowance below that bound so a stale GPU view cannot
-# consume the reserve while a healthy five-second CPU watchdog is still the
-# primary circuit breaker.
+# Bound how long a GPU worker may continue when its trusted host-side budget
+# telemetry stops advancing. The independent five-second CPU watchdog remains
+# the primary circuit breaker; this check prevents unbounded GPU spend if that
+# control path disappears.
 MAX_BUDGET_SNAPSHOT_AGE_SECONDS = 120.0
+# Modal can finish creating a sandbox immediately after the host injected the
+# snapshot that opened its startup barrier.  If cold start itself took longer
+# than the freshness window, the first worker read can therefore race the next
+# independent pulse.  Wait briefly for that pulse before declaring telemetry
+# unavailable.  No agent command runs during this fail-closed startup wait.
+INITIAL_BUDGET_REFRESH_WAIT_SECONDS = 90.0
+INITIAL_BUDGET_REFRESH_POLL_SECONDS = 1.0
 RUNTIME_BUDGET_SNAPSHOT = Path("/run/sprint-budget-watchdog.json")
 RUNTIME_AGENT_CANCEL = Path("/run/sprint-agent-cancel.json")
 
@@ -848,6 +853,63 @@ def refresh_budget_stop(
     return str(payload["reason"])
 
 
+def wait_for_initial_budget_stop(
+    run_id: str,
+    durable_dir: str = "/durable",
+    *,
+    timeout_seconds: float = INITIAL_BUDGET_REFRESH_WAIT_SECONDS,
+    poll_seconds: float = INITIAL_BUDGET_REFRESH_POLL_SECONDS,
+    max_snapshot_age_seconds: float = MAX_BUDGET_SNAPSHOT_AGE_SECONDS,
+    runtime_snapshot: Path = RUNTIME_BUDGET_SNAPSHOT,
+    now_fn=time.time,
+    monotonic_fn=time.monotonic,
+    sleep_fn=time.sleep,
+    on_wait=None,
+) -> str | None:
+    """Wait for one fresh trusted snapshot before starting paid agent work.
+
+    A stale snapshot at worker startup is ambiguous: it can mean the trusted
+    controller disappeared, or simply that Modal cold start completed just
+    before the next host pulse.  Keep the worker idle behind this barrier for
+    a bounded interval.  Runtime checks remain immediately fail-closed after
+    the agent command starts.
+    """
+    deadline = monotonic_fn() + max(0.0, float(timeout_seconds))
+    while True:
+        try:
+            snapshot = json.loads(runtime_snapshot.read_text())
+            if snapshot.get("schema_version") != 2:
+                raise ValueError("budget watchdog schema mismatch")
+            if snapshot.get("run_id") != run_id:
+                raise ValueError("budget watchdog identity mismatch")
+            snapshot_epoch = float(snapshot["checked_at_epoch_s"])
+            age = float(now_fn()) - snapshot_epoch
+            if not math.isfinite(age) or age < -max_snapshot_age_seconds:
+                raise ValueError("budget watchdog timestamp is invalid")
+            if age > max_snapshot_age_seconds:
+                raise ValueError(f"budget watchdog snapshot is stale ({age:.1f}s)")
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+            if monotonic_fn() >= deadline:
+                return refresh_budget_stop(
+                    run_id,
+                    durable_dir,
+                    now=float(now_fn()),
+                    max_snapshot_age_seconds=max_snapshot_age_seconds,
+                    runtime_snapshot=runtime_snapshot,
+                )
+            if on_wait is not None:
+                on_wait()
+            sleep_fn(max(0.01, float(poll_seconds)))
+            continue
+        return refresh_budget_stop(
+            run_id,
+            durable_dir,
+            now=float(now_fn()),
+            max_snapshot_age_seconds=max_snapshot_age_seconds,
+            runtime_snapshot=runtime_snapshot,
+        )
+
+
 def supervise_child(
     proc: subprocess.Popen,
     *,
@@ -984,7 +1046,26 @@ def main() -> int:
         ),
     )
 
-    if termination_reason := refresh_budget_stop(run_id):
+    def startup_budget_wait_heartbeat() -> None:
+        write_status(
+            heartbeat_path,
+            heartbeat_payload(
+                run_id=run_id,
+                job_id=job_id,
+                attempt=attempt,
+                lease_id=lease_id,
+                status="starting",
+                progress=progress,
+                checkpoint=checkpoint,
+                lease_seconds=lease_seconds,
+                job_kind=infer_job_kind(job),
+                phase="budget_startup_wait",
+            ),
+        )
+
+    if termination_reason := wait_for_initial_budget_stop(
+        run_id, on_wait=startup_budget_wait_heartbeat
+    ):
         attempt_record.update(
             {
                 "status": "terminated",
