@@ -3638,6 +3638,8 @@ class LauncherWiringTests(unittest.TestCase):
     def test_goal_template_is_launchable(self) -> None:
         live = (ROOT / "event_runtime/control/templates/codex.j2").read_text()
         self.assertIn("{{ instruction }}", live)
+        self.assertNotIn("event history", live)
+        self.assertNotIn("event wait", live)
 
 
 if __name__ == "__main__":

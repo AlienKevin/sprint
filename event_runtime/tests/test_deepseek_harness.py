@@ -34,14 +34,23 @@ def test_harbor_adapter_checks_the_pinned_local_runtime_graph() -> None:
     assert "/usr/local/lib/node_modules/@deepseek-ai" not in version_command
 
 
-def test_deepseek_harness_rejects_nonbenchmark_reasoning_effort(
-    tmp_path: Path,
+@pytest.mark.parametrize("reasoning_effort", ["medium", "high", "max"])
+def test_deepseek_harness_accepts_supported_reasoning_efforts(
+    tmp_path: Path, reasoning_effort: str
 ) -> None:
-    with pytest.raises(ValueError, match="must be max"):
+    DeepSeekHarness(
+        logs_dir=tmp_path,
+        model_name="deepseek/deepseek-v4-flash-vision-exp",
+        reasoning_effort=reasoning_effort,
+    )
+
+
+def test_deepseek_harness_rejects_unknown_reasoning_effort(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="must be one of"):
         DeepSeekHarness(
             logs_dir=tmp_path,
             model_name="deepseek/deepseek-v4-flash-vision-exp",
-            reasoning_effort="high",
+            reasoning_effort="ultra",
         )
 
 
@@ -130,6 +139,8 @@ def test_native_goal_bootstrap_precedes_first_model_step() -> None:
         ROOT / "event_runtime/control/templates/deepseek-harness.j2"
     ).read_text()
     assert not template.lstrip().startswith("/goal")
+    assert "event history" not in template
+    assert "event wait" not in template
 
 
 def test_native_benchmark_goal_is_host_owned() -> None:
