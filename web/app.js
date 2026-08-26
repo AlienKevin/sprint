@@ -2,11 +2,11 @@
   let observedVersion = null;
   const $ = selector => document.querySelector(selector);
   const MODEL = {
-    deepseek: {label:'DeepSeek V4 Flash Vision Exp', color:'#4D6BFF', cls:'deepseek'},
-    'flash-baidu': {label:'DeepSeek V4 Flash 0731 · Baidu', color:'#4D6BFF', cls:'flash-baidu'},
+    deepseek: {label:'DeepSeek V4 Flash Vision Exp', color:'#7C54CD', cls:'deepseek'},
+    'flash-baidu': {label:'DeepSeek V4 Flash 0731 · Baidu', color:'#7C54CD', cls:'flash-baidu'},
     'pro-alibaba': {label:'DeepSeek V4 Pro 0813 · Alibaba', color:'#ff9f43', cls:'pro-alibaba'},
     luna: {label:'GPT‑5.6 Luna', color:'#66D693', cls:'luna'},
-    sol: {label:'GPT‑5.6 Sol', color:'#239057', cls:'sol'}
+    sol: {label:'GPT‑5.6 Sol', color:'#2279DC', cls:'sol'}
   };
   const DISPLAY_FAMILIES = ['deepseek','flash-baidu','pro-alibaba','luna','sol'];
   const state = {runs:[], performance:null, batch:null, timelineUpdatedAt:null, refreshing:false};

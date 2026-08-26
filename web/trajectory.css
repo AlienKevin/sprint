@@ -7,11 +7,11 @@
   --line-soft: #1c2025;
   --muted: #989ba0;
   --text: #f4f4f2;
-  --accent: #4d6bff;
+  --accent: #7c54cd;
   --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
-  --deepseek: #4d6bff;
+  --deepseek: #7c54cd;
   --luna: #66d693;
-  --sol: #239057;
+  --sol: #2279dc;
   --tool: #e5b45c;
   --observation: #7fc8c0;
   --reasoning: #b6a3ff;

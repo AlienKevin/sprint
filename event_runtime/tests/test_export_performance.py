@@ -500,9 +500,9 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "class:'submission-target'" in app
     assert "el.getScreenCTM()" in app
     assert "nearest.distance<=22**2" in app
-    assert "styles.css?v=20260825-15" in page
-    assert "app.js?v=20260825-15" in page
-    assert '"version":"20260825-15"' in (ROOT / "web/version.json").read_text()
+    assert "styles.css?v=20260826-1" in page
+    assert "app.js?v=20260826-1" in page
+    assert '"version":"20260826-1"' in (ROOT / "web/version.json").read_text()
     assert "AUC cutoff" not in app
     assert "auc-cap-line" not in app
     assert ".auc-cap-line" not in styles
@@ -543,7 +543,7 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "meta.append(el('b','',`#" in trajectory_app
     assert "fmtClock(step.timestamp)" not in trajectory_app
     assert 'class="right-rail"' not in trajectory_page
-    assert "trajectory.css?v=20260825-14" in trajectory_page
+    assert "trajectory.css?v=20260826-1" in trajectory_page
     assert "trajectory.js?v=20260825-23" in trajectory_page
     assert "trajectory-overview.js?v=20260825-4" in trajectory_page
     assert 'id="rollout-outline"' in trajectory_page
@@ -614,17 +614,19 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert 'id="cost-scores"' not in page
     assert 'id="time-scores"' in page
     assert "auc-bar-row" in app
-    assert "color:'#4D6BFF'" in app
+    assert "color:'#7C54CD'" in app
     assert "color:'#66D693'" in app
-    assert "color:'#239057'" in app
-    assert "--deep: #4D6BFF" in styles
+    assert "color:'#2279DC'" in app
+    assert "--deep: #7C54CD" in styles
     assert "--luna: #66D693" in styles
+    assert "--deepseek: #7c54cd" in trajectory_styles
+    assert "--sol: #2279dc" in trajectory_styles
     assert "border-right: 2px solid color-mix(in srgb, var(--model-accent) 72%, var(--line))" in styles
     assert "background: var(--cost-cpu)" in styles
     assert "background: var(--cost-training)" in styles
-    assert "--deepseek:#4D6BFF" in timeline_page
+    assert "--deepseek:#7C54CD" in timeline_page
     assert "--luna:#66D693" in timeline_page
-    assert "--sol:#239057" in timeline_page
+    assert "--sol:#2279DC" in timeline_page
     assert 'id="policy-cost-chart"' in timeline_page
     assert 'id="policy-replay-frame"' in timeline_page
     assert "/data/performance/current.json" in timeline_app
