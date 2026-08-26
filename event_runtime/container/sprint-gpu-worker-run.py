@@ -52,6 +52,21 @@ RUNTIME_BUDGET_SNAPSHOT = Path("/run/sprint-budget-watchdog.json")
 RUNTIME_AGENT_CANCEL = Path("/run/sprint-agent-cancel.json")
 
 
+def runtime_bounded_command(command: list[str], timeout_sec: int) -> list[str]:
+    """Apply the advertised job runtime after the GPU sandbox has started."""
+    timeout = shutil.which("timeout")
+    if not timeout:
+        raise RuntimeError("GNU timeout is unavailable in the GPU worker image")
+    bounded = max(60, min(int(timeout_sec), 24 * 60 * 60))
+    return [
+        timeout,
+        "--signal=TERM",
+        "--kill-after=20s",
+        f"{bounded}s",
+        *command,
+    ]
+
+
 def file_sha256(path: Path) -> str:
     with path.open("rb") as handle:
         return hashlib.file_digest(handle, "sha256").hexdigest()
@@ -1146,6 +1161,9 @@ def main() -> int:
     time.sleep(2)
     emit(run_id, job_id, attempt, lease_id, "isaac_starting", "exit")
     emit(run_id, job_id, attempt, lease_id, "gpu_active", "enter")
+    command = runtime_bounded_command(
+        command, int(job.get("timeout_sec") or 3600)
+    )
     print("exec", command, "cwd", workdir, flush=True)
     interrupted = False
     activity_watchdog_fired = False
@@ -1284,6 +1302,11 @@ def main() -> int:
             interruption_grace_sec=interruption_grace_sec,
             on_heartbeat=update_heartbeat,
         )
+        if exit_code == 124 and not interrupted:
+            error = (
+                "GPU job command exceeded its declared runtime limit "
+                f"({int(job.get('timeout_sec') or 3600)}s)"
+            )
         emit(
             run_id,
             job_id,

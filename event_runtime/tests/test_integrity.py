@@ -305,3 +305,36 @@ def test_unacknowledged_control_request_requires_replacement(tmp_path: Path) -> 
 
     assert report["benchmark_valid"] is False
     assert report["reasons"][0]["code"] == "gpu_cancellation_unacknowledged"
+
+
+def test_terminal_cancel_registry_record_is_authoritative_acknowledgement(
+    tmp_path: Path,
+) -> None:
+    request_id = "a" * 32
+    (tmp_path / "control-events.jsonl").write_text(
+        json.dumps(
+            {
+                "event": "cancel_requested",
+                "request_id": request_id,
+                "job_id": "job-1",
+            }
+        )
+        + "\n"
+    )
+    registry = tmp_path / "gpu-job-registry"
+    registry.mkdir()
+    (registry / "job-1.json").write_text(
+        json.dumps(
+            {
+                "job_id": "job-1",
+                "status": "terminated",
+                "termination_reason": "agent_cancelled",
+                "cancel_request_id": request_id,
+            }
+        )
+    )
+
+    report = build_integrity_report(tmp_path, run_contract("cancelled"))
+
+    assert report["benchmark_valid"] is True
+    assert report["observations"]["cancel_requests_acknowledged"] == 1

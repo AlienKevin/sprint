@@ -3354,7 +3354,7 @@ def monitor_cycle(batch_id: str, *, env_file: Path | None = None) -> dict[str, A
                     finalized_current = bool(
                         finalized_marker.get("complete") is True
                         and finalized_marker.get("integrity", {}).get("schema_version")
-                        == 1
+                        == sprintctl.run_integrity.SCHEMA_VERSION
                         and finalized_marker.get("timeline_schema_version")
                         == sprintctl.UNIFIED_TIMELINE_SCHEMA_VERSION
                         and (

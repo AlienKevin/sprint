@@ -3654,7 +3654,10 @@ def test_health_monitor_completes_without_any_site_publication(
         json.dumps(
             {
                 "complete": True,
-                "integrity": {"schema_version": 1, "benchmark_valid": True},
+                "integrity": {
+                    "schema_version": batch_eval.sprintctl.run_integrity.SCHEMA_VERSION,
+                    "benchmark_valid": True,
+                },
                 "timeline_schema_version": batch_eval.sprintctl.UNIFIED_TIMELINE_SCHEMA_VERSION,
                 "conditions": {"provider_usage_ledger_settled": True},
             }

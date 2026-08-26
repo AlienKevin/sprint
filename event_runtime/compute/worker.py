@@ -86,6 +86,10 @@ MAX_WORK_ARCHIVE_BYTES = 256 * 1024 * 1024
 WORK_ARCHIVE_TRANSFER_ATTEMPTS = 5
 GPU_BUDGET_MIRROR_PATH = "/run/sprint-budget-watchdog.json"
 MAX_GPU_BUDGET_MIRROR_BYTES = 1024 * 1024
+# Modal's Sandbox timeout starts while the image/container is still starting.
+# Keep that provider boundary separate from the agent-requested command runtime,
+# which is enforced by the worker after startup.
+GPU_SANDBOX_STARTUP_FINALIZATION_ALLOWANCE_SEC = 10 * 60
 
 
 def submission_bridge_state_dir(run: dict[str, Any]) -> Path:
@@ -2034,8 +2038,11 @@ def spawn_gpu_sandbox(run: dict[str, Any], job: dict[str, Any]) -> str:
     )
     image = training_image(run)
     volume = modal.Volume.from_name(str(run["volume_name"]))
-    timeout = int(job.get("timeout_sec") or 3600)
-    timeout = max(60, min(timeout, 24 * 60 * 60))
+    command_timeout = int(job.get("timeout_sec") or 3600)
+    command_timeout = max(60, min(command_timeout, 24 * 60 * 60))
+    sandbox_timeout = (
+        command_timeout + GPU_SANDBOX_STARTUP_FINALIZATION_ALLOWANCE_SEC
+    )
     worker_command = (
         "python3 /opt/sprint-gpu-worker-run.py "
         + shlex.quote(run_id)
@@ -2066,7 +2073,7 @@ def spawn_gpu_sandbox(run: dict[str, Any], job: dict[str, Any]) -> str:
         memory=12288,
         env={"HEADLESS": "1"},
         block_network=True,
-        timeout=timeout,
+        timeout=sandbox_timeout,
         volumes={"/durable": volume},
         tags={
             "sprint.role": WORKER_TAG_ROLE,

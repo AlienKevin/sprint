@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import Any
 
 
+SCHEMA_VERSION = 2
+
+
 EXPECTED_TEARDOWN_MARKERS = (
     "already shut down",
     "already terminated",
@@ -265,6 +268,20 @@ def build_integrity_report(state_dir: Path, run: dict[str, Any]) -> dict[str, An
         elif event.get("event") == "cancel_acknowledged":
             acknowledged_cancels.add(request_id)
     for request_id, job_id in requested_cancels.items():
+        # The terminal registry record is itself durable provider evidence. A
+        # controller can be stopped after persisting that record but before it
+        # appends the redundant acknowledgement event; do not invalidate a
+        # cleanly terminated job solely because of that event-ordering gap.
+        job = _read_json(state_dir / "gpu-job-registry" / f"{job_id}.json")
+        registry_acknowledged = (
+            str(job.get("cancel_request_id") or "") == request_id
+            and str(job.get("status") or "") == "terminated"
+            and str(job.get("termination_reason") or "")
+            in {"agent_cancelled", "agent_cancelled_forced"}
+            and not str(job.get("terminate_error") or "").strip()
+        )
+        if registry_acknowledged:
+            acknowledged_cancels.add(request_id)
         if request_id not in acknowledged_cancels:
             reasons.append(
                 _reason(
@@ -286,7 +303,7 @@ def build_integrity_report(state_dir: Path, run: dict[str, Any]) -> dict[str, An
             unique.append(item)
     invalid = any(item["severity"] == "invalid" for item in unique)
     return {
-        "schema_version": 1,
+        "schema_version": SCHEMA_VERSION,
         "run_id": str(run["run_id"]),
         "status": "invalid_infrastructure" if invalid else "clean",
         "benchmark_valid": not invalid,

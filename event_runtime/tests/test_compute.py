@@ -68,6 +68,33 @@ class ClaimSelectionTests(unittest.TestCase):
             job = {"job_id": "a", "status": status}
             self.assertEqual(gpu_claim.select_claim_action(job, claim_id="c1"), "skip")
 
+
+class WorkerRuntimeBoundaryTests(unittest.TestCase):
+    def test_runtime_limit_is_enforced_inside_started_sandbox(self) -> None:
+        with mock.patch.object(worker_run.shutil, "which", return_value="/usr/bin/timeout"):
+            command = worker_run.runtime_bounded_command(["python3", "train.py"], 120)
+
+        self.assertEqual(
+            command,
+            [
+                "/usr/bin/timeout",
+                "--signal=TERM",
+                "--kill-after=20s",
+                "120s",
+                "python3",
+                "train.py",
+            ],
+        )
+
+    def test_runtime_limit_is_clamped_to_supported_bounds(self) -> None:
+        with mock.patch.object(worker_run.shutil, "which", return_value="/usr/bin/timeout"):
+            self.assertEqual(
+                worker_run.runtime_bounded_command(["true"], 1)[3], "60s"
+            )
+            self.assertEqual(
+                worker_run.runtime_bounded_command(["true"], 100_000)[3], "86400s"
+            )
+
     def test_foreign_fresh_claim_skipped(self) -> None:
         job = {
             "job_id": "a",

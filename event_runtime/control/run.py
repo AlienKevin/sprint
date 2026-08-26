@@ -2293,7 +2293,8 @@ def _finalize_owned(
         existing = json.loads(final_path.read_text())
         if (
             existing.get("complete") is True
-            and existing.get("integrity", {}).get("schema_version") == 1
+            and existing.get("integrity", {}).get("schema_version")
+            == run_integrity.SCHEMA_VERSION
             and existing.get("timeline_schema_version")
             == UNIFIED_TIMELINE_SCHEMA_VERSION
             and (
