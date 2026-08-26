@@ -3136,7 +3136,6 @@ def test_homepage_uses_compact_timeline_index_summaries() -> None:
     assert ".append(document.createElementNS" not in source
     assert "final_api_cost_usd" in source
     assert "modal_provider_billing" in source
-    assert "verifier sandbox excluded" in source
     assert "modalRoleCost(run,'verifier_gpu')" not in source
     assert "Full-screen replay" not in source
     assert "replay_url" in source

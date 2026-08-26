@@ -220,6 +220,55 @@ class DurableOpsTests(unittest.TestCase):
             ],
         )
 
+    def test_exact_binary_volume_read_is_bounded_and_bypasses_list_lock(self) -> None:
+        run = {"run_id": "exact-run", "volume_name": "exact-volume"}
+        completed = subprocess.CompletedProcess([], 0, b"\x00policy", b"")
+        with mock.patch.object(
+            sprintctl.subprocess, "run", return_value=completed
+        ) as run_process:
+            content = sprintctl.volume_get_bytes(
+                run,
+                "known/policy.pt",
+                max_bytes=32 * 1024 * 1024,
+            )
+        self.assertEqual(content, b"\x00policy")
+        argv = run_process.call_args.args[0]
+        self.assertEqual(
+            argv[:5],
+            [
+                sys.executable,
+                "-m",
+                "event_runtime.control.volume_read",
+                "exact-volume",
+                "known/policy.pt",
+            ],
+        )
+        self.assertEqual(argv[-2:], ["--max-bytes", str(32 * 1024 * 1024)])
+
+    def test_exact_binary_volume_download_streams_to_requested_path(self) -> None:
+        run = {"run_id": "exact-run", "volume_name": "exact-volume"}
+        with tempfile.TemporaryDirectory() as raw:
+            destination = Path(raw) / "workspace.tar.gz"
+
+            def downloaded(command, **_kwargs):
+                destination.write_bytes(b"archive")
+                return subprocess.CompletedProcess(command, 0, b"", b"")
+
+            with mock.patch.object(
+                sprintctl.subprocess, "run", side_effect=downloaded
+            ) as run_process:
+                ok = sprintctl.volume_download_exact(
+                    run,
+                    "runs/exact-run/workspace.tar.gz",
+                    destination,
+                    max_bytes=256 * 1024 * 1024,
+                )
+
+            self.assertTrue(ok)
+            self.assertEqual(destination.read_bytes(), b"archive")
+            argv = run_process.call_args.args[0]
+            self.assertEqual(argv[-2:], ["--output", str(destination)])
+
     def test_codex_wrapper_waits_for_delayed_setsid(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

@@ -103,6 +103,14 @@ def test_gpu_archive_routes_to_host_bridge_instead_of_durable_queue(
     assert receipt["gpu_attempt"] == 2
     assert receipt["gpu_lease_id"] == "lease-2"
     assert list((tmp_path / "durable-bridge/outbox").glob("*.pt"))
+    durable_index = json.loads(
+        (tmp_path / "durable-bridge/indexes/job-1.json").read_text()
+    )
+    assert durable_index["run_id"] == "run-1"
+    assert durable_index["gpu_job_id"] == "job-1"
+    assert durable_index["gpu_attempt"] == 2
+    assert durable_index["gpu_lease_id"] == "lease-2"
+    assert durable_index["submissions"][receipt["submission_id"]] == receipt
 
 
 def test_host_archive_request_id_is_idempotent(

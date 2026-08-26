@@ -372,6 +372,69 @@ def volume_get_text(
     return result.stdout or ""
 
 
+def volume_get_bytes(
+    run: dict[str, Any],
+    remote_path: str,
+    *,
+    timeout_seconds: int = 60,
+    max_bytes: int,
+) -> bytes | None:
+    """Read one bounded binary file without consuming directory-list quota."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "event_runtime.control.volume_read",
+            str(run["volume_name"]),
+            remote_path,
+            "--max-bytes",
+            str(max_bytes),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=command_env(run),
+        check=False,
+        timeout=timeout_seconds,
+    )
+    if result.returncode != 0:
+        return None
+    return bytes(result.stdout)
+
+
+def volume_download_exact(
+    run: dict[str, Any],
+    remote_path: str,
+    destination: Path,
+    *,
+    timeout_seconds: int = 60,
+    max_bytes: int,
+) -> bool:
+    """Stream one bounded binary file to disk without a directory listing."""
+    destination.unlink(missing_ok=True)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "event_runtime.control.volume_read",
+            str(run["volume_name"]),
+            remote_path,
+            "--max-bytes",
+            str(max_bytes),
+            "--output",
+            str(destination),
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        env=command_env(run),
+        check=False,
+        timeout=timeout_seconds,
+    )
+    if result.returncode != 0:
+        destination.unlink(missing_ok=True)
+        return False
+    return destination.is_file()
+
+
 def volume_upload(run: dict[str, Any], source: Path, remote_path: str) -> None:
     run_command(
         modal_command(

@@ -153,12 +153,16 @@ class ClaimSelectionTests(unittest.TestCase):
                 "submitted_work_archive_sha256": digest,
             }
 
-            def download(command, **_kwargs):
-                Path(command[-1]).write_bytes(archive_bytes)
-                return subprocess.CompletedProcess(command, 0, "", "")
+            def download(_run, _remote, destination, **_kwargs):
+                destination.write_bytes(archive_bytes)
+                return True
 
             with (
-                mock.patch.object(gpu_worker.sprintctl, "run_command", download),
+                mock.patch.object(
+                    gpu_worker.sprintctl,
+                    "volume_download_exact",
+                    side_effect=download,
+                ),
                 mock.patch.object(gpu_worker.sprintctl, "volume_upload") as upload,
             ):
                 pinned = gpu_worker.pin_work_archive(run, job)
@@ -192,11 +196,15 @@ class ClaimSelectionTests(unittest.TestCase):
                 "submitted_work_archive_sha256": hashlib.sha256(b"old").hexdigest(),
             }
 
-            def download(command, **_kwargs):
-                Path(command[-1]).write_bytes(archive_bytes)
-                return subprocess.CompletedProcess(command, 0, "", "")
+            def download(_run, _remote, destination, **_kwargs):
+                destination.write_bytes(archive_bytes)
+                return True
 
-            with mock.patch.object(gpu_worker.sprintctl, "run_command", download):
+            with mock.patch.object(
+                gpu_worker.sprintctl,
+                "volume_download_exact",
+                side_effect=download,
+            ):
                 pinned = gpu_worker.pin_work_archive(run, job)
 
             self.assertTrue(pinned["work_archive_changed_before_claim"])
@@ -219,18 +227,20 @@ class ClaimSelectionTests(unittest.TestCase):
             }
             calls = 0
 
-            def download(command, **_kwargs):
+            def download(_run, _remote, destination, **_kwargs):
                 nonlocal calls
                 calls += 1
                 if calls < 3:
-                    return subprocess.CompletedProcess(
-                        command, 1, "", "VolumeGet rate limit exceeded"
-                    )
-                Path(command[-1]).write_bytes(archive_bytes)
-                return subprocess.CompletedProcess(command, 0, "", "")
+                    return False
+                destination.write_bytes(archive_bytes)
+                return True
 
             with (
-                mock.patch.object(gpu_worker.sprintctl, "run_command", download),
+                mock.patch.object(
+                    gpu_worker.sprintctl,
+                    "volume_download_exact",
+                    side_effect=download,
+                ),
                 mock.patch.object(gpu_worker.time, "sleep") as sleep,
             ):
                 pinned = gpu_worker.pin_work_archive(run, job)
@@ -1028,13 +1038,12 @@ class ClaimSelectionTests(unittest.TestCase):
             "progress": {"policy_path": "/durable/runs/run-1/policies/policy_7.pt"},
         }
 
-        def fake_get(command, **_kwargs):
-            self.assertIn("runs/run-1/policies/policy_7.pt", command)
-            Path(command[-1]).write_bytes(b"trusted policy")
-            return subprocess.CompletedProcess(command, 0, "", "")
+        def fake_get(_run, remote, **_kwargs):
+            self.assertEqual(remote, "runs/run-1/policies/policy_7.pt")
+            return b"trusted policy"
 
         with mock.patch.object(
-            gpu_worker.sprintctl, "run_command", side_effect=fake_get
+            gpu_worker.sprintctl, "volume_get_bytes", side_effect=fake_get
         ):
             payload, name, content, detail = gpu_worker.fetch_agent_policy_artifact(
                 run, job
@@ -1151,13 +1160,14 @@ class ClaimSelectionTests(unittest.TestCase):
             },
         }
 
-        def fake_get(command, **_kwargs):
-            self.assertIn("runs/run-1/gpu-jobs/checkpoints/job-1/policy_2.pt", command)
-            Path(command[-1]).write_bytes(b"trusted checkpoint policy")
-            return subprocess.CompletedProcess(command, 0, "", "")
+        def fake_get(_run, remote, **_kwargs):
+            self.assertEqual(
+                remote, "runs/run-1/gpu-jobs/checkpoints/job-1/policy_2.pt"
+            )
+            return b"trusted checkpoint policy"
 
         with mock.patch.object(
-            gpu_worker.sprintctl, "run_command", side_effect=fake_get
+            gpu_worker.sprintctl, "volume_get_bytes", side_effect=fake_get
         ):
             payload, name, content, detail = gpu_worker.fetch_agent_policy_artifact(
                 run, job
@@ -1180,12 +1190,10 @@ class ClaimSelectionTests(unittest.TestCase):
             },
         }
 
-        def fake_get(command, **_kwargs):
-            Path(command[-1]).write_bytes(b"aliased policy")
-            return subprocess.CompletedProcess(command, 0, "", "")
-
         with mock.patch.object(
-            gpu_worker.sprintctl, "run_command", side_effect=fake_get
+            gpu_worker.sprintctl,
+            "volume_get_bytes",
+            return_value=b"aliased policy",
         ):
             payload, name, content, detail = gpu_worker.fetch_agent_policy_artifact(
                 run, job
@@ -1205,12 +1213,10 @@ class ClaimSelectionTests(unittest.TestCase):
             },
         }
 
-        def fake_get(command, **_kwargs):
-            Path(command[-1]).write_bytes(b"custom job policy")
-            return subprocess.CompletedProcess(command, 0, "", "")
-
         with mock.patch.object(
-            gpu_worker.sprintctl, "run_command", side_effect=fake_get
+            gpu_worker.sprintctl,
+            "volume_get_bytes",
+            return_value=b"custom job policy",
         ):
             payload, name, content, detail = gpu_worker.fetch_agent_policy_artifact(
                 run, job
@@ -1228,13 +1234,12 @@ class ClaimSelectionTests(unittest.TestCase):
             "progress": {"policy_path": "/durable/runs/run-1/candidates/policy_599.pt"},
         }
 
-        def fake_get(command, **_kwargs):
-            self.assertIn("runs/run-1/candidates/policy_599.pt", command)
-            Path(command[-1]).write_bytes(b"candidate policy")
-            return subprocess.CompletedProcess(command, 0, "", "")
+        def fake_get(_run, remote, **_kwargs):
+            self.assertEqual(remote, "runs/run-1/candidates/policy_599.pt")
+            return b"candidate policy"
 
         with mock.patch.object(
-            gpu_worker.sprintctl, "run_command", side_effect=fake_get
+            gpu_worker.sprintctl, "volume_get_bytes", side_effect=fake_get
         ):
             payload, name, content, detail = gpu_worker.fetch_agent_policy_artifact(
                 run, job
@@ -1512,6 +1517,102 @@ class SubmissionBridgeTests(unittest.TestCase):
                 _updated, detail = gpu_worker.drain_worker_submission_outbox(run, job)
             self.assertEqual(detail["forwarded"], 1)
             submit.assert_called_once()
+
+    def test_durable_recovery_uses_exact_manifest_and_binary_reads(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            run, job = self.run_and_job(Path(raw))
+            request = self.request()
+            receipt = request["receipt"]
+            index = {
+                "schema_version": 1,
+                "run_id": run["run_id"],
+                "gpu_job_id": job["job_id"],
+                "gpu_attempt": job["attempt"],
+                "gpu_lease_id": job["lease_id"],
+                "submissions": {receipt["submission_id"]: receipt},
+            }
+            with (
+                mock.patch.object(
+                    gpu_worker.sprintctl,
+                    "volume_get_text",
+                    return_value=json.dumps(index),
+                ) as text_read,
+                mock.patch.object(
+                    gpu_worker.sprintctl,
+                    "volume_get_bytes",
+                    return_value=b"immutable-policy",
+                ) as binary_read,
+                mock.patch.object(gpu_worker.sprintctl, "run_command") as legacy,
+            ):
+                recovered = gpu_worker.read_durable_submission_outbox(run, job)
+
+            self.assertEqual(recovered, [request])
+            text_read.assert_called_once_with(
+                run,
+                "runs/run-1/submission-bridge/indexes/job-1.json",
+                timeout_seconds=15,
+            )
+            binary_read.assert_called_once_with(
+                run,
+                "runs/run-1/submission-bridge/outbox/123456-abcd.pt",
+                timeout_seconds=120,
+                max_bytes=gpu_worker.GPU_SUBMISSION_BRIDGE_MAX_POLICY_BYTES,
+            )
+            legacy.assert_not_called()
+
+    def test_fifteen_durable_recovery_readers_do_not_serialize_on_volume_lists(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            run, job = self.run_and_job(Path(raw))
+            receipt = self.request()["receipt"]
+            index_text = json.dumps(
+                {
+                    "schema_version": 1,
+                    "run_id": run["run_id"],
+                    "gpu_job_id": job["job_id"],
+                    "gpu_attempt": job["attempt"],
+                    "gpu_lease_id": job["lease_id"],
+                    "submissions": {receipt["submission_id"]: receipt},
+                }
+            )
+            barrier = threading.Barrier(15, timeout=5)
+
+            def exact_index(*_args, **_kwargs):
+                barrier.wait()
+                return index_text
+
+            results: list[list[dict]] = []
+            errors: list[Exception] = []
+
+            def recover() -> None:
+                try:
+                    results.append(gpu_worker.read_durable_submission_outbox(run, job))
+                except Exception as exc:  # pragma: no cover - assertion aid
+                    errors.append(exc)
+
+            with (
+                mock.patch.object(
+                    gpu_worker.sprintctl,
+                    "volume_get_text",
+                    side_effect=exact_index,
+                ),
+                mock.patch.object(
+                    gpu_worker.sprintctl,
+                    "volume_get_bytes",
+                    return_value=b"immutable-policy",
+                ),
+                mock.patch.object(gpu_worker.sprintctl, "run_command") as legacy,
+            ):
+                threads = [threading.Thread(target=recover) for _ in range(15)]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join(timeout=10)
+
+            self.assertEqual(errors, [])
+            self.assertEqual(len(results), 15)
+            legacy.assert_not_called()
 
     def test_drain_pages_until_every_explicit_submission_is_forwarded(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

@@ -391,33 +391,35 @@ def read_durable_submission_outbox(
 ) -> list[dict[str, Any]]:
     """Recover GPU archive requests after the producing sandbox has exited."""
     prefix = f"runs/{run['run_id']}/submission-bridge"
-    result = sprintctl.run_command(
-        sprintctl.modal_command(
-            "volume",
-            "ls",
-            str(run["volume_name"]),
-            f"{prefix}/receipts",
-            "--json",
-        ),
-        run=run,
-        check=False,
-        timeout=60,
+    index_text = sprintctl.volume_get_text(
+        run, f"{prefix}/indexes/{job['job_id']}.json", timeout_seconds=15
     )
-    if result.returncode != 0:
+    if not index_text:
         return []
     try:
-        entries = json.loads(result.stdout or "[]")
+        index = json.loads(index_text)
     except json.JSONDecodeError:
         return []
+    if (
+        not isinstance(index, dict)
+        or index.get("schema_version") != 1
+        or index.get("run_id") != str(run["run_id"])
+        or index.get("gpu_job_id") != str(job["job_id"])
+        or int(index.get("gpu_attempt") or 0) != int(job.get("attempt") or 0)
+        or index.get("gpu_lease_id") != str(job.get("lease_id") or "")
+        or not isinstance(index.get("submissions"), dict)
+    ):
+        raise RuntimeError("durable submission index identity/schema mismatch")
     records: list[dict[str, Any]] = []
+    total_bytes = 0
     state_root = submission_bridge_state_dir(run)
-    for entry in entries if isinstance(entries, list) else []:
-        remote_receipt = str(entry.get("filename") or "")
-        name = Path(remote_receipt).name
-        if not name.endswith(".json"):
-            continue
-        submission_id = name[:-5]
+    for submission_id, receipt in sorted(index["submissions"].items()):
         if not GPU_SUBMISSION_ID_RE.fullmatch(submission_id):
+            continue
+        if (
+            not isinstance(receipt, dict)
+            or receipt.get("submission_id") != submission_id
+        ):
             continue
         try:
             existing = json.loads((state_root / f"{submission_id}.json").read_text())
@@ -425,35 +427,27 @@ def read_durable_submission_outbox(
             existing = {}
         if existing.get("state") == "forwarded":
             continue
-        receipt_text = sprintctl.volume_get_text(run, remote_receipt)
-        if not receipt_text:
-            continue
         try:
-            receipt = json.loads(receipt_text)
-        except json.JSONDecodeError:
+            declared_size = int(receipt.get("policy_size_bytes") or 0)
+        except (TypeError, ValueError):
             continue
+        if (
+            declared_size <= 0
+            or declared_size > GPU_SUBMISSION_BRIDGE_MAX_POLICY_BYTES
+        ):
+            continue
+        if total_bytes + declared_size > GPU_SUBMISSION_BRIDGE_MAX_BATCH_BYTES:
+            break
         remote_policy = f"{prefix}/outbox/{submission_id}.pt"
-        with tempfile.TemporaryDirectory() as raw:
-            destination = Path(raw) / f"{submission_id}.pt"
-            downloaded = sprintctl.run_command(
-                sprintctl.modal_command(
-                    "volume",
-                    "get",
-                    "--force",
-                    str(run["volume_name"]),
-                    remote_policy,
-                    str(destination),
-                ),
-                run=run,
-                check=False,
-                timeout=120,
-            )
-            if downloaded.returncode != 0 or not destination.is_file():
-                continue
-            size = destination.stat().st_size
-            if not (0 < size <= GPU_SUBMISSION_BRIDGE_MAX_POLICY_BYTES):
-                continue
-            content = destination.read_bytes()
+        content = sprintctl.volume_get_bytes(
+            run,
+            remote_policy,
+            timeout_seconds=120,
+            max_bytes=GPU_SUBMISSION_BRIDGE_MAX_POLICY_BYTES,
+        )
+        if not content:
+            continue
+        total_bytes += len(content)
         records.append(
             {
                 "receipt": receipt,
@@ -1305,35 +1299,14 @@ def fetch_agent_policy_artifact(
     ):
         return payload, None, None, {"policy_mirror": "rejected_scope"}
     remote = str(policy_path.relative_to("/durable"))
-    with tempfile.TemporaryDirectory() as raw:
-        destination = Path(raw) / policy_path.name
-        result = sprintctl.run_command(
-            sprintctl.modal_command(
-                "volume",
-                "get",
-                "--force",
-                str(run["volume_name"]),
-                remote,
-                str(destination),
-            ),
-            run=run,
-            check=False,
-            timeout=120,
-        )
-        if result.returncode != 0 or not destination.is_file():
-            return payload, None, None, {"policy_mirror": "fetch_retry"}
-        size = destination.stat().st_size
-        if size <= 0 or size > AGENT_GPU_MIRROR_ARTIFACT_BYTES:
-            return (
-                payload,
-                None,
-                None,
-                {
-                    "policy_mirror": "rejected_size",
-                    "policy_size_bytes": size,
-                },
-            )
-        content = destination.read_bytes()
+    content = sprintctl.volume_get_bytes(
+        run,
+        remote,
+        timeout_seconds=120,
+        max_bytes=AGENT_GPU_MIRROR_ARTIFACT_BYTES,
+    )
+    if not content:
+        return payload, None, None, {"policy_mirror": "fetch_retry"}
     mirror_path = (
         f"{AGENT_GPU_MIRROR_ROOT}/artifacts/{job['job_id']}/{policy_path.name}"
     )
@@ -1547,39 +1520,27 @@ def pin_work_archive(run: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]
         canonical.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory() as raw:
             downloaded = Path(raw) / "app.tar.gz"
-            last_error = ""
             for attempt in range(1, WORK_ARCHIVE_TRANSFER_ATTEMPTS + 1):
-                downloaded.unlink(missing_ok=True)
                 try:
-                    result = sprintctl.run_command(
-                        sprintctl.modal_command(
-                            "volume",
-                            "get",
-                            "--force",
-                            str(run["volume_name"]),
-                            remote,
-                            str(downloaded),
-                        ),
-                        run=run,
-                        check=False,
-                        timeout=180,
+                    available = sprintctl.volume_download_exact(
+                        run,
+                        remote,
+                        downloaded,
+                        timeout_seconds=180,
+                        max_bytes=MAX_WORK_ARCHIVE_BYTES,
                     )
-                    if result.returncode == 0 and downloaded.is_file():
-                        break
-                    last_error = (result.stderr or result.stdout or "").strip()[-500:]
-                except (OSError, subprocess.SubprocessError, TimeoutError) as exc:
-                    last_error = f"{type(exc).__name__}: {exc}"
+                except (OSError, subprocess.SubprocessError, TimeoutError):
+                    available = False
+                if available:
+                    break
                 if attempt < WORK_ARCHIVE_TRANSFER_ATTEMPTS:
                     time.sleep(work_archive_retry_delay(attempt))
             else:
-                detail = f": {last_error}" if last_error else ""
                 raise RuntimeError(
                     "unable to pin GPU work archive after "
-                    f"{WORK_ARCHIVE_TRANSFER_ATTEMPTS} attempts: {remote}{detail}"
+                    f"{WORK_ARCHIVE_TRANSFER_ATTEMPTS} attempts: {remote}"
                 )
             size = downloaded.stat().st_size
-            if size <= 0 or size > MAX_WORK_ARCHIVE_BYTES:
-                raise RuntimeError(f"invalid GPU work archive size: {size}")
             digest = _file_sha256(downloaded)
             if expected and digest != expected:
                 raise RuntimeError("GPU work archive changed after host claim")

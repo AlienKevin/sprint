@@ -224,9 +224,33 @@ def main() -> int:
             durable_staged = os.path.join(durable_queue, f".{job_id}.pt")
             shutil.copy2(queued, durable_staged)
             os.replace(durable_staged, os.path.join(durable_queue, f"{job_id}.pt"))
-            atomic_json(
-                os.path.join(durable_receipts, f"{job_id}.json"), receipt
+            atomic_json(os.path.join(durable_receipts, f"{job_id}.json"), receipt)
+            # Publish one exact-name manifest last. The trusted host can recover
+            # every immutable submission without a directory-list operation,
+            # which keeps concurrent trials out of Modal's shared list quota.
+            durable_indexes = os.path.join(GPU_DURABLE_BRIDGE_ROOT, "indexes")
+            os.makedirs(durable_indexes, exist_ok=True)
+            durable_index_path = os.path.join(
+                durable_indexes, f"{os.environ.get('SPRINT_GPU_JOB_ID')}.json"
             )
+            durable_index = read_json(durable_index_path)
+            if (
+                durable_index.get("schema_version") != 1
+                or durable_index.get("run_id") != os.environ.get("SPRINT_RUN_ID")
+                or durable_index.get("gpu_job_id")
+                != os.environ.get("SPRINT_GPU_JOB_ID")
+                or not isinstance(durable_index.get("submissions"), dict)
+            ):
+                durable_index = {
+                    "schema_version": 1,
+                    "run_id": os.environ.get("SPRINT_RUN_ID"),
+                    "gpu_job_id": os.environ.get("SPRINT_GPU_JOB_ID"),
+                    "gpu_attempt": int(os.environ.get("SPRINT_GPU_ATTEMPT") or 0),
+                    "gpu_lease_id": os.environ.get("SPRINT_GPU_LEASE_ID"),
+                    "submissions": {},
+                }
+            durable_index["submissions"][job_id] = receipt
+            atomic_json(durable_index_path, durable_index)
             if note:
                 durable_note = os.path.join(durable_notes, f"{job_id}.txt")
                 with open(durable_note, "w", encoding="utf-8") as handle:
