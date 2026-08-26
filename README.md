@@ -4,7 +4,8 @@ Sprint benchmarks how well autonomous agents turn a fixed model-inference and
 compute budget into embodied performance. In the current
 [G1 100 metres event](events/g1-100-metres/README.md), independent agents train
 Unitree G1 policies in Isaac Lab. Each trial receives the same agent-cost cap;
-its result is the fastest valid policy archived before that cap is exhausted.
+its result is the fastest valid policy explicitly submitted before that cap is
+exhausted.
 Results are published at [g1-sprint.vercel.app](https://g1-sprint.vercel.app/).
 
 Agents begin with the [event environment guide](events/g1-100-metres/environment/README.md),
