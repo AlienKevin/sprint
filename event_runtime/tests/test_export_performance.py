@@ -544,7 +544,7 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "fmtClock(step.timestamp)" not in trajectory_app
     assert 'class="right-rail"' not in trajectory_page
     assert "trajectory.css?v=20260825-14" in trajectory_page
-    assert "trajectory.js?v=20260825-20" in trajectory_page
+    assert "trajectory.js?v=20260825-23" in trajectory_page
     assert "trajectory-overview.js?v=20260825-4" in trajectory_page
     assert 'id="rollout-outline"' in trajectory_page
     assert '<h2 id="rollout-outline-title">Trial Outline</h2>' in trajectory_page
@@ -569,14 +569,19 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "function authoredChapters" in trajectory_app
     assert "· Start time: ${elapsed(" in trajectory_app
     assert "function chapterTarget(chapter){return document.getElementById(chapter.id)}" in trajectory_app
-    assert "target.scrollIntoView({behavior:'auto',block:'start'})" in trajectory_app
+    assert "target.scrollIntoView({behavior:'auto',block:'center'})" in trajectory_app
+    assert "window.scrollBy({top:rect.top+rect.height/2-window.innerHeight/2" in trajectory_app
+    assert "state.outlineLockUntil=performance.now()+500" in trajectory_app
+    assert "setActiveChapter(chapter,false)" in trajectory_app
     assert "step.classList.add('jump-flash')" in trajectory_app
     assert "function jumpToStepInput(input)" not in trajectory_app
     assert "$('#jump-step')" not in trajectory_app
     assert "$('#search')" not in trajectory_app
     assert "function hasPrimaryContent(group)" in trajectory_app
     assert "const pulse=document.querySelector('.utilization-overview')" in trajectory_app
-    assert "chapterNav.scrollTop=bottom-chapterNav.clientHeight" in trajectory_app
+    assert "current.offsetTop-chapterNav.offsetTop-(chapterNav.clientHeight-current.offsetHeight)/2" in trajectory_app
+    assert "const anchor=Math.max(traceAnchor(),window.innerHeight/2)" in trajectory_app
+    assert "Math.abs(target.getBoundingClientRect().top+target.offsetHeight/2-anchor)" in trajectory_app
     assert "current.scrollIntoView({block:'nearest'})" not in trajectory_app
     assert "el('span','chapter-divider-number',number)" in trajectory_app
     assert "scrollTargetForStep(target).scrollIntoView" in trajectory_overview
