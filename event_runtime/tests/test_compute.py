@@ -528,6 +528,50 @@ class ClaimSelectionTests(unittest.TestCase):
         output = "PhysX warning: GPU solver pipeline failed, switching to software"
         self.assertEqual(gpu_worker.provider_terminal_error(output), output)
 
+    def test_agent_stdout_cannot_forge_a_provider_terminal_error(self) -> None:
+        archived = (
+            "== Modal stdout ==\n"
+            "source = 'GPU solver pipeline failed|GPU Bp pipeline failed|"
+            "switching to software'\n"
+            "== Modal stderr ==\n"
+            "recoverable Vulkan warning\n"
+        )
+        self.assertIsNone(gpu_worker.provider_terminal_error(archived))
+
+    def test_archive_classifies_only_provider_stderr(self) -> None:
+        uploaded: dict[str, bytes] = {}
+        job = {
+            "run_id": "run-1",
+            "job_id": "job-1",
+            "attempt": 1,
+            "status": "succeeded",
+            "exit_code": 0,
+            "sandbox_id": "sb-1",
+        }
+
+        def upload(_run: dict, source: Path, _remote: str) -> None:
+            uploaded["content"] = source.read_bytes()
+
+        stdout = "print('GPU solver pipeline failed|switching to software')\n"
+        with (
+            mock.patch.object(
+                gpu_worker.sprintctl, "volume_upload", side_effect=upload
+            ),
+            mock.patch.object(
+                gpu_worker, "mirror_agent_job", return_value={"agent_mirror": "updated"}
+            ),
+        ):
+            archived, detail = gpu_worker.archive_provider_logs(
+                {"run_id": "run-1"},
+                job,
+                read_output=lambda _sandbox_id: (stdout, "recoverable warning\n"),
+            )
+
+        self.assertIn(stdout.encode(), uploaded["content"])
+        self.assertEqual(archived["status"], "succeeded")
+        self.assertFalse(archived["provider_terminal_error_detected"])
+        self.assertIsNone(detail["provider_terminal_error"])
+
     def test_kit_semantic_startup_failures_override_false_zero_exit(self) -> None:
         for output in (
             "Failed to resolve extension dependencies",

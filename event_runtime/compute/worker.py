@@ -2121,6 +2121,14 @@ def provider_terminal_error(stream_text: str) -> str | None:
     headless Vulkan initialization emits recoverable diagnostics, but these
     semantic startup failures are terminal.
     """
+    # Archived logs preserve both provider streams. Only stderr is an
+    # authoritative source for these process/runtime markers: agent programs
+    # may legitimately print source code or diagnostics containing the same
+    # words to stdout. Modal keeps the streams separate at collection time.
+    stderr_header = "== Modal stderr ==\n"
+    if stderr_header in stream_text:
+        stream_text = stream_text.rsplit(stderr_header, 1)[1]
+
     if "Traceback (most recent call last):" in stream_text:
         tail = stream_text[stream_text.rfind("Traceback (most recent call last):") :]
         final = next(
@@ -2272,7 +2280,7 @@ def archive_provider_logs(
             "provider_logs_source": "modal-sandbox-streams",
         }
     )
-    terminal_error = provider_terminal_error(content)
+    terminal_error = provider_terminal_error(stderr)
     payload = apply_provider_terminal_error(payload, terminal_error)
     payload, artifact_name, artifact_content, policy_detail = (
         fetch_agent_policy_artifact(run, payload)
