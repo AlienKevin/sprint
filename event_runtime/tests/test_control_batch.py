@@ -3985,6 +3985,41 @@ def test_provider_auth_alert_does_not_match_heartbeat_age(
     assert batch_eval.log_alerts(run_id) == []
 
 
+def test_provider_rate_limit_alert_does_not_match_watchdog_age(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = "eval-sol-1"
+    state_dir = tmp_path / run_id
+    state_dir.mkdir()
+    (state_dir / "controller-errors.jsonl").write_text(
+        '{"message": "budget pulse watchdog snapshot is stale (429.2s)"}\n'
+    )
+    monkeypatch.setattr(batch_eval, "SCRIPT_DIR", tmp_path)
+
+    assert batch_eval.log_alerts(run_id) == []
+
+
+def test_provider_rate_limit_alert_matches_http_429(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = "eval-sol-1"
+    state_dir = tmp_path / run_id
+    state_dir.mkdir()
+    (state_dir / "controller-errors.jsonl").write_text(
+        '{"message": "OpenRouter response status 429"}\n'
+    )
+    monkeypatch.setattr(batch_eval, "SCRIPT_DIR", tmp_path)
+
+    assert batch_eval.log_alerts(run_id) == [
+        {
+            "run_id": run_id,
+            "kind": "provider_rate_limit",
+            "source": "controller-errors.jsonl",
+            "count_in_tail": "1",
+        }
+    ]
+
+
 def test_recovered_log_alert_is_archived() -> None:
     payload = {
         "alerts": [

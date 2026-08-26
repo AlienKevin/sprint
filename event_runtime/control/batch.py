@@ -135,7 +135,9 @@ VERCEL_DAILY_QUOTA_CODE = "api-deployments-free-per-day"
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,48}$")
 ALERT_PATTERNS = {
     "provider_rate_limit": re.compile(
-        r"\b(?:429|rate.?limit|too many requests)\b", re.I
+        r"(?:\b(?:http(?: status)?|status(?: code)?|response)\s*[:=]?\s*429\b|"
+        r"\b(?:rate.?limit|too many requests)\b)",
+        re.I,
     ),
     "provider_quota": re.compile(
         r"\b(?:insufficient_quota|quota exceeded|billing limit|spend limit)\b", re.I
