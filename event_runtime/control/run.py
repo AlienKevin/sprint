@@ -2852,6 +2852,18 @@ def gpu_budget_pulse_once(run_id: str) -> dict[str, Any]:
     state_dir, run = load_run(run_id)
     try:
         payload = json.loads((state_dir / "telemetry" / "agent-cost.json").read_text())
+    except FileNotFoundError:
+        result = {
+            "schema_version": 1,
+            "run_id": run_id,
+            "updated_at": utc_now(),
+            "gpu_budget_mirror": "not_started",
+            "status": "watchdog_starting",
+        }
+        atomic_write_json(
+            state_dir / "telemetry" / "gpu-budget-mirror.json", result, mode=0o600
+        )
+        return result
     except (OSError, json.JSONDecodeError) as exc:
         raise RuntimeError("GPU budget pulse has no valid host snapshot") from exc
 

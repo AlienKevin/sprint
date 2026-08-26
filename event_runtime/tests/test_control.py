@@ -516,6 +516,18 @@ class DurableOpsTests(unittest.TestCase):
             )
             self.assertEqual(persisted["sandbox_ids"], ["sb-one"])
 
+    def test_gpu_budget_pulse_reports_normal_startup_before_host_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            run = {"run_id": "pulse-run"}
+            with mock.patch.object(
+                sprintctl, "load_run", return_value=(state, run)
+            ):
+                result = sprintctl.gpu_budget_pulse_once("pulse-run")
+
+            self.assertEqual(result["status"], "watchdog_starting")
+            self.assertEqual(result["gpu_budget_mirror"], "not_started")
+
     def test_budget_pulse_does_not_mirror_after_stop_ack_arrives(self) -> None:
         from event_runtime.compute import worker as gpu_worker
 
