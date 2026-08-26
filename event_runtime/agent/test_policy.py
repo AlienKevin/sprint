@@ -34,8 +34,6 @@ def build_command(worker_policy: Path, note: str) -> list[str]:
         "gpu",
         "--timeout",
         "900",
-        "--max-attempts",
-        "3",
         "--job-kind",
         "verify",
         "--note",
