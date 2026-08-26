@@ -36,6 +36,35 @@ def load_module(name: str, path: Path):
 
 
 class TelemetrySamplerTests(unittest.TestCase):
+    def test_verifier_once_writes_one_complete_sample(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            out = Path(raw)
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(VERIFIER_TELEMETRY_PY),
+                    "--once",
+                    "--out-dir",
+                    str(out),
+                    "--interval-seconds",
+                    "60",
+                ],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            rows = [
+                json.loads(line)
+                for line in (out / "samples.jsonl").read_text().splitlines()
+            ]
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["sample_index"], 1)
+            lifecycle = json.loads((out / "lifecycle.json").read_text())
+            self.assertEqual(lifecycle["sample_count"], 1)
+            self.assertTrue(lifecycle["complete"])
+
     def test_once_writes_snapshot_and_sample(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             out = Path(raw)

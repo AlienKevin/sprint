@@ -82,11 +82,12 @@ def test_warmup_checks_agent_shell_entrypoints() -> None:
         assert f"test -x /opt/{name}" in source
 
 
-def test_verifier_warmup_accepts_only_its_expected_telemetry_timeout() -> None:
+def test_verifier_warmup_waits_for_one_complete_telemetry_sample() -> None:
     source = (PREFLIGHT / "warm_images.py").read_text()
 
-    assert "timeout --preserve-status --signal=TERM --kill-after=5 5" in source
-    assert '|| test \\"$?\\" -eq 143) &&' in source
+    assert "verifier_telemetry.py " in source
+    assert '"--out-dir /tmp/verifier-telemetry --once && "' in source
+    assert "timeout --preserve-status --signal=TERM --kill-after=5 5" not in source
 
 
 def test_warmup_builds_a_valid_dynamic_batch_torchscript_policy(

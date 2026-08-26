@@ -310,6 +310,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out-dir", type=pathlib.Path, required=True)
     parser.add_argument("--interval-seconds", type=float, default=10.0)
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="write one complete sample and exit",
+    )
     args = parser.parse_args()
     if args.interval_seconds <= 0:
         parser.error("--interval-seconds must be positive")
@@ -338,6 +343,8 @@ def main() -> int:
                 os.fsync(handle.fileno())
             lifecycle["sample_count"] += 1
             atomic_json(args.out_dir / "latest.json", payload)
+            if args.once:
+                break
             deadline = time.monotonic() + args.interval_seconds
             while not STOP and time.monotonic() < deadline:
                 time.sleep(max(0.0, min(0.25, deadline - time.monotonic())))
