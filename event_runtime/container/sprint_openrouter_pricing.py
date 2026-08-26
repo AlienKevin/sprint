@@ -221,6 +221,61 @@ def parse_endpoint_discount_snapshot(
     }
 
 
+def validate_endpoint_discount_snapshot(
+    snapshot: object,
+    *,
+    model: str,
+    provider_tag: str,
+) -> dict[str, Any]:
+    """Validate one sealed endpoint-pricing snapshot from launch preflight."""
+    if not isinstance(snapshot, dict):
+        raise OpenRouterPricingError("OpenRouter pricing snapshot is not an object")
+    if snapshot.get("schema_version") != 2:
+        raise OpenRouterPricingError("OpenRouter pricing snapshot schema is invalid")
+    if snapshot.get("model") != model:
+        raise OpenRouterPricingError("OpenRouter pricing snapshot model mismatch")
+    if snapshot.get("provider_tag") != provider_tag:
+        raise OpenRouterPricingError("OpenRouter pricing snapshot provider mismatch")
+    if snapshot.get("cost_basis") != benchmark_cost_basis_for_model(model):
+        raise OpenRouterPricingError("OpenRouter pricing snapshot cost basis mismatch")
+    try:
+        discount = float(snapshot["discount_fraction"])
+        multiplier = float(snapshot["gross_up_multiplier"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise OpenRouterPricingError(
+            "OpenRouter pricing snapshot has invalid discount metadata"
+        ) from exc
+    if not math.isfinite(discount) or not 0 <= discount < 1:
+        raise OpenRouterPricingError("OpenRouter pricing snapshot discount is invalid")
+    expected_multiplier = 1.0 / (1.0 - discount)
+    if not math.isfinite(multiplier) or not math.isclose(
+        multiplier, expected_multiplier, rel_tol=1e-12, abs_tol=1e-12
+    ):
+        raise OpenRouterPricingError(
+            "OpenRouter pricing snapshot gross-up multiplier is invalid"
+        )
+    endpoints = snapshot.get("endpoints")
+    if not isinstance(endpoints, list) or not endpoints:
+        raise OpenRouterPricingError("OpenRouter pricing snapshot has no endpoint")
+    for endpoint in endpoints:
+        try:
+            endpoint_discount = float(endpoint["discount_fraction"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise OpenRouterPricingError(
+                "OpenRouter pricing snapshot endpoint discount is invalid"
+            ) from exc
+        if (
+            endpoint.get("tag") != provider_tag
+            or endpoint_discount != discount
+        ):
+            raise OpenRouterPricingError("OpenRouter pricing snapshot endpoint mismatch")
+    if not isinstance(snapshot.get("captured_at"), str) or not snapshot["captured_at"]:
+        raise OpenRouterPricingError("OpenRouter pricing snapshot has no timestamp")
+    if not isinstance(snapshot.get("source_url"), str) or not snapshot["source_url"]:
+        raise OpenRouterPricingError("OpenRouter pricing snapshot has no source")
+    return snapshot
+
+
 def capture_endpoint_discount_snapshot(
     *,
     canonical_model: str,

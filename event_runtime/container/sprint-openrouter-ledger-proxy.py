@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import datetime as dt
 from http import HTTPStatus
 import http.client
@@ -32,6 +33,7 @@ from sprint_openrouter_pricing import (  # noqa: E402
     benchmark_cost_usd,
     capture_endpoint_discount_snapshot,
     undiscounted_cost_usd,
+    validate_endpoint_discount_snapshot,
 )
 from sprint_openrouter_usage import (  # noqa: E402
     add_token_usage,
@@ -691,24 +693,31 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                     raise OpenRouterPricingError(
                         "sealed request route does not match run contract"
                     )
-            except OpenRouterPricingError:
-                self.ledger_server.write_stop(
-                    {
-                        "schema_version": 2,
-                        "run_id": self.ledger_server.run_id,
-                        "reason": "budget_telemetry_unavailable",
-                        "status": "fail_closed",
-                    }
+                validate_endpoint_discount_snapshot(
+                    promotion_snapshot,
+                    model=self.ledger_server.canonical_model,
+                    provider_tag=self.ledger_server.pricing_provider_tag,
                 )
-                body = b'{"error":{"message":"live list-price metadata unavailable"}}\n'
-                self.send_response(HTTPStatus.SERVICE_UNAVAILABLE)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.send_header("Connection", "close")
-                self.end_headers()
-                self.wfile.write(body)
-                self.close_connection = True
-                return
+                promotion_snapshot = copy.deepcopy(promotion_snapshot)
+                promotion_snapshot["selection_source"] = "request_live_refresh"
+                self.ledger_server.latest_pricing_snapshot = copy.deepcopy(
+                    promotion_snapshot
+                )
+            except OpenRouterPricingError as exc:
+                # Pricing is sealed before the sandbox starts. A request-time
+                # refresh lets a genuine promotion boundary take effect, but
+                # an OpenRouter metadata outage must not kill an otherwise
+                # healthy evaluation. Fall back to the latest validated
+                # snapshot; the provider-reported request charge remains the
+                # invoice record either way.
+                promotion_snapshot = copy.deepcopy(
+                    self.ledger_server.latest_pricing_snapshot
+                )
+                promotion_snapshot["selection_source"] = (
+                    "latest_valid_snapshot_after_refresh_failure"
+                )
+                promotion_snapshot["applied_at"] = utc_now()
+                promotion_snapshot["refresh_error_type"] = type(exc).__name__
             record = {
                 "schema_version": 3,
                 "ledger_request_id": request_id,
@@ -1108,6 +1117,27 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
             self.canonical_model
         ):
             raise ValueError("run model and cost basis mismatch")
+        sealed_pricing_snapshot = run.get("openrouter_pricing_snapshot")
+        self.pricing_provider_tag = str(
+            self.provider_endpoint
+            or (
+                sealed_pricing_snapshot.get("provider_tag")
+                if isinstance(sealed_pricing_snapshot, dict)
+                else ""
+            )
+        )
+        try:
+            self.latest_pricing_snapshot = copy.deepcopy(
+                validate_endpoint_discount_snapshot(
+                    sealed_pricing_snapshot,
+                    model=self.canonical_model,
+                    provider_tag=self.pricing_provider_tag,
+                )
+            )
+        except OpenRouterPricingError as exc:
+            raise ValueError(
+                "run has no valid sealed OpenRouter pricing snapshot"
+            ) from exc
         self.requests_dir = ledger_root / "requests"
         self.runtime_dir = runtime_dir
         self.billing_lock = threading.Lock()

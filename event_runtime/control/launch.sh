@@ -294,6 +294,15 @@ else
   SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON=''
 fi
 export SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON
+if [[ -z "${SPRINT_OPENROUTER_PROVIDER_ENDPOINT:-}" ]]; then
+  # Generic OpenRouter models default to their author's official provider.
+  # Family-specific launchers above still enforce their exact known route.
+  export SPRINT_OPENROUTER_PROVIDER_ENDPOINT="${MODEL%%/*}"
+fi
+if [[ ! "$SPRINT_OPENROUTER_PROVIDER_ENDPOINT" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ ]]; then
+  echo "OpenRouter evaluations require one safe pinned provider endpoint" >&2
+  exit 2
+fi
 if [[ "$AGENT_KIND" == "deepseek-harness" ]]; then
   SPRINT_OPENROUTER_ALLOWED_INFERENCE_PATH=chat_completions
 else
@@ -420,6 +429,7 @@ spec.loader.exec_module(module)
 print(module.benchmark_cost_basis_for_model(model))
 PY
 )
+OPENROUTER_ENDPOINT_PRICING_SNAPSHOT_JSON=""
 
 VOLUMES_JSON=$(python3 - "$VOLUME_NAME" <<'PY'
 import json
@@ -646,6 +656,45 @@ PY
 )
 SPRINT_SOURCE_COMMIT=$(git -C "$ROOT" rev-parse HEAD)
 
+# Freeze a valid endpoint-pricing snapshot before allocating any sandbox. The
+# trusted proxy may refresh it per request to observe a genuine promotion
+# boundary, but transient metadata failures fall back to this sealed copy.
+OPENROUTER_ENDPOINT_PRICING_SNAPSHOT_JSON=$(python3 - \
+  "$ROOT/event_runtime/container/sprint_openrouter_pricing.py" \
+  "$MODEL" "$SPRINT_OPENROUTER_PROVIDER_ENDPOINT" "$AGENT_SECRET" <<'PY'
+import importlib.util
+import json
+import sys
+import time
+
+path, model, provider, api_key = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("sprint_launch_openrouter_pricing", path)
+if spec is None or spec.loader is None:
+    raise SystemExit("cannot load canonical OpenRouter pricing policy")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+last_error = None
+for attempt in range(3):
+    try:
+        snapshot = module.capture_endpoint_discount_snapshot(
+            canonical_model=model,
+            requested_model=model,
+            request_provider={"only": [provider]},
+            authorization=f"Bearer {api_key}",
+        )
+        module.validate_endpoint_discount_snapshot(
+            snapshot, model=model, provider_tag=provider
+        )
+        print(json.dumps(snapshot, separators=(",", ":"), sort_keys=True))
+        raise SystemExit(0)
+    except module.OpenRouterPricingError as exc:
+        last_error = exc
+        if attempt < 2:
+            time.sleep(1)
+raise SystemExit(f"cannot seal OpenRouter pricing snapshot: {last_error}")
+PY
+)
+
 umask 077
 if [[ -e "$SECRET_DIR" || -e "$JOBS_ROOT" ]]; then
   echo "partial run state already exists: $RUN_ID" >&2
@@ -701,7 +750,8 @@ python3 - "$STATE_DIR/run.json" "$RUN_ID" "$APP_NAME" "$TRAINING_APP_NAME" \
   "$SOURCE_ROOT" "$SPRINT_SOURCE_COMMIT" "$TASK" \
   "$AGENT_COST_BUDGET_USD" "$AGENT_COST_SHUTDOWN_RESERVE_USD" \
   "$MINIMUM_SAFE_SHUTDOWN_RESERVE_USD" \
-  "$DEEPSEEK_PRICING_SNAPSHOT_JSON" "$MODEL_API_COST_BASIS" \
+  "$DEEPSEEK_PRICING_SNAPSHOT_JSON" "$OPENROUTER_ENDPOINT_PRICING_SNAPSHOT_JSON" \
+  "$MODEL_API_COST_BASIS" \
   "$SUBMISSION_CAP_PER_TRIAL" <<'PY'
 import datetime
 import fcntl
@@ -716,9 +766,11 @@ import sys
  branch, standing_gpu_flag,
  model_api_host, prompt_template, warmup_manifest_path, root, batch_id, source_root,
  sprint_source_commit, rendered_task_root, agent_cost_budget, shutdown_reserve, minimum_reserve,
- pricing_snapshot_json, model_api_cost_basis, submission_cap_per_trial) = sys.argv[1:]
+ pricing_snapshot_json, openrouter_pricing_snapshot_json, model_api_cost_basis,
+ submission_cap_per_trial) = sys.argv[1:]
 standing_gpu = standing_gpu_flag == "1"
 pricing_snapshot = json.loads(pricing_snapshot_json) if pricing_snapshot_json else None
+openrouter_pricing_snapshot = json.loads(openrouter_pricing_snapshot_json)
 provider_endpoint = os.environ.get("SPRINT_OPENROUTER_PROVIDER_ENDPOINT")
 quantization = os.environ.get("SPRINT_OPENROUTER_QUANTIZATION")
 openrouter_route = (
@@ -792,6 +844,7 @@ payload = {
     "automatic_stop_reason": "agent_cost_budget_exhausted",
     "agent_cost_budget_usd": float(agent_cost_budget),
     "api_pricing_snapshot": pricing_snapshot,
+    "openrouter_pricing_snapshot": openrouter_pricing_snapshot,
     "openrouter_route": openrouter_route,
     "openrouter_request_contract": openrouter_request_contract,
     "provider_usage_ledger_required": model_api_host == "openrouter.ai",

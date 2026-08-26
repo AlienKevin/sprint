@@ -32,7 +32,26 @@ def write_run_contract(
     model: str = "vendor/model",
     budget: float = 10.0,
 ) -> None:
-    basis = DEEPSEEK_PEAK_BASIS if model.startswith("deepseek/") else UNDISCOUNTED_BASIS
+    pricing = proxy.sys.modules["sprint_openrouter_pricing"]
+    basis = pricing.benchmark_cost_basis_for_model(model)
+    provider = model.split("/", 1)[0]
+    endpoint_snapshot = pricing.parse_endpoint_discount_snapshot(
+        {
+            "data": {
+                "endpoints": [
+                    {
+                        "provider_name": provider,
+                        "tag": provider,
+                        "pricing": {"discount": 0},
+                    }
+                ]
+            }
+        },
+        model=model,
+        provider_tag=provider,
+        captured_at="2026-08-26T00:00:00Z",
+        source_url="https://openrouter.ai/test-fixture",
+    )
     state = run_root / "state"
     state.mkdir(parents=True, exist_ok=True)
     (state / "run.json").write_text(
@@ -42,6 +61,7 @@ def write_run_contract(
                 "model": model,
                 "agent_cost_budget_usd": budget,
                 "api_pricing_snapshot": {"cost_basis": basis},
+                "openrouter_pricing_snapshot": endpoint_snapshot,
                 "budget_enforcement": {"api_budget_cost_basis": basis},
             }
         )
@@ -911,6 +931,23 @@ def test_proxy_rejects_run_model_cost_basis_mismatch(tmp_path: Path) -> None:
         )
 
 
+def test_proxy_requires_a_valid_launch_pricing_snapshot(tmp_path: Path) -> None:
+    write_run_contract(tmp_path)
+    run_path = tmp_path / "state/run.json"
+    run = json.loads(run_path.read_text())
+    run.pop("openrouter_pricing_snapshot")
+    run_path.write_text(json.dumps(run))
+
+    with pytest.raises(ValueError, match="sealed OpenRouter pricing snapshot"):
+        proxy.LedgerProxyServer(
+            ("127.0.0.1", 0),
+            upstream="https://openrouter.ai/api/v1",
+            ledger_root=tmp_path / "api-usage",
+            run_id="run-1",
+            cpu_attempt=1,
+        )
+
+
 def test_generic_openrouter_budget_gate_blocks_a_second_paid_request(
     tmp_path: Path,
 ) -> None:
@@ -1413,25 +1450,12 @@ def test_streaming_chat_completions_is_sealed_metered_and_peak_normalized(
         model="deepseek/deepseek-v4-flash-vision-exp",
         budget=0.0002,
     )
-    promotion = proxy.sys.modules[
-        "sprint_openrouter_pricing"
-    ].parse_endpoint_discount_snapshot(
-        {
-            "data": {
-                "endpoints": [
-                    {
-                        "provider_name": "DeepSeek",
-                        "tag": "deepseek",
-                        "pricing": {"discount": 0},
-                    }
-                ]
-            }
-        },
-        model="deepseek/deepseek-v4-flash-vision-exp",
-        provider_tag="deepseek",
-    )
     monkeypatch.setattr(
-        proxy, "capture_endpoint_discount_snapshot", lambda **_: promotion
+        proxy,
+        "capture_endpoint_discount_snapshot",
+        lambda **_: (_ for _ in ()).throw(
+            proxy.OpenRouterPricingError("transient metadata outage")
+        ),
     )
 
     class FakeResponse:
@@ -1602,6 +1626,9 @@ def test_streaming_chat_completions_is_sealed_metered_and_peak_normalized(
     record = json.loads(records[0].read_text())
     assert record["api_path"] == "/api/v1/chat/completions"
     assert record["state"] == "complete"
+    assert record["promotion_snapshot"]["selection_source"] == (
+        "latest_valid_snapshot_after_refresh_failure"
+    )
     assert record["usage"]["prompt_tokens_details"]["cached_tokens"] == 800
     marker = json.loads((run_root / "BUDGET_STOP_REQUESTED.json").read_text())
     assert marker["status"] == "stop_requested"
