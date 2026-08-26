@@ -488,7 +488,7 @@ def test_live_watchdog_fails_closed_when_host_cost_mirror_is_stale(
             runtime_dir=runtime,
             codex_home=codex_home,
             pricing_path=PRICING,
-            now=1_061,
+            now=1_121,
         )
 
 

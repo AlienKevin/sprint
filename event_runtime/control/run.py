@@ -2624,6 +2624,24 @@ def _budget_pulse_once_unlocked(
 
     from event_runtime.compute import worker as gpu_worker
 
+    # Refresh the CPU agent first.  A Modal exec into a newly starting or
+    # stopping GPU sandbox can block for most of its control-plane timeout.  If
+    # GPU mirroring runs first, that delay can age the CPU watchdog's host cost
+    # mirror past its safety window even though this pulse is healthy.  The CPU
+    # agent is the authority that launches model requests and GPU jobs, so its
+    # circuit breaker must receive each pulse before slower downstream mirrors.
+    agent_mirror = gpu_worker.mirror_agent_cost(run, payload)
+    atomic_write_json(
+        state_dir / "telemetry" / "agent-cost-mirror.json",
+        {"schema_version": 1, "updated_at": utc_now(), **agent_mirror},
+        mode=0o600,
+    )
+    if agent_mirror.get("agent_cost_mirror") == "error":
+        raise RuntimeError(
+            "agent cost pulse mirror failed: "
+            + str(agent_mirror.get("agent_cost_mirror_error") or "unknown")
+        )
+
     gpu_mirror = gpu_worker.mirror_gpu_budget(run, payload)
     atomic_write_json(
         state_dir / "telemetry" / "gpu-budget-mirror.json",
@@ -2636,17 +2654,6 @@ def _budget_pulse_once_unlocked(
             + str(gpu_mirror.get("errors") or "unknown")
         )
 
-    agent_mirror = gpu_worker.mirror_agent_cost(run, payload)
-    atomic_write_json(
-        state_dir / "telemetry" / "agent-cost-mirror.json",
-        {"schema_version": 1, "updated_at": utc_now(), **agent_mirror},
-        mode=0o600,
-    )
-    if agent_mirror.get("agent_cost_mirror") == "error":
-        raise RuntimeError(
-            "agent cost pulse mirror failed: "
-            + str(agent_mirror.get("agent_cost_mirror_error") or "unknown")
-        )
     enforce_agent_cost_budget(run_id, state_dir, run, payload)
     result = {
         "schema_version": 1,

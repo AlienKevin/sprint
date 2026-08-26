@@ -48,7 +48,12 @@ CPU_USD_PER_SECOND = 2 * 0.00003942 + 8 * 0.00000667
 TRAINING_USD_PER_SECOND = 6 * 0.00003942 + 12 * 0.00000667 + 0.000306
 STOP_REASON = "agent_cost_budget_exhausted"
 HOST_COST_MIRROR_RELATIVE_PATH = Path("sprint-gpu-mirror/cost.json")
-HOST_COST_MIRROR_MAX_AGE_SECONDS = 60.0
+# The independent host pulse normally refreshes every 15 seconds, but a Modal
+# control-plane exec into a starting or stopping GPU sandbox can legitimately
+# consume tens of seconds.  Match the GPU worker's 120-second heartbeat window
+# so one slow control-plane operation cannot invalidate an otherwise healthy
+# trial; a real controller outage still fails closed after this bounded grace.
+HOST_COST_MIRROR_MAX_AGE_SECONDS = 120.0
 HOST_COST_MIRROR_MAX_CLOCK_SKEW_SECONDS = 60.0
 OPENROUTER_PROXY_STARTUP_GRACE_SECONDS = 30.0
 BUDGET_TELEMETRY_CHECK_ATTEMPTS = 3

@@ -378,11 +378,15 @@ class DurableOpsTests(unittest.TestCase):
 
             def mirror_gpu(_run: dict, _payload: dict) -> dict:
                 self.assertTrue(cost_lock_held)
+                mirror_order.append("gpu")
                 return {"gpu_budget_mirror": "updated"}
 
             def mirror_agent(_run: dict, _payload: dict) -> dict:
                 self.assertTrue(cost_lock_held)
+                mirror_order.append("agent")
                 return {"agent_cost_mirror": "updated"}
+
+            mirror_order: list[str] = []
 
             with (
                 mock.patch.object(sprintctl, "load_run", return_value=(state, run)),
@@ -418,6 +422,7 @@ class DurableOpsTests(unittest.TestCase):
             fetch.assert_called_once()
             gpu_mirror.assert_called_once()
             agent_mirror.assert_called_once()
+            self.assertEqual(mirror_order, ["agent", "gpu"])
             enforce.assert_called_once()
             mirrored = gpu_mirror.call_args.args[1]
             self.assertEqual(mirrored["checked_at_epoch_s"], 1010.0)
