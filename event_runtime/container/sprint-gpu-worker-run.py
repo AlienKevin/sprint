@@ -1463,7 +1463,12 @@ def main() -> int:
         exit_code = 2
         error = "required GPU output missing or invalid: " + ", ".join(missing_outputs)
         print(error, flush=True)
-    if final_status == "succeeded" and job.get("submission_paths"):
+    # Explicit submission intent survives cancellation and budget teardown.
+    # A job can be stopped after producing a structurally valid checkpoint;
+    # dropping that file here would make teardown timing change the benchmark
+    # result. ``event archive`` still validates every path before staging it,
+    # so missing or malformed outputs do not consume a submission slot.
+    if job.get("submission_paths"):
         submission_results = submit_declared_policies(job)
         progress_payload = dict(progress) if isinstance(progress, dict) else {}
         progress_payload["submission_results"] = submission_results

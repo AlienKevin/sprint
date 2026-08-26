@@ -1409,6 +1409,54 @@ class DurableOpsTests(unittest.TestCase):
                 _complete, conditions, _details = sprintctl.final_conditions(state, run)
                 self.assertTrue(conditions["submission_bridge_drained"])
 
+                registry = state / "gpu-job-registry"
+                registry.mkdir()
+                registry_job = registry / "job-1.json"
+                registry_job.write_text(
+                    json.dumps(
+                        {
+                            "job_id": "job-1",
+                            "submission_paths": ["/app/policy.pt"],
+                        }
+                    )
+                )
+                _complete, conditions, details = sprintctl.final_conditions(state, run)
+                self.assertFalse(conditions["submission_bridge_drained"])
+                self.assertTrue(
+                    any("did not finalize all declared submissions" in d for d in details)
+                )
+
+                registry_job.write_text(
+                    json.dumps(
+                        {
+                            "job_id": "job-1",
+                            "submission_paths": ["/app/policy.pt"],
+                            "progress": {
+                                "submission_results": [
+                                    {
+                                        "path": "/app/policy.pt",
+                                        "state": "staged",
+                                    }
+                                ]
+                            },
+                        }
+                    )
+                )
+                bridge_record = json.loads(
+                    (bridge / "123456-abcd.json").read_text()
+                )
+                bridge_record["gpu_job_id"] = "job-1"
+                (bridge / "123456-abcd.json").write_text(json.dumps(bridge_record))
+                _complete, conditions, _details = sprintctl.final_conditions(state, run)
+                self.assertTrue(conditions["submission_bridge_drained"])
+
+                (state / "STOP_ACK.json").write_text(
+                    json.dumps({"gpu_submission_drain_timed_out": True})
+                )
+                _complete, conditions, details = sprintctl.final_conditions(state, run)
+                self.assertFalse(conditions["submission_bridge_drained"])
+                self.assertTrue(any("timed out" in d for d in details))
+
     def test_stale_finalized_file_is_rechecked(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             state_dir = Path(raw)
@@ -2107,6 +2155,7 @@ while True:
                     time.sleep(0.1)
                 self.assertTrue(first_seen.exists())
                 (runtime / "sprint-stop").touch()
+                (runtime / "sprint-gpu-drain-complete.json").write_text("{}\n")
 
                 watcher.wait(timeout=25)
                 wrapper.wait(timeout=10)
@@ -2117,6 +2166,7 @@ while True:
                 ack = json.loads((durable / "runs/test-codex/STOP_ACK").read_text())
                 self.assertEqual(ack["agent_kind"], "codex")
                 self.assertEqual(ack["reason"], "operator_stop")
+                self.assertFalse(ack["gpu_submission_drain_timed_out"])
                 self.assertNotIn("final_snapshot_id", ack)
 
                 copied = agent_logs / "codex-state"
@@ -2354,6 +2404,85 @@ raise SystemExit(2)
                 watcher.communicate()
                 if agent.poll() is None:
                     agent.kill()
+                    agent.wait()
+
+    def test_supervisor_records_gpu_submission_drain_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            durable = root / "durable"
+            runtime = root / "run"
+            agent_logs = root / "agent"
+            artifact_logs = root / "artifacts"
+            codex_home = root / "codex-home"
+            for path in (durable, runtime, agent_logs, artifact_logs, codex_home):
+                path.mkdir()
+
+            agent = subprocess.Popen(
+                ["bash", "-c", "exec -a sprint-drain-timeout-codex sleep 60"],
+                preexec_fn=os.setsid,
+            )
+            process_dir = runtime / "sprint-agent"
+            process_dir.mkdir()
+            start_time = Path(f"/proc/{agent.pid}/stat").read_text().split()[21]
+            (process_dir / "codex-process").write_text(
+                f"{agent.pid} {os.getpgid(agent.pid)} {start_time}\n"
+            )
+            env = os.environ.copy()
+            env["SPRINT_GPU_DRAIN_TIMEOUT_SECONDS"] = "1"
+            watcher = subprocess.Popen(
+                [
+                    "bash",
+                    str(ROOT / "event_runtime/container/sprint-agent-supervisor.sh"),
+                    "--run-id",
+                    "test-drain-timeout",
+                    "--agent-kind",
+                    "codex",
+                    "--poll-seconds",
+                    "1",
+                    "--term-grace-seconds",
+                    "1",
+                    "--durable-dir",
+                    str(durable),
+                    "--runtime-dir",
+                    str(runtime),
+                    "--agent-log-dir",
+                    str(agent_logs),
+                    "--artifact-log-dir",
+                    str(artifact_logs),
+                    "--codex-home-dir",
+                    str(codex_home),
+                    "--budget-watchdog-bin",
+                    "/bin/true",
+                    "--codex-pattern",
+                    "sprint-drain-timeout-codex",
+                    "--exit-after-ack",
+                ],
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                first_seen = (
+                    durable
+                    / "runs/test-drain-timeout/supervisor/first-codex-seen"
+                )
+                deadline = time.time() + 10
+                while not first_seen.exists() and time.time() < deadline:
+                    time.sleep(0.1)
+                self.assertTrue(first_seen.exists())
+                (runtime / "sprint-stop").touch()
+                watcher.wait(timeout=15)
+                ack = json.loads(
+                    (durable / "runs/test-drain-timeout/STOP_ACK").read_text()
+                )
+                self.assertEqual(ack["reason"], "operator_stop")
+                self.assertTrue(ack["gpu_submission_drain_timed_out"])
+            finally:
+                watcher.kill()
+                watcher.communicate()
+                if agent.poll() is None:
+                    os.killpg(os.getpgid(agent.pid), signal.SIGKILL)
                     agent.wait()
 
     def test_supervisor_tolerates_one_watchdog_timeout_with_recent_snapshot(

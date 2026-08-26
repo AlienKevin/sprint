@@ -14,6 +14,7 @@ TRACE_MIRROR_BIN=/opt/sprint-trace-mirror.py
 BUDGET_WATCHDOG_BIN=/opt/sprint-budget-watchdog.py
 BUDGET_WATCHDOG_TIMEOUT_SECONDS=${SPRINT_BUDGET_WATCHDOG_TIMEOUT_SECONDS:-15}
 BUDGET_WATCHDOG_STALE_GRACE_SECONDS=${SPRINT_BUDGET_WATCHDOG_STALE_GRACE_SECONDS:-60}
+GPU_DRAIN_TIMEOUT_SECONDS=${SPRINT_GPU_DRAIN_TIMEOUT_SECONDS:-120}
 CODEX_PATTERN=""
 EXIT_AFTER_ACK=0
 TRACE_MIRROR_PID=""
@@ -58,7 +59,8 @@ if [[ "$AGENT_KIND" != "codex" && "$AGENT_KIND" != "deepseek-harness" ]]; then
   exit 2
 fi
 for value in "$POLL_SECONDS" "$TERM_GRACE_SECONDS" \
-  "$BUDGET_WATCHDOG_TIMEOUT_SECONDS" "$BUDGET_WATCHDOG_STALE_GRACE_SECONDS"; do
+  "$BUDGET_WATCHDOG_TIMEOUT_SECONDS" "$BUDGET_WATCHDOG_STALE_GRACE_SECONDS" \
+  "$GPU_DRAIN_TIMEOUT_SECONDS"; do
   if [[ ! "$value" =~ ^[0-9]+$ ]]; then
     echo "time values must be whole seconds" >&2
     exit 2
@@ -72,6 +74,7 @@ HEARTBEAT="$STATE_DIR/heartbeat.json"
 STOP_ACK="$RUN_ROOT/STOP_ACK"
 STOP_FILE="$RUNTIME_DIR/sprint-stop"
 STOP_SIGNALLED="$RUNTIME_DIR/sprint-stop-signalled"
+GPU_DRAIN_COMPLETE="$RUNTIME_DIR/sprint-gpu-drain-complete.json"
 if [[ "$AGENT_KIND" == "deepseek-harness" ]]; then
   FIRST_SEEN="$STATE_DIR/first-deepseek-harness-seen"
 else
@@ -277,9 +280,9 @@ find_agent_identity() {
 }
 
 write_ack() {
-  local reason=$1
+  local reason=$1 drain_timed_out=${2:-0}
   python3 - "$STOP_ACK" "$RUN_ID" "$AGENT_KIND" "$reason" \
-    "$AGENT_PID" "$AGENT_PGID" <<'PY'
+    "$AGENT_PID" "$AGENT_PGID" "$drain_timed_out" <<'PY'
 import datetime
 import json
 import os
@@ -295,6 +298,7 @@ payload = {
     "reason": sys.argv[4],
     "agent_pid": int(sys.argv[5]) if sys.argv[5].isdigit() else None,
     "agent_pgid": int(sys.argv[6]) if sys.argv[6].isdigit() else None,
+    "gpu_submission_drain_timed_out": sys.argv[7] == "1",
 }
 tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
 tmp.write_text(json.dumps(payload, sort_keys=True) + "\n")
@@ -317,12 +321,27 @@ stop_signal_watch() {
 }
 
 finalize_and_ack() {
-  local reason=$1
+  local reason=$1 drain_timed_out=0 deadline
   stop_signal_watch
   stop_trace_mirror
   mirror_trace_once
   write_heartbeat finalizing
-  write_ack "$reason"
+  # Keep Harbor's agent command alive while the trusted host fences GPU work
+  # and forwards any final explicitly submitted artifacts. Without this
+  # handshake, Harbor can tear down the CPU sandbox between GPU artifact
+  # mirroring and the host submission bridge.
+  if [[ "$reason" != "agent_exit" ]]; then
+    deadline=$((SECONDS + GPU_DRAIN_TIMEOUT_SECONDS))
+    while [[ ! -s "$GPU_DRAIN_COMPLETE" ]] && ((SECONDS < deadline)); do
+      write_heartbeat draining_gpu_submissions
+      sleep 1
+    done
+    if [[ ! -s "$GPU_DRAIN_COMPLETE" ]]; then
+      drain_timed_out=1
+      log "GPU submission drain timed out after ${GPU_DRAIN_TIMEOUT_SECONDS}s"
+    fi
+  fi
+  write_ack "$reason" "$drain_timed_out"
   write_heartbeat stop_acknowledged
   log "STOP_ACK written reason=$reason"
   # The supervisor is Modal's sandbox keepalive.  Exiting it here tears down

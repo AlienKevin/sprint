@@ -1813,6 +1813,96 @@ class SubmissionBridgeTests(unittest.TestCase):
             self.assertIn("integer returncode", record["error"])
             acknowledge.assert_not_called()
 
+    def test_terminal_bridge_requires_results_and_forwarded_staged_policies(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            run, job = self.run_and_job(root)
+            job.update(
+                {
+                    "submission_paths": ["/app/policy.pt"],
+                    "lease_id": "lease-1",
+                }
+            )
+            detail = {"error": 0, "retry_wait": 0}
+            attempt = {
+                "attempt": 1,
+                "lease_id": "lease-1",
+                "status": "terminated",
+                "progress": {
+                    "submission_results": [
+                        {"path": "/app/policy.pt", "state": "staged"}
+                    ]
+                },
+            }
+            with mock.patch.object(
+                gpu_worker, "load_attempt_record", return_value=attempt
+            ):
+                self.assertFalse(
+                    gpu_worker.terminal_submission_bridge_complete(run, job, detail)
+                )
+                bridge = root / "submission-bridge"
+                bridge.mkdir(exist_ok=True)
+                (bridge / "123456-abcd.json").write_text(
+                    json.dumps(
+                        {
+                            "gpu_job_id": "job-1",
+                            "state": "forwarded",
+                        }
+                    )
+                )
+                self.assertTrue(
+                    gpu_worker.terminal_submission_bridge_complete(run, job, detail)
+                )
+
+                attempt["progress"]["submission_results"][0]["state"] = "rejected"
+                (bridge / "123456-abcd.json").unlink()
+                self.assertTrue(
+                    gpu_worker.terminal_submission_bridge_complete(run, job, detail)
+                )
+
+    def test_terminal_submission_evidence_is_attached_without_undoing_fence(
+        self,
+    ) -> None:
+        run = {"run_id": "run-1", "state_dir": "/tmp/unused"}
+        job = {
+            "job_id": "job-1",
+            "attempt": 1,
+            "lease_id": "lease-1",
+            "status": "terminated",
+            "termination_reason": "agent_cost_budget_exhausted",
+            "submission_paths": ["/app/policy.pt"],
+        }
+        attempt = {
+            "attempt": 1,
+            "lease_id": "lease-1",
+            "status": "succeeded",
+            "progress": {
+                "submission_results": [
+                    {"path": "/app/policy.pt", "state": "staged"}
+                ]
+            },
+        }
+        with (
+            mock.patch.object(
+                gpu_worker, "load_attempt_record", return_value=attempt
+            ),
+            mock.patch.object(
+                gpu_worker, "persist_job", side_effect=lambda _run, payload: payload
+            ),
+        ):
+            attached = gpu_worker.attach_terminal_submission_evidence(run, job)
+
+        self.assertEqual(attached["status"], "terminated")
+        self.assertEqual(
+            attached["termination_reason"], "agent_cost_budget_exhausted"
+        )
+        self.assertEqual(
+            attached["progress"]["submission_results"],
+            attempt["progress"]["submission_results"],
+        )
+
 
 class HostJobRegistryTests(unittest.TestCase):
     def test_persist_records_job_outside_agent_volume_first(self) -> None:
@@ -3237,6 +3327,112 @@ class RetryAndFencingTests(unittest.TestCase):
             timeout_sec=gpu_worker.STOP_DISPATCH_LOCK_TIMEOUT_SEC,
         )
 
+    def test_operator_stop_releases_cpu_only_after_terminal_bridge_proof(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            run = {
+                "run_id": "unit",
+                "state_dir": raw,
+                "cpu_agent_gpu_worker": True,
+            }
+            job = {
+                "job_id": "done",
+                "status": "terminated",
+                "submission_bridge_enabled": True,
+                "submission_paths": ["/app/policy.pt"],
+            }
+            with (
+                mock.patch.object(
+                    gpu_worker.sprintctl, "load_run", return_value=(state, run)
+                ),
+                mock.patch.object(
+                    gpu_worker, "operator_stop_requested", return_value=True
+                ),
+                mock.patch.object(gpu_worker, "_stop_all_locked", return_value=[]),
+                mock.patch.object(gpu_worker, "list_job_ids", return_value=["done"]),
+                mock.patch.object(gpu_worker, "load_job", return_value=dict(job)),
+                mock.patch.object(
+                    gpu_worker,
+                    "reconcile_terminal_attempt_before_stop",
+                    side_effect=lambda _run, payload: payload,
+                ),
+                mock.patch.object(
+                    gpu_worker,
+                    "attach_terminal_submission_evidence",
+                    side_effect=lambda _run, payload: payload,
+                ),
+                mock.patch.object(
+                    gpu_worker,
+                    "drain_worker_submission_outbox",
+                    return_value=(dict(job), {"error": 0, "retry_wait": 0}),
+                ),
+                mock.patch.object(
+                    gpu_worker, "terminal_submission_bridge_complete", return_value=True
+                ),
+                mock.patch.object(gpu_worker, "persist_job"),
+                mock.patch.object(
+                    gpu_worker, "signal_gpu_submission_drain_complete"
+                ) as release,
+            ):
+                result = gpu_worker.dispatch_once("unit")
+
+        self.assertEqual(result["submission_bridge_pending_jobs"], [])
+        release.assert_called_once_with(run)
+
+    def test_operator_stop_keeps_cpu_alive_while_submission_is_pending(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            run = {
+                "run_id": "unit",
+                "state_dir": raw,
+                "cpu_agent_gpu_worker": True,
+            }
+            job = {
+                "job_id": "done",
+                "status": "terminated",
+                "submission_bridge_enabled": True,
+                "submission_paths": ["/app/policy.pt"],
+            }
+            with (
+                mock.patch.object(
+                    gpu_worker.sprintctl, "load_run", return_value=(state, run)
+                ),
+                mock.patch.object(
+                    gpu_worker, "operator_stop_requested", return_value=True
+                ),
+                mock.patch.object(gpu_worker, "_stop_all_locked", return_value=[]),
+                mock.patch.object(gpu_worker, "list_job_ids", return_value=["done"]),
+                mock.patch.object(gpu_worker, "load_job", return_value=dict(job)),
+                mock.patch.object(
+                    gpu_worker,
+                    "reconcile_terminal_attempt_before_stop",
+                    side_effect=lambda _run, payload: payload,
+                ),
+                mock.patch.object(
+                    gpu_worker,
+                    "attach_terminal_submission_evidence",
+                    side_effect=lambda _run, payload: payload,
+                ),
+                mock.patch.object(
+                    gpu_worker,
+                    "drain_worker_submission_outbox",
+                    return_value=(dict(job), {"error": 0, "retry_wait": 0}),
+                ),
+                mock.patch.object(
+                    gpu_worker,
+                    "terminal_submission_bridge_complete",
+                    return_value=False,
+                ),
+                mock.patch.object(gpu_worker, "persist_job"),
+                mock.patch.object(
+                    gpu_worker, "signal_gpu_submission_drain_complete"
+                ) as release,
+            ):
+                result = gpu_worker.dispatch_once("unit")
+
+        self.assertEqual(result["submission_bridge_pending_jobs"], ["done"])
+        release.assert_not_called()
+
     def test_stop_arriving_during_spawn_fences_new_sandbox(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             run = {
@@ -3894,7 +4090,7 @@ class AgentGpuCliTests(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "TorchScript .pt"):
             train_cli.validate_submission_paths(["/app/results/checkpoint.pth"])
 
-    def test_declared_submission_is_archived_only_after_success(self) -> None:
+    def test_declared_submission_is_archived_when_worker_finalizes(self) -> None:
         completed = mock.Mock(returncode=0, stdout="staged locally abc\n", stderr="")
         with mock.patch.object(
             worker_run.subprocess, "run", return_value=completed

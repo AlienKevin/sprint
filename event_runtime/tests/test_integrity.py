@@ -62,6 +62,26 @@ def test_clean_single_attempt_run_is_eligible(tmp_path: Path) -> None:
     assert report["replacement_required"] is False
 
 
+def test_gpu_submission_drain_timeout_is_invalid(tmp_path: Path) -> None:
+    run = run_contract("drain-timeout")
+    (tmp_path / "STOP_ACK.json").write_text(
+        json.dumps(
+            {
+                "reason": "agent_cost_budget_exhausted",
+                "gpu_submission_drain_timed_out": True,
+            }
+        )
+    )
+    write_clean_exit(tmp_path / "CPU_TRIAL_EXIT.json")
+
+    report = build_integrity_report(tmp_path, run)
+
+    assert report["benchmark_valid"] is False
+    assert {reason["code"] for reason in report["reasons"]} == {
+        "gpu_submission_drain_timeout"
+    }
+
+
 def test_wrong_execution_policy_and_budget_telemetry_failure_are_invalid(
     tmp_path: Path,
 ) -> None:

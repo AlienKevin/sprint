@@ -77,6 +77,7 @@ GPU_SUBMISSION_BRIDGE_MAX_POLICY_BYTES = 32 * 1024 * 1024
 GPU_SUBMISSION_BRIDGE_MAX_BATCH_BYTES = 64 * 1024 * 1024
 GPU_SUBMISSION_BRIDGE_MAX_DRAIN_BATCHES = 65
 GPU_SUBMISSION_ID_RE = re.compile(r"^[0-9]{6}-[0-9a-f]{4}$")
+GPU_SUBMISSION_DRAIN_COMPLETE = "/run/sprint-gpu-drain-complete.json"
 LIVE_PROVIDER_LOG_INTERVAL_SEC = 30
 LIVE_PROVIDER_LOG_TAIL_LINES = 2000
 AGENT_GPU_CLI_PATH = "/opt/event_runtime/agent/gpu.py"
@@ -116,6 +117,34 @@ def _cpu_agent_sandbox(run: dict[str, Any]):
             (identity.stderr or identity.stdout or "missing CPU sandbox ID")[-1000:]
         )
     return modal.Sandbox.from_id(sandbox_id)
+
+
+def signal_gpu_submission_drain_complete(run: dict[str, Any]) -> None:
+    """Release the CPU wrapper only after final GPU submissions are forwarded."""
+    payload = base64.b64encode(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "run_id": str(run["run_id"]),
+                "completed_at": utc_now(),
+            },
+            sort_keys=True,
+        ).encode()
+    ).decode("ascii")
+    script = r"""
+import base64, os, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+temporary.write_bytes(base64.b64decode(sys.argv[2]))
+os.chmod(temporary, 0o600)
+os.replace(temporary, path)
+""".strip()
+    process = _cpu_agent_sandbox(run).exec(
+        "python3", "-c", script, GPU_SUBMISSION_DRAIN_COMPLETE, payload, timeout=30
+    )
+    if process.wait() != 0:
+        detail = process.stderr.read() or process.stdout.read()
+        raise RuntimeError(f"CPU GPU-drain handshake failed: {str(detail)[-1000:]}")
 
 
 def append_control_event(
@@ -853,6 +882,100 @@ def drain_worker_submission_outbox(
     payload["submission_bridge_last_checked_at"] = utc_now()
     payload["submission_bridge_counts"] = totals
     return payload, {"submission_bridge": "drained", **totals}
+
+
+def owned_terminal_attempt(
+    run: dict[str, Any], job: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Read the immutable terminal record for this exact job lease."""
+    try:
+        attempt = load_attempt_record(run, job)
+    except Exception:  # noqa: BLE001 - the next dispatch tick retries
+        return None
+    if (
+        not isinstance(attempt, dict)
+        or int(attempt.get("attempt") or 0) != int(job.get("attempt") or 0)
+        or str(attempt.get("lease_id") or "") != str(job.get("lease_id") or "")
+        or str(attempt.get("status") or "") not in gpu_claim.TERMINAL
+    ):
+        return None
+    return attempt
+
+
+def terminal_submission_bridge_complete(
+    run: dict[str, Any], job: dict[str, Any], detail: dict[str, Any]
+) -> bool:
+    """Prove every declared terminal submission was rejected or forwarded."""
+    if int(detail.get("error") or 0) or int(detail.get("retry_wait") or 0):
+        return False
+    declared = [str(path) for path in job.get("submission_paths") or []]
+    if not declared:
+        return True
+    attempt = owned_terminal_attempt(run, job)
+    if attempt is None:
+        return False
+    progress = attempt.get("progress")
+    results = progress.get("submission_results") if isinstance(progress, dict) else None
+    if not isinstance(results, list) or len(results) != len(declared):
+        return False
+    result_paths = [
+        str(item.get("path") or "")
+        for item in results
+        if isinstance(item, dict)
+    ]
+    if result_paths != declared:
+        return False
+    staged = sum(
+        1
+        for item in results
+        if isinstance(item, dict) and item.get("state") == "staged"
+    )
+    if any(
+        not isinstance(item, dict) or item.get("state") not in {"staged", "rejected"}
+        for item in results
+    ):
+        return False
+    forwarded = 0
+    for path in submission_bridge_state_dir(run).glob("*.json"):
+        try:
+            record = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if (
+            isinstance(record, dict)
+            and record.get("gpu_job_id") == job.get("job_id")
+            and record.get("state") == "forwarded"
+        ):
+            forwarded += 1
+    return forwarded >= staged
+
+
+def attach_terminal_submission_evidence(
+    run: dict[str, Any], job: dict[str, Any]
+) -> dict[str, Any]:
+    """Persist immutable worker submission results without undoing a host fence.
+
+    A budget/operator fence can precede the worker's terminal Volume commit.
+    In that case the host-owned job must remain ``terminated``, but the later
+    immutable ``submission_results`` are still authoritative evidence needed
+    to prove that every explicitly declared path was rejected or forwarded.
+    """
+    if not job.get("submission_paths"):
+        return job
+    attempt = owned_terminal_attempt(run, job)
+    if attempt is None:
+        return job
+    progress = attempt.get("progress")
+    if not isinstance(progress, dict) or not isinstance(
+        progress.get("submission_results"), list
+    ):
+        return job
+    payload = dict(job)
+    payload["progress"] = progress
+    payload["attempt_record"] = attempt_path(
+        str(run["run_id"]), str(job["job_id"]), int(job["attempt"])
+    )
+    return persist_job(run, payload)
 
 
 def mirror_agent_job(
@@ -2830,8 +2953,8 @@ def reconcile_job(
         terminal["attempt_record"] = attempt_path(
             str(run["run_id"]), str(job["job_id"]), int(job["attempt"])
         )
-        if not int(submission_bridge_detail.get("error") or 0) and not int(
-            submission_bridge_detail.get("retry_wait") or 0
+        if terminal_submission_bridge_complete(
+            run, terminal, submission_bridge_detail
         ):
             terminal["submission_bridge_terminal_drained_at"] = utc_now()
         terminal, log_detail = archive_provider_logs(run, terminal)
@@ -3572,6 +3695,43 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
 
         if operator_stop_requested(state_dir):
             stopped = _stop_all_locked(run, reason="operator_stop")
+            bridge_pending: list[str] = []
+            reconciled: list[dict[str, Any]] = []
+            for job_id in list_job_ids(run):
+                job = load_job(run, job_id)
+                if not job:
+                    continue
+                job = reconcile_terminal_attempt_before_stop(run, job)
+                job = attach_terminal_submission_evidence(run, job)
+                if (
+                    str(job.get("status") or "") not in gpu_claim.TERMINAL
+                    or not job.get("submission_bridge_enabled")
+                ):
+                    continue
+                bridged, detail = drain_worker_submission_outbox(run, job)
+                bridged = attach_terminal_submission_evidence(run, bridged)
+                if terminal_submission_bridge_complete(run, bridged, detail):
+                    bridged["submission_bridge_terminal_drained_at"] = utc_now()
+                else:
+                    bridge_pending.append(job_id)
+                if bridged != job:
+                    persist_job(run, bridged)
+                reconciled.append(
+                    {
+                        "job_id": job_id,
+                        "attempt": bridged.get("attempt"),
+                        "status": bridged.get("status"),
+                        "decision": "stop_submission_bridge_drain",
+                        **detail,
+                    }
+                )
+            drain_signal_error = None
+            if not bridge_pending:
+                try:
+                    signal_gpu_submission_drain_complete(run)
+                except Exception as exc:  # noqa: BLE001
+                    drain_signal_error = f"{type(exc).__name__}: {exc}"
+                    bridge_pending.append("cpu_drain_handshake")
             result = {
                 "run_id": run_id,
                 "pending": [],
@@ -3583,7 +3743,9 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
                     }
                     for item in stopped
                 ],
-                "reconciled": [],
+                "reconciled": reconciled,
+                "submission_bridge_pending_jobs": bridge_pending,
+                "submission_bridge_drain_signal_error": drain_signal_error,
                 "skipped": True,
                 "reason": "operator_stop",
                 "ts": utc_now(),
@@ -3624,9 +3786,8 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
                 and not job.get("submission_bridge_terminal_drained_at")
             ):
                 bridged, detail = drain_worker_submission_outbox(run, job)
-                if not int(detail.get("error") or 0) and not int(
-                    detail.get("retry_wait") or 0
-                ):
+                bridged = attach_terminal_submission_evidence(run, bridged)
+                if terminal_submission_bridge_complete(run, bridged, detail):
                     bridged["submission_bridge_terminal_drained_at"] = utc_now()
                 else:
                     submission_bridge_pending_jobs.append(job_id)

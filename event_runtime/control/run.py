@@ -2183,10 +2183,65 @@ def final_conditions(
         for record in bridge_records
         if record.get("state") != "forwarded"
     ]
+    try:
+        stop_ack_payload = json.loads((state_dir / "STOP_ACK.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        stop_ack_payload = {}
+    gpu_submission_drain_timed_out = bool(
+        isinstance(stop_ack_payload, dict)
+        and stop_ack_payload.get("gpu_submission_drain_timed_out")
+    )
+    declared_gpu_submission_errors: list[str] = []
+    forwarded_by_job: dict[str, int] = {}
+    for record in bridge_records:
+        if record.get("state") == "forwarded":
+            job_id = str(record.get("gpu_job_id") or "")
+            forwarded_by_job[job_id] = forwarded_by_job.get(job_id, 0) + 1
+    registry = state_dir / "gpu-job-registry"
+    if registry.is_dir():
+        for path in sorted(registry.glob("*.json")):
+            try:
+                gpu_job = json.loads(path.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            declared = [str(item) for item in gpu_job.get("submission_paths") or []]
+            if not declared:
+                continue
+            progress = gpu_job.get("progress")
+            results = (
+                progress.get("submission_results")
+                if isinstance(progress, dict)
+                else None
+            )
+            job_id = str(gpu_job.get("job_id") or path.stem)
+            if not isinstance(results, list) or len(results) != len(declared):
+                declared_gpu_submission_errors.append(
+                    f"GPU job {job_id} did not finalize all declared submissions"
+                )
+                continue
+            staged = sum(
+                1
+                for item in results
+                if isinstance(item, dict) and item.get("state") == "staged"
+            )
+            if forwarded_by_job.get(job_id, 0) < staged:
+                declared_gpu_submission_errors.append(
+                    f"GPU job {job_id} staged {staged} submission(s) but only "
+                    f"{forwarded_by_job.get(job_id, 0)} reached Harbor"
+                )
     conditions["submission_bridge_drained"] = not (
-        bridge_errors or missing_bridge_names or nonforwarded_bridge
+        bridge_errors
+        or missing_bridge_names
+        or nonforwarded_bridge
+        or declared_gpu_submission_errors
+        or gpu_submission_drain_timed_out
     )
     details.extend(bridge_errors)
+    details.extend(declared_gpu_submission_errors)
+    if gpu_submission_drain_timed_out:
+        details.append(
+            "CPU teardown timed out before the GPU submission bridge proved drained"
+        )
     if missing_bridge_names:
         details.append(
             "GPU submission(s) forwarded but absent from Harbor ledger: "

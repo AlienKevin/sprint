@@ -111,6 +111,14 @@ def build_integrity_report(state_dir: Path, run: dict[str, Any]) -> dict[str, An
                 "trusted budget telemetry failed before the normal budget stop",
             )
         )
+    if stop_ack.get("gpu_submission_drain_timed_out"):
+        reasons.append(
+            _reason(
+                "gpu_submission_drain_timeout",
+                "STOP_ACK.json",
+                "CPU teardown timed out before final GPU submissions were forwarded",
+            )
+        )
 
     # A persistent Codex goal may span multiple turns, but the benchmark CPU
     # process must not disappear while that goal is still active.  The trusted
