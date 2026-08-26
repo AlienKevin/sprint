@@ -624,7 +624,7 @@ fi
 
 # Evaluations only start from image definitions that were eagerly built and
 # exercised on Modal. A stopped CPU trial is never resumed in place.
-if [[ -n "$(git -C "$ROOT" status --porcelain --untracked-files=all -- event_runtime events harbor)" ]]; then
+if ! python3 "$ROOT/event_runtime/preflight/check_source.py"; then
   echo "new evaluations require committed benchmark, Harbor, and launcher source" >&2
   exit 1
 fi

@@ -49,13 +49,13 @@ def test_event_runtime_state_does_not_dirty_the_source_tree() -> None:
 
 def test_launcher_provenance_guard_checks_source_not_generated_runs() -> None:
     launcher = (ROOT / "event_runtime/control/launch.sh").read_text()
-    assert (
-        "status --porcelain --untracked-files=all -- event_runtime events harbor"
-        in launcher
-    )
-    assert (
-        "status --porcelain --untracked-files=all -- events harbor runs" not in launcher
-    )
+    assert 'python3 "$ROOT/event_runtime/preflight/check_source.py"' in launcher
+    source_check = (ROOT / "event_runtime/preflight/check_source.py").read_text()
+    assert '"event_runtime/control"' in source_check
+    assert '"events/g1-100-metres"' in source_check
+    assert '"harbor"' in source_check
+    assert '"event_runtime/export"' not in source_check
+    assert '"runs"' not in source_check
 
 
 def test_launcher_forbids_same_trial_cpu_resume() -> None:
@@ -223,9 +223,14 @@ def test_high_effort_is_propagated_to_deepseek_and_sol_contracts() -> None:
     assert len(rows) == 6
     assert {row["reasoning_effort"] for row in rows} == {"high"}
     launcher = (ROOT / "event_runtime/control/launch.sh").read_text()
+    deepseek_wrapper = (
+        ROOT / "event_runtime/control/providers/deepseek_harness.sh"
+    ).read_text()
     assert '--ae "SPRINT_REASONING_EFFORT=$REASONING_EFFORT"' in launcher
     assert "DeepSeek Harness benchmark reasoning effort is sealed to max" not in launcher
     assert '\"reasoning_effort\":\"' in launcher
+    assert 'REASONING_EFFORT="${REASONING_EFFORT:-max}"' in deepseek_wrapper
+    assert "REASONING_EFFORT=max" not in deepseek_wrapper
 
 
 def test_batch_monitor_holds_owner_until_terminal_cycle(

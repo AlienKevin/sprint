@@ -9,7 +9,7 @@ export MODAL_PROFILE="${MODAL_PROFILE:-kevinli020508}"
 
 MODEL=deepseek/deepseek-v4-flash-vision-exp
 ENDPOINT=https://openrouter.ai/api/v1
-REASONING_EFFORT=max
+REASONING_EFFORT="${REASONING_EFFORT:-max}"
 RUN_ID="${RUN_ID:-lane-deepseek-vision-$(date -u +%Y%m%dT%H%M%SZ)}"
 
 if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then

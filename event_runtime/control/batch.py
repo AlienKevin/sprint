@@ -1554,6 +1554,15 @@ def preflight(
         and goal_template.read_text().startswith("/goal ")
         and "{{ instruction }}" in goal_template.read_text()
     )
+    checks["committed_evaluation_source"] = (
+        subprocess.run(
+            [sys.executable, str(PREFLIGHT_DIR / "check_source.py")],
+            cwd=ROOT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode
+        == 0
+    )
     checks["warm_images"] = (
         subprocess.run(
             [sys.executable, str(PREFLIGHT_DIR / "check_images.py")],
