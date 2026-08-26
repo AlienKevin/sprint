@@ -16,6 +16,6 @@ within the lane, and avoid geometric self-collision.
 ## Verification Explanation
 
 Agents can run the published verifier on their own GPU allocation; official
-scoring archives the same policy bytes separately and remains blind. Effective
+scoring evaluates the submitted policy bytes separately and remains blind. Effective
 Speed rewards legal distance and pace. A trial's final result is its highest
 Effective Speed after the configured budget is exhausted.

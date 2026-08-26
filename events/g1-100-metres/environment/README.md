@@ -1,6 +1,6 @@
 # G1 100 metres
 
-Build and export a TorchScript policy for the frozen Unitree G1 course. This is
+Build and submit a TorchScript policy for the frozen Unitree G1 course. This is
 the agent-facing source of truth for the policy interface, target metric, and
 available commands. The writable workspace is `/app`; this guide and the frozen
 training helpers are installed in `/app/train`. The exact course implementation
