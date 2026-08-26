@@ -90,17 +90,13 @@ def test_minimal_cordis_contract_is_sealed() -> None:
 
 def test_wrapper_seals_route_and_wire_parameters() -> None:
     wrapper = (CONTAINER / "sprint-deepseek-harness-exec-wrapper.sh").read_text()
-    marker = "REQUEST_CONTRACT='"
-    start = wrapper.index(marker) + len(marker)
-    contract = json.loads(wrapper[start : wrapper.index("'", start)])
-    assert contract == {
-        "model": "deepseek/deepseek-v4-flash-vision-exp",
-        "stream": True,
-        "temperature": 1.0,
-        "top_p": 0.95,
-        "max_tokens": 384_000,
-        "reasoning_effort": "max",
-    }
+    assert "REASONING_EFFORT=${SPRINT_REASONING_EFFORT:-max}" in wrapper
+    assert '"reasoning_effort":"' in wrapper
+    assert '$REASONING_EFFORT' in wrapper
+    assert "SPRINT_REASONING_EFFORT must be medium, high, or max" in wrapper
+    assert '"max_tokens":384000' in wrapper
+    assert '"temperature":1.0' in wrapper
+    assert '"top_p":0.95' in wrapper
     assert "PROVIDER_ENDPOINT:-deepseek" in wrapper
     assert '--provider-endpoint "$PROVIDER_ENDPOINT"' in wrapper
     assert '--request-contract-json "$REQUEST_CONTRACT"' in wrapper

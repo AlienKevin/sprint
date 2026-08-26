@@ -12,6 +12,7 @@ UPSTREAM_URL=${SPRINT_OPENROUTER_UPSTREAM_URL:-https://openrouter.ai/api/v1}
 PROVIDER_ENDPOINT=${SPRINT_OPENROUTER_PROVIDER_ENDPOINT:-deepseek}
 RUNNER=${SPRINT_DEEPSEEK_HARNESS_RUNNER:-/opt/sprint-deepseek-harness-runner.py}
 MODEL=${SPRINT_MODEL:-deepseek/deepseek-v4-flash-vision-exp}
+REASONING_EFFORT=${SPRINT_REASONING_EFFORT:-max}
 PROCESS_FILE="$AGENT_STATE_DIR/agent-process"
 PROXY_PROCESS_FILE="$AGENT_STATE_DIR/openrouter-proxy.pid"
 EXPECTED_INTERRUPT="$AGENT_STATE_DIR/expected-interrupt"
@@ -19,13 +20,20 @@ STOP_ACK_TIMEOUT_SECONDS=${SPRINT_STOP_ACK_TIMEOUT_SECONDS:-600}
 PROXY_DRAIN_TIMEOUT_SECONDS=${SPRINT_OPENROUTER_PROXY_DRAIN_TIMEOUT_SECONDS:-900}
 
 EXPECTED_MODEL=deepseek/deepseek-v4-flash-vision-exp
-REQUEST_CONTRACT='{"model":"deepseek/deepseek-v4-flash-vision-exp","stream":true,"temperature":1.0,"top_p":0.95,"max_tokens":384000,"reasoning_effort":"max"}'
+REQUEST_CONTRACT='{"model":"deepseek/deepseek-v4-flash-vision-exp","stream":true,"temperature":1.0,"top_p":0.95,"max_tokens":384000,"reasoning_effort":"'"$REASONING_EFFORT"'"}'
 
 [[ -n "$RUN_ID" ]] || { echo "SPRINT_RUN_ID is required" >&2; exit 2; }
 [[ "$MODEL" == "$EXPECTED_MODEL" ]] || {
   echo "DeepSeek Harness model is sealed to $EXPECTED_MODEL" >&2
   exit 2
 }
+case "$REASONING_EFFORT" in
+  medium|high|max) ;;
+  *)
+    echo "SPRINT_REASONING_EFFORT must be medium, high, or max" >&2
+    exit 2
+    ;;
+esac
 [[ "$PROVIDER_ENDPOINT" == "deepseek" ]] || {
   echo "Vision Exp is sealed to the official DeepSeek OpenRouter endpoint" >&2
   exit 2

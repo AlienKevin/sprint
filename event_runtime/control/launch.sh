@@ -113,10 +113,6 @@ if [[ "$AGENT_KIND" == "deepseek-harness" ]]; then
     echo "DeepSeek Harness is sealed to deepseek/deepseek-v4-flash-vision-exp" >&2
     exit 2
   }
-  [[ "$REASONING_EFFORT" == "max" ]] || {
-    echo "DeepSeek Harness benchmark reasoning effort is sealed to max" >&2
-    exit 2
-  }
   ENDPOINT=${ENDPOINT:-https://openrouter.ai/api/v1}
 elif [[ "${MODEL#*/}" == deepseek-* ]]; then
   echo "DeepSeek models must use the pinned deepseek-harness adapter" >&2
@@ -276,10 +272,10 @@ fi
 if [[ "$MODEL_API_HOST" == "openrouter.ai" ]]; then
   case "$AGENT_KIND:${MODEL#*/}" in
     deepseek-harness:deepseek-v4-flash-vision-exp)
-      SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON='{"max_tokens":384000,"model":"deepseek/deepseek-v4-flash-vision-exp","reasoning_effort":"max","stream":true,"temperature":1.0,"top_p":0.95}'
+      SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON='{"max_tokens":384000,"model":"deepseek/deepseek-v4-flash-vision-exp","reasoning_effort":"'"$REASONING_EFFORT"'","stream":true,"temperature":1.0,"top_p":0.95}'
       ;;
     codex:deepseek-v4-flash-vision-exp)
-      SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON='{"max_output_tokens":384000,"model":"deepseek/deepseek-v4-flash-vision-exp","reasoning":{"effort":"max"},"temperature":1.0,"top_p":0.95}'
+      SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON='{"max_output_tokens":384000,"model":"deepseek/deepseek-v4-flash-vision-exp","reasoning":{"effort":"'"$REASONING_EFFORT"'"},"temperature":1.0,"top_p":0.95}'
       ;;
     codex:gpt-5.6-luna)
       # The official OpenAI route advertises neither sampling overrides nor
@@ -940,6 +936,7 @@ SHARED_AGENT_ENV=(
   --ae "SPRINT_SUBMISSIONS_ROOT=/durable/submissions"
   --ae "SPRINT_SUBMISSION_CAP_PER_TRIAL=$SUBMISSION_CAP_PER_TRIAL"
   --ae "SPRINT_MODEL=$MODEL"
+  --ae "SPRINT_REASONING_EFFORT=$REASONING_EFFORT"
   --ae "SPRINT_SCORING_QUEUE_KEY=${BATCH_ID:-standalone}"
   --ae "SPRINT_REQUESTED_CPU_CORES=2"
   --ae "SPRINT_REQUESTED_MEMORY_MIB=8192"

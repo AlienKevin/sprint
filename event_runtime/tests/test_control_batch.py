@@ -211,8 +211,21 @@ def test_duplicate_monitor_control_record_is_safe_for_cli_output() -> None:
         "status": "monitor_already_running",
         "updated_at": "2026-08-24T00:00:00Z",
     }
-
     assert batch_eval.public_command_output("monitor", result) == result
+
+
+def test_high_effort_is_propagated_to_deepseek_and_sol_contracts() -> None:
+    rows = batch_eval.matrix(
+        "high-canary",
+        families=("deepseek", "sol"),
+        reasoning_effort="high",
+    )
+    assert len(rows) == 6
+    assert {row["reasoning_effort"] for row in rows} == {"high"}
+    launcher = (ROOT / "event_runtime/control/launch.sh").read_text()
+    assert '--ae "SPRINT_REASONING_EFFORT=$REASONING_EFFORT"' in launcher
+    assert "DeepSeek Harness benchmark reasoning effort is sealed to max" not in launcher
+    assert '\"reasoning_effort\":\"' in launcher
 
 
 def test_batch_monitor_holds_owner_until_terminal_cycle(
