@@ -382,8 +382,8 @@ def main() -> int:
         verifier_command = (
             "mkdir -p /tmp/verifier-warm && "
             "mkdir -p /tmp/verifier-telemetry && "
-            "SPRINT_REQUESTED_CPU_CORES=4 SPRINT_REQUESTED_MEMORY_MIB=10240 "
-            "(timeout --preserve-status --signal=TERM --kill-after=5 5 "
+            "(SPRINT_REQUESTED_CPU_CORES=4 SPRINT_REQUESTED_MEMORY_MIB=10240 "
+            "timeout --preserve-status --signal=TERM --kill-after=5 5 "
             "python3 /opt/event_runtime/container/verifier_telemetry.py "
             "--out-dir /tmp/verifier-telemetry --interval-seconds 0.5 "
             "|| test \"$?\" -eq 143) && "
