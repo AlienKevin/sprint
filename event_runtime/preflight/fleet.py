@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Probe one fresh sealed Isaac training GPU allocation per planned trial."""
+"""Probe one CPU-agent and one Isaac training-GPU allocation per trial."""
 
 from __future__ import annotations
 
@@ -59,7 +59,8 @@ def main() -> int:
         "modal_profile": os.environ.get("MODAL_PROFILE"),
         "started_at_epoch_s": started,
         "worker_ids": worker_ids,
-        "workers": [],
+        "cpu_workers": [],
+        "training_gpu_workers": [],
     }
 
     command = (
@@ -76,7 +77,26 @@ def main() -> int:
         "echo SPRINT_FLEET_WORKER_READY"
     )
 
-    def probe(worker_id: str) -> dict[str, Any]:
+    def probe_cpu(worker_id: str) -> dict[str, Any]:
+        result = run_sandbox(
+            app=app,
+            image=image,
+            role="cpu-agent-fleet-probe",
+            command=(
+                "set -euo pipefail; "
+                'python3 -c "import os; assert (os.cpu_count() or 0) >= 2; '
+                'import torch; print(torch.__version__)"; '
+                "test \"$(codex --version)\" = 'codex-cli 0.149.1'; "
+                "echo SPRINT_CPU_FLEET_WORKER_READY"
+            ),
+            cpu=2,
+            memory=8192,
+            timeout=120,
+            required_output_substrings=("SPRINT_CPU_FLEET_WORKER_READY",),
+        )
+        return {"worker_id": worker_id, "ready": True, **result}
+
+    def probe_gpu(worker_id: str) -> dict[str, Any]:
         result = run_sandbox(
             app=app,
             image=image,
@@ -99,40 +119,56 @@ def main() -> int:
         # sandbox has already been terminated by run_sandbox's finally block.
         with app.run():
             with concurrent.futures.ThreadPoolExecutor(
-                max_workers=len(worker_ids)
+                max_workers=2 * len(worker_ids)
             ) as executor:
-                futures = {
-                    executor.submit(probe, worker_id): worker_id
-                    for worker_id in worker_ids
-                }
-                results: dict[str, dict[str, Any]] = {}
+                futures = {}
+                for worker_id in worker_ids:
+                    futures[executor.submit(probe_cpu, worker_id)] = (
+                        "cpu_agent",
+                        worker_id,
+                    )
+                    futures[executor.submit(probe_gpu, worker_id)] = (
+                        "training_gpu",
+                        worker_id,
+                    )
+                results: dict[tuple[str, str], dict[str, Any]] = {}
                 for future in concurrent.futures.as_completed(futures):
-                    worker_id = futures[future]
+                    role, worker_id = futures[future]
                     try:
-                        results[worker_id] = future.result()
+                        results[(role, worker_id)] = future.result()
                     except Exception as exc:  # noqa: BLE001
                         failures.append(
                             {
+                                "role": role,
                                 "worker_id": worker_id,
                                 "error_type": type(exc).__name__,
                                 "error": str(exc)[-4000:],
                             }
                         )
-                report["workers"] = [
-                    results[worker_id]
+                report["cpu_workers"] = [
+                    results[("cpu_agent", worker_id)]
                     for worker_id in worker_ids
-                    if worker_id in results
+                    if ("cpu_agent", worker_id) in results
+                ]
+                report["training_gpu_workers"] = [
+                    results[("training_gpu", worker_id)]
+                    for worker_id in worker_ids
+                    if ("training_gpu", worker_id) in results
                 ]
         report["failures"] = failures
-        report["completed"] = not failures and len(report["workers"]) == len(worker_ids)
+        report["completed"] = bool(
+            not failures
+            and len(report["cpu_workers"]) == len(worker_ids)
+            and len(report["training_gpu_workers"]) == len(worker_ids)
+        )
         report["completed_at_epoch_s"] = time.time()
         report["elapsed_s"] = round(time.time() - started, 3)
         report["cleanup"] = (
-            "all fleet-probe sandboxes terminated; temporary App stopped"
+            "all CPU and GPU fleet-probe sandboxes terminated; temporary App stopped"
         )
         if not report["completed"]:
             raise RuntimeError(
-                f"{len(failures)} of {len(worker_ids)} training GPU probes failed"
+                f"{len(failures)} of {2 * len(worker_ids)} fleet probes failed"
             )
         return 0
     finally:

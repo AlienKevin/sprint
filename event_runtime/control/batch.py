@@ -339,7 +339,7 @@ def functional_gpu_canary_ready() -> bool:
 def training_gpu_fleet_probe(
     *, batch_id: str, modal_profile: str, worker_ids: list[str]
 ) -> tuple[bool, dict[str, Any]]:
-    """Require one concurrent AppLauncher success per planned trial lane."""
+    """Require one concurrent CPU and Isaac GPU allocation per trial lane."""
     if not worker_ids or len(set(worker_ids)) != len(worker_ids):
         return False, {"error": "worker IDs must be non-empty and unique"}
     with tempfile.TemporaryDirectory(prefix="sprint-fleet-probe-") as temporary:
@@ -383,8 +383,13 @@ def training_gpu_fleet_probe(
             completed.returncode == 0
             and report.get("completed") is True
             and report.get("worker_ids") == worker_ids
-            and len(report.get("workers", [])) == len(worker_ids)
-            and all(row.get("ready") is True for row in report.get("workers", []))
+            and len(report.get("cpu_workers", [])) == len(worker_ids)
+            and len(report.get("training_gpu_workers", [])) == len(worker_ids)
+            and all(row.get("ready") is True for row in report.get("cpu_workers", []))
+            and all(
+                row.get("ready") is True
+                for row in report.get("training_gpu_workers", [])
+            )
             and report.get("image_id") == expected_image_id
         )
         if not ready and "controller_output_tail" not in report:
@@ -2828,9 +2833,7 @@ def public_tracking_batch(payload: dict[str, Any]) -> dict[str, Any]:
                     )
                 family = str(arm.get("family") or "")
                 effort = str(
-                    arm.get("reasoning_effort")
-                    or batch.get("reasoning_effort")
-                    or ""
+                    arm.get("reasoning_effort") or batch.get("reasoning_effort") or ""
                 )
                 trial = int(arm.get("trial") or 0)
                 slot = (family, effort, trial)

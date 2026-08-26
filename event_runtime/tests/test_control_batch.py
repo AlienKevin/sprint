@@ -1468,7 +1468,11 @@ def test_training_gpu_fleet_probe_requires_every_exact_worker_and_image(
                     "completed": True,
                     "image_id": "im-exact",
                     "worker_ids": worker_ids,
-                    "workers": [
+                    "cpu_workers": [
+                        {"worker_id": worker_id, "ready": True}
+                        for worker_id in worker_ids
+                    ],
+                    "training_gpu_workers": [
                         {"worker_id": worker_id, "ready": True}
                         for worker_id in worker_ids
                     ],
@@ -1483,13 +1487,16 @@ def test_training_gpu_fleet_probe_requires_every_exact_worker_and_image(
         batch_id="eval", modal_profile="test", worker_ids=planned_workers
     )
     assert ready
-    assert [row["worker_id"] for row in report["workers"]] == planned_workers
+    assert [row["worker_id"] for row in report["cpu_workers"]] == planned_workers
+    assert [
+        row["worker_id"] for row in report["training_gpu_workers"]
+    ] == planned_workers
 
     def incomplete_run(command, **kwargs):
         result = successful_run(command, **kwargs)
         report = Path(command[command.index("--report") + 1])
         payload = json.loads(report.read_text())
-        payload["workers"].pop()
+        payload["cpu_workers"].pop()
         report.write_text(json.dumps(payload))
         return result
 
