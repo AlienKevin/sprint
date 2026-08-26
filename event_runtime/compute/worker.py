@@ -3694,11 +3694,33 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
             return result
 
         if operator_stop_requested(state_dir):
+            # The CPU supervisor waits for this handshake solely to protect
+            # explicit policy submissions from teardown.  If no job ever
+            # declared a submission path, release it before the slower sandbox
+            # stop/reconciliation pass; otherwise a large terminal job history
+            # can consume the entire drain timeout despite there being nothing
+            # to forward.
+            job_ids = list_job_ids(run)
+            jobs_before_stop = {
+                job_id: load_job(run, job_id) for job_id in job_ids
+            }
+            has_explicit_submissions = any(
+                job and job.get("submission_paths")
+                for job in jobs_before_stop.values()
+            )
+            drain_pre_signaled = False
+            drain_signal_error = None
+            if not has_explicit_submissions:
+                try:
+                    signal_gpu_submission_drain_complete(run)
+                    drain_pre_signaled = True
+                except Exception as exc:  # noqa: BLE001
+                    drain_signal_error = f"{type(exc).__name__}: {exc}"
             stopped = _stop_all_locked(run, reason="operator_stop")
             bridge_pending: list[str] = []
             reconciled: list[dict[str, Any]] = []
-            for job_id in list_job_ids(run):
-                job = load_job(run, job_id)
+            for job_id in job_ids:
+                job = load_job(run, job_id) or jobs_before_stop.get(job_id)
                 if not job:
                     continue
                 job = reconcile_terminal_attempt_before_stop(run, job)
@@ -3725,10 +3747,10 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
                         **detail,
                     }
                 )
-            drain_signal_error = None
-            if not bridge_pending:
+            if not bridge_pending and not drain_pre_signaled:
                 try:
                     signal_gpu_submission_drain_complete(run)
+                    drain_signal_error = None
                 except Exception as exc:  # noqa: BLE001
                     drain_signal_error = f"{type(exc).__name__}: {exc}"
                     bridge_pending.append("cpu_drain_handshake")

@@ -58,8 +58,20 @@ def submission_bridge_reasons(
 ) -> list[dict[str, str]]:
     """Return fail-closed reasons for incomplete explicit GPU submissions."""
     reasons: list[dict[str, str]] = []
-    if _read_json(state_dir / "STOP_ACK.json").get(
-        "gpu_submission_drain_timed_out"
+    registry = state_dir / "gpu-job-registry"
+    registry_jobs = (
+        [_read_json(path) for path in sorted(registry.glob("*.json"))]
+        if registry.is_dir()
+        else []
+    )
+    has_explicit_submissions = any(
+        job.get("submission_paths") for job in registry_jobs
+    )
+    if (
+        _read_json(state_dir / "STOP_ACK.json").get(
+            "gpu_submission_drain_timed_out"
+        )
+        and has_explicit_submissions
     ):
         reasons.append(
             _reason(
@@ -133,10 +145,8 @@ def submission_bridge_reasons(
                 )
             )
 
-    registry = state_dir / "gpu-job-registry"
     if registry.is_dir():
-        for path in sorted(registry.glob("*.json")):
-            job = _read_json(path)
+        for path, job in zip(sorted(registry.glob("*.json")), registry_jobs):
             declared = [str(item) for item in job.get("submission_paths") or []]
             if not declared:
                 continue
