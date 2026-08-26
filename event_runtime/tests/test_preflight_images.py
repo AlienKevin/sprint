@@ -189,6 +189,18 @@ def test_functional_canary_uses_trainer_owned_final_checkpoint() -> None:
     assert '"EXPORTED /app/policy_train.pt"' not in source
 
 
+def test_functional_canary_exercises_the_published_structural_checker() -> None:
+    source = (PREFLIGHT / "canary.py").read_text()
+    dockerfile = (
+        ROOT / "events/g1-100-metres/environment/Dockerfile"
+    ).read_text()
+
+    assert "test -f /opt/event-verifier/check_submission.py" in source
+    assert "python3 /opt/event-verifier/check_submission.py" in source
+    assert "rsl-rl-lib==3.0.1" in dockerfile
+    assert "m.version(\"rsl-rl-lib\") == \"3.0.1\"" in dockerfile
+
+
 def test_functional_canary_accepts_any_authoritative_gpu_activity_signal() -> None:
     source = (PREFLIGHT / "canary.py").read_text()
 

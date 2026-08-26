@@ -43,4 +43,5 @@ def test_published_verifier_contract_matches_declared_sources(tmp_path: Path) ->
         relative.as_posix() for relative in verifier_source_files(event.verifier)
     }
     assert selected == set(published)
+    assert "check_submission.py" in selected
     assert not any(path.startswith("test_") for path in selected)

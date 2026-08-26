@@ -18,6 +18,7 @@ from event_runtime.event import EventLayout, load_event  # noqa: E402
 
 VERIFIER_ENTRYPOINTS = (
     Path("test.sh"),
+    Path("check_submission.py"),
     Path("verify.py"),
     Path("verifier/collision_geometry.json"),
 )

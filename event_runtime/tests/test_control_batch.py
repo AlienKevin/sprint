@@ -52,6 +52,8 @@ def test_launcher_provenance_guard_checks_source_not_generated_runs() -> None:
     assert 'python3 "$ROOT/event_runtime/preflight/check_source.py"' in launcher
     source_check = (ROOT / "event_runtime/preflight/check_source.py").read_text()
     assert '"event_runtime/control"' in source_check
+    assert '"event_runtime/event.py"' in source_check
+    assert '"event_runtime/sync_verifier.py"' in source_check
     assert '"events/g1-100-metres"' in source_check
     assert '"harbor"' in source_check
     assert '"event_runtime/export"' not in source_check

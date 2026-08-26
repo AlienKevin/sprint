@@ -18,8 +18,10 @@ EVALUATION_SOURCE_PATHS = (
     "event_runtime/control",
     "event_runtime/models",
     "event_runtime/preflight",
+    "event_runtime/event.py",
     "event_runtime/image.py",
     "event_runtime/pricing.py",
+    "event_runtime/sync_verifier.py",
     "events/g1-100-metres",
     "harbor",
 )
