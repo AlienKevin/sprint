@@ -76,17 +76,19 @@
       const apiBasis=(run.timeline?.usage_summary?.calculated_api_usage_cost_basis||[]).includes('openrouter_reported_cost')?'OpenRouter reported request cost':'reconstructed at published list price';
       const parts=[{key:'api',label:'Model API',value:finite(api)?api:0,basis:apiBasis},{key:'cpu',label:'CPU agent',...cpu},{key:'training',label:'Training sandbox',...training}];
       return {run,family:family(run.model),trial:trialNumber(run),effort:run.reasoning_effort||'',parts,total:parts.reduce((sum,part)=>sum+part.value,0)};
-    }).sort((a,b)=>order.indexOf(a.family)-order.indexOf(b.family)||String(a.effort).localeCompare(String(b.effort))||(a.trial||0)-(b.trial||0));
+    });
     if(!rows.length){$('#resource-bars').innerHTML='<p class="empty">Costs appear as trials start.</p>';return}
-    const max=Math.max(.01,...rows.map(row=>row.total));
-    const legend=`<div class="cost-legend"><span><i class="api"></i>Model API</span><span><i class="cpu"></i>CPU agent</span><span><i class="training"></i>Training sandbox</span></div><p class="cost-note">Verifier sandbox excluded · Modal charges are pre-credit</p>`;
-    const bars=rows.map((row,index)=>{
-      const model=MODEL[row.family]?.label||row.family,trial=row.trial??index+1,effort=row.effort?` · ${row.effort}`:'';
-      const segments=row.parts.map(part=>`<i class="cost-segment ${part.key}" style="width:${100*part.value/max}%" title="${esc(part.label)}: ${part.value.toFixed(2)} USD · ${esc(part.basis)}"></i>`).join('');
-      const breakdown=row.parts.map(part=>`${part.label} $${part.value.toFixed(2)}`).join(', ');
-      return `<div class="cost-trial-row ${row.family}"><span class="cost-trial-label"><strong>${model}${esc(effort)} · trial ${trial}</strong><small>${esc(row.run.run_id)}</small></span><div class="cost-stack" role="img" aria-label="${model}${esc(effort)} trial ${trial}: ${esc(breakdown)}; verifier sandbox excluded">${segments}</div><b>$${row.total.toFixed(2)}</b></div>`;
+    const budget=10,effortOrder={medium:0,high:1,max:2},grouped=groupBy(rows,row=>row.family);
+    const heat=value=>`${Math.round(Math.max(0,Math.min(1,value/budget))*44)}%`;
+    const costCell=part=>`<td class="budget-heat budget-${part.key}" style="--heat:${heat(part.value)}" title="${esc(part.label)}: ${part.value.toFixed(2)} USD · ${esc(part.basis)}"><strong>${fmtMoney(part.value)}</strong><small>${Math.round(100*part.value/budget)}%</small></td>`;
+    const bodies=order.filter(key=>grouped[key]?.length).map(key=>{
+      const familyRows=grouped[key].sort((a,b)=>(effortOrder[a.effort]??99)-(effortOrder[b.effort]??99)||(a.trial||0)-(b.trial||0));
+      return `<tbody class="budget-group ${esc(key)}">${familyRows.map((row,index)=>{
+        const model=MODEL[key]?.label||key,trial=row.trial??index+1,parts=Object.fromEntries(row.parts.map(part=>[part.key,part])),unspent=Math.max(0,budget-row.total),href=`/trajectory?run=${encodeURIComponent(row.run.run_id)}`;
+        return `<tr class="budget-row ${esc(key)}">${index===0?`<th class="budget-model" scope="rowgroup" rowspan="${familyRows.length}"><span class="trial-dot"></span><strong>${esc(model)}</strong></th>`:''}<td>${esc(row.effort||'—')}</td><td><a href="${href}" aria-label="Open trial ${esc(trial)} trace">${esc(trial)}</a></td>${costCell(parts.api)}${costCell(parts.cpu)}${costCell(parts.training)}<td class="budget-total"><strong>${fmtMoney(row.total)}</strong></td>${costCell({key:'unspent',label:'Unspent budget',value:unspent,basis:'$10 trial budget minus recorded agent-side cost'})}</tr>`;
+      }).join('')}</tbody>`;
     }).join('');
-    $('#resource-bars').innerHTML=legend+`<div class="cost-trial-list">${bars}</div>`;
+    $('#resource-bars').innerHTML=`<div class="budget-table-wrap"><table class="budget-table"><caption>Cell shading and percentages use the shared $10 trial budget. Modal charges are pre-credit; verifier infrastructure is excluded.</caption><thead><tr><th scope="col">Model</th><th scope="col">Effort</th><th scope="col">Trial</th><th scope="col">Model API</th><th scope="col">CPU agent</th><th scope="col">Training</th><th scope="col">Total</th><th scope="col">Unspent</th></tr></thead>${bodies}</table></div>`;
   }
   function snapshotUpdatedAt(batch=state.batch){const candidates=[batch?.updated_at,state.timelineUpdatedAt,state.performance?.generated_at].map(value=>Date.parse(value||'')).filter(finite);return candidates.length?new Date(Math.max(...candidates)).toISOString():null}
   function batchIsLive(batch=state.batch){const updated=Date.parse(snapshotUpdatedAt(batch)||''),declared=['running','stopping','finalizing_site'].includes(batch?.status);return declared&&finite(updated)&&Date.now()-updated<30*60*1000}

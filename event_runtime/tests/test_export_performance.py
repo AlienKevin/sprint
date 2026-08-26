@@ -500,9 +500,9 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "class:'submission-target'" in app
     assert "el.getScreenCTM()" in app
     assert "nearest.distance<=22**2" in app
-    assert "styles.css?v=20260826-1" in page
-    assert "app.js?v=20260826-1" in page
-    assert '"version":"20260826-1"' in (ROOT / "web/version.json").read_text()
+    assert "styles.css?v=20260826-2" in page
+    assert "app.js?v=20260826-2" in page
+    assert '"version":"20260826-2"' in (ROOT / "web/version.json").read_text()
     assert "AUC cutoff" not in app
     assert "auc-cap-line" not in app
     assert ".auc-cap-line" not in styles
@@ -533,6 +533,14 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "data-family=\"${esc(key)}\"" in app
     assert "experiment-model-hover" in app
     assert "best_continuous_score_mps" in app
+    assert 'class="budget-table"' in app
+    assert 'scope="rowgroup"' in app
+    assert "Cell shading and percentages use the shared $10 trial budget" in app
+    assert "Math.max(0,budget-row.total)" in app
+    assert "cost-stack" not in app
+    assert ".budget-heat" in styles
+    assert "background: color-mix(in srgb, var(--text) var(--heat), var(--panel))" in styles
+    assert ".cost-trial-row" not in styles
     preview = trajectory_app.split("function stepPreview", 1)[1].split(
         "function matchesFilter", 1
     )[0]
@@ -622,8 +630,8 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "--deepseek: #7c54cd" in trajectory_styles
     assert "--sol: #2279dc" in trajectory_styles
     assert "border-right: 2px solid color-mix(in srgb, var(--model-accent) 72%, var(--line))" in styles
-    assert "background: var(--cost-cpu)" in styles
-    assert "background: var(--cost-training)" in styles
+    assert "--cost-cpu" not in styles
+    assert "--cost-training" not in styles
     assert "--deepseek:#7C54CD" in timeline_page
     assert "--luna:#66D693" in timeline_page
     assert "--sol:#2279DC" in timeline_page
