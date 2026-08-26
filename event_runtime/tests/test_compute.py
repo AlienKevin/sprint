@@ -1365,15 +1365,15 @@ class ClaimSelectionTests(unittest.TestCase):
 
 
 class SubmissionBridgeTests(unittest.TestCase):
-    def request(self, *, attempt: int = 1) -> dict:
+    def request(self, *, attempt: int = 1, submission_id: str = "123456-abcd") -> dict:
         content = b"immutable-policy"
         digest = hashlib.sha256(content).hexdigest()
         return {
             "receipt": {
                 "schema_version": 2,
                 "bridge": "host_owned_gpu_submission_v1",
-                "submission_id": "123456-abcd",
-                "queue_name": "123456-abcd.pt",
+                "submission_id": submission_id,
+                "queue_name": f"{submission_id}.pt",
                 "run_id": "run-1",
                 "gpu_job_id": "job-1",
                 "gpu_attempt": attempt,
@@ -1468,6 +1468,30 @@ class SubmissionBridgeTests(unittest.TestCase):
                 _updated, detail = gpu_worker.drain_worker_submission_outbox(run, job)
             self.assertEqual(detail["forwarded"], 1)
             submit.assert_called_once()
+
+    def test_drain_pages_until_every_explicit_submission_is_forwarded(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            run, job = self.run_and_job(Path(raw))
+            first = self.request(submission_id="123456-abcd")
+            second = self.request(submission_id="123457-abce")
+            with (
+                mock.patch.object(
+                    gpu_worker,
+                    "read_worker_submission_outbox",
+                    side_effect=[[first], [second], []],
+                ),
+                mock.patch.object(
+                    gpu_worker,
+                    "submit_worker_policy_to_cpu_agent",
+                    return_value={"returncode": 0, "stdout": "staged", "stderr": ""},
+                ) as submit,
+                mock.patch.object(gpu_worker, "acknowledge_worker_submission"),
+            ):
+                _updated, detail = gpu_worker.drain_worker_submission_outbox(run, job)
+
+            self.assertEqual(detail["observed"], 2)
+            self.assertEqual(detail["forwarded"], 2)
+            self.assertEqual(submit.call_count, 2)
 
     def test_drain_fails_closed_when_cpu_archive_omits_returncode(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -1999,6 +2023,34 @@ class TryClaimPersistenceTests(unittest.TestCase):
 
 
 class GpuConcurrencyLimitTests(unittest.TestCase):
+    def test_fifteen_trials_have_independent_single_gpu_slots(self) -> None:
+        jobs = {
+            f"run-{index}": {
+                "job_id": f"job-{index}",
+                "status": "running",
+            }
+            for index in range(15)
+        }
+
+        def list_ids(run, **_kwargs):
+            return [jobs[str(run["run_id"])]["job_id"]]
+
+        def load(run, _job_id, **_kwargs):
+            return jobs[str(run["run_id"])]
+
+        with (
+            mock.patch.object(gpu_worker, "list_job_ids", side_effect=list_ids),
+            mock.patch.object(gpu_worker, "load_job", side_effect=load),
+        ):
+            active = [
+                gpu_worker.active_training_job_ids({"run_id": f"run-{index}"})
+                for index in range(15)
+            ]
+
+        self.assertTrue(all(len(job_ids) == 1 for job_ids in active))
+        self.assertEqual(len({job_ids[0] for job_ids in active}), 15)
+        self.assertEqual(gpu_worker.MAX_ACTIVE_TRAINING_JOBS_PER_RUN, 1)
+
     def test_six_idle_indexed_lanes_do_one_exact_index_read_and_no_lists(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -2326,48 +2378,6 @@ class GpuConcurrencyLimitTests(unittest.TestCase):
 
             self.assertEqual(result[0]["decision"], "cancel_retry_required")
             self.assertFalse((Path(raw) / "control-acks" / f"{'c' * 32}.json").exists())
-
-    def test_retry_backoff_reserves_slot_ahead_of_new_job(self) -> None:
-        jobs = {
-            "recovering": {
-                "job_id": "recovering",
-                "status": "retry_wait",
-                "attempt": 1,
-                "retry_not_before_epoch_s": time.time() + 60,
-            },
-            "new": {
-                "job_id": "new",
-                "status": "pending",
-                "attempt": 0,
-                "created_at_epoch_s": 2,
-            },
-        }
-        with tempfile.TemporaryDirectory() as raw:
-            run = {
-                "run_id": "unit",
-                "state_dir": raw,
-                "cpu_agent_gpu_worker": True,
-            }
-            with (
-                mock.patch.object(
-                    gpu_worker.sprintctl,
-                    "load_run",
-                    return_value=(Path(raw), run),
-                ),
-                mock.patch.object(gpu_worker, "list_job_ids", return_value=list(jobs)),
-                mock.patch.object(
-                    gpu_worker,
-                    "load_job",
-                    side_effect=lambda _run, job_id, **_kwargs: dict(jobs[job_id]),
-                ),
-                mock.patch.object(gpu_worker.ModalSandboxProvider, "start") as start,
-            ):
-                result = gpu_worker.dispatch_once("unit")
-
-        self.assertEqual(result["reason"], "retry_backoff_reserved")
-        self.assertEqual(result["pending"], [])
-        start.assert_not_called()
-
 
 class AgentCredentialBoundaryTests(unittest.TestCase):
     def test_agent_env_allows_only_model_auth_and_endpoint_metadata(self) -> None:
@@ -2791,7 +2801,7 @@ class RetryAndFencingTests(unittest.TestCase):
             )
         )
 
-    def test_retry_keeps_logical_job_and_fences_lease(self) -> None:
+    def test_preemption_is_terminal_and_fences_lease(self) -> None:
         job = {
             "job_id": "logical",
             "run_id": "unit",
@@ -2818,7 +2828,7 @@ class RetryAndFencingTests(unittest.TestCase):
                     with mock.patch.object(
                         gpu_worker, "_terminate_sandbox", return_value=None
                     ):
-                        out = gpu_worker.schedule_retry(
+                        out = gpu_worker.finalize_lost_job(
                             run,
                             job,
                             heartbeat=heartbeat,
@@ -2827,14 +2837,14 @@ class RetryAndFencingTests(unittest.TestCase):
                             now=200,
                         )
         self.assertEqual(out["job_id"], "logical")
-        self.assertEqual(out["status"], "retry_wait")
-        self.assertEqual(out["next_attempt"], 2)
-        self.assertEqual(out["retry_not_before_epoch_s"], 202)
+        self.assertEqual(out["status"], "preempted")
+        self.assertEqual(out["failure_reason"], "worker_lost")
+        self.assertEqual(out["retry_policy"], "agent_decides_new_job")
         self.assertEqual(out["fenced_lease_id"], "old-lease")
         self.assertNotIn("lease_id", out)
         self.assertEqual(out["last_progress"], {"step": 7})
 
-    def test_max_attempts_exhausts_cleanly(self) -> None:
+    def test_spawn_failure_is_terminal_without_hidden_retry(self) -> None:
         job = {
             "job_id": "logical",
             "run_id": "unit",
@@ -2848,16 +2858,16 @@ class RetryAndFencingTests(unittest.TestCase):
                 with mock.patch.object(
                     gpu_worker, "_terminate_sandbox", return_value=None
                 ):
-                    out = gpu_worker.schedule_retry(
+                    out = gpu_worker.finalize_lost_job(
                         {"run_id": "unit"},
                         job,
                         heartbeat=None,
                         exit_code=137,
-                        reason="worker_lost",
+                        reason="spawn_failed",
                         now=200,
                     )
         self.assertEqual(out["status"], "failed")
-        self.assertEqual(out["failure_reason"], "max_attempts_exhausted")
+        self.assertEqual(out["failure_reason"], "spawn_failed")
 
     def test_old_worker_cannot_own_new_lease(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -3106,7 +3116,7 @@ class RetryAndFencingTests(unittest.TestCase):
             repaired["termination_reason"], "agent_cost_budget_exhausted"
         )
 
-    def test_reconcile_automatically_retries_lost_running_worker(self) -> None:
+    def test_reconcile_reports_lost_running_worker_as_preempted(self) -> None:
         job = {
             "job_id": "logical",
             "run_id": "unit",
@@ -3152,9 +3162,9 @@ class RetryAndFencingTests(unittest.TestCase):
                                     now=200,
                                     probe_fn=lambda _job: ("exited", 137, None),
                                 )
-        self.assertEqual(detail["decision"], "dead")
-        self.assertEqual(out["status"], "retry_wait")
-        self.assertEqual(out["next_attempt"], 2)
+        self.assertEqual(detail["decision"], "preempted")
+        self.assertEqual(out["status"], "preempted")
+        self.assertEqual(out["retry_policy"], "agent_decides_new_job")
 
 
 class CheckpointContinuationTests(unittest.TestCase):
@@ -3350,6 +3360,25 @@ class AgentGpuCliTests(unittest.TestCase):
             train_cli.validate_output_paths(["/tmp/policy.pt"])
         with self.assertRaisesRegex(SystemExit, "basenames must be unique"):
             train_cli.validate_output_paths(["/app/a/p.pt", "/app/b/p.pt"])
+
+    def test_submission_paths_require_explicit_torchscript_files(self) -> None:
+        self.assertEqual(
+            train_cli.validate_submission_paths(["/app/results/policy.pt"]),
+            ["/app/results/policy.pt"],
+        )
+        with self.assertRaisesRegex(SystemExit, "TorchScript .pt"):
+            train_cli.validate_submission_paths(["/app/results/checkpoint.pth"])
+
+    def test_declared_submission_is_archived_only_after_success(self) -> None:
+        completed = mock.Mock(returncode=0, stdout="staged locally abc\n", stderr="")
+        with mock.patch.object(worker_run.subprocess, "run", return_value=completed) as run:
+            results = worker_run.submit_declared_policies(
+                {"job_id": "job-1", "submission_paths": ["/app/policy.pt"]}
+            )
+
+        self.assertEqual(results[0]["state"], "staged")
+        command = run.call_args.args[0]
+        self.assertEqual(command[:3], ["/usr/local/bin/event", "archive", "/app/policy.pt"])
 
     def test_terminal_status_requires_explicit_artifact_retrieval(self) -> None:
         payload = {

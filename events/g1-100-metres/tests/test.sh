@@ -26,7 +26,7 @@ stop_telemetry() {
 trap stop_telemetry EXIT
 
 write_rewards() {
-    VALID="${VALID:-0}" LOGS_DIR="$LOGS_DIR" python3 << 'PYEOF'
+    VALID="${VALID:-0}" STRUCTURAL_VALID="${STRUCTURAL_VALID:-0}" LOGS_DIR="$LOGS_DIR" python3 << 'PYEOF'
 import json, os
 
 logs = os.environ["LOGS_DIR"]
@@ -43,10 +43,12 @@ r = json.load(open(path)) if os.path.exists(path) else {}
 # the field to read first. Gate pass/fail is encoded as 1/0 floats for the
 # trusted result archive. It is not copied back to the agent.
 valid = bool(int(os.environ["VALID"]))
+structural_valid = bool(int(os.environ["STRUCTURAL_VALID"]))
 failed = set(r.get("failed_gates") or [])
 data = {
     "reward": 1.0 if valid else 0.0,
     "valid_run": 1.0 if valid else 0.0,
+    "submission_contract_valid": 1.0 if structural_valid else 0.0,
     "best_100m_s": float(r.get("best_valid_100m_s") or 0.0),
     # Diagnostic legal progress for the benchmark archive; counting stops at the
     # first lane or self-collision DQ and never participates in validity.
@@ -85,6 +87,13 @@ if [ ! -f "$SUBMISSION" ]; then
     exit 1
 fi
 
+POLICY_SIZE_BYTES="$(stat -c %s "$SUBMISSION")"
+if [ "$POLICY_SIZE_BYTES" -le 0 ] || [ "$POLICY_SIZE_BYTES" -gt 33554432 ]; then
+    echo "ERROR: policy must be non-empty and no larger than 32 MiB"
+    VALID=0 STRUCTURAL_VALID=0 write_rewards
+    exit 1
+fi
+
 # The submission is data, not code.  Refusing anything that is not a TorchScript
 # archive is what keeps the rollout from executing arbitrary Python inside the
 # verifier.
@@ -97,6 +106,18 @@ sys.exit(0 if zipfile.is_zipfile('$SUBMISSION') else 1)
     exit 1
 fi
 
+# This trusted CPU preflight defines whether the artifact consumes one of the
+# trial's submission slots. It checks the exact immutable bytes before any
+# expensive Isaac rollout begins.
+if ! python3 "$TESTS_DIR/check_submission.py" "$SUBMISSION" \
+    >"$LOGS_DIR/submission-contract.txt" 2>&1; then
+    cat "$LOGS_DIR/submission-contract.txt"
+    echo "ERROR: policy does not meet the structural submission contract"
+    VALID=0 STRUCTURAL_VALID=0 write_rewards
+    exit 1
+fi
+STRUCTURAL_VALID=1
+
 echo ""
 echo "=== Time trial ==="
 set +e
@@ -106,7 +127,7 @@ ISAAC_PYTHON=(python3)
 if [ -n "${SPRINT_ISAAC_BOOTSTRAP:-}" ]; then
     if [ ! -f "$SPRINT_ISAAC_BOOTSTRAP" ]; then
         echo "ERROR: requested Isaac bootstrap is missing: $SPRINT_ISAAC_BOOTSTRAP"
-        VALID=0 write_rewards
+        VALID=0 STRUCTURAL_VALID=1 write_rewards
         exit 1
     fi
     ISAAC_PYTHON+=("$SPRINT_ISAAC_BOOTSTRAP")
@@ -132,7 +153,7 @@ if grep -Eq \
     'GPU solver pipeline failed|GPU Bp pipeline failed|switching to software' \
     "$ISAAC_STDOUT"; then
     echo "ERROR: PhysX GPU pipeline fell back to CPU; refusing to score"
-    VALID=0 write_rewards
+    VALID=0 STRUCTURAL_VALID=1 write_rewards
     exit 1
 fi
 
@@ -142,7 +163,7 @@ if [ "$VERIFY_EXIT" -ne 0 ]; then
     else
         echo "ERROR: nominal evaluation did not complete (exit $VERIFY_EXIT)"
     fi
-    VALID=0 write_rewards
+    VALID=0 STRUCTURAL_VALID=1 write_rewards
     exit 1
 fi
 
@@ -167,5 +188,5 @@ else:
     print("failed gates          : -")
 PYEOF
 
-VALID="$VALID" write_rewards
+VALID="$VALID" STRUCTURAL_VALID=1 write_rewards
 [ "$VALID" = "1" ] && exit 0 || exit 1

@@ -10,7 +10,7 @@
 export const name = 'sprint-deepseek-goal-bootstrap'
 export const inject = ['goals']
 
-const HOST_OWNED_MUTATIONS = ['edit', 'pause', 'complete', 'block', 'clear', 'resume']
+const HOST_OWNED_MUTATIONS = ['edit', 'pause', 'complete', 'clear', 'resume']
 
 function requiredObjective() {
   const objective = process.env.DSH_GOAL_OBJECTIVE?.trim()
@@ -34,7 +34,9 @@ export function apply(ctx) {
   //
   // Put the authority boundary at the service itself so every caller (current
   // tools and future plugins alike) receives an ordinary tool error before any
-  // goal/change event is committed. The CPU rollout is never resumed in place.
+  // goal/change event is committed. ``block`` remains available to the trusted
+  // stock round driver so queue, checkpoint, and round-limit failures become a
+  // durable terminal goal state. No model-facing goal tools are mounted.
   for (const mutation of HOST_OWNED_MUTATIONS) {
     if (typeof ctx.goals[mutation] !== 'function') {
       throw new Error(`DeepSeek Harness goal service is missing ${mutation}()`)

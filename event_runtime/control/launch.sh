@@ -665,6 +665,18 @@ python3 "$SOURCE_ROOT/event_runtime/control/render_task.py" \
   --source "$TASK_SOURCE" \
   --destination "$TASK" \
   --budget "$AGENT_COST_BUDGET_USD"
+SUBMISSION_CAP_PER_TRIAL=$(python3 - "$TASK/task.toml" <<'PY'
+import pathlib
+import sys
+import tomllib
+
+config = tomllib.loads(pathlib.Path(sys.argv[1]).read_text())
+value = config["verifier"]["continuous"].get("max_submissions")
+if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+    raise SystemExit("verifier.continuous.max_submissions must be a positive integer")
+print(value)
+PY
+)
 printf '%s=%s\n' "$AGENT_SECRET_NAME" "$AGENT_SECRET" >"$ENV_FILE"
 if [[ -n "$ENDPOINT" && "$AGENT_KIND" == "codex" ]]; then
   printf 'OPENAI_BASE_URL=%s\n' "$ENDPOINT" >>"$ENV_FILE"
@@ -693,7 +705,8 @@ python3 - "$STATE_DIR/run.json" "$RUN_ID" "$APP_NAME" "$TRAINING_APP_NAME" \
   "$SOURCE_ROOT" "$SPRINT_SOURCE_COMMIT" "$TASK" \
   "$AGENT_COST_BUDGET_USD" "$AGENT_COST_SHUTDOWN_RESERVE_USD" \
   "$MINIMUM_SAFE_SHUTDOWN_RESERVE_USD" \
-  "$DEEPSEEK_PRICING_SNAPSHOT_JSON" "$MODEL_API_COST_BASIS" <<'PY'
+  "$DEEPSEEK_PRICING_SNAPSHOT_JSON" "$MODEL_API_COST_BASIS" \
+  "$SUBMISSION_CAP_PER_TRIAL" <<'PY'
 import datetime
 import fcntl
 import hashlib
@@ -707,7 +720,7 @@ import sys
  branch, standing_gpu_flag,
  model_api_host, prompt_template, warmup_manifest_path, root, batch_id, source_root,
  sprint_source_commit, rendered_task_root, agent_cost_budget, shutdown_reserve, minimum_reserve,
- pricing_snapshot_json, model_api_cost_basis) = sys.argv[1:]
+ pricing_snapshot_json, model_api_cost_basis, submission_cap_per_trial) = sys.argv[1:]
 standing_gpu = standing_gpu_flag == "1"
 pricing_snapshot = json.loads(pricing_snapshot_json) if pricing_snapshot_json else None
 provider_endpoint = os.environ.get("SPRINT_OPENROUTER_PROVIDER_ENDPOINT")
@@ -901,14 +914,13 @@ payload = {
     "telemetry_gpu_max_gap_seconds": 45,
     "telemetry_gpu_pipeline_max_gap_seconds": 45,
     "telemetry_resource_roles": ["cpu-agent", "training-gpu", "verifier-gpu"],
-    # Per-trial admission is rate-limited, then every run in this batch feeds
-    # one crash-safe blind official verifier lane.
+    # Every run in this batch feeds one crash-safe blind official verifier lane.
     "scoring_queue_scope": "shared_blind_archival_queue",
     "scoring_queue_key": batch_id or "standalone",
     "scoring_max_concurrent_per_trial": 1,
     "scoring_cross_trial_lease": True,
-    "scoring_minimum_submission_interval_sec": 300,
-    "scoring_max_outstanding_submissions_per_trial": 1,
+    "scoring_max_submissions_per_trial": int(submission_cap_per_trial),
+    "scoring_submission_slot_policy": "unique_structurally_valid_policy",
     "scoring_feedback_policy": "official_results_hidden_agent_local_verification",
     "scoring_drain_policy": "all_accepted_submissions",
     "scoring_deduplication_key": "task_fingerprint_plus_policy_sha256",
@@ -926,7 +938,7 @@ SHARED_AGENT_ENV=(
   --ae "SPRINT_RUN_ID=$RUN_ID"
   --ae "SPRINT_GPU_JOBS_ROOT=/durable/runs/$RUN_ID/gpu-jobs"
   --ae "SPRINT_SUBMISSIONS_ROOT=/durable/submissions"
-  --ae "SPRINT_SUBMISSION_MIN_INTERVAL_SEC=300"
+  --ae "SPRINT_SUBMISSION_CAP_PER_TRIAL=$SUBMISSION_CAP_PER_TRIAL"
   --ae "SPRINT_MODEL=$MODEL"
   --ae "SPRINT_SCORING_QUEUE_KEY=${BATCH_ID:-standalone}"
   --ae "SPRINT_REQUESTED_CPU_CORES=2"

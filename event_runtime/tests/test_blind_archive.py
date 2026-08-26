@@ -166,6 +166,21 @@ def test_submission_accepts_after_sixty_prior_receipts(
     assert len(list(Path(submit.QUEUE).glob("*.pt"))) == 1
 
 
+def test_submission_rejects_policy_over_visible_size_limit(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    submit = load_script("archive.py")
+    configure_paths(submit, tmp_path)
+    monkeypatch.setattr(submit, "MAX_POLICY_BYTES", 4)
+    policy = tmp_path / "candidate.pt"
+    policy.write_bytes(b"12345")
+    monkeypatch.setattr(sys, "argv", ["event archive", str(policy)])
+
+    assert submit.main() == 1
+    assert "32 MiB" in capsys.readouterr().err
+    assert not list(Path(submit.QUEUE).glob("*.pt"))
+
+
 def test_board_lists_receipts_without_reading_official_results(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:

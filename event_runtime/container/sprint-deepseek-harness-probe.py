@@ -3,10 +3,12 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
 from pathlib import Path
+import sys
 import tempfile
 import threading
 
@@ -16,6 +18,11 @@ from deepseek_harness import DeepSeekHarness
 MODEL = "deepseek/deepseek-v4-flash-vision-exp"
 RUNTIME = os.environ.get("DSH_PROBE_RUNTIME", "/usr/local/bin/dsh-jsonrpc-agent")
 CORDIS = os.environ.get("DSH_PROBE_CORDIS", "/opt/deepseek-harness-minimal.cordis.yml")
+RUNNER = Path(
+    os.environ.get(
+        "DSH_PROBE_RUNNER", "/opt/event_runtime/container/sprint-deepseek-harness-runner.py"
+    )
+)
 FAILED_PARTIAL_TEXT = "partial-stream-content-must-not-surface"
 
 
@@ -69,9 +76,10 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        if request_number != 2:
+        if request_number not in {2, 3}:
             self.send_error(500, f"unexpected request {request_number}")
             return
+        response_text = "smoke-ok" if request_number == 2 else "round-ok"
         events = [
             {
                 "id": "probe-generation",
@@ -80,7 +88,7 @@ class Handler(BaseHTTPRequestHandler):
                 "choices": [
                     {
                         "index": 0,
-                        "delta": {"role": "assistant", "content": "smoke-ok"},
+                        "delta": {"role": "assistant", "content": response_text},
                         "finish_reason": None,
                     }
                 ],
@@ -103,6 +111,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
+    Handler.request_payloads = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -117,7 +126,15 @@ def main() -> int:
             # without making this offline image probe loop 256 times.
             os.environ["DSH_GOAL_MAX_ROUNDS"] = "1"
             try:
-                with DeepSeekHarness(
+                spec = importlib.util.spec_from_file_location(
+                    "sprint_deepseek_harness_runner_probe", RUNNER
+                )
+                if spec is None or spec.loader is None:
+                    raise RuntimeError(f"could not load DeepSeek runner from {RUNNER}")
+                runner = importlib.util.module_from_spec(spec)
+                sys.modules[spec.name] = runner
+                spec.loader.exec_module(runner)
+                harness = DeepSeekHarness(
                     provider="deepseek-official",
                     model=MODEL,
                     max_tokens=384_000,
@@ -130,8 +147,27 @@ def main() -> int:
                     api_key="offline-probe-key",
                     request_timeout_seconds=30.0,
                     shutdown_timeout_seconds=10.0,
-                ) as harness:
-                    result = harness.start_session("image-probe").run(objective)
+                )
+                events: list[dict[str, object]] = []
+
+                def record(notification: object) -> None:
+                    raw_notification = runner.notification_dict(notification)
+                    if raw_notification["method"] != "session.event":
+                        return
+                    payload = raw_notification["payload"]
+                    event = payload.get("event")
+                    if isinstance(event, dict):
+                        events.append(event)
+
+                result = runner.run_goal_session(
+                    harness,
+                    session_id="image-probe",
+                    objective=objective,
+                    record=record,
+                    stop_file=root / "stop",
+                    lifecycle_path=root / "goal-lifecycle.json",
+                    continuation_timeout_seconds=10,
+                )
             finally:
                 if previous_objective is None:
                     os.environ.pop("DSH_GOAL_OBJECTIVE", None)
@@ -141,24 +177,29 @@ def main() -> int:
                     os.environ.pop("DSH_GOAL_MAX_ROUNDS", None)
                 else:
                     os.environ["DSH_GOAL_MAX_ROUNDS"] = previous_rounds
-        if result.finish_reason != "completed":
+        if result.exit_code != 0 or result.runner_state != "terminal":
             raise AssertionError(
                 json.dumps(
                     {
-                        "finish_reason": result.finish_reason,
+                        "exit_code": result.exit_code,
+                        "runner_state": result.runner_state,
+                        "goal_status": result.goal_status,
                         "final_response": result.final_response,
-                        "events": result.events[-20:],
+                        "events": events[-20:],
                     },
                     indent=2,
                     default=str,
                 )
             )
-        assert result.final_response == "smoke-ok", result.final_response
+        assert result.final_response == "round-ok", result.final_response
+        assert result.goal_status == "blocked", result.goal_status
+        assert result.completed_turns == 2, result.completed_turns
+        assert result.rounds_started == 1, result.rounds_started
         # The first provider attempt closes without [DONE]. The finite retry
         # executor opens a retry turn over the same surface history; it is not a
         # second goal round and it does not require a CPU-agent relaunch.
-        assert len(Handler.request_payloads) == 2, len(Handler.request_payloads)
-        first_request, retry_request = Handler.request_payloads
+        assert len(Handler.request_payloads) == 3, len(Handler.request_payloads)
+        first_request, retry_request, goal_round_request = Handler.request_payloads
         assert first_request == retry_request
         assert FAILED_PARTIAL_TEXT not in json.dumps(retry_request)
         request = first_request
@@ -185,7 +226,6 @@ def main() -> int:
             "bash",
             "str_replace_editor",
         }, names
-        events = result.events
         retry_events = [event for event in events if event.get("type") == "llm/retry"]
         retry_started_events = [
             event for event in events if event.get("type") == "llm/retry-started"
@@ -218,6 +258,19 @@ def main() -> int:
         goal = events[created_at]["data"]["goal"]
         assert goal["objective"] == objective
         assert goal["maxGoalRounds"] == 1
+        goal_messages = [
+            event
+            for event in events
+            if event.get("type") == "user/message"
+            and event.get("data", {}).get("source", {}).get("kind") == "goal"
+        ]
+        assert len(goal_messages) == 1, goal_messages
+        assert goal_messages[0]["data"]["source"]["round"] == 1
+        assert len(
+            [event for event in events if event.get("type") == "turn/start"]
+        ) == 2
+        assert "<goal_round>" in json.dumps(goal_round_request)
+        assert objective in json.dumps(goal_round_request)
         assert not any(
             name in json.dumps(Handler.request_payloads)
             for name in ("create_goal", "get_goal", "update_goal")

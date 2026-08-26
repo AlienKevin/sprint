@@ -173,6 +173,7 @@ fi
 
 session_root="$DURABLE_DIR/runs/$RUN_ID/deepseek-harness/sessions"
 events="$AGENT_LOG_DIR/deepseek-harness-events.jsonl"
+lifecycle="$AGENT_LOG_DIR/goal-lifecycle.json"
 session_id="$RUN_ID"
 
 setsid "$RUNNER" \
@@ -180,6 +181,7 @@ setsid "$RUNNER" \
   --session-root "$session_root" \
   --session-id "$session_id" \
   --events "$events" \
+  --lifecycle "$lifecycle" \
   --base-url "$PROXY_BASE_URL" \
   --stop-file "$RUNTIME_DIR/sprint-stop" \
   "$@" &

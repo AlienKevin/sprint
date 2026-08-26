@@ -29,6 +29,14 @@ def write_codex_goal_files(
         (agent_dir / "goal-lifecycle.json").write_text(json.dumps(lifecycle))
 
 
+def write_deepseek_goal_file(
+    state_dir: Path, *, lifecycle: dict[str, object]
+) -> None:
+    agent_dir = state_dir / "harbor-jobs" / "run-1" / "task-1" / "agent"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "goal-lifecycle.json").write_text(json.dumps(lifecycle))
+
+
 def write_clean_exit(path: Path, *, code: int = 0, requested: bool = True) -> None:
     path.write_text(
         json.dumps(
@@ -118,6 +126,39 @@ def test_codex_agent_exit_after_terminal_goal_is_clean(tmp_path: Path) -> None:
     write_codex_goal_files(
         tmp_path,
         lifecycle={"goal_status": "complete", "runner_state": "terminal"},
+    )
+
+    report = build_integrity_report(tmp_path, run)
+
+    assert report["benchmark_valid"] is True
+
+
+def test_deepseek_agent_exit_with_active_goal_is_invalid(tmp_path: Path) -> None:
+    run = run_contract("deepseek-active-goal-exit")
+    run["agent_kind"] = "deepseek-harness"
+    (tmp_path / "STOP_ACK.json").write_text(json.dumps({"reason": "agent_exit"}))
+    write_clean_exit(tmp_path / "CPU_TRIAL_EXIT.json")
+    write_deepseek_goal_file(
+        tmp_path,
+        lifecycle={"goal_status": "active", "runner_state": "running"},
+    )
+
+    report = build_integrity_report(tmp_path, run)
+
+    assert report["benchmark_valid"] is False
+    assert {reason["code"] for reason in report["reasons"]} == {
+        "deepseek_goal_active_at_agent_exit"
+    }
+
+
+def test_deepseek_agent_exit_after_terminal_goal_is_clean(tmp_path: Path) -> None:
+    run = run_contract("deepseek-terminal-goal-exit")
+    run["agent_kind"] = "deepseek-harness"
+    (tmp_path / "STOP_ACK.json").write_text(json.dumps({"reason": "agent_exit"}))
+    write_clean_exit(tmp_path / "CPU_TRIAL_EXIT.json")
+    write_deepseek_goal_file(
+        tmp_path,
+        lifecycle={"goal_status": "blocked", "runner_state": "terminal"},
     )
 
     report = build_integrity_report(tmp_path, run)

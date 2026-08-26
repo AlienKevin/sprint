@@ -4,7 +4,6 @@ Commands:
   event gpu [ARGS...]       run or inspect this trial's GPU work
   event check POLICY.pt     validate the event-specific policy interface on CPU
   event test POLICY.pt      run the published checker on trial-local GPU compute
-  event archive POLICY.pt   durably stage a candidate for blind official scoring
   event cost                print this trial's cumulative comparison cost as JSON
   event history             list staged candidates and admission acknowledgments
 """

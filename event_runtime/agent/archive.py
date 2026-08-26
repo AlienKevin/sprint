@@ -47,9 +47,7 @@ RECEIPTS = os.path.join(SUBMISSIONS_ROOT, "receipts")
 ACKNOWLEDGMENTS = os.path.join(SUBMISSIONS_ROOT, "acknowledgments")
 LOCK = os.path.join(SUBMISSIONS_ROOT, "submit.lock")
 REQUEST_ID_RE = re.compile(r"^[0-9]{6}-[0-9a-f]{4}$")
-MINIMUM_INTERVAL_SECONDS = float(
-    os.environ.get("SPRINT_SUBMISSION_MIN_INTERVAL_SEC", "300")
-)
+MAX_POLICY_BYTES = 32 * 1024 * 1024
 
 
 def atomic_json(path: str, payload: dict) -> None:
@@ -85,7 +83,6 @@ def admission_backpressure(policy_sha256: str) -> str | None:
         names = sorted(name for name in os.listdir(RECEIPTS) if name.endswith(".json"))
     except (FileNotFoundError, PermissionError):
         return None
-    now = datetime.now(timezone.utc)
     for name in reversed(names):
         receipt = read_json(os.path.join(RECEIPTS, name))
         if not receipt:
@@ -98,22 +95,6 @@ def admission_backpressure(policy_sha256: str) -> str | None:
             "ingestion_failed",
         }:
             return f"identical policy already {state} as {submission_id}"
-        if state == "staged":
-            return f"submission {submission_id} is still awaiting Harbor ingestion"
-        if state != "accepted":
-            continue
-        raw_accepted = ack.get("accepted_at")
-        try:
-            accepted_at = datetime.fromisoformat(str(raw_accepted))
-            elapsed = (now - accepted_at).total_seconds()
-        except (TypeError, ValueError):
-            continue
-        remaining = MINIMUM_INTERVAL_SECONDS - elapsed
-        if remaining > 0:
-            return (
-                f"Harbor cooldown is active for about {int(remaining + 0.999)} "
-                "more second(s)"
-            )
     return None
 
 
@@ -124,7 +105,7 @@ def main() -> int:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="stage despite local duplicate/cooldown backpressure",
+        help="stage despite local duplicate backpressure",
     )
     args = parser.parse_args()
     policy = args.policy
@@ -134,25 +115,19 @@ def main() -> int:
         print(f"no such file: {policy}", file=sys.stderr)
         return 1
 
-    # Reject malformed TorchScript locally before spending verifier compute.
-    check = subprocess.run(
-        ["/usr/local/bin/event", "check", policy],
-        capture_output=True,
-        text=True,
-    )
-    if check.returncode != 0:
-        sys.stderr.write(check.stdout + check.stderr)
-        print(
-            "not submitted: the policy does not meet the interface contract.",
-            file=sys.stderr,
-        )
-        return 1
-
     for directory in (QUEUE, NOTES, RECEIPTS, ACKNOWLEDGMENTS):
         os.makedirs(directory, exist_ok=True)
     lock_fd = os.open(LOCK, os.O_CREAT | os.O_RDWR, 0o600)
     fcntl.flock(lock_fd, fcntl.LOCK_EX)
     try:
+        source_size = os.path.getsize(policy)
+        if source_size <= 0 or source_size > MAX_POLICY_BYTES:
+            print(
+                f"not submitted: policy is {source_size} bytes; the limit is "
+                f"{MAX_POLICY_BYTES} bytes (32 MiB)",
+                file=sys.stderr,
+            )
+            return 1
         with open(policy, "rb") as handle:
             source_sha256 = hashlib.file_digest(handle, "sha256").hexdigest()
         requested_id = str(os.environ.get("SPRINT_HOST_ARCHIVE_REQUEST_ID") or "")
@@ -171,13 +146,6 @@ def main() -> int:
                     return 2
                 print(f"staged locally {requested_id}  (idempotent replay)")
                 return 0
-        if not args.force:
-            refusal = admission_backpressure(source_sha256)
-            if refusal:
-                print(
-                    f"not staged: {refusal}; use --force to override", file=sys.stderr
-                )
-                return 2
         submitted_at = datetime.now(timezone.utc)
         job_id = requested_id or f"{submitted_at:%H%M%S}-{uuid.uuid4().hex[:4]}"
 
@@ -185,8 +153,38 @@ def main() -> int:
         # referencing freezes the exact bytes while training continues.
         staged = os.path.join(QUEUE, f".{job_id}.pt")
         shutil.copy2(policy, staged)
+        staged_size = os.path.getsize(staged)
         with open(staged, "rb") as handle:
             policy_sha256 = hashlib.file_digest(handle, "sha256").hexdigest()
+        if staged_size != source_size or policy_sha256 != source_sha256:
+            os.unlink(staged)
+            print("not submitted: policy changed while being staged", file=sys.stderr)
+            return 1
+        # Validate the frozen bytes, not the mutable source pathname. The
+        # trusted verifier repeats this contract check before the submission
+        # consumes one of the trial's official slots.
+        check = subprocess.run(
+            ["/usr/local/bin/event", "check", staged],
+            capture_output=True,
+            text=True,
+        )
+        if check.returncode != 0:
+            os.unlink(staged)
+            sys.stderr.write(check.stdout + check.stderr)
+            print(
+                "not submitted: the policy does not meet the interface contract.",
+                file=sys.stderr,
+            )
+            return 1
+        if not args.force:
+            refusal = admission_backpressure(policy_sha256)
+            if refusal:
+                os.unlink(staged)
+                print(
+                    f"not staged: {refusal}; use --force to override",
+                    file=sys.stderr,
+                )
+                return 2
         queued = os.path.join(QUEUE, f"{job_id}.pt")
         os.replace(staged, queued)
 

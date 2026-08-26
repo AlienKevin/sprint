@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-TERMINAL = frozenset({"succeeded", "failed", "terminated"})
+TERMINAL = frozenset({"succeeded", "failed", "preempted", "terminated"})
 OWNED = frozenset({"claiming", "dispatched", "running", "death_observed"})
 DEFAULT_CLAIM_STALE_SEC = 900
 DEFAULT_HEARTBEAT_TIMEOUT_SEC = 45

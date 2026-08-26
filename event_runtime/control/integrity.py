@@ -150,6 +150,31 @@ def build_integrity_report(
                     )
                 )
 
+    if agent_kind == "deepseek-harness" and stop_reason == "agent_exit":
+        if len(lifecycle_paths) != 1:
+            reasons.append(
+                _reason(
+                    "deepseek_goal_lifecycle_missing",
+                    "harbor-jobs/*/*/agent/goal-lifecycle.json",
+                    "DeepSeek Harness exited without one native-goal lifecycle record",
+                )
+            )
+        else:
+            lifecycle = _read_json(lifecycle_paths[0])
+            goal_status = str(lifecycle.get("goal_status") or "")
+            runner_state = str(lifecycle.get("runner_state") or "")
+            if (
+                goal_status not in {"complete", "blocked"}
+                or runner_state != "terminal"
+            ):
+                reasons.append(
+                    _reason(
+                        "deepseek_goal_active_at_agent_exit",
+                        str(lifecycle_paths[0].relative_to(state_dir)),
+                        "DeepSeek Harness exited before its native goal reached a terminal state",
+                    )
+                )
+
     gpu_jobs = 0
     retried_jobs = 0
     for path in sorted((state_dir / "gpu-job-registry").glob("*.json")):

@@ -39,7 +39,8 @@ from sprint_resilience import CheckpointStore, Interruption, Lease
 
 MAX_ARCHIVE_MEMBERS = 20_000
 MAX_ARCHIVE_EXPANDED_BYTES = 512 * 1024 * 1024
-MAX_OUTPUT_ARTIFACT_BYTES = 32 * 1024 * 1024
+MAX_OUTPUT_ARTIFACT_BYTES = 128 * 1024 * 1024
+MAX_OUTPUT_ARTIFACT_TOTAL_BYTES = 512 * 1024 * 1024
 # Modal Volume commits from the CPU sandbox are not guaranteed to become
 # visible in a separately mounted GPU sandbox within 30 seconds.  The $0.10
 # shutdown reserve covers more than 160 seconds of one configured A10G worker;
@@ -67,6 +68,7 @@ def collect_output_artifacts(
     """Commit explicitly declared GPU outputs to a run-scoped durable path."""
     records: list[dict] = []
     missing: list[str] = []
+    total_size = 0
     destination_root = (
         durable_dir
         / "runs"
@@ -88,9 +90,14 @@ def collect_output_artifacts(
             missing.append(str(declared))
             continue
         size = source.stat().st_size
-        if size <= 0 or size > MAX_OUTPUT_ARTIFACT_BYTES:
+        if (
+            size <= 0
+            or size > MAX_OUTPUT_ARTIFACT_BYTES
+            or total_size + size > MAX_OUTPUT_ARTIFACT_TOTAL_BYTES
+        ):
             missing.append(f"{source} (invalid size {size})")
             continue
+        total_size += size
         destination_root.mkdir(parents=True, exist_ok=True)
         destination = destination_root / source.name
         tmp = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
@@ -108,6 +115,34 @@ def collect_output_artifacts(
             }
         )
     return records, missing
+
+
+def submit_declared_policies(job: dict) -> list[dict]:
+    """Submit only policies explicitly marked in the immutable job request."""
+    results: list[dict] = []
+    for raw in job.get("submission_paths") or []:
+        completed = subprocess.run(
+            [
+                "/usr/local/bin/event",
+                "archive",
+                str(raw),
+                "--note",
+                f"explicit GPU output from job {job.get('job_id')}",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        results.append(
+            {
+                "path": str(raw),
+                "return_code": completed.returncode,
+                "stdout": completed.stdout[-2000:],
+                "stderr": completed.stderr[-2000:],
+                "state": "staged" if completed.returncode == 0 else "rejected",
+            }
+        )
+    return results
 
 
 def safe_extract_work_archive(archive: Path, destination: Path) -> None:
@@ -1255,7 +1290,7 @@ def main() -> int:
     if app_launcher_failure:
         error = (
             "Isaac AppLauncher initialization failed before the agent script "
-            "started; retrying on a fresh GPU sandbox"
+            "started; reporting the attempt as preempted"
         )
         print(error, flush=True)
     exit_code, final_status = final_attempt_outcome(
@@ -1312,6 +1347,16 @@ def main() -> int:
         exit_code = 2
         error = "required GPU output missing or invalid: " + ", ".join(missing_outputs)
         print(error, flush=True)
+    if final_status == "succeeded" and job.get("submission_paths"):
+        submission_results = submit_declared_policies(job)
+        progress_payload = dict(progress) if isinstance(progress, dict) else {}
+        progress_payload["submission_results"] = submission_results
+        progress = progress_payload
+        for result in submission_results:
+            print(
+                f"official submission {result['state']}: {result['path']}",
+                flush=True,
+            )
     finished = time.time()
     attempt_record.update(
         {

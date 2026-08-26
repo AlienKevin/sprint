@@ -42,7 +42,6 @@ from event_runtime.container.sprint_resilience import (  # noqa: E402
     ProbeResult,
     ProbeState,
     ProviderHandle,
-    RetryPolicy,
 )
 
 WORKER_TAG_ROLE = "gpu-worker"
@@ -74,6 +73,7 @@ GPU_SUBMISSION_BRIDGE_ROOT = "/run/sprint-submission-bridge"
 GPU_SUBMISSION_BRIDGE_MAX_REQUESTS = 8
 GPU_SUBMISSION_BRIDGE_MAX_POLICY_BYTES = 32 * 1024 * 1024
 GPU_SUBMISSION_BRIDGE_MAX_BATCH_BYTES = 64 * 1024 * 1024
+GPU_SUBMISSION_BRIDGE_MAX_DRAIN_BATCHES = 65
 GPU_SUBMISSION_ID_RE = re.compile(r"^[0-9]{6}-[0-9a-f]{4}$")
 LIVE_PROVIDER_LOG_INTERVAL_SEC = 30
 LIVE_PROVIDER_LOG_TAIL_LINES = 2000
@@ -309,7 +309,10 @@ def read_durable_agent_cancel_requests(
 
 
 def read_worker_submission_outbox(
-    run: dict[str, Any], job: dict[str, Any]
+    run: dict[str, Any],
+    job: dict[str, Any],
+    *,
+    exclude_submission_ids: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Read bounded immutable archive requests from a live GPU sandbox.
 
@@ -326,6 +329,7 @@ root = pathlib.Path(sys.argv[1])
 limit = int(sys.argv[2])
 max_policy = int(sys.argv[3])
 max_batch = int(sys.argv[4])
+excluded = set(json.loads(sys.argv[5]))
 rows = []
 total = 0
 for receipt_path in sorted((root / "receipts").glob("*.json")):
@@ -336,6 +340,8 @@ for receipt_path in sorted((root / "receipts").glob("*.json")):
     except (OSError, json.JSONDecodeError):
         continue
     submission_id = receipt_path.stem
+    if submission_id in excluded:
+        continue
     policy_path = root / "outbox" / f"{submission_id}.pt"
     try:
         size = policy_path.stat().st_size
@@ -362,6 +368,7 @@ sys.stdout.buffer.write(gzip.compress(json.dumps(rows, separators=(",", ":")).en
         str(GPU_SUBMISSION_BRIDGE_MAX_REQUESTS),
         str(GPU_SUBMISSION_BRIDGE_MAX_POLICY_BYTES),
         str(GPU_SUBMISSION_BRIDGE_MAX_BATCH_BYTES),
+        json.dumps(sorted(exclude_submission_ids or set())),
         text=False,
         timeout=45,
     )
@@ -590,8 +597,11 @@ os.replace(temporary, target)
         raise RuntimeError(str(detail)[-1000:])
 
 
-def drain_worker_submission_outbox(
-    run: dict[str, Any], job: dict[str, Any]
+def _drain_worker_submission_outbox_once(
+    run: dict[str, Any],
+    job: dict[str, Any],
+    *,
+    exclude_submission_ids: set[str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Idempotently forward every GPU archive request through the CPU agent."""
     if not job.get("submission_bridge_enabled"):
@@ -599,7 +609,9 @@ def drain_worker_submission_outbox(
     payload = dict(job)
     counts = {"observed": 0, "forwarded": 0, "retry_wait": 0, "error": 0}
     try:
-        requests = read_worker_submission_outbox(run, job)
+        requests = read_worker_submission_outbox(
+            run, job, exclude_submission_ids=exclude_submission_ids
+        )
     except modal.exception.NotFoundError:
         requests = []
     except Exception as exc:  # noqa: BLE001
@@ -616,6 +628,8 @@ def drain_worker_submission_outbox(
         receipt = request.get("receipt")
         if isinstance(receipt, dict) and receipt.get("submission_id"):
             by_id[str(receipt["submission_id"])] = request
+    for submission_id in exclude_submission_ids or set():
+        by_id.pop(submission_id, None)
     requests = list(by_id.values())
 
     root = submission_bridge_state_dir(run)
@@ -741,7 +755,57 @@ def drain_worker_submission_outbox(
         payload.pop("submission_bridge_error", None)
     payload["submission_bridge_last_checked_at"] = utc_now()
     payload["submission_bridge_counts"] = counts
-    return payload, {"submission_bridge": "drained", **counts}
+    return payload, {
+        "submission_bridge": "drained",
+        "submission_ids": sorted(by_id),
+        **counts,
+    }
+
+
+def drain_worker_submission_outbox(
+    run: dict[str, Any], job: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Forward the bounded outbox in small pages until it is drained.
+
+    A page is deliberately small so 15 concurrent trials cannot each allocate
+    hundreds of megabytes of base64 payload at once. Successful live requests
+    are acknowledged and removed before the next page is read. The durable
+    recovery reader likewise skips host records already marked forwarded.
+    """
+    if not job.get("submission_bridge_enabled"):
+        return job, {"submission_bridge": "disabled"}
+    payload = dict(job)
+    totals = {"observed": 0, "forwarded": 0, "retry_wait": 0, "error": 0}
+    seen: set[str] = set()
+    for _ in range(GPU_SUBMISSION_BRIDGE_MAX_DRAIN_BATCHES):
+        payload, detail = _drain_worker_submission_outbox_once(
+            run, payload, exclude_submission_ids=seen
+        )
+        submission_ids = {
+            str(value) for value in detail.pop("submission_ids", []) if value
+        }
+        fresh = submission_ids - seen
+        if not fresh:
+            break
+        seen.update(fresh)
+        for key in totals:
+            totals[key] += int(detail.get(key) or 0)
+        if int(detail.get("error") or 0) or int(detail.get("retry_wait") or 0):
+            break
+    else:
+        payload["submission_bridge_error"] = (
+            "submission outbox exceeded the bounded drain window"
+        )
+        totals["error"] += 1
+    if totals["error"] or totals["retry_wait"]:
+        payload["submission_bridge_error"] = (
+            f"{totals['error']} invalid, {totals['retry_wait']} awaiting retry"
+        )
+    else:
+        payload.pop("submission_bridge_error", None)
+    payload["submission_bridge_last_checked_at"] = utc_now()
+    payload["submission_bridge_counts"] = totals
+    return payload, {"submission_bridge": "drained", **totals}
 
 
 def mirror_agent_job(
@@ -2422,7 +2486,7 @@ def _terminate_sandbox(job: dict[str, Any]) -> str | None:
     )
 
 
-def schedule_retry(
+def finalize_lost_job(
     run: dict[str, Any],
     job: dict[str, Any],
     *,
@@ -2431,7 +2495,12 @@ def schedule_retry(
     reason: str,
     now: float | None = None,
 ) -> dict[str, Any]:
-    """Fence the old lease, then queue the same logical job with backoff."""
+    """Fence a lost worker and publish a terminal, agent-visible outcome.
+
+    GPU jobs are immutable single attempts. The controller never reconstructs
+    missing model state or silently replays agent-authored work; the agent may
+    submit a new job explicitly after inspecting this terminal record.
+    """
     ref = time.time() if now is None else float(now)
     payload = dict(job)
     attempt = int(payload.get("attempt") or 0)
@@ -2480,34 +2549,18 @@ def schedule_retry(
     payload.pop("death_observed_at", None)
     payload.pop("death_observed_epoch_s", None)
 
-    retry_policy = RetryPolicy.from_job(payload)
-    if not retry_policy.allows_after(attempt):
-        payload.update(
-            {
-                "status": "failed",
-                "failure_reason": "max_attempts_exhausted",
-                "finished_at": utc_now(),
-                "finished_at_epoch_s": ref,
-            }
-        )
-        persist_job(run, payload)
-        terminate_error = _terminate_sandbox(job)
-        if terminate_error:
-            payload["terminate_error"] = terminate_error
-            persist_job(run, payload)
-        return payload
-
-    delay = retry_policy.delay_after(attempt)
+    was_preempted = reason in {
+        "graceful_preemption",
+        "worker_lost",
+        "app_launcher_initialization_failed",
+    }
     payload.update(
         {
-            "status": "retry_wait",
-            "next_attempt": attempt + 1,
-            "retry_count": int(payload.get("retry_count") or 0) + 1,
-            "retry_not_before_epoch_s": ref + delay,
-            "retry_not_before": time.strftime(
-                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(ref + delay)
-            ),
-            "retry_reason": reason,
+            "status": "preempted" if was_preempted else "failed",
+            "failure_reason": reason,
+            "retry_policy": "agent_decides_new_job",
+            "finished_at": utc_now(),
+            "finished_at_epoch_s": ref,
         }
     )
     persist_job(run, payload)
@@ -2515,18 +2568,6 @@ def schedule_retry(
     if terminate_error:
         payload["terminate_error"] = terminate_error
         persist_job(run, payload)
-    timeline_job = dict(payload)
-    timeline_job["attempt"] = attempt + 1
-    timeline_job["lease_id"] = ""
-    _timeline_event(
-        run,
-        timeline_job,
-        phase="gpu_queue_wait",
-        action="enter",
-        epoch_s=int(ref),
-        reason=reason,
-        retry_of_attempt=attempt,
-    )
     return payload
 
 
@@ -2628,7 +2669,7 @@ def reconcile_job(
 
     if owned_record and str(attempt_record.get("status") or "") == "interrupted":
         retry_reason = str(attempt_record.get("retry_reason") or "graceful_preemption")
-        retried = schedule_retry(
+        terminal = finalize_lost_job(
             run,
             job,
             heartbeat=heartbeat,
@@ -2636,9 +2677,9 @@ def reconcile_job(
             reason=retry_reason,
             now=ref,
         )
-        return retried, {
-            "decision": "retry",
-            "status": retried["status"],
+        return terminal, {
+            "decision": "preempted",
+            "status": terminal["status"],
             "reason": retry_reason,
             **submission_bridge_detail,
         }
@@ -2715,7 +2756,7 @@ def reconcile_job(
             persist_job(run, job)
         detail.update(live_log_detail)
         return job, detail
-    retried = schedule_retry(
+    terminal = finalize_lost_job(
         run,
         job,
         heartbeat=heartbeat,
@@ -2723,7 +2764,9 @@ def reconcile_job(
         reason="worker_lost",
         now=ref,
     )
-    return retried, detail
+    detail["decision"] = "preempted"
+    detail["status"] = terminal["status"]
+    return terminal, detail
 
 
 def reconcile_terminal_attempt_before_stop(
@@ -3355,18 +3398,6 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
             )
 
         pending = _candidate_job_ids(run, now=now, indexed=indexed)
-        # A preempted logical job owns this run's single training slot through
-        # its short retry backoff.  Otherwise a newly submitted job can jump
-        # ahead during that window and turn transparent recovery into an
-        # unbounded wait behind unrelated work from the same agent.
-        retry_reservations: list[str] = []
-        for job_id in list_job_ids(run, indexed=indexed):
-            job = load_job_from_index_snapshot(run, job_id, indexed)
-            if job and str(job.get("status") or "") == "retry_wait":
-                retry_reservations.append(job_id)
-        if retry_reservations:
-            reserved = set(retry_reservations)
-            pending = [job_id for job_id in pending if job_id in reserved]
         active = active_training_job_ids(run, indexed=indexed)
         for job_id in pending:
             if len(active) >= MAX_ACTIVE_TRAINING_JOBS_PER_RUN:
@@ -3495,7 +3526,7 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
             except Exception as exc:  # noqa: BLE001
                 current = load_job(run, job_id) or claimed
                 error = f"{type(exc).__name__}: {exc}"
-                retried = schedule_retry(
+                terminal = finalize_lost_job(
                     run,
                     current,
                     heartbeat=None,
@@ -3507,7 +3538,7 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
                     {
                         "job_id": job_id,
                         "attempt": current.get("attempt"),
-                        "status": retried.get("status"),
+                        "status": terminal.get("status"),
                         "error": error,
                     }
                 )
@@ -3555,8 +3586,6 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
     }
     if active and not actions:
         result["reason"] = "training_concurrency_limit"
-    elif retry_reservations and not pending and not actions:
-        result["reason"] = "retry_backoff_reserved"
     sprintctl.atomic_write_json(state_dir / "gpu-dispatch.json", result, mode=0o600)
     return result
 

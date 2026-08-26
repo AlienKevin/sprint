@@ -639,10 +639,28 @@ class ContinuousVerificationConfig(BaseModel):
     )
     max_submissions: int | None = Field(
         default=None,
+        ge=1,
         description=(
             "Cap on submissions accepted over the run. None is unlimited. "
             "Submissions past the cap are rejected with a result explaining "
             "why, rather than silently dropped."
+        ),
+    )
+    submission_limit_reward_key: str | None = Field(
+        default=None,
+        description=(
+            "Optional numeric verifier reward key that determines whether an "
+            "accepted artifact consumes one max_submissions slot. This lets a "
+            "task exclude structurally invalid artifacts from its submission "
+            "allowance without exposing verifier scores to the agent."
+        ),
+    )
+    submission_limit_unique_by_sha256: bool = Field(
+        default=False,
+        description=(
+            "Count at most one structurally accepted submission per artifact "
+            "SHA-256 toward max_submissions. Duplicate requests remain in the "
+            "ledger but do not consume additional allowance."
         ),
     )
     minimum_submission_interval_sec: float = Field(

@@ -39,8 +39,8 @@ from event_runtime.container.sprint_resilience import CheckpointStore, Completio
 AGENT_MIRROR_ROOT = Path("/run/sprint-gpu-mirror")
 AGENT_CONTROL_ROOT = Path("/run/sprint-gpu-control")
 AGENT_WORKSPACE_ROOT = Path("/app")
-TERMINAL_STATUSES = frozenset({"succeeded", "failed", "terminated"})
-MAX_OUTPUT_ARTIFACTS = 8
+TERMINAL_STATUSES = frozenset({"succeeded", "failed", "preempted", "terminated"})
+MAX_OUTPUT_ARTIFACTS = 512
 MIRRORED_POLICY_SUFFIXES = frozenset({".pt", ".pth"})
 DISPATCH_INDEX_SCHEMA_VERSION = 1
 
@@ -404,6 +404,15 @@ def validate_output_paths(raw_paths: list[str] | None) -> list[str]:
     return paths
 
 
+def validate_submission_paths(raw_paths: list[str] | None) -> list[str]:
+    """Validate policies explicitly designated for official consideration."""
+    paths = validate_output_paths(raw_paths)
+    for raw in paths:
+        if Path(raw).suffix != ".pt":
+            raise SystemExit(f"--submit-output must name a TorchScript .pt file: {raw}")
+    return paths
+
+
 def cmd_submit(args: argparse.Namespace) -> int:
     if not args.command:
         raise SystemExit("missing command after --")
@@ -422,6 +431,16 @@ def cmd_submit(args: argparse.Namespace) -> int:
     checkpoint_dir = Path(args.checkpoint_dir or root / "checkpoints" / job_id)
     progress_file = Path(args.progress_file or checkpoint_dir / "progress.json")
 
+    submission_paths = validate_submission_paths(
+        getattr(args, "submit_output", None)
+    )
+    output_paths = validate_output_paths(getattr(args, "output", None))
+    for path in submission_paths:
+        if path not in output_paths:
+            output_paths.append(path)
+    if len(output_paths) > MAX_OUTPUT_ARTIFACTS:
+        raise SystemExit(f"at most {MAX_OUTPUT_ARTIFACTS} returned files are allowed")
+
     job = {
         "schema_version": 3,
         "job_id": job_id,
@@ -438,19 +457,19 @@ def cmd_submit(args: argparse.Namespace) -> int:
         "submitted_work_archive_size_bytes": archive_size,
         "status": "pending",
         "attempt": 0,
-        "max_attempts": int(args.max_attempts),
-        "retry_backoff_sec": float(args.retry_backoff),
-        "retry_backoff_max_sec": float(args.retry_backoff_max),
+        "max_attempts": 1,
         "heartbeat_interval_sec": int(args.heartbeat_interval),
         "heartbeat_timeout_sec": int(args.heartbeat_timeout),
         "interruption_grace_sec": float(args.interruption_grace),
         "checkpoint_dir": str(checkpoint_dir),
         "progress_file": str(progress_file),
         "checkpoint_protocol": "sprint-v1",
-        "resume_arg": args.resume_arg or "",
+        "resume_arg": "",
         "gpu_type": "A10G",
         "job_kind": args.job_kind,
-        "output_paths": validate_output_paths(getattr(args, "output", None)),
+        "output_paths": output_paths,
+        "submission_paths": submission_paths,
+        "submission_intent": "explicit_paths_only",
         # GPU sandboxes cannot publish directly into the long-lived CPU
         # sandbox's point-in-time Modal Volume mount.  The host dispatcher
         # drains immutable archive requests over the sandbox control channel.
@@ -834,6 +853,15 @@ def main() -> int:
         default=None,
         help="Required file under /app to return (repeatable; .pt/.pth is mirrored)",
     )
+    submit.add_argument(
+        "--submit-output",
+        action="append",
+        default=None,
+        help=(
+            "Explicitly submit this required /app/*.pt output for blind official "
+            "scoring after structural validation (repeatable)"
+        ),
+    )
     submit.add_argument("--workdir", default="/app")
     submit.add_argument("--timeout", type=int, default=3600)
     submit.add_argument("--note", default="")
@@ -843,9 +871,6 @@ def main() -> int:
         default="auto",
         help="Select phase-aware worker watchdogs (default: infer from command)",
     )
-    submit.add_argument("--max-attempts", type=int, default=3)
-    submit.add_argument("--retry-backoff", type=float, default=10)
-    submit.add_argument("--retry-backoff-max", type=float, default=120)
     submit.add_argument("--heartbeat-interval", type=int, default=5)
     submit.add_argument("--heartbeat-timeout", type=int, default=45)
     submit.add_argument(
@@ -856,11 +881,6 @@ def main() -> int:
     )
     submit.add_argument("--checkpoint-dir", default="")
     submit.add_argument("--progress-file", default="")
-    submit.add_argument(
-        "--resume-arg",
-        default="",
-        help="Append FLAG CHECKPOINT on replacement attempts",
-    )
     submit.add_argument("command", nargs=argparse.REMAINDER)
 
     status = sub.add_parser("status")

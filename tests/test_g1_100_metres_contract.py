@@ -112,7 +112,8 @@ def test_documented_container_paths_match_the_built_agent_image() -> None:
     assert network_contract in " ".join(guide.split())
     assert "The writable workspace is `/app`" in guide
     assert (
-        "event gpu --output /app/policy.pt -- python3 -u /app/YOUR_SCRIPT.py" in guide
+        "event gpu --submit-output /app/policy.pt -- python3 -u /app/YOUR_SCRIPT.py"
+        in guide
     )
     assert "/app/train/YOUR_SCRIPT.py" not in guide
     assert 'AGENT_WORKSPACE_ROOT = Path("/app")' in gpu

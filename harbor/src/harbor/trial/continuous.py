@@ -135,7 +135,8 @@ class ContinuousVerificationService:
         self._seen: set[str] = set()
         self._sizes: dict[str, int] = {}
         self._accepted = 0
-        self._accepted_count = 0
+        self._submission_limit_count = 0
+        self._submission_limit_hashes: set[str] = set()
         self._last_accepted_at: datetime | None = None
         self._outstanding_names: set[str] = set()
         self._admission_lock = asyncio.Lock()
@@ -211,9 +212,20 @@ class ContinuousVerificationService:
             self._watcher = None
 
         # One last pass, so a submission written between the final poll and the
-        # agent exiting is not lost to timing.
+        # agent exiting is not lost to timing. Reward-qualified limits must
+        # drain sequentially because structural validity decides whether the
+        # next queued artifact is still eligible for admission.
         with contextlib.suppress(Exception):
             await self._poll(settle=False)
+        if (
+            self._config.drain_pending_on_stop
+            and self._config.submission_limit_reward_key is not None
+        ):
+            while self._tasks:
+                await asyncio.gather(*list(self._tasks), return_exceptions=True)
+                self._tasks = {task for task in self._tasks if not task.done()}
+                with contextlib.suppress(Exception):
+                    await self._poll(settle=False)
 
         self._draining = True
         if self._tasks:
@@ -255,7 +267,14 @@ class ContinuousVerificationService:
                 self._logger.warning(f"Continuous verification poll failed: {exc}")
             await asyncio.sleep(self._config.poll_interval_sec)
 
-    async def _poll(self, *, settle: bool = True) -> None:
+    async def _poll(self, *, settle: bool = True) -> int:
+        # A reward-qualified submission limit can only be decided after the
+        # trusted verifier has completed its structural preflight. Admit one
+        # candidate at a time so later queue entries are judged against the
+        # updated durable allowance rather than speculatively consuming slots.
+        if self._config.submission_limit_reward_key is not None and self._tasks:
+            return 0
+        spawned = 0
         entries = await self._list_watch_dir()
         for name, size in sorted(entries.items()):
             if name in self._seen:
@@ -278,6 +297,10 @@ class ContinuousVerificationService:
             if self._draining:
                 continue
             self._spawn(name)
+            spawned += 1
+            if self._config.submission_limit_reward_key is not None:
+                break
+        return spawned
 
     async def _list_watch_dir(self) -> dict[str, int]:
         result = await self._env.exec(
@@ -331,7 +354,7 @@ class ContinuousVerificationService:
         self._summary = ContinuousVerificationSummary(submissions=records)
         self._accepted = max(indices, default=0)
         accepted_records = [record for record in records if record.accepted]
-        self._accepted_count = len(accepted_records)
+        self._hydrate_submission_limit(accepted_records)
         accepted_times = [
             record.accepted_at or record.submitted_at for record in accepted_records
         ]
@@ -383,7 +406,7 @@ class ContinuousVerificationService:
     def _admission_rejection(self, now: datetime) -> tuple[str, float | None] | None:
         """Return a host-trusted rejection and retry hint, or admit the request."""
         cap = self._config.max_submissions
-        if cap is not None and self._accepted_count >= cap:
+        if cap is not None and self._submission_limit_count >= cap:
             return f"submission limit of {cap} reached", None
 
         maximum = self._config.max_outstanding_submissions
@@ -400,6 +423,35 @@ class ContinuousVerificationService:
                     float(math.ceil(remaining)),
                 )
         return None
+
+    def _record_counts_toward_submission_limit(
+        self, record: ContinuousSubmission
+    ) -> bool:
+        key = self._config.submission_limit_reward_key
+        if key is not None:
+            value = (record.rewards or {}).get(key)
+            if not isinstance(value, (int, float)) or not bool(value):
+                return False
+        digest = record.artifact_sha256
+        if self._config.submission_limit_unique_by_sha256 and digest:
+            if digest in self._submission_limit_hashes:
+                return False
+            self._submission_limit_hashes.add(digest)
+        self._submission_limit_count += 1
+        return True
+
+    def _hydrate_submission_limit(
+        self, accepted_records: list[ContinuousSubmission]
+    ) -> None:
+        self._submission_limit_count = 0
+        self._submission_limit_hashes = set()
+        for record in accepted_records:
+            if self._config.submission_limit_reward_key is not None:
+                if record.rewards is None:
+                    continue
+                self._record_counts_toward_submission_limit(record)
+                continue
+            self._record_counts_toward_submission_limit(record)
 
     def _rotate_verifier_output(self, paths: TrialPaths, attempt: int) -> str | None:
         source = paths.verifier_dir
@@ -457,7 +509,8 @@ class ContinuousVerificationService:
                 self._summary.submissions.append(record)
                 self._summary.submissions.sort(key=lambda item: item.index)
                 if rejection is None:
-                    self._accepted_count += 1
+                    if self._config.submission_limit_reward_key is None:
+                        self._record_counts_toward_submission_limit(record)
                     self._last_accepted_at = observed_at
                     self._outstanding_names.add(name)
                 self._write_ledger()
@@ -578,6 +631,9 @@ class ContinuousVerificationService:
                         record.rewards = result.rewards or {}
                         record.source_evaluation_id = self._evaluation_id(record)
                         self._write_cached_result(record)
+                    if self._config.submission_limit_reward_key is not None:
+                        async with self._admission_lock:
+                            self._record_counts_toward_submission_limit(record)
             except asyncio.CancelledError:
                 # Cancelled mid-verification: the drain budget ran out while
                 # this one was running.  Recorded rather than left as a row that

@@ -601,7 +601,7 @@ class InterruptionTests(unittest.TestCase):
             self.assertNotEqual(exit_code, 0)
             self.assertEqual(marker.read_text(), "checkpointed")
 
-    def test_host_retries_graceful_interruption_without_heartbeat_timeout(self) -> None:
+    def test_host_reports_graceful_interruption_without_hidden_retry(self) -> None:
         job = {
             "job_id": "logical",
             "run_id": "unit",
@@ -627,16 +627,19 @@ class InterruptionTests(unittest.TestCase):
             with mock.patch.object(
                 gpu_worker, "load_heartbeat", return_value=heartbeat
             ):
-                with mock.patch.object(gpu_worker, "schedule_retry") as retry:
-                    retry.return_value = {"status": "retry_wait", "next_attempt": 2}
+                with mock.patch.object(gpu_worker, "finalize_lost_job") as finalize:
+                    finalize.return_value = {
+                        "status": "preempted",
+                        "retry_policy": "agent_decides_new_job",
+                    }
                     out, detail = gpu_worker.reconcile_job(
                         {"run_id": "unit"}, job, now=101
                     )
-        self.assertEqual(out["status"], "retry_wait")
+        self.assertEqual(out["status"], "preempted")
         self.assertEqual(detail["reason"], "graceful_preemption")
-        retry.assert_called_once()
+        finalize.assert_called_once()
 
-    def test_host_preserves_app_launcher_retry_reason(self) -> None:
+    def test_host_preserves_app_launcher_preemption_reason(self) -> None:
         job = {
             "job_id": "logical",
             "run_id": "unit",
@@ -656,13 +659,16 @@ class InterruptionTests(unittest.TestCase):
         with (
             mock.patch.object(gpu_worker, "load_attempt_record", return_value=attempt),
             mock.patch.object(gpu_worker, "load_heartbeat", return_value=None),
-            mock.patch.object(gpu_worker, "schedule_retry") as retry,
+            mock.patch.object(gpu_worker, "finalize_lost_job") as finalize,
         ):
-            retry.return_value = {"status": "retry_wait", "next_attempt": 2}
+            finalize.return_value = {
+                "status": "preempted",
+                "retry_policy": "agent_decides_new_job",
+            }
             _out, detail = gpu_worker.reconcile_job({"run_id": "unit"}, job, now=101)
         self.assertEqual(detail["reason"], "app_launcher_initialization_failed")
         self.assertEqual(
-            retry.call_args.kwargs["reason"],
+            finalize.call_args.kwargs["reason"],
             "app_launcher_initialization_failed",
         )
 

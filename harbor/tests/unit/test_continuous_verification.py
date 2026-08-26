@@ -603,6 +603,52 @@ async def test_submissions_past_the_cap_are_rejected_with_a_reason(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_cap_counts_only_unique_structurally_valid_artifacts(tmp_path):
+    env = FakeAgentEnv(tmp_path / "env")
+    scored: list[bytes] = []
+
+    async def run_verifier(key: str, paths) -> VerifierResult:
+        content = (paths.artifacts_dir / "app/submission/policy.pt").read_bytes()
+        scored.append(content)
+        return VerifierResult(
+            rewards={
+                "reward": 0.0,
+                "submission_contract_valid": 0.0 if content == b"invalid" else 1.0,
+            }
+        )
+
+    service = _service(
+        tmp_path,
+        env,
+        run_verifier,
+        max_submissions=2,
+        submission_limit_reward_key="submission_contract_valid",
+        submission_limit_unique_by_sha256=True,
+        drain_pending_on_stop=True,
+        shared_result_cache_dir=str(tmp_path / "trusted-cache"),
+    )
+    for name, content in (
+        ("01-same.pt", b"same"),
+        ("02-invalid.pt", b"invalid"),
+        ("03-duplicate.pt", b"same"),
+        ("04-other.pt", b"other"),
+        ("05-over-cap.pt", b"third"),
+    ):
+        (env.watch / name).write_bytes(content)
+
+    async with service.running():
+        await asyncio.sleep(0.08)
+
+    assert scored == [b"same", b"invalid", b"other"]
+    records = service.summary.submissions
+    assert len(records) == 5
+    assert records[1].rewards["submission_contract_valid"] == 0.0
+    assert records[2].cache_hit is True
+    assert records[4].accepted is False
+    assert "limit of 2" in (records[4].error or "")
+
+
+@pytest.mark.asyncio
 async def test_one_outstanding_submission_is_enforced_by_trusted_host(tmp_path):
     env = FakeAgentEnv(tmp_path / "env")
     first_started = asyncio.Event()

@@ -59,8 +59,9 @@ def test_event_help_is_one_screen(monkeypatch: pytest.MonkeyPatch, capsys) -> No
     monkeypatch.setattr(sys, "argv", ["event", "--help"])
     assert cli.main() == 0
     output = capsys.readouterr().out
-    for command in (*cli.COMMANDS, "check"):
+    for command in ("gpu", "test", "cost", "history", "check"):
         assert f"event {command}" in output
+    assert "event archive" not in output
 
 
 def test_event_rejects_unknown_command(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
