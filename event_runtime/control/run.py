@@ -2396,6 +2396,10 @@ def _finalize_owned(
             },
             mode=0o444,
         )
+    else:
+        # A newer integrity schema may clear a false-positive from an older
+        # certification pass. Do not leave that obsolete derived marker behind.
+        (state_dir / "REPLACEMENT_REQUIRED.json").unlink(missing_ok=True)
     try:
         payload["archives"] = json.loads(
             (state_dir / "archive-manifest.json").read_text()
