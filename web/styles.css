@@ -521,6 +521,19 @@ main {
   min-width: 860px;
   border-collapse: collapse;
   font-family: var(--mono);
+  table-layout: fixed;
+}
+.budget-col-model {
+  width: 22%;
+}
+.budget-col-effort {
+  width: 10%;
+}
+.budget-col-trial {
+  width: 8%;
+}
+.budget-col-cost {
+  width: 15%;
 }
 .budget-table caption {
   padding: 13px 18px;
@@ -546,8 +559,7 @@ main {
 .budget-table tbody:last-of-type tr:last-child > * {
   border-bottom: 0;
 }
-.budget-group,
-.budget-row {
+.budget-group {
   --model-accent: var(--deep);
 }
 .budget-group.deepseek,
@@ -574,7 +586,6 @@ main {
   box-shadow: inset 4px 0 var(--model-accent);
 }
 .budget-model {
-  width: 25%;
   border-right: 2px solid color-mix(in srgb, var(--model-accent) 72%, var(--line));
   border-bottom-color: var(--line) !important;
   font-size: 12px;
@@ -597,8 +608,7 @@ main {
 .budget-heat {
   background: color-mix(in srgb, var(--text) var(--heat), var(--panel));
 }
-.budget-heat strong,
-.budget-total strong {
+.budget-heat strong {
   display: block;
   color: var(--text);
   font-weight: 700;
@@ -608,9 +618,6 @@ main {
   margin-top: 3px;
   color: color-mix(in srgb, var(--text) 66%, var(--muted));
   font: 8px/1 var(--mono);
-}
-.budget-total {
-  background: var(--panel2);
 }
 .filters {
   display: flex;

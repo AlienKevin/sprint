@@ -500,9 +500,9 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "class:'submission-target'" in app
     assert "el.getScreenCTM()" in app
     assert "nearest.distance<=22**2" in app
-    assert "styles.css?v=20260826-2" in page
-    assert "app.js?v=20260826-2" in page
-    assert '"version":"20260826-2"' in (ROOT / "web/version.json").read_text()
+    assert "styles.css?v=20260826-3" in page
+    assert "app.js?v=20260826-3" in page
+    assert '"version":"20260826-3"' in (ROOT / "web/version.json").read_text()
     assert "AUC cutoff" not in app
     assert "auc-cap-line" not in app
     assert ".auc-cap-line" not in styles
@@ -537,6 +537,13 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert 'scope="rowgroup"' in app
     assert "Cell shading and percentages use the shared $10 trial budget" in app
     assert "Math.max(0,budget-row.total)" in app
+    assert '<th scope="col">Total</th>' not in app
+    assert 'class="budget-total"' not in app
+    assert 'class="budget-col-model"' in app
+    assert "table-layout: fixed" in styles
+    assert ".budget-col-model" in styles
+    assert "width: 22%" in styles
+    assert ".budget-group,\n.budget-row" not in styles
     assert "cost-stack" not in app
     assert ".budget-heat" in styles
     assert "background: color-mix(in srgb, var(--text) var(--heat), var(--panel))" in styles
