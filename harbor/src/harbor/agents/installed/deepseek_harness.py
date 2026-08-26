@@ -14,10 +14,12 @@ class DeepSeekHarness(BaseInstalledAgent):
 
     _OUTPUT_FILENAME = "deepseek-harness.txt"
     _RUNTIME_VERSION = "0.1.1-rc.2"
+    _REASONING_EFFORTS = frozenset({"medium", "high", "max"})
 
     def __init__(self, *args, reasoning_effort: str = "max", **kwargs):
-        if reasoning_effort != "max":
-            raise ValueError("DeepSeek Harness benchmark reasoning effort must be max")
+        if reasoning_effort not in self._REASONING_EFFORTS:
+            allowed = ", ".join(sorted(self._REASONING_EFFORTS))
+            raise ValueError(f"DeepSeek Harness reasoning effort must be one of: {allowed}")
         super().__init__(*args, **kwargs)
 
     @staticmethod

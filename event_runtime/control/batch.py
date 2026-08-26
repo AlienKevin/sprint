@@ -499,6 +499,50 @@ def matrix(
     return arms
 
 
+def agent_adapter_contract_ready(planned: list[dict[str, Any]]) -> bool:
+    """Instantiate every selected host adapter with the exact launch kwargs."""
+
+    contracts = [
+        {
+            "agent_kind": arm["agent_kind"],
+            "model": arm["model"],
+            "reasoning_effort": arm["reasoning_effort"],
+        }
+        for arm in planned
+    ]
+    probe = r"""
+import json
+import sys
+import tempfile
+from pathlib import Path
+
+from harbor.agents.installed.codex import Codex
+from harbor.agents.installed.deepseek_harness import DeepSeekHarness
+
+adapters = {"codex": Codex, "deepseek-harness": DeepSeekHarness}
+rows = json.loads(sys.argv[1])
+with tempfile.TemporaryDirectory(prefix="sprint-adapter-contract-") as root:
+    for index, row in enumerate(rows):
+        adapter = adapters[row["agent_kind"]]
+        adapter(
+            logs_dir=Path(root) / str(index),
+            model_name=row["model"],
+            reasoning_effort=row["reasoning_effort"],
+        )
+"""
+    try:
+        completed = subprocess.run(
+            [str(HARBOR_PYTHON), "-c", probe, json.dumps(contracts)],
+            cwd=ROOT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0
+
+
 def batch_dir(batch_id: str) -> Path:
     if not RUN_ID_RE.fullmatch(batch_id):
         raise ValueError("batch ID must be 3-49 safe filename characters")
@@ -1588,6 +1632,7 @@ def preflight(
         ).returncode
         == 0
     )
+    checks["agent_adapter_contract"] = agent_adapter_contract_ready(planned)
     command_env = dict(os.environ)
     command_env["MODAL_PROFILE"] = modal_profile
     checks["modal_auth"] = False

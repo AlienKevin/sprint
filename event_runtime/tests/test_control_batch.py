@@ -231,6 +231,19 @@ def test_high_effort_is_propagated_to_deepseek_and_sol_contracts() -> None:
     assert '\"reasoning_effort\":\"' in launcher
     assert 'REASONING_EFFORT="${REASONING_EFFORT:-max}"' in deepseek_wrapper
     assert "REASONING_EFFORT=max" not in deepseek_wrapper
+    assert batch_eval.agent_adapter_contract_ready(rows)
+
+
+def test_agent_adapter_contract_rejects_unsupported_deepseek_effort() -> None:
+    assert not batch_eval.agent_adapter_contract_ready(
+        [
+            {
+                "agent_kind": "deepseek-harness",
+                "model": "deepseek/deepseek-v4-flash-vision-exp",
+                "reasoning_effort": "ultra",
+            }
+        ]
+    )
 
 
 def test_batch_monitor_holds_owner_until_terminal_cycle(
