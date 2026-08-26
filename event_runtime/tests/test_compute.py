@@ -2407,6 +2407,82 @@ class GpuConcurrencyLimitTests(unittest.TestCase):
         self.assertEqual(result["max_active_training_jobs"], 1)
         start.assert_not_called()
 
+    def test_terminal_job_submission_bridge_is_drained_once(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            run = {
+                "run_id": "unit",
+                "state_dir": raw,
+                "cpu_agent_gpu_worker": True,
+            }
+            job = {
+                "job_id": "done",
+                "status": "succeeded",
+                "attempt": 1,
+                "submission_bridge_enabled": True,
+                "provider_logs_archived_at": "now",
+                "provider_terminal_error_checked_at": "now",
+            }
+            persisted: list[dict] = []
+            with (
+                mock.patch.object(
+                    gpu_worker.sprintctl,
+                    "load_run",
+                    return_value=(state, run),
+                ),
+                mock.patch.object(
+                    gpu_worker, "indexed_agent_jobs", return_value={"done": job}
+                ),
+                mock.patch.object(gpu_worker, "list_job_ids", return_value=["done"]),
+                mock.patch.object(
+                    gpu_worker,
+                    "load_job_from_index_snapshot",
+                    return_value=dict(job),
+                ),
+                mock.patch.object(
+                    gpu_worker,
+                    "drain_worker_submission_outbox",
+                    return_value=(
+                        {**job, "submission_bridge_counts": {"forwarded": 4}},
+                        {
+                            "submission_bridge": "drained",
+                            "observed": 4,
+                            "forwarded": 4,
+                            "retry_wait": 0,
+                            "error": 0,
+                        },
+                    ),
+                ) as drain,
+                mock.patch.object(
+                    gpu_worker,
+                    "persist_job",
+                    side_effect=lambda _run, payload: (
+                        persisted.append(dict(payload)) or payload
+                    ),
+                ),
+                mock.patch.object(
+                    gpu_worker, "cleanup_orphaned_training_sandboxes", return_value=[]
+                ),
+                mock.patch.object(
+                    gpu_worker, "reconcile_live_agent_cancel_requests", return_value=[]
+                ),
+                mock.patch.object(
+                    gpu_worker, "reconcile_agent_cancelled_jobs", return_value=[]
+                ),
+                mock.patch.object(gpu_worker, "_candidate_job_ids", return_value=[]),
+                mock.patch.object(
+                    gpu_worker, "active_training_job_ids", return_value=[]
+                ),
+                mock.patch.object(
+                    gpu_worker, "operator_stop_requested", return_value=False
+                ),
+            ):
+                result = gpu_worker.dispatch_once("unit")
+
+        drain.assert_called_once()
+        self.assertEqual(result["submission_bridge_pending_jobs"], [])
+        self.assertTrue(persisted[-1]["submission_bridge_terminal_drained_at"])
+
     def test_retry_wait_does_not_consume_gpu_slot(self) -> None:
         run = {"run_id": "unit"}
         jobs = {

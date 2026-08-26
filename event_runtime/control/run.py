@@ -2813,6 +2813,8 @@ def budget_safety_should_exit(state_dir: Path, run: dict[str, Any]) -> bool:
             ack_reason = str(json.loads(ack_path.read_text()).get("reason") or "")
         except (OSError, json.JSONDecodeError):
             return True
+        if ack_reason == "agent_exit" and gpu_dispatch_loop_alive(state_dir):
+            return False
         if ack_reason != "agent_cost_budget_exhausted":
             return True
         if (state_dir / "STOP_REQUESTED.json").is_file():
@@ -2872,7 +2874,7 @@ def gpu_dispatch_loop(run_id: str, poll_seconds: int) -> int:
         own_pid = os.getpid()
         atomic_write_text(pid_path, f"{own_pid}\n", 0o600)
         try:
-            while not run_services_should_exit(state_dir, run):
+            while True:
                 started = time.monotonic()
                 try:
                     from event_runtime.compute import worker as gpu_worker
@@ -2887,9 +2889,15 @@ def gpu_dispatch_loop(run_id: str, poll_seconds: int) -> int:
                         "error": f"{type(exc).__name__}: {exc}",
                     }
                 print(json.dumps(payload, sort_keys=True), flush=True)
+                if (
+                    run_services_should_exit(state_dir, run)
+                    and not payload.get("active_training_jobs")
+                    and not payload.get("pending")
+                    and not payload.get("submission_bridge_pending_jobs")
+                ):
+                    return 0
                 elapsed = time.monotonic() - started
                 time.sleep(max(1.0, float(poll_seconds) - elapsed))
-            return 0
         finally:
             try:
                 registered = int(pid_path.read_text().strip())

@@ -2662,6 +2662,10 @@ def reconcile_job(
         terminal["attempt_record"] = attempt_path(
             str(run["run_id"]), str(job["job_id"]), int(job["attempt"])
         )
+        if not int(submission_bridge_detail.get("error") or 0) and not int(
+            submission_bridge_detail.get("retry_wait") or 0
+        ):
+            terminal["submission_bridge_terminal_drained_at"] = utc_now()
         terminal, log_detail = archive_provider_logs(run, terminal)
         persist_job(run, terminal)
         _timeline_event(
@@ -3300,6 +3304,7 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
     pending: list[str] = []
     log_backfill: dict[str, Any] | None = None
     policy_backfill: dict[str, Any] | None = None
+    submission_bridge_pending_jobs: list[str] = []
     with gpu_claim.dispatch_lock(state_dir) as got_lock:
         if not got_lock:
             result = {
@@ -3367,6 +3372,30 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
             reported_policy = isinstance(progress, dict) and bool(
                 str(progress.get("policy_path") or progress.get("policy") or "").strip()
             )
+            if (
+                str(job.get("status") or "") in gpu_claim.TERMINAL
+                and job.get("submission_bridge_enabled")
+                and not job.get("submission_bridge_terminal_drained_at")
+            ):
+                bridged, detail = drain_worker_submission_outbox(run, job)
+                if not int(detail.get("error") or 0) and not int(
+                    detail.get("retry_wait") or 0
+                ):
+                    bridged["submission_bridge_terminal_drained_at"] = utc_now()
+                else:
+                    submission_bridge_pending_jobs.append(job_id)
+                if bridged != job:
+                    persist_job(run, bridged)
+                job = bridged
+                reconciled.append(
+                    {
+                        "job_id": job_id,
+                        "attempt": job.get("attempt"),
+                        "status": job.get("status"),
+                        "decision": "terminal_submission_bridge_drain",
+                        **detail,
+                    }
+                )
             if (
                 str(job.get("status") or "") in gpu_claim.TERMINAL
                 and reported_policy
@@ -3593,6 +3622,7 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
         "pending": pending,
         "active_training_jobs": active,
         "max_active_training_jobs": MAX_ACTIVE_TRAINING_JOBS_PER_RUN,
+        "submission_bridge_pending_jobs": submission_bridge_pending_jobs,
         "actions": actions,
         "reconciled": reconciled,
         "ts": utc_now(),

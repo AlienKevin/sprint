@@ -524,12 +524,8 @@ class DurableOpsTests(unittest.TestCase):
             gpu_mirror.assert_not_called()
             agent_mirror.assert_not_called()
             enforce.assert_not_called()
-            self.assertEqual(
-                payload["gpu_mirror"], "terminal_snapshot_not_mirrored"
-            )
-            self.assertEqual(
-                payload["agent_mirror"], "terminal_snapshot_not_mirrored"
-            )
+            self.assertEqual(payload["gpu_mirror"], "terminal_snapshot_not_mirrored")
+            self.assertEqual(payload["agent_mirror"], "terminal_snapshot_not_mirrored")
             self.assertEqual(
                 json.loads((state / "telemetry/agent-cost.json").read_text())[
                     "total_usd"
@@ -854,9 +850,7 @@ class DurableOpsTests(unittest.TestCase):
                 mock.patch.object(
                     sprintctl, "run_results_finished", return_value=False
                 ),
-                mock.patch.object(
-                    sprintctl, "budget_pulse_once"
-                ) as run_pulse,
+                mock.patch.object(sprintctl, "budget_pulse_once") as run_pulse,
                 mock.patch.object(sprintctl.time, "sleep"),
             ):
                 self.assertEqual(sprintctl.budget_pulse_loop("retry-run", 15), 0)
@@ -894,6 +888,60 @@ class DurableOpsTests(unittest.TestCase):
 
             self.assertEqual(observed, [str(os.getpid())])
             self.assertFalse((state / "gpu-dispatch-loop.pid").exists())
+
+    def test_gpu_dispatch_loop_drains_declared_work_after_agent_exit(self) -> None:
+        from event_runtime.compute import worker as gpu_worker
+
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            run = {"run_id": "drain-run", "cpu_agent_gpu_worker": True}
+            payloads = [
+                {
+                    "run_id": "drain-run",
+                    "pending": [],
+                    "active_training_jobs": ["job-1"],
+                    "submission_bridge_pending_jobs": [],
+                },
+                {
+                    "run_id": "drain-run",
+                    "pending": [],
+                    "active_training_jobs": [],
+                    "submission_bridge_pending_jobs": [],
+                },
+            ]
+
+            @contextlib.contextmanager
+            def owned_lock(_path: Path, *, blocking: bool = True):
+                self.assertFalse(blocking)
+                yield True
+
+            with (
+                mock.patch.object(sprintctl, "load_run", return_value=(state, run)),
+                mock.patch.object(sprintctl, "file_lock", side_effect=owned_lock),
+                mock.patch.object(
+                    sprintctl, "run_services_should_exit", return_value=True
+                ),
+                mock.patch.object(
+                    gpu_worker, "dispatch_once", side_effect=payloads
+                ) as dispatch,
+                mock.patch.object(sprintctl.time, "sleep"),
+            ):
+                self.assertEqual(sprintctl.gpu_dispatch_loop("drain-run", 5), 0)
+
+            self.assertEqual(dispatch.call_count, 2)
+
+    def test_agent_exit_keeps_budget_feed_alive_while_gpu_dispatch_drains(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            (state / "STOP_ACK.json").write_text(json.dumps({"reason": "agent_exit"}))
+            with mock.patch.object(
+                sprintctl, "gpu_dispatch_loop_alive", return_value=True
+            ):
+                self.assertFalse(
+                    sprintctl.budget_safety_should_exit(state, {"run_id": "drain-run"})
+                )
 
     def test_budget_watchdog_prefers_live_agent_sandbox(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -1525,7 +1573,9 @@ class DurableOpsTests(unittest.TestCase):
     def test_dry_run_accepts_one_global_budget_override(self) -> None:
         run_id = f"dry-{uuid.uuid4().hex[:12]}"
         env = os.environ.copy()
-        env["OPENROUTER_API_KEY"] = "fake-openrouter-key-that-must-never-print-123456789"
+        env["OPENROUTER_API_KEY"] = (
+            "fake-openrouter-key-that-must-never-print-123456789"
+        )
         env["AGENT_COST_BUDGET_USD"] = "12.5"
         completed = subprocess.run(
             [
@@ -1553,7 +1603,9 @@ class DurableOpsTests(unittest.TestCase):
     def test_terra_dry_run_pins_reconstructible_cost_policy(self) -> None:
         run_id = f"dry-{uuid.uuid4().hex[:12]}"
         env = os.environ.copy()
-        env["OPENROUTER_API_KEY"] = "fake-openrouter-key-that-must-never-print-123456789"
+        env["OPENROUTER_API_KEY"] = (
+            "fake-openrouter-key-that-must-never-print-123456789"
+        )
         completed = subprocess.run(
             [
                 "bash",
@@ -1648,7 +1700,9 @@ class DurableOpsTests(unittest.TestCase):
     def test_sol_dry_run_pins_reconstructible_cost_policy(self) -> None:
         run_id = f"dry-{uuid.uuid4().hex[:12]}"
         env = os.environ.copy()
-        env["OPENROUTER_API_KEY"] = "fake-openrouter-key-that-must-never-print-123456789"
+        env["OPENROUTER_API_KEY"] = (
+            "fake-openrouter-key-that-must-never-print-123456789"
+        )
         completed = subprocess.run(
             [
                 "bash",
@@ -1706,7 +1760,9 @@ class DurableOpsTests(unittest.TestCase):
         )
         self.assertTrue(config["usage_audit_required"])
 
-    def test_sol_dry_run_propagates_reasoning_effort_into_trusted_contract(self) -> None:
+    def test_sol_dry_run_propagates_reasoning_effort_into_trusted_contract(
+        self,
+    ) -> None:
         for effort in ("medium", "high", "max"):
             with self.subTest(effort=effort):
                 run_id = f"dry-{uuid.uuid4().hex[:12]}"
@@ -1772,7 +1828,9 @@ class DurableOpsTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(completed.returncode, 2)
-        self.assertIn("must be low, medium, high, xhigh, max, or ultra", completed.stderr)
+        self.assertIn(
+            "must be low, medium, high, xhigh, max, or ultra", completed.stderr
+        )
 
     def test_codex_cannot_launch_a_deepseek_model(self) -> None:
         run_id = f"dry-{uuid.uuid4().hex[:12]}"
@@ -1985,9 +2043,7 @@ while True:
                 text=True,
             )
             try:
-                first_seen = (
-                    durable / "runs/test-codex/supervisor/first-codex-seen"
-                )
+                first_seen = durable / "runs/test-codex/supervisor/first-codex-seen"
                 deadline = time.time() + 15
                 while not first_seen.exists() and time.time() < deadline:
                     time.sleep(0.1)
@@ -2030,7 +2086,9 @@ while True:
                 monitor.wait()
                 wrapper.communicate()
 
-    def test_codex_goal_runner_keeps_one_supervised_allocation_across_turns(self) -> None:
+    def test_codex_goal_runner_keeps_one_supervised_allocation_across_turns(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             durable = root / "durable"
@@ -2044,7 +2102,7 @@ while True:
             turn_count = root / "turn-count"
             fake_codex = root / "fake-codex.py"
             fake_codex.write_text(
-                f'''#!/usr/bin/env python3
+                f"""#!/usr/bin/env python3
 import json
 from pathlib import Path
 import sys
@@ -2076,7 +2134,7 @@ if sys.argv[1] == "exec":
     print(json.dumps({{"type": "turn.completed", "turn": turns}}), flush=True)
     raise SystemExit(0)
 raise SystemExit(2)
-'''
+"""
             )
             fake_codex.chmod(0o755)
             receipt = agent_logs / "goal-bootstrap.json"
@@ -2100,8 +2158,7 @@ raise SystemExit(2)
                         agent_logs / "goal-lifecycle.json"
                     ),
                     "SPRINT_CODEX_GOAL_RUNNER_BIN": str(
-                        ROOT
-                        / "event_runtime/container/sprint-codex-goal-runner.py"
+                        ROOT / "event_runtime/container/sprint-codex-goal-runner.py"
                     ),
                     "SPRINT_CODEX_APP_SERVER_ARGS_JSON": "[]",
                 }
@@ -2159,13 +2216,9 @@ raise SystemExit(2)
                     wrapper.stderr.read() if wrapper.stderr else "",
                 )
                 self.assertEqual(turn_count.read_text(), "2")
-                first_seen = (
-                    durable / "runs/test-goal-loop/supervisor/first-codex-seen"
-                )
+                first_seen = durable / "runs/test-goal-loop/supervisor/first-codex-seen"
                 self.assertTrue(first_seen.exists())
-                ack = json.loads(
-                    (durable / "runs/test-goal-loop/STOP_ACK").read_text()
-                )
+                ack = json.loads((durable / "runs/test-goal-loop/STOP_ACK").read_text())
                 self.assertEqual(ack["reason"], "agent_exit")
             finally:
                 watcher.kill()
@@ -2231,7 +2284,9 @@ raise SystemExit(2)
                 while not ack_path.exists() and time.time() < deadline:
                     time.sleep(0.1)
                 self.assertTrue(ack_path.exists())
-                self.assertEqual(json.loads(ack_path.read_text())["reason"], "agent_exit")
+                self.assertEqual(
+                    json.loads(ack_path.read_text())["reason"], "agent_exit"
+                )
                 self.assertIsNone(
                     watcher.poll(),
                     "supervisor keepalive exited before Harbor cleanup",
@@ -2260,7 +2315,7 @@ raise SystemExit(2)
             counter = root / "watchdog-count"
             watchdog = root / "watchdog.py"
             watchdog.write_text(
-                f'''#!/usr/bin/env python3
+                f"""#!/usr/bin/env python3
 import json
 from pathlib import Path
 import time
@@ -2281,7 +2336,7 @@ if count == 1:
     }}))
 else:
     time.sleep(10)
-'''
+"""
             )
             watchdog.chmod(0o755)
             agent = subprocess.Popen(
@@ -2339,7 +2394,10 @@ else:
                 self.assertFalse((runtime / "sprint-stop").exists())
                 self.assertIsNone(agent.poll())
                 stale_deadline = time.time() + 15
-                while not (runtime / "sprint-stop").exists() and time.time() < stale_deadline:
+                while (
+                    not (runtime / "sprint-stop").exists()
+                    and time.time() < stale_deadline
+                ):
                     time.sleep(0.1)
                 self.assertEqual(
                     (runtime / "sprint-stop").read_text().strip(),
