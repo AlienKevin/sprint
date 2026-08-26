@@ -14,7 +14,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # Kit wants the usual desktop GL/X/Vulkan libraries present even headless.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      build-essential ca-certificates curl git python3.11 python3.11-dev \
+      build-essential ca-certificates curl git unzip python3.11 python3.11-dev \
       python3-pip tmux asciinema \
       libatomic1 libegl1 libgl1 libglu1-mesa libgomp1 \
       libsm6 libice6 libxi6 libxrandr2 libxt6 libxext6 \
