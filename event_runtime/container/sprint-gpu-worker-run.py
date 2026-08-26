@@ -49,6 +49,7 @@ MAX_OUTPUT_ARTIFACT_TOTAL_BYTES = 512 * 1024 * 1024
 # primary circuit breaker.
 MAX_BUDGET_SNAPSHOT_AGE_SECONDS = 120.0
 RUNTIME_BUDGET_SNAPSHOT = Path("/run/sprint-budget-watchdog.json")
+RUNTIME_AGENT_CANCEL = Path("/run/sprint-agent-cancel.json")
 
 
 def file_sha256(path: Path) -> str:
@@ -734,9 +735,21 @@ def stop_child(proc: subprocess.Popen) -> None:
 
 
 def job_cancel_requested(
-    run_id: str, job_id: str, durable_dir: str = "/durable"
+    run_id: str,
+    job_id: str,
+    durable_dir: str = "/durable",
+    *,
+    runtime_marker: Path = RUNTIME_AGENT_CANCEL,
 ) -> bool:
-    marker = (
+    """Return whether the trusted controller delivered an agent cancellation.
+
+    A running CPU and GPU sandbox have point-in-time Volume views, so the
+    durable marker is an audit fallback rather than a reliable live signal.
+    The host writes the same validated request into this sandbox's private
+    ``/run`` filesystem.  Checking both paths preserves compatibility with a
+    marker visible at worker startup while making live cancellation reliable.
+    """
+    durable_marker = (
         Path(durable_dir)
         / "runs"
         / run_id
@@ -744,16 +757,19 @@ def job_cancel_requested(
         / "cancel"
         / f"{job_id}.json"
     )
-    try:
-        payload = json.loads(marker.read_text())
-    except (OSError, json.JSONDecodeError):
-        return False
-    return (
-        payload.get("schema_version") == 1
-        and payload.get("run_id") == run_id
-        and payload.get("job_id") == job_id
-        and payload.get("reason") == "agent_cancelled"
-    )
+    for marker in (runtime_marker, durable_marker):
+        try:
+            payload = json.loads(marker.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if (
+            payload.get("schema_version") == 1
+            and payload.get("run_id") == run_id
+            and payload.get("job_id") == job_id
+            and payload.get("reason") == "agent_cancelled"
+        ):
+            return True
+    return False
 
 
 def refresh_budget_stop(

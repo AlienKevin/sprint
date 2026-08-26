@@ -1426,9 +1426,10 @@ def refresh_agent_cost_snapshot(
 
     The artifact monitor and the independent budget pulse are concurrent
     writers. Local serialization keeps the ledger monotonic. While the
-    dedicated pulse is alive it alone owns remote propagation: an artifact
-    timeline can lag the live watchdog and must never overwrite the fresher
-    agent/GPU heartbeat merely because it finished later.
+    dedicated pulse is alive it alone owns CPU-agent propagation; the separate
+    GPU pulse consumes that same snapshot. An artifact timeline can lag the
+    live watchdog and must never overwrite either fresher heartbeat merely
+    because it finished later.
     """
     with file_lock(state_dir / "telemetry" / "agent-cost.lock"):
         cost_payload = agent_cost.build_snapshot(timeline, state_dir=state_dir)
@@ -2705,17 +2706,10 @@ def _budget_pulse_once_unlocked(
             + str(agent_mirror.get("agent_cost_mirror_error") or "unknown")
         )
 
-    gpu_mirror = gpu_worker.mirror_gpu_budget(run, payload)
-    atomic_write_json(
-        state_dir / "telemetry" / "gpu-budget-mirror.json",
-        {"schema_version": 1, "updated_at": utc_now(), **gpu_mirror},
-        mode=0o600,
-    )
-    if gpu_mirror.get("gpu_budget_mirror") == "error":
-        raise RuntimeError(
-            "GPU budget pulse mirror failed: "
-            + str(gpu_mirror.get("errors") or "unknown")
-        )
+    # GPU control-plane calls can wait for a newly allocated sandbox to become
+    # executable. They run in a separate restartable service so that delay can
+    # never starve the CPU/API authority's budget heartbeat.
+    gpu_mirror = {"gpu_budget_mirror": "delegated_to_gpu_budget_pulse"}
 
     enforce_agent_cost_budget(run_id, state_dir, run, payload)
     result = {
@@ -2860,6 +2854,72 @@ def budget_pulse_loop(run_id: str, poll_seconds: int) -> int:
                 pid_path.unlink(missing_ok=True)
 
 
+def gpu_budget_pulse_once(run_id: str) -> dict[str, Any]:
+    """Mirror the latest trusted host ledger into active GPU sandboxes."""
+    state_dir, run = load_run(run_id)
+    try:
+        payload = json.loads((state_dir / "telemetry" / "agent-cost.json").read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("GPU budget pulse has no valid host snapshot") from exc
+
+    from event_runtime.compute import worker as gpu_worker
+
+    result = {
+        "schema_version": 1,
+        "run_id": run_id,
+        "updated_at": utc_now(),
+        **gpu_worker.mirror_gpu_budget(run, payload),
+    }
+    atomic_write_json(
+        state_dir / "telemetry" / "gpu-budget-mirror.json", result, mode=0o600
+    )
+    if result.get("gpu_budget_mirror") == "error":
+        detail = (
+            result.get("errors")
+            or result.get("gpu_budget_mirror_error")
+            or "unknown"
+        )
+        raise RuntimeError(f"GPU budget pulse mirror failed: {detail}")
+    return result
+
+
+def gpu_budget_pulse_loop(run_id: str, poll_seconds: int) -> int:
+    """Refresh GPU watchdogs independently from CPU/API enforcement."""
+    state_dir, run = load_run(run_id)
+    lock_path = state_dir / "gpu-budget-pulse.lock"
+    with file_lock(lock_path, blocking=False) as acquired:
+        if not acquired:
+            print(f"GPU budget pulse already running for {run_id}", file=sys.stderr)
+            return 2
+        pid_path = state_dir / "gpu-budget-pulse.pid"
+        own_pid = os.getpid()
+        atomic_write_text(pid_path, f"{own_pid}\n", 0o600)
+        try:
+            while not budget_safety_should_exit(state_dir, run):
+                started = time.monotonic()
+                try:
+                    payload = gpu_budget_pulse_once(run_id)
+                except Exception as exc:  # noqa: BLE001
+                    record_controller_error(run_id, exc)
+                    payload = {
+                        "run_id": run_id,
+                        "updated_at": utc_now(),
+                        "status": "gpu_pulse_error",
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                print(json.dumps(payload, sort_keys=True), flush=True)
+                elapsed = time.monotonic() - started
+                time.sleep(max(1.0, float(poll_seconds) - elapsed))
+            return 0
+        finally:
+            try:
+                registered = int(pid_path.read_text().strip())
+            except (OSError, ValueError):
+                registered = None
+            if registered == own_pid:
+                pid_path.unlink(missing_ok=True)
+
+
 def gpu_dispatch_loop(run_id: str, poll_seconds: int) -> int:
     """Reconcile and dispatch GPU jobs independently of observability I/O."""
 
@@ -2916,6 +2976,7 @@ def build_parser() -> argparse.ArgumentParser:
         "finalize",
         "monitor",
         "budget-pulse",
+        "gpu-budget-pulse",
         "gpu-dispatch-loop",
         "wait",
         "gpu-dispatch",
@@ -2924,7 +2985,13 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         command = sub.add_parser(name)
         command.add_argument("--run-id", required=True)
-        if name in {"monitor", "budget-pulse", "gpu-dispatch-loop", "wait"}:
+        if name in {
+            "monitor",
+            "budget-pulse",
+            "gpu-budget-pulse",
+            "gpu-dispatch-loop",
+            "wait",
+        }:
             command.add_argument("--poll-seconds", type=int, default=POLL_SECONDS)
         if name == "wait":
             command.add_argument(
@@ -2949,6 +3016,8 @@ def main() -> int:
             return monitor_loop(args.run_id, args.poll_seconds)
         elif args.command == "budget-pulse":
             return budget_pulse_loop(args.run_id, args.poll_seconds)
+        elif args.command == "gpu-budget-pulse":
+            return gpu_budget_pulse_loop(args.run_id, args.poll_seconds)
         elif args.command == "gpu-dispatch-loop":
             return gpu_dispatch_loop(args.run_id, args.poll_seconds)
         elif args.command == "wait":

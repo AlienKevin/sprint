@@ -1126,6 +1126,10 @@ if ((START_MONITOR)); then
     pulse "$STATE_DIR/budget-pulse.log" "$STATE_DIR/budget-pulse.pid" \
     budget-pulse --run-id "$RUN_ID" --poll-seconds 15
   start_controller_worker \
+    gpu-budget-pulse "$STATE_DIR/gpu-budget-pulse.log" \
+    "$STATE_DIR/gpu-budget-pulse.pid" \
+    gpu-budget-pulse --run-id "$RUN_ID" --poll-seconds 15
+  start_controller_worker \
     gpu-dispatch "$STATE_DIR/gpu-dispatch-loop.log" \
     "$STATE_DIR/gpu-dispatch-loop.pid" \
     gpu-dispatch-loop --run-id "$RUN_ID" --poll-seconds 10

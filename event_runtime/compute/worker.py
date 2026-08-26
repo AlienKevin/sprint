@@ -66,6 +66,8 @@ DEAD_GRACE_SEC = int(
 AGENT_GPU_MIRROR_ROOT = "/run/sprint-gpu-mirror"
 AGENT_GPU_CONTROL_ROOT = "/run/sprint-gpu-control"
 AGENT_GPU_CONTROL_MAX_REQUESTS = 64
+GPU_AGENT_CANCEL_GRACE_SEC = 60
+GPU_AGENT_CANCEL_RUNTIME_MARKER = "/run/sprint-agent-cancel.json"
 AGENT_GPU_MIRROR_LOG_BYTES = 768 * 1024
 AGENT_GPU_MIRROR_ARTIFACT_BYTES = 32 * 1024 * 1024
 AGENT_GPU_MIRROR_ARG_BYTES = 64 * 1024
@@ -306,6 +308,56 @@ def read_durable_agent_cancel_requests(
         ):
             requests.append(dict(request))
     return requests
+
+
+def deliver_agent_cancel_to_gpu_worker(
+    job: dict[str, Any], request: dict[str, Any]
+) -> None:
+    """Atomically signal a running GPU worker without killing its sandbox.
+
+    The worker needs a brief cooperative shutdown window to stop the child,
+    collect already-written declared outputs, and commit its terminal attempt
+    record.  Provider termination at request receipt races that commit and can
+    discard valid artifacts produced before an Isaac teardown hang.
+    """
+    sandbox_id = str(job.get("sandbox_id") or "")
+    if not sandbox_id.startswith("sb-"):
+        raise RuntimeError("GPU sandbox is unavailable for cancellation")
+    payload = {
+        "schema_version": 1,
+        "request_id": str(request["request_id"]),
+        "run_id": str(request["run_id"]),
+        "job_id": str(request["job_id"]),
+        "reason": "agent_cancelled",
+        "requested_at": str(request.get("requested_at") or utc_now()),
+        "requested_at_epoch_s": float(
+            request.get("requested_at_epoch_s") or time.time()
+        ),
+    }
+    script = r"""
+import json, os, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+payload = json.loads(sys.argv[2])
+path.parent.mkdir(parents=True, exist_ok=True)
+tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+tmp.write_text(json.dumps(payload, sort_keys=True) + "\n")
+os.chmod(tmp, 0o600)
+os.replace(tmp, path)
+""".strip()
+    process = modal.Sandbox.from_id(sandbox_id).exec(
+        "python3",
+        "-c",
+        script,
+        GPU_AGENT_CANCEL_RUNTIME_MARKER,
+        json.dumps(payload, separators=(",", ":")),
+        timeout=15,
+    )
+    return_code = process.wait()
+    stdout = process.stdout.read()
+    stderr = process.stderr.read()
+    if return_code != 0:
+        detail = stderr or stdout or "GPU cancellation signal failed"
+        raise RuntimeError(str(detail)[-1000:])
 
 
 def read_worker_submission_outbox(
@@ -2912,12 +2964,14 @@ def reconcile_live_agent_cancel_requests(
     *,
     indexed: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Persist, execute, and acknowledge live agent cancellation requests.
+    """Persist, deliver, and acknowledge live agent cancellation requests.
 
     This is called while the dispatch lock is held. The durable host event is
-    written before fencing/termination, and the acknowledgement is written
-    only after synchronous provider termination succeeds (or the job is
-    already terminal). An unacknowledged request is safe to replay.
+    written before delivery. A running worker is first signalled through its
+    private live control channel so it can retain declared output artifacts;
+    provider termination is only a bounded fallback. The acknowledgement is
+    written only after the job is terminal. An unacknowledged request is safe
+    to replay after controller restart.
     """
     state_dir = Path(str(run["state_dir"]))
     ack_dir = state_dir / "control-acks"
@@ -2939,9 +2993,9 @@ def reconcile_live_agent_cancel_requests(
         ack_path = ack_dir / f"{request_id}.json"
         if ack_path.is_file():
             continue
-        append_control_event(run, "cancel_requested", request=request)
         job = load_host_job(run, job_id)
         if job is None:
+            append_control_event(run, "cancel_requested", request=request)
             outcome = "unknown_job"
             payload: dict[str, Any] = {
                 "job_id": job_id,
@@ -2949,30 +3003,110 @@ def reconcile_live_agent_cancel_requests(
                 "status": "unknown",
             }
         else:
-            payload = _terminate_job_locked(run, job_id, reason="agent_cancelled")
-            if payload.get("terminate_error"):
-                # Do not acknowledge. The next controller pass retries the
-                # still-persistent request after the provider recovers.
-                append_control_event(
-                    run,
-                    "cancel_delivery_failed",
-                    request=request,
-                    error=str(payload["terminate_error"]),
+            job = reconcile_terminal_attempt_before_stop(run, job)
+            status = str(job.get("status") or "")
+            if status in gpu_claim.TERMINAL:
+                payload = job
+                outcome = "already_terminal"
+            elif not job.get("sandbox_id"):
+                append_control_event(run, "cancel_requested", request=request)
+                payload = _terminate_job_locked(
+                    run, job_id, reason="agent_cancelled_before_dispatch"
                 )
-                reconciled.append(
-                    {
-                        "job_id": job_id,
-                        "request_id": request_id,
-                        "decision": "cancel_retry_required",
-                        "error": payload["terminate_error"],
-                    }
+                outcome = "terminated"
+            else:
+                now = time.time()
+                request_changed = str(job.get("cancel_request_id") or "") != request_id
+                delivered_at = float(job.get("cancel_signal_delivered_at_epoch_s") or 0)
+                if request_changed:
+                    append_control_event(run, "cancel_requested", request=request)
+                    payload = dict(job)
+                    payload.update(
+                        {
+                            "cancel_request_id": request_id,
+                            "cancel_requested_at": utc_now(),
+                            "cancel_requested_at_epoch_s": now,
+                        }
+                    )
+                    delivered_at = 0
+                else:
+                    payload = dict(job)
+                if delivered_at <= 0:
+                    try:
+                        deliver_agent_cancel_to_gpu_worker(payload, request)
+                    except Exception as exc:  # noqa: BLE001
+                        error = f"{type(exc).__name__}: {exc}"
+                        append_control_event(
+                            run,
+                            "cancel_delivery_failed",
+                            request=request,
+                            error=error,
+                        )
+                        payload["cancel_delivery_error"] = error
+                        persist_job(run, payload)
+                        reconciled.append(
+                            {
+                                "job_id": job_id,
+                                "request_id": request_id,
+                                "decision": "cancel_retry_required",
+                                "error": error,
+                            }
+                        )
+                        continue
+                    delivered_at = time.time()
+                    payload.update(
+                        {
+                            "cancel_signal_delivered_at": utc_now(),
+                            "cancel_signal_delivered_at_epoch_s": delivered_at,
+                            "cancel_force_after_epoch_s": (
+                                delivered_at + GPU_AGENT_CANCEL_GRACE_SEC
+                            ),
+                        }
+                    )
+                    payload.pop("cancel_delivery_error", None)
+                    persist_job(run, payload)
+                    append_control_event(
+                        run,
+                        "cancel_delivered",
+                        request=request,
+                        sandbox_id=str(payload.get("sandbox_id") or ""),
+                    )
+                force_after = float(
+                    payload.get("cancel_force_after_epoch_s")
+                    or (delivered_at + GPU_AGENT_CANCEL_GRACE_SEC)
                 )
-                continue
-            outcome = (
-                "already_terminal"
-                if str(job.get("status")) in gpu_claim.TERMINAL
-                else "terminated"
-            )
+                if time.time() < force_after:
+                    reconciled.append(
+                        {
+                            "job_id": job_id,
+                            "request_id": request_id,
+                            "status": payload.get("status"),
+                            "decision": "agent_cancel_delivered",
+                        }
+                    )
+                    continue
+                payload = _terminate_job_locked(
+                    run, job_id, reason="agent_cancelled_forced"
+                )
+                if payload.get("terminate_error"):
+                    # Do not acknowledge. The next controller pass retries the
+                    # still-persistent request after the provider recovers.
+                    append_control_event(
+                        run,
+                        "cancel_delivery_failed",
+                        request=request,
+                        error=str(payload["terminate_error"]),
+                    )
+                    reconciled.append(
+                        {
+                            "job_id": job_id,
+                            "request_id": request_id,
+                            "decision": "cancel_retry_required",
+                            "error": payload["terminate_error"],
+                        }
+                    )
+                    continue
+                outcome = "forced_terminated"
         acknowledgement = {
             "schema_version": 1,
             "request_id": request_id,

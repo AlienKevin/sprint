@@ -70,6 +70,7 @@ def test_launcher_forbids_same_trial_cpu_resume() -> None:
 def test_launcher_requires_exact_gpu_job_index_and_paces_dispatch() -> None:
     launcher = (ROOT / "event_runtime/control/launch.sh").read_text()
     assert 'gpu-dispatch-loop --run-id "$RUN_ID" --poll-seconds 10' in launcher
+    assert 'gpu-budget-pulse --run-id "$RUN_ID" --poll-seconds 15' in launcher
 
 
 def test_batch_matrix_is_exact_six_arm_max_effort_contract() -> None:

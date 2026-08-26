@@ -388,7 +388,7 @@ class DurableOpsTests(unittest.TestCase):
             )
             owned.assert_not_called()
 
-    def test_budget_pulse_uses_fresh_watchdog_and_mirrors_both_consumers(
+    def test_budget_pulse_uses_fresh_watchdog_without_waiting_for_gpu_control(
         self,
     ) -> None:
         from event_runtime.compute import worker as gpu_worker
@@ -425,11 +425,6 @@ class DurableOpsTests(unittest.TestCase):
                 finally:
                     cost_lock_held = False
 
-            def mirror_gpu(_run: dict, _payload: dict) -> dict:
-                self.assertTrue(cost_lock_held)
-                mirror_order.append("gpu")
-                return {"gpu_budget_mirror": "updated"}
-
             def mirror_agent(_run: dict, _payload: dict) -> dict:
                 self.assertTrue(cost_lock_held)
                 mirror_order.append("agent")
@@ -457,7 +452,6 @@ class DurableOpsTests(unittest.TestCase):
                 mock.patch.object(
                     gpu_worker,
                     "mirror_gpu_budget",
-                    side_effect=mirror_gpu,
                 ) as gpu_mirror,
                 mock.patch.object(
                     gpu_worker,
@@ -469,18 +463,58 @@ class DurableOpsTests(unittest.TestCase):
                 payload = sprintctl.budget_pulse_once("pulse-run", now=1010.0)
 
             fetch.assert_called_once()
-            gpu_mirror.assert_called_once()
+            gpu_mirror.assert_not_called()
             agent_mirror.assert_called_once()
-            self.assertEqual(mirror_order, ["agent", "gpu"])
+            self.assertEqual(mirror_order, ["agent"])
             enforce.assert_called_once()
-            mirrored = gpu_mirror.call_args.args[1]
+            mirrored = agent_mirror.call_args.args[1]
             self.assertEqual(mirrored["checked_at_epoch_s"], 1010.0)
             self.assertEqual(mirrored["as_of_epoch_ms"], 1010000)
             self.assertEqual(mirrored["as_of"], "1970-01-01T00:16:50Z")
             self.assertEqual(payload["total_usd"], 1.25)
             self.assertEqual(payload["upstream_watchdog_age_seconds"], 10.0)
             persisted = json.loads((state / "telemetry/budget-pulse.json").read_text())
-            self.assertEqual(persisted["gpu_mirror"], "updated")
+            self.assertEqual(
+                persisted["gpu_mirror"], "delegated_to_gpu_budget_pulse"
+            )
+
+    def test_gpu_budget_pulse_mirrors_latest_host_snapshot(self) -> None:
+        from event_runtime.compute import worker as gpu_worker
+
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            (state / "telemetry").mkdir()
+            run = {"run_id": "pulse-run"}
+            snapshot = {
+                "schema_version": 2,
+                "run_id": "pulse-run",
+                "checked_at_epoch_s": 1010.0,
+                "total_usd": 1.25,
+                "stop_threshold_usd": 10.0,
+                "status": "within_budget",
+            }
+            (state / "telemetry" / "agent-cost.json").write_text(
+                json.dumps(snapshot)
+            )
+            with (
+                mock.patch.object(sprintctl, "load_run", return_value=(state, run)),
+                mock.patch.object(
+                    gpu_worker,
+                    "mirror_gpu_budget",
+                    return_value={
+                        "gpu_budget_mirror": "updated",
+                        "sandbox_ids": ["sb-one"],
+                    },
+                ) as mirror,
+            ):
+                result = sprintctl.gpu_budget_pulse_once("pulse-run")
+
+            mirror.assert_called_once_with(run, snapshot)
+            self.assertEqual(result["gpu_budget_mirror"], "updated")
+            persisted = json.loads(
+                (state / "telemetry" / "gpu-budget-mirror.json").read_text()
+            )
+            self.assertEqual(persisted["sandbox_ids"], ["sb-one"])
 
     def test_budget_pulse_does_not_mirror_after_stop_ack_arrives(self) -> None:
         from event_runtime.compute import worker as gpu_worker

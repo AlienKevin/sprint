@@ -2548,7 +2548,7 @@ class GpuConcurrencyLimitTests(unittest.TestCase):
             )
         persist.assert_not_called()
 
-    def test_live_cancel_is_durably_recorded_then_acknowledged(self) -> None:
+    def test_live_cancel_is_delivered_without_killing_worker_or_acknowledging(self) -> None:
         request = {
             "schema_version": 1,
             "request_id": "a" * 32,
@@ -2578,18 +2578,25 @@ class GpuConcurrencyLimitTests(unittest.TestCase):
                 mock.patch.object(gpu_worker, "load_host_job", return_value=job),
                 mock.patch.object(
                     gpu_worker,
-                    "_terminate_job_locked",
-                    return_value={**job, "status": "terminated"},
-                ) as terminate,
+                    "reconcile_terminal_attempt_before_stop",
+                    return_value=job,
+                ),
+                mock.patch.object(gpu_worker, "deliver_agent_cancel_to_gpu_worker") as deliver,
+                mock.patch.object(
+                    gpu_worker,
+                    "persist_job",
+                    side_effect=lambda _run, payload: payload,
+                ),
+                mock.patch.object(gpu_worker, "_terminate_job_locked") as terminate,
             ):
                 result = gpu_worker.reconcile_live_agent_cancel_requests(run)
 
-            self.assertEqual(result[0]["decision"], "agent_cancel_terminated")
-            terminate.assert_called_once_with(run, "running", reason="agent_cancelled")
-            ack = json.loads(
-                (Path(raw) / "control-acks" / f"{'a' * 32}.json").read_text()
+            self.assertEqual(result[0]["decision"], "agent_cancel_delivered")
+            deliver.assert_called_once_with(mock.ANY, request)
+            terminate.assert_not_called()
+            self.assertFalse(
+                (Path(raw) / "control-acks" / f"{'a' * 32}.json").exists()
             )
-            self.assertEqual(ack["outcome"], "terminated")
             events = [
                 json.loads(line)
                 for line in (Path(raw) / "control-events.jsonl")
@@ -2598,9 +2605,58 @@ class GpuConcurrencyLimitTests(unittest.TestCase):
             ]
             self.assertEqual(
                 [event["event"] for event in events],
-                ["cancel_requested", "cancel_acknowledged"],
+                ["cancel_requested", "cancel_delivered"],
             )
             self.assertEqual([event["sequence"] for event in events], [1, 2])
+
+    def test_live_cancel_is_acknowledged_after_worker_commits_terminal_record(self) -> None:
+        request = {
+            "schema_version": 1,
+            "request_id": "d" * 32,
+            "run_id": "unit",
+            "job_id": "running",
+            "reason": "agent_cancelled",
+        }
+        terminal = {
+            "job_id": "running",
+            "run_id": "unit",
+            "status": "terminated",
+            "termination_reason": "agent_cancelled",
+            "progress": {
+                "output_artifacts": [{"name": "policy.pt"}],
+                "policy_path": "/durable/runs/unit/gpu-jobs/artifacts/running/policy.pt",
+            },
+        }
+        with tempfile.TemporaryDirectory() as raw:
+            run = {"run_id": "unit", "state_dir": raw}
+            with (
+                mock.patch.object(
+                    gpu_worker,
+                    "read_durable_agent_cancel_requests",
+                    return_value=[request],
+                ),
+                mock.patch.object(
+                    gpu_worker, "read_live_agent_cancel_requests", return_value=[]
+                ),
+                mock.patch.object(gpu_worker, "load_host_job", return_value=terminal),
+                mock.patch.object(
+                    gpu_worker,
+                    "reconcile_terminal_attempt_before_stop",
+                    return_value=terminal,
+                ),
+                mock.patch.object(gpu_worker, "deliver_agent_cancel_to_gpu_worker") as deliver,
+                mock.patch.object(gpu_worker, "_terminate_job_locked") as terminate,
+            ):
+                result = gpu_worker.reconcile_live_agent_cancel_requests(run)
+
+            self.assertEqual(result[0]["decision"], "agent_cancel_already_terminal")
+            deliver.assert_not_called()
+            terminate.assert_not_called()
+            ack = json.loads(
+                (Path(raw) / "control-acks" / f"{'d' * 32}.json").read_text()
+            )
+            self.assertEqual(ack["outcome"], "already_terminal")
+            self.assertEqual(ack["status"], "terminated")
 
     def test_durable_cancel_replays_when_cpu_control_channel_is_down(self) -> None:
         request = {
@@ -2632,15 +2688,23 @@ class GpuConcurrencyLimitTests(unittest.TestCase):
                 mock.patch.object(gpu_worker, "load_host_job", return_value=job),
                 mock.patch.object(
                     gpu_worker,
-                    "_terminate_job_locked",
-                    return_value={**job, "status": "terminated"},
-                ) as terminate,
+                    "reconcile_terminal_attempt_before_stop",
+                    return_value=job,
+                ),
+                mock.patch.object(gpu_worker, "deliver_agent_cancel_to_gpu_worker") as deliver,
+                mock.patch.object(
+                    gpu_worker,
+                    "persist_job",
+                    side_effect=lambda _run, payload: payload,
+                ),
             ):
                 result = gpu_worker.reconcile_live_agent_cancel_requests(run)
 
-            self.assertEqual(result[0]["decision"], "agent_cancel_terminated")
-            terminate.assert_called_once()
-            self.assertTrue((Path(raw) / "control-acks" / f"{'b' * 32}.json").is_file())
+            self.assertEqual(result[0]["decision"], "agent_cancel_delivered")
+            deliver.assert_called_once()
+            self.assertFalse(
+                (Path(raw) / "control-acks" / f"{'b' * 32}.json").exists()
+            )
 
     def test_unconfirmed_cancel_is_not_acknowledged(self) -> None:
         request = {
@@ -2650,7 +2714,12 @@ class GpuConcurrencyLimitTests(unittest.TestCase):
             "job_id": "running",
             "reason": "agent_cancelled",
         }
-        job = {"job_id": "running", "run_id": "unit", "status": "running"}
+        job = {
+            "job_id": "running",
+            "run_id": "unit",
+            "status": "running",
+            "sandbox_id": "sb-live",
+        }
         with tempfile.TemporaryDirectory() as raw:
             run = {"run_id": "unit", "state_dir": raw}
             with (
@@ -2665,18 +2734,78 @@ class GpuConcurrencyLimitTests(unittest.TestCase):
                 mock.patch.object(gpu_worker, "load_host_job", return_value=job),
                 mock.patch.object(
                     gpu_worker,
-                    "_terminate_job_locked",
-                    return_value={
-                        **job,
-                        "status": "terminated",
-                        "terminate_error": "TimeoutError: provider did not settle",
-                    },
+                    "reconcile_terminal_attempt_before_stop",
+                    return_value=job,
+                ),
+                mock.patch.object(
+                    gpu_worker,
+                    "deliver_agent_cancel_to_gpu_worker",
+                    side_effect=RuntimeError("provider control channel unavailable"),
+                ),
+                mock.patch.object(
+                    gpu_worker,
+                    "persist_job",
+                    side_effect=lambda _run, payload: payload,
                 ),
             ):
                 result = gpu_worker.reconcile_live_agent_cancel_requests(run)
 
             self.assertEqual(result[0]["decision"], "cancel_retry_required")
             self.assertFalse((Path(raw) / "control-acks" / f"{'c' * 32}.json").exists())
+
+    def test_cancel_force_terminates_only_after_cooperative_grace(self) -> None:
+        request_id = "e" * 32
+        request = {
+            "schema_version": 1,
+            "request_id": request_id,
+            "run_id": "unit",
+            "job_id": "running",
+            "reason": "agent_cancelled",
+        }
+        job = {
+            "job_id": "running",
+            "run_id": "unit",
+            "status": "running",
+            "sandbox_id": "sb-live",
+            "cancel_request_id": request_id,
+            "cancel_signal_delivered_at_epoch_s": 100.0,
+            "cancel_force_after_epoch_s": 160.0,
+        }
+        terminated = {**job, "status": "terminated"}
+        with tempfile.TemporaryDirectory() as raw:
+            run = {"run_id": "unit", "state_dir": raw}
+            with (
+                mock.patch.object(
+                    gpu_worker,
+                    "read_durable_agent_cancel_requests",
+                    return_value=[request],
+                ),
+                mock.patch.object(
+                    gpu_worker, "read_live_agent_cancel_requests", return_value=[]
+                ),
+                mock.patch.object(gpu_worker, "load_host_job", return_value=job),
+                mock.patch.object(
+                    gpu_worker,
+                    "reconcile_terminal_attempt_before_stop",
+                    return_value=job,
+                ),
+                mock.patch.object(
+                    gpu_worker,
+                    "_terminate_job_locked",
+                    return_value=terminated,
+                ) as terminate,
+                mock.patch.object(gpu_worker.time, "time", return_value=161.0),
+            ):
+                result = gpu_worker.reconcile_live_agent_cancel_requests(run)
+
+            terminate.assert_called_once_with(
+                run, "running", reason="agent_cancelled_forced"
+            )
+            self.assertEqual(result[0]["decision"], "agent_cancel_forced_terminated")
+            ack = json.loads(
+                (Path(raw) / "control-acks" / f"{request_id}.json").read_text()
+            )
+            self.assertEqual(ack["outcome"], "forced_terminated")
 
 
 class AgentCredentialBoundaryTests(unittest.TestCase):
@@ -3649,6 +3778,28 @@ class AgentGpuCliTests(unittest.TestCase):
                 )
             )
             self.assertTrue(worker_run.job_cancel_requested("run-1", "job-1", raw))
+
+    def test_worker_recognizes_private_runtime_cancel_signal(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            runtime_marker = Path(raw) / "cancel.json"
+            runtime_marker.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "run_id": "run-1",
+                        "job_id": "job-1",
+                        "reason": "agent_cancelled",
+                    }
+                )
+            )
+            self.assertTrue(
+                worker_run.job_cancel_requested(
+                    "run-1",
+                    "job-1",
+                    str(Path(raw) / "missing-durable"),
+                    runtime_marker=runtime_marker,
+                )
+            )
 
     def test_output_paths_are_scoped_and_have_unique_names(self) -> None:
         self.assertEqual(
