@@ -515,13 +515,14 @@ def gpu_activity_stalled(
     minimum_samples: int = 12,
     active_utilization_pct: float = 5.0,
 ) -> bool:
-    """Return true when a live GPU job has made no sampled accelerator progress.
+    """Return true when a live GPU job never starts accelerator work.
 
     Isaac startup and short smoke tests can legitimately sample at zero percent,
     so the guard needs both a five-minute grace period and a useful run of
-    successful ``nvidia-smi`` samples.  A job that exits inside the grace period
-    is never affected.  The worker records this as a deterministic failure;
-    it is not an infrastructure preemption and must not silently restart.
+    successful ``nvidia-smi`` samples.  Once any accelerator activity has been
+    observed, later CPU-side export, evaluation, or simulator teardown must not
+    make the startup guard fire.  Ongoing hangs are covered by the independent
+    declared-progress watchdog and the absolute job timeout.
     """
     now = time.time() if now_epoch_s is None else now_epoch_s
     if now - started_epoch_s < grace_seconds or not samples_path.is_file():
@@ -536,15 +537,10 @@ def gpu_activity_stalled(
                 rows.append(row)
     except (OSError, ValueError, json.JSONDecodeError):
         return False
-    # A job may train successfully and then hang in a later framework call.
-    # Judge the most recent grace-sized window rather than letting one old
-    # burst of GPU work exempt the process forever.
-    recent_cutoff = max(started_epoch_s, now - grace_seconds)
     rows = [
         row
         for row in rows
         if row.get("nvidia_smi_ok") is True
-        and float(row.get("epoch_s") or 0) >= recent_cutoff
     ]
     if len(rows) < minimum_samples:
         return False
@@ -1266,7 +1262,7 @@ def main() -> int:
                 activity_watchdog_fired = True
                 error = (
                     "GPU activity watchdog: no sampled accelerator utilization "
-                    "above 5% during the five-minute startup/progress window"
+                    "above 5% during the five-minute startup window"
                 )
                 print(error, flush=True)
                 stop_child(proc)

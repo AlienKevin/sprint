@@ -404,7 +404,9 @@ class WorkerAttemptGuardTests(unittest.TestCase):
                 )
             )
 
-    def test_gpu_activity_watchdog_does_not_accept_stale_progress(self) -> None:
+    def test_gpu_activity_watchdog_remains_satisfied_after_cpu_only_tail(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as raw:
             samples = Path(raw) / "samples.jsonl"
             rows = []
@@ -424,7 +426,7 @@ class WorkerAttemptGuardTests(unittest.TestCase):
                     )
                 )
             samples.write_text("\n".join(rows) + "\n")
-            self.assertTrue(
+            self.assertFalse(
                 worker_run.gpu_activity_stalled(
                     samples, started_epoch_s=100, now_epoch_s=500
                 )
