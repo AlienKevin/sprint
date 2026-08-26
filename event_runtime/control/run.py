@@ -1475,15 +1475,8 @@ def refresh_agent_cost_snapshot(
             delegated,
             mode=0o600,
         )
-        atomic_write_json(
-            state_dir / "telemetry" / "gpu-budget-mirror.json",
-            {
-                "schema_version": 1,
-                "updated_at": utc_now(),
-                "gpu_budget_mirror": "delegated_to_budget_pulse",
-            },
-            mode=0o600,
-        )
+        # The independent GPU pulse owns its status file. Do not overwrite its
+        # sandbox IDs or errors with an artifact-monitor delegation marker.
         return cost_payload
 
     from event_runtime.compute import worker as gpu_worker

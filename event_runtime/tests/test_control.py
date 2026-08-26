@@ -638,6 +638,14 @@ class DurableOpsTests(unittest.TestCase):
                 "run_id": "delegated-run",
                 "total_usd": 2.0,
             }
+            gpu_status = {
+                "schema_version": 1,
+                "gpu_budget_mirror": "updated",
+                "sandbox_ids": ["sb-live"],
+            }
+            (state / "telemetry" / "gpu-budget-mirror.json").write_text(
+                json.dumps(gpu_status)
+            )
             with (
                 mock.patch.object(
                     sprintctl.agent_cost, "build_snapshot", return_value=payload
@@ -662,6 +670,10 @@ class DurableOpsTests(unittest.TestCase):
                     "agent_cost_mirror"
                 ],
                 "delegated_to_budget_pulse",
+            )
+            self.assertEqual(
+                json.loads((state / "telemetry/gpu-budget-mirror.json").read_text()),
+                gpu_status,
             )
 
     def test_terminal_artifact_cost_refresh_does_not_mirror_expired_sandbox(
