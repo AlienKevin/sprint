@@ -12,6 +12,7 @@ from isaaclab.app import AppLauncher  # noqa: E402
 
 app = AppLauncher({"device": "cpu", "headless": True}).app
 
+import isaaclab_tasks  # noqa: F401,E402
 import omni.client  # noqa: E402
 
 from sprint_assets import LOCAL_ASSET_ROOT, remote_asset_root  # noqa: E402

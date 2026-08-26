@@ -36,7 +36,7 @@ RUN pip3 install --no-cache-dir "isaacsim[all,extscache]==5.1.0" \
 # setuptools that cannot build this.
 RUN git clone --depth 1 --branch v2.3.2 \
       https://github.com/isaac-sim/IsaacLab.git /opt/IsaacLab \
- && pip3 install --no-cache-dir 'setuptools<80' wheel toml \
+ && pip3 install --no-cache-dir 'setuptools<80' wheel toml 'h5py==3.16.0' \
  && pip3 install --no-cache-dir --no-build-isolation -e /opt/IsaacLab/source/isaaclab \
  && pip3 install --no-cache-dir --no-build-isolation -e /opt/IsaacLab/source/isaaclab_assets \
  && pip3 install --no-cache-dir --no-build-isolation -e /opt/IsaacLab/source/isaaclab_tasks

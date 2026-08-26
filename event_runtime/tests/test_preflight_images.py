@@ -199,13 +199,32 @@ def test_functional_canary_uses_trainer_owned_final_checkpoint() -> None:
 
 def test_functional_canary_exercises_the_published_structural_checker() -> None:
     source = (PREFLIGHT / "canary.py").read_text()
-    dockerfile = (
+    agent_dockerfile = (
         ROOT / "events/g1-100-metres/environment/Dockerfile"
+    ).read_text()
+    verifier_dockerfile = (
+        ROOT / "events/g1-100-metres/tests/Dockerfile"
     ).read_text()
 
     assert "test -f /opt/event-verifier/check_submission.py" in source
     assert "python3 /opt/event-verifier/check_submission.py" in source
-    assert "rsl-rl-lib" not in dockerfile
+    for dockerfile in (agent_dockerfile, verifier_dockerfile):
+        assert "'h5py==3.16.0'" in dockerfile
+        assert "rsl-rl-lib" not in dockerfile
+        assert "/source/isaaclab_rl" not in dockerfile
+        assert "/source/isaaclab_mimic" not in dockerfile
+
+
+def test_image_probes_fail_if_isaaclab_tasks_cannot_import() -> None:
+    localizer = (
+        ROOT / "event_runtime/container/localize_assets.py"
+    ).read_text()
+    runtime_probe = (
+        ROOT / "event_runtime/container/sprint-isaac-runtime-probe.py"
+    ).read_text()
+
+    assert "import isaaclab_tasks" in localizer
+    assert "import isaaclab_tasks" in runtime_probe
 
 
 def test_functional_canary_accepts_any_authoritative_gpu_activity_signal() -> None:

@@ -14,6 +14,7 @@ AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 app = AppLauncher(args).app
 
+import isaaclab_tasks  # noqa: F401,E402
 from isaaclab.markers.config import BLUE_ARROW_X_MARKER_CFG  # noqa: E402
 from isaaclab.sim import SimulationCfg, SimulationContext  # noqa: E402
 from isaaclab_assets import G1_CFG  # noqa: E402
