@@ -123,6 +123,29 @@ def test_batch_matrix_accepts_explicit_reasoning_effort() -> None:
     assert {row["reasoning_effort"] for row in rows} == {"medium"}
 
 
+@pytest.mark.parametrize("family", ["deepseek", "luna"])
+@pytest.mark.parametrize("reasoning_effort", ["medium", "high"])
+def test_batch_matrix_requires_max_for_fixed_effort_families(
+    family: str, reasoning_effort: str
+) -> None:
+    with pytest.raises(ValueError, match=f"reasoning effort must be max for {family}"):
+        batch_eval.matrix(
+            f"eval-{family}-{reasoning_effort}",
+            families=(family,),
+            reasoning_effort=reasoning_effort,
+        )
+
+
+@pytest.mark.parametrize("reasoning_effort", ["medium", "high", "max"])
+def test_batch_matrix_allows_sol_effort_sweep(reasoning_effort: str) -> None:
+    rows = batch_eval.matrix(
+        f"eval-sol-{reasoning_effort}",
+        families=("sol",),
+        reasoning_effort=reasoning_effort,
+    )
+    assert {row["reasoning_effort"] for row in rows} == {reasoning_effort}
+
+
 def test_batch_matrix_accepts_exact_replacement_trial_slots() -> None:
     rows = batch_eval.matrix(
         "eval-sol-medium-replacement",
@@ -215,14 +238,21 @@ def test_duplicate_monitor_control_record_is_safe_for_cli_output() -> None:
     assert batch_eval.public_command_output("monitor", result) == result
 
 
-def test_high_effort_is_propagated_to_deepseek_and_sol_contracts() -> None:
-    rows = batch_eval.matrix(
-        "high-canary",
-        families=("deepseek", "sol"),
+def test_fixed_and_swept_efforts_are_propagated_to_agent_contracts() -> None:
+    deepseek_rows = batch_eval.matrix(
+        "max-deepseek-canary",
+        families=("deepseek",),
+        reasoning_effort="max",
+    )
+    sol_rows = batch_eval.matrix(
+        "high-sol-canary",
+        families=("sol",),
         reasoning_effort="high",
     )
-    assert len(rows) == 6
-    assert {row["reasoning_effort"] for row in rows} == {"high"}
+    assert len(deepseek_rows) == 3
+    assert len(sol_rows) == 3
+    assert {row["reasoning_effort"] for row in deepseek_rows} == {"max"}
+    assert {row["reasoning_effort"] for row in sol_rows} == {"high"}
     launcher = (ROOT / "event_runtime/control/launch.sh").read_text()
     deepseek_wrapper = (
         ROOT / "event_runtime/control/providers/deepseek_harness.sh"
@@ -234,7 +264,7 @@ def test_high_effort_is_propagated_to_deepseek_and_sol_contracts() -> None:
     assert '"reasoning_effort":"' in launcher
     assert 'REASONING_EFFORT="${REASONING_EFFORT:-max}"' in deepseek_wrapper
     assert "REASONING_EFFORT=max" not in deepseek_wrapper
-    assert batch_eval.agent_adapter_contract_ready(rows)
+    assert batch_eval.agent_adapter_contract_ready(deepseek_rows + sol_rows)
 
 
 def test_agent_adapter_contract_rejects_unsupported_deepseek_effort() -> None:

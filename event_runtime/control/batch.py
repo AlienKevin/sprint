@@ -452,6 +452,11 @@ def matrix(
     unknown = sorted(set(selected) - set(SUPPORTED_FAMILIES))
     if not selected or unknown:
         raise ValueError(f"invalid model families: {unknown or list(selected)}")
+    fixed_max_families = sorted(set(selected) & {"deepseek", "luna"})
+    if fixed_max_families and reasoning_effort != "max":
+        raise ValueError(
+            "reasoning effort must be max for " + ", ".join(fixed_max_families)
+        )
     for family in selected:
         spec = specs[family]
         model_owner = str(spec["model"]).split("/", 1)[0]

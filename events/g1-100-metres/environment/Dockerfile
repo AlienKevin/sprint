@@ -14,7 +14,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # Kit wants the usual desktop GL/X/Vulkan libraries present even headless.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      build-essential ca-certificates curl git unzip python3.11 python3.11-dev \
+      build-essential ca-certificates curl git python3.11 python3.11-dev \
       python3-pip tmux asciinema \
       libatomic1 libegl1 libgl1 libglu1-mesa libgomp1 \
       libsm6 libice6 libxi6 libxrandr2 libxt6 libxext6 \
@@ -39,11 +39,7 @@ RUN git clone --depth 1 --branch v2.3.2 \
  && pip3 install --no-cache-dir 'setuptools<80' wheel toml \
  && pip3 install --no-cache-dir --no-build-isolation -e /opt/IsaacLab/source/isaaclab \
  && pip3 install --no-cache-dir --no-build-isolation -e /opt/IsaacLab/source/isaaclab_assets \
- && pip3 install --no-cache-dir --no-build-isolation -e /opt/IsaacLab/source/isaaclab_mimic \
- && pip3 install --no-cache-dir --no-build-isolation -e /opt/IsaacLab/source/isaaclab_rl \
- && pip3 install --no-cache-dir --no-build-isolation -e /opt/IsaacLab/source/isaaclab_tasks \
- && pip3 install --no-cache-dir 'rsl-rl-lib==3.0.1' \
- && python3 -c 'import importlib.metadata as m, rsl_rl; assert m.version("rsl-rl-lib") == "3.0.1"'
+ && pip3 install --no-cache-dir --no-build-isolation -e /opt/IsaacLab/source/isaaclab_tasks
 
 # Isaac Lab 2.3.2's application manifest pins the URDF importer from a newer
 # extension cache than the Isaac Sim 5.1.0 wheel actually ships.  Online Kit

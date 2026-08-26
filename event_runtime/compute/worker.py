@@ -69,7 +69,7 @@ AGENT_GPU_CONTROL_MAX_REQUESTS = 64
 GPU_AGENT_CANCEL_GRACE_SEC = 60
 GPU_AGENT_CANCEL_RUNTIME_MARKER = "/run/sprint-agent-cancel.json"
 AGENT_GPU_MIRROR_LOG_BYTES = 768 * 1024
-AGENT_GPU_MIRROR_ARTIFACT_BYTES = 32 * 1024 * 1024
+AGENT_GPU_MIRROR_ARTIFACT_BYTES = 128 * 1024 * 1024
 AGENT_GPU_MIRROR_ARG_BYTES = 64 * 1024
 GPU_SUBMISSION_BRIDGE_ROOT = "/run/sprint-submission-bridge"
 GPU_SUBMISSION_BRIDGE_MAX_REQUESTS = 8
@@ -1367,6 +1367,24 @@ def fetch_agent_policy_artifact(
             "agent_policy_size_bytes": len(content),
         }
     )
+    mirrors = dict(payload.get("agent_artifact_mirrors") or {})
+    source_path = str(
+        next(
+            (
+                item.get("source_path")
+                for item in (progress.get("output_artifacts") or [])
+                if isinstance(item, dict)
+                and str(item.get("path") or "") == str(policy_path)
+            ),
+            str(Path("/app") / policy_path.name),
+        )
+    )
+    mirrors[source_path] = {
+        "mirror_path": mirror_path,
+        "size_bytes": len(content),
+        "sha256": hashlib.sha256(content).hexdigest(),
+    }
+    payload["agent_artifact_mirrors"] = mirrors
     return (
         payload,
         policy_path.name,
@@ -1374,6 +1392,97 @@ def fetch_agent_policy_artifact(
         {
             "policy_mirror": "fetched",
             "policy_size_bytes": len(content),
+        },
+    )
+
+
+def pending_output_artifact(job: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the next declared terminal output not yet mirrored to the agent."""
+    progress = job.get("progress")
+    if not isinstance(progress, dict):
+        return None
+    mirrors = job.get("agent_artifact_mirrors")
+    mirrored_sources = set(mirrors) if isinstance(mirrors, dict) else set()
+    for record in progress.get("output_artifacts") or []:
+        if not isinstance(record, dict):
+            continue
+        source_path = str(record.get("source_path") or "").strip()
+        durable_path = str(record.get("path") or "").strip()
+        if source_path and durable_path and source_path not in mirrored_sources:
+            return record
+    return None
+
+
+def fetch_agent_output_artifact(
+    run: dict[str, Any], job: dict[str, Any]
+) -> tuple[dict[str, Any], str | None, bytes | None, dict[str, Any]]:
+    """Fetch one declared output into the trusted CPU-agent mirror."""
+    payload = dict(job)
+    record = pending_output_artifact(payload)
+    if record is None:
+        return payload, None, None, {"artifact_mirror": "not_reported"}
+    source_path = Path(str(record.get("source_path") or ""))
+    durable_path = Path(str(record.get("path") or ""))
+    expected_root = (
+        Path("/durable")
+        / "runs"
+        / str(run["run_id"])
+        / "gpu-jobs"
+        / "artifacts"
+        / str(job["job_id"])
+    )
+    try:
+        source_path.relative_to("/app")
+        relative = durable_path.relative_to(expected_root)
+    except ValueError:
+        return payload, None, None, {"artifact_mirror": "rejected_scope"}
+    if not relative.parts or ".." in relative.parts or not durable_path.name:
+        return payload, None, None, {"artifact_mirror": "rejected_scope"}
+    content = sprintctl.volume_get_bytes(
+        run,
+        str(durable_path.relative_to("/durable")),
+        timeout_seconds=120,
+        max_bytes=AGENT_GPU_MIRROR_ARTIFACT_BYTES,
+    )
+    if content is None:
+        return payload, None, None, {"artifact_mirror": "fetch_retry"}
+    expected_size = int(record.get("size_bytes") or 0)
+    expected_sha = str(record.get("sha256") or "")
+    actual_sha = hashlib.sha256(content).hexdigest()
+    if (
+        not content
+        or expected_size != len(content)
+        or not expected_sha
+        or expected_sha != actual_sha
+    ):
+        return payload, None, None, {"artifact_mirror": "digest_mismatch"}
+    mirror_path = (
+        f"{AGENT_GPU_MIRROR_ROOT}/artifacts/{job['job_id']}/{durable_path.name}"
+    )
+    mirrors = dict(payload.get("agent_artifact_mirrors") or {})
+    mirrors[str(source_path)] = {
+        "mirror_path": mirror_path,
+        "size_bytes": len(content),
+        "sha256": actual_sha,
+    }
+    payload["agent_artifact_mirrors"] = mirrors
+    if source_path.suffix in {".pt", ".pth"}:
+        payload.update(
+            {
+                "agent_policy_mirror_path": mirror_path,
+                "agent_policy_source_path": str(durable_path),
+                "agent_policy_sha256": actual_sha,
+                "agent_policy_size_bytes": len(content),
+            }
+        )
+    return (
+        payload,
+        durable_path.name,
+        content,
+        {
+            "artifact_mirror": "fetched",
+            "artifact_source_path": str(source_path),
+            "artifact_size_bytes": len(content),
         },
     )
 
@@ -1438,18 +1547,18 @@ def refresh_live_policy_mirror(
     }
 
 
-def retry_terminal_policy_mirror(
+def retry_terminal_artifact_mirror(
     run: dict[str, Any], job: dict[str, Any]
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Retry a terminal artifact fetch after Modal Volume propagation lag."""
-    payload, artifact_name, artifact_content, detail = fetch_agent_policy_artifact(
+    payload, artifact_name, artifact_content, detail = fetch_agent_output_artifact(
         run, job
     )
-    outcome = str(detail.get("policy_mirror") or "")
+    outcome = str(detail.get("artifact_mirror") or "")
     if artifact_name is not None and artifact_content is not None:
-        payload.pop("policy_mirror_retry_after_epoch_s", None)
-        payload.pop("policy_mirror_attempts", None)
-        payload["agent_policy_mirrored_at"] = utc_now()
+        payload.pop("artifact_mirror_retry_after_epoch_s", None)
+        payload.pop("artifact_mirror_attempts", None)
+        payload["agent_artifact_mirrored_at"] = utc_now()
         mirror_detail = mirror_agent_job(
             run,
             payload,
@@ -1458,13 +1567,13 @@ def retry_terminal_policy_mirror(
         )
         return payload, {**detail, **mirror_detail}
     if outcome == "fetch_retry":
-        attempts = int(payload.get("policy_mirror_attempts") or 0) + 1
-        payload["policy_mirror_attempts"] = attempts
-        payload["policy_mirror_retry_after_epoch_s"] = time.time() + min(
+        attempts = int(payload.get("artifact_mirror_attempts") or 0) + 1
+        payload["artifact_mirror_attempts"] = attempts
+        payload["artifact_mirror_retry_after_epoch_s"] = time.time() + min(
             15 * 60, 15 * (2 ** min(attempts - 1, 6))
         )
     else:
-        payload["policy_mirror_terminal_failure"] = outcome or "unknown"
+        payload["artifact_mirror_terminal_failure"] = outcome or "unknown"
     return payload, detail
 
 
@@ -2251,8 +2360,8 @@ def audit_archived_provider_logs(
     stdout, stderr = split_archived_provider_streams(text)
     terminal_error = provider_terminal_error_for_job(job, stdout, stderr)
     payload = apply_provider_terminal_error(job, terminal_error)
-    payload, artifact_name, artifact_content, policy_detail = (
-        fetch_agent_policy_artifact(run, payload)
+    payload, artifact_name, artifact_content, artifact_detail = (
+        fetch_agent_output_artifact(run, payload)
     )
     mirror_detail = mirror_agent_job(
         run,
@@ -2264,7 +2373,7 @@ def audit_archived_provider_logs(
     return payload, {
         "provider_logs": "audited",
         "provider_terminal_error": terminal_error,
-        **policy_detail,
+        **artifact_detail,
         **mirror_detail,
     }
 
@@ -2339,8 +2448,8 @@ def archive_provider_logs(
     )
     terminal_error = provider_terminal_error_for_job(payload, stdout, stderr)
     payload = apply_provider_terminal_error(payload, terminal_error)
-    payload, artifact_name, artifact_content, policy_detail = (
-        fetch_agent_policy_artifact(run, payload)
+    payload, artifact_name, artifact_content, artifact_detail = (
+        fetch_agent_output_artifact(run, payload)
     )
     mirror_detail = mirror_agent_job(
         run,
@@ -2353,7 +2462,7 @@ def archive_provider_logs(
         "provider_logs": "archived",
         "provider_logs_size_bytes": len(encoded),
         "provider_terminal_error": terminal_error,
-        **policy_detail,
+        **artifact_detail,
         **mirror_detail,
     }
 
@@ -3437,7 +3546,7 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
     reconciled: list[dict[str, Any]] = []
     pending: list[str] = []
     log_backfill: dict[str, Any] | None = None
-    policy_backfill: dict[str, Any] | None = None
+    artifact_backfill: dict[str, Any] | None = None
     submission_bridge_pending_jobs: list[str] = []
     with gpu_claim.dispatch_lock(state_dir) as got_lock:
         if not got_lock:
@@ -3502,10 +3611,6 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
             job = load_job_from_index_snapshot(run, job_id, indexed)
             if not job:
                 continue
-            progress = job.get("progress")
-            reported_policy = isinstance(progress, dict) and bool(
-                str(progress.get("policy_path") or progress.get("policy") or "").strip()
-            )
             if (
                 str(job.get("status") or "") in gpu_claim.TERMINAL
                 and job.get("submission_bridge_enabled")
@@ -3532,13 +3637,12 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
                 )
             if (
                 str(job.get("status") or "") in gpu_claim.TERMINAL
-                and reported_policy
-                and not job.get("agent_policy_mirror_path")
-                and not job.get("policy_mirror_terminal_failure")
-                and float(job.get("policy_mirror_retry_after_epoch_s") or 0) <= now
-                and policy_backfill is None
+                and pending_output_artifact(job) is not None
+                and not job.get("artifact_mirror_terminal_failure")
+                and float(job.get("artifact_mirror_retry_after_epoch_s") or 0) <= now
+                and artifact_backfill is None
             ):
-                policy_backfill = job
+                artifact_backfill = job
             if (
                 str(job.get("status") or "") in gpu_claim.TERMINAL
                 and not job.get("provider_logs_archived_at")
@@ -3737,16 +3841,16 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
                 }
             )
 
-        if policy_backfill is not None:
-            mirrored, detail = retry_terminal_policy_mirror(run, policy_backfill)
-            if mirrored != policy_backfill:
+        if artifact_backfill is not None:
+            mirrored, detail = retry_terminal_artifact_mirror(run, artifact_backfill)
+            if mirrored != artifact_backfill:
                 persist_job(run, mirrored)
             reconciled.append(
                 {
                     "job_id": mirrored.get("job_id"),
                     "attempt": mirrored.get("attempt"),
                     "status": mirrored.get("status"),
-                    "decision": "terminal_policy_backfill",
+                    "decision": "terminal_artifact_backfill",
                     **detail,
                 }
             )

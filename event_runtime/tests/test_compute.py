@@ -1137,27 +1137,69 @@ class ClaimSelectionTests(unittest.TestCase):
             "/durable/runs/run-1/policies/policy_7.pt",
         )
 
-    def test_terminal_policy_fetch_retries_after_volume_lag(self) -> None:
+    def test_terminal_output_fetch_retries_after_volume_lag(self) -> None:
         job = {
             "job_id": "job-1",
             "status": "succeeded",
             "progress": {
-                "policy_path": (
-                    "/durable/runs/run-1/gpu-jobs/artifacts/job-1/attempt-1/policy.pt"
-                )
+                "output_artifacts": [
+                    {
+                        "source_path": "/app/diagnostics.json",
+                        "path": (
+                            "/durable/runs/run-1/gpu-jobs/artifacts/job-1/"
+                            "attempt-1/diagnostics.json"
+                        ),
+                    }
+                ]
             },
         }
         with mock.patch.object(
             gpu_worker,
-            "fetch_agent_policy_artifact",
-            return_value=(job, None, None, {"policy_mirror": "fetch_retry"}),
+            "fetch_agent_output_artifact",
+            return_value=(job, None, None, {"artifact_mirror": "fetch_retry"}),
         ):
-            payload, detail = gpu_worker.retry_terminal_policy_mirror(
+            payload, detail = gpu_worker.retry_terminal_artifact_mirror(
                 {"run_id": "run-1"}, job
             )
-        self.assertEqual(detail["policy_mirror"], "fetch_retry")
-        self.assertEqual(payload["policy_mirror_attempts"], 1)
-        self.assertGreater(payload["policy_mirror_retry_after_epoch_s"], time.time())
+        self.assertEqual(detail["artifact_mirror"], "fetch_retry")
+        self.assertEqual(payload["artifact_mirror_attempts"], 1)
+        self.assertGreater(payload["artifact_mirror_retry_after_epoch_s"], time.time())
+
+    def test_fetches_declared_non_policy_output_for_agent_mirror(self) -> None:
+        content = b'{"loss": 0.5}\n'
+        digest = hashlib.sha256(content).hexdigest()
+        run = {"run_id": "run-1", "volume_name": "volume-1"}
+        job = {
+            "job_id": "job-1",
+            "progress": {
+                "output_artifacts": [
+                    {
+                        "source_path": "/app/diagnostics.json",
+                        "path": (
+                            "/durable/runs/run-1/gpu-jobs/artifacts/job-1/"
+                            "attempt-1/diagnostics.json"
+                        ),
+                        "size_bytes": len(content),
+                        "sha256": digest,
+                    }
+                ]
+            },
+        }
+
+        with mock.patch.object(
+            gpu_worker.sprintctl, "volume_get_bytes", return_value=content
+        ):
+            payload, name, mirrored, detail = gpu_worker.fetch_agent_output_artifact(
+                run, job
+            )
+
+        self.assertEqual(name, "diagnostics.json")
+        self.assertEqual(mirrored, content)
+        self.assertEqual(detail["artifact_mirror"], "fetched")
+        self.assertEqual(
+            payload["agent_artifact_mirrors"]["/app/diagnostics.json"]["mirror_path"],
+            "/run/sprint-gpu-mirror/artifacts/job-1/diagnostics.json",
+        )
 
     def test_live_heartbeat_policy_is_mirrored_once_while_training(self) -> None:
         run = {"run_id": "run-1", "volume_name": "volume-1"}
@@ -2548,7 +2590,9 @@ class GpuConcurrencyLimitTests(unittest.TestCase):
             )
         persist.assert_not_called()
 
-    def test_live_cancel_is_delivered_without_killing_worker_or_acknowledging(self) -> None:
+    def test_live_cancel_is_delivered_without_killing_worker_or_acknowledging(
+        self,
+    ) -> None:
         request = {
             "schema_version": 1,
             "request_id": "a" * 32,
@@ -2581,7 +2625,9 @@ class GpuConcurrencyLimitTests(unittest.TestCase):
                     "reconcile_terminal_attempt_before_stop",
                     return_value=job,
                 ),
-                mock.patch.object(gpu_worker, "deliver_agent_cancel_to_gpu_worker") as deliver,
+                mock.patch.object(
+                    gpu_worker, "deliver_agent_cancel_to_gpu_worker"
+                ) as deliver,
                 mock.patch.object(
                     gpu_worker,
                     "persist_job",
@@ -2594,9 +2640,7 @@ class GpuConcurrencyLimitTests(unittest.TestCase):
             self.assertEqual(result[0]["decision"], "agent_cancel_delivered")
             deliver.assert_called_once_with(mock.ANY, request)
             terminate.assert_not_called()
-            self.assertFalse(
-                (Path(raw) / "control-acks" / f"{'a' * 32}.json").exists()
-            )
+            self.assertFalse((Path(raw) / "control-acks" / f"{'a' * 32}.json").exists())
             events = [
                 json.loads(line)
                 for line in (Path(raw) / "control-events.jsonl")
@@ -2609,7 +2653,9 @@ class GpuConcurrencyLimitTests(unittest.TestCase):
             )
             self.assertEqual([event["sequence"] for event in events], [1, 2])
 
-    def test_live_cancel_is_acknowledged_after_worker_commits_terminal_record(self) -> None:
+    def test_live_cancel_is_acknowledged_after_worker_commits_terminal_record(
+        self,
+    ) -> None:
         request = {
             "schema_version": 1,
             "request_id": "d" * 32,
@@ -2644,7 +2690,9 @@ class GpuConcurrencyLimitTests(unittest.TestCase):
                     "reconcile_terminal_attempt_before_stop",
                     return_value=terminal,
                 ),
-                mock.patch.object(gpu_worker, "deliver_agent_cancel_to_gpu_worker") as deliver,
+                mock.patch.object(
+                    gpu_worker, "deliver_agent_cancel_to_gpu_worker"
+                ) as deliver,
                 mock.patch.object(gpu_worker, "_terminate_job_locked") as terminate,
             ):
                 result = gpu_worker.reconcile_live_agent_cancel_requests(run)
@@ -2691,7 +2739,9 @@ class GpuConcurrencyLimitTests(unittest.TestCase):
                     "reconcile_terminal_attempt_before_stop",
                     return_value=job,
                 ),
-                mock.patch.object(gpu_worker, "deliver_agent_cancel_to_gpu_worker") as deliver,
+                mock.patch.object(
+                    gpu_worker, "deliver_agent_cancel_to_gpu_worker"
+                ) as deliver,
                 mock.patch.object(
                     gpu_worker,
                     "persist_job",
@@ -2702,9 +2752,7 @@ class GpuConcurrencyLimitTests(unittest.TestCase):
 
             self.assertEqual(result[0]["decision"], "agent_cancel_delivered")
             deliver.assert_called_once()
-            self.assertFalse(
-                (Path(raw) / "control-acks" / f"{'b' * 32}.json").exists()
-            )
+            self.assertFalse((Path(raw) / "control-acks" / f"{'b' * 32}.json").exists())
 
     def test_unconfirmed_cancel_is_not_acknowledged(self) -> None:
         request = {
@@ -3862,11 +3910,11 @@ class AgentGpuCliTests(unittest.TestCase):
 
         self.assertEqual(enriched["artifact_retrieval"]["status"], "syncing")
         self.assertEqual(
-            enriched["artifact_retrieval"]["retry_command"],
-            "event gpu get job-1 /app/policy.pt",
+            enriched["artifact_retrieval"]["retry_commands"],
+            ["event gpu get job-1 /app/policy.pt"],
         )
 
-    def test_non_policy_output_does_not_claim_a_policy_mirror_is_syncing(self) -> None:
+    def test_non_policy_output_reports_artifact_mirror_syncing(self) -> None:
         payload = {
             "status": "succeeded",
             "output_paths": ["/app/diagnostics.json"],
@@ -3879,7 +3927,53 @@ class AgentGpuCliTests(unittest.TestCase):
 
         enriched = train_cli.status_with_artifact_retrieval(payload, "job-1")
 
-        self.assertNotIn("artifact_retrieval", enriched)
+        self.assertEqual(enriched["artifact_retrieval"]["status"], "syncing")
+        self.assertEqual(
+            enriched["artifact_retrieval"]["retry_commands"],
+            ["event gpu get job-1 /app/diagnostics.json"],
+        )
+
+    def test_get_retrieves_non_policy_declared_output(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw) / "gpu-jobs"
+            mirror = Path(raw) / "mirror"
+            source = mirror / "artifacts" / "job-1" / "diagnostics.json"
+            source.parent.mkdir(parents=True)
+            content = b'{"loss": 0.5}\n'
+            source.write_bytes(content)
+            destination = Path(raw) / "app" / "diagnostics.json"
+            payload = {
+                "job_id": "job-1",
+                "status": "succeeded",
+                "output_paths": [str(destination)],
+                "agent_artifact_mirrors": {
+                    str(destination): {
+                        "mirror_path": str(source),
+                        "size_bytes": len(content),
+                        "sha256": hashlib.sha256(content).hexdigest(),
+                    }
+                },
+            }
+            (root / "status").mkdir(parents=True)
+            (root / "status" / "job-1.json").write_text(json.dumps(payload))
+
+            with (
+                mock.patch.object(train_cli, "jobs_root", return_value=root),
+                mock.patch.object(train_cli, "AGENT_MIRROR_ROOT", mirror),
+                mock.patch.object(train_cli, "AGENT_WORKSPACE_ROOT", Path(raw) / "app"),
+            ):
+                self.assertEqual(
+                    train_cli.cmd_get(
+                        type(
+                            "Args",
+                            (),
+                            {"job_id": "job-1", "destination": str(destination)},
+                        )()
+                    ),
+                    0,
+                )
+
+            self.assertEqual(destination.read_bytes(), content)
 
     def test_logs_end_with_artifact_retrieval_command(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

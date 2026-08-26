@@ -407,8 +407,6 @@ def main() -> int:
         "test -f /opt/event-verifier/check_submission.py; "
         f"python3 /opt/event-verifier/check_submission.py "
         f"/warm{remote_root}/checkpoints/policy_final.pt; "
-        "python3 -c \"import importlib.metadata as m, rsl_rl; "
-        "assert m.version('rsl-rl-lib') == '3.0.1'\"; "
         f"grep -F 'Optimization iteration 9/10' /warm{remote_root}/training.log; "
         f'python3 -c "import json; rows=[json.loads(x) for x in '
         f"open('/warm{remote_root}/telemetry/samples.jsonl') if x.strip()]; "

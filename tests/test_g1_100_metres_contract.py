@@ -91,7 +91,8 @@ def test_built_images_do_not_preinstall_one_learning_backend() -> None:
     combined = "\n".join(path.read_text().lower() for path in surfaces)
     for cue in NAMED_METHOD_CUES:
         assert cue not in combined, f"built image contains method cue {cue!r}"
-    assert "-e /opt/isaaclab/source/isaaclab_rl" in combined
+    assert "-e /opt/isaaclab/source/isaaclab_rl" not in combined
+    assert "-e /opt/isaaclab/source/isaaclab_mimic" not in combined
 
 
 def test_documented_container_paths_match_the_built_agent_image() -> None:

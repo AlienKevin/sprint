@@ -205,8 +205,7 @@ def test_functional_canary_exercises_the_published_structural_checker() -> None:
 
     assert "test -f /opt/event-verifier/check_submission.py" in source
     assert "python3 /opt/event-verifier/check_submission.py" in source
-    assert "rsl-rl-lib==3.0.1" in dockerfile
-    assert "m.version(\"rsl-rl-lib\") == \"3.0.1\"" in dockerfile
+    assert "rsl-rl-lib" not in dockerfile
 
 
 def test_functional_canary_accepts_any_authoritative_gpu_activity_signal() -> None:
