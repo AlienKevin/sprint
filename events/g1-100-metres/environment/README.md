@@ -29,16 +29,16 @@ E = (d / 100 m) × (d / t) = d² / (100 m × t)
 
 For a valid finish, this simplifies to `100 m / t`. When the configured budget
 is exhausted, the final score is the highest Effective Speed from the policies
-archived by that point.
+submitted by that point.
 
 ## Commands
 
 ```bash
 event gpu --submit-output /app/policy.pt -- python3 -u /app/YOUR_SCRIPT.py
-event gpu status                                   # job and policy mirror
+event gpu status                                   # job and output mirrors
 event gpu logs JOB_ID                              # worker output
 event gpu wait JOB_ID                              # wait for completion
-event gpu get JOB_ID /app/policy.pt                # retrieve verified output
+event gpu get JOB_ID /app/policy.pt                # retrieve declared output
 event gpu cancel JOB_ID                            # cancel a queued or running job
 event check POLICY.pt                              # validate TorchScript ABI
 event test POLICY.pt                               # run local published verifier
@@ -54,10 +54,12 @@ outputs are never inferred as submissions. A submitted policy must be a valid
 TorchScript `.pt` file no larger than 32 MiB. Each trial may submit at most 32
 unique policies that pass the structural interface check; invalid or duplicate
 policies do not consume the allowance. Declared files are required, bounded,
-checksummed, and copied automatically. Do not encode model files into logs.
-Only one A10G job runs at a time; later jobs run FIFO. Cancellation is
-asynchronous once a GPU sandbox has been allocated, so inspect
-`event gpu status JOB_ID` for the terminal acknowledgement.
+checksummed, and copied into a trusted mirror when the job ends; use
+`event gpu get` to install each returned file into `/app`. Do not encode model
+files into logs. A job may return at most 512 regular files, each no larger than
+128 MiB and together no larger than 512 MiB. Only one A10G job runs at a time;
+later jobs run FIFO. Cancellation is asynchronous once a GPU sandbox has been
+allocated, so inspect `event gpu status JOB_ID` for the terminal acknowledgement.
 
 The worker automatically bootstraps Python scripts that use Isaac Lab; do not
 wrap them in another launcher or pass wrapper-reserved device flags. `/app`,

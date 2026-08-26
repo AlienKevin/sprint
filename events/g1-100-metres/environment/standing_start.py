@@ -20,7 +20,7 @@ ROOT_ORIENTATION_WXYZ = (1.0, 0.0, 0.0, 0.0)
 ROOT_LINEAR_VELOCITY_M_S = (0.0, 0.0, 0.0)
 ROOT_ANGULAR_VELOCITY_RAD_S = (0.0, 0.0, 0.0)
 
-# This is the Isaac Lab 2.3.2 G1_CFG standing pose, made explicit so an
+# This is the frozen G1_CFG standing pose, made explicit so an
 # upstream asset-default change cannot silently alter the event start.
 JOINT_POSITIONS_RAD = {
     ".*_hip_pitch_joint": -0.20,

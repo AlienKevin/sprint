@@ -4,7 +4,7 @@
 
 Produce a TorchScript policy that moves a Unitree G1 humanoid through a
 100-metre lane in Isaac Lab. Each trial has the same configured agent-cost
-budget and is scored by the fastest valid policy it archives before that budget
+budget and is scored by the fastest valid policy it submits before that budget
 is exhausted. The concise task is in `instruction.md`; the complete
 agent-facing contract is in `environment/README.md`.
 

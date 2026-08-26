@@ -116,6 +116,15 @@ def test_documented_container_paths_match_the_built_agent_image() -> None:
         "event gpu --submit-output /app/policy.pt -- python3 -u /app/YOUR_SCRIPT.py"
         in guide
     )
+    assert "`--output /app/...`" in guide
+    normalized_guide = " ".join(guide.split())
+    assert "use `event gpu get` to install each returned file" in normalized_guide
+    assert "at most 512 regular files" in normalized_guide
+    assert "128 MiB" in normalized_guide
+    assert "together no larger than 512 MiB" in normalized_guide
+    assert "copied automatically" not in guide
+    assert "Isaac Lab 2.3.2" not in instruction
+    assert "Isaac Lab 2.3.2" not in guide
     assert "/app/train/YOUR_SCRIPT.py" not in guide
     assert 'AGENT_WORKSPACE_ROOT = Path("/app")' in gpu
     assert 'submit.add_argument("--workdir", default="/app")' in gpu
