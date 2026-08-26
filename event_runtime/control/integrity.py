@@ -50,6 +50,146 @@ def _reason(
     }
 
 
+def submission_bridge_reasons(
+    state_dir: Path, *, ledger_names: set[str] | None = None
+) -> list[dict[str, str]]:
+    """Return fail-closed reasons for incomplete explicit GPU submissions."""
+    reasons: list[dict[str, str]] = []
+    if _read_json(state_dir / "STOP_ACK.json").get(
+        "gpu_submission_drain_timed_out"
+    ):
+        reasons.append(
+            _reason(
+                "gpu_submission_drain_timeout",
+                "STOP_ACK.json",
+                "CPU teardown timed out before final GPU submissions were forwarded",
+            )
+        )
+    records: list[dict[str, Any]] = []
+    bridge_root = state_dir / "submission-bridge"
+    if bridge_root.is_dir():
+        for path in sorted(bridge_root.glob("*.json")):
+            record = _read_json(path)
+            if not record:
+                reasons.append(
+                    _reason(
+                        "gpu_submission_bridge_record_invalid",
+                        path.name,
+                        "GPU submission bridge record is missing or invalid",
+                    )
+                )
+                continue
+            records.append(record)
+            if record.get("state") != "forwarded":
+                reasons.append(
+                    _reason(
+                        "gpu_submission_forwarding_incomplete",
+                        path.name,
+                        str(record.get("error") or "GPU submission was not forwarded"),
+                    )
+                )
+
+    forwarded_by_job: dict[str, int] = {}
+    forwarded_names: list[tuple[str, str]] = []
+    for record in records:
+        if record.get("state") != "forwarded":
+            continue
+        job_id = str(record.get("gpu_job_id") or "")
+        forwarded_by_job[job_id] = forwarded_by_job.get(job_id, 0) + 1
+        forwarded_names.append(
+            (
+                str(record.get("queue_name") or ""),
+                str(record.get("submission_id") or ""),
+            )
+        )
+
+    if ledger_names is None:
+        ledger_names = set()
+        for ledger in state_dir.glob(
+            "harbor-jobs/*/*/artifacts/continuous/ledger.jsonl"
+        ):
+            try:
+                lines = ledger.read_text().splitlines()
+            except OSError:
+                continue
+            for line in lines:
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(row, dict):
+                    ledger_names.add(str(row.get("name") or ""))
+    for queue_name, submission_id in forwarded_names:
+        if queue_name and queue_name not in ledger_names:
+            reasons.append(
+                _reason(
+                    "gpu_submission_missing_from_harbor",
+                    queue_name,
+                    "Forwarded GPU submission "
+                    f"{submission_id or queue_name} is absent from Harbor's ledger",
+                )
+            )
+
+    registry = state_dir / "gpu-job-registry"
+    if registry.is_dir():
+        for path in sorted(registry.glob("*.json")):
+            job = _read_json(path)
+            declared = [str(item) for item in job.get("submission_paths") or []]
+            if not declared:
+                continue
+            job_id = str(job.get("job_id") or path.stem)
+            progress = job.get("progress")
+            results = (
+                progress.get("submission_results")
+                if isinstance(progress, dict)
+                else None
+            )
+            result_paths = (
+                [
+                    str(item.get("path") or "")
+                    for item in results
+                    if isinstance(item, dict)
+                ]
+                if isinstance(results, list)
+                else []
+            )
+            if result_paths != declared:
+                reasons.append(
+                    _reason(
+                        "gpu_submission_results_missing",
+                        path.name,
+                        f"GPU job {job_id} did not finalize every explicitly "
+                        "declared submission",
+                    )
+                )
+                continue
+            if any(
+                not isinstance(item, dict)
+                or item.get("state") not in {"staged", "rejected"}
+                for item in results
+            ):
+                reasons.append(
+                    _reason(
+                        "gpu_submission_result_invalid",
+                        path.name,
+                        f"GPU job {job_id} has an invalid terminal submission result",
+                    )
+                )
+                continue
+            staged = sum(item.get("state") == "staged" for item in results)
+            forwarded = forwarded_by_job.get(job_id, 0)
+            if forwarded < staged:
+                reasons.append(
+                    _reason(
+                        "gpu_submission_forwarding_incomplete",
+                        path.name,
+                        f"GPU job {job_id} staged {staged} submission(s), but "
+                        f"only {forwarded} reached Harbor",
+                    )
+                )
+    return reasons
+
+
 def build_integrity_report(state_dir: Path, run: dict[str, Any]) -> dict[str, Any]:
     """Return a conservative certificate independent of archival completion."""
     reasons: list[dict[str, str]] = []
@@ -111,14 +251,7 @@ def build_integrity_report(state_dir: Path, run: dict[str, Any]) -> dict[str, An
                 "trusted budget telemetry failed before the normal budget stop",
             )
         )
-    if stop_ack.get("gpu_submission_drain_timed_out"):
-        reasons.append(
-            _reason(
-                "gpu_submission_drain_timeout",
-                "STOP_ACK.json",
-                "CPU teardown timed out before final GPU submissions were forwarded",
-            )
-        )
+    reasons.extend(submission_bridge_reasons(state_dir))
 
     # A persistent Codex goal may span multiple turns, but the benchmark CPU
     # process must not disappear while that goal is still active.  The trusted

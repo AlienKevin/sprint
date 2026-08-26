@@ -1403,7 +1403,7 @@ class DurableOpsTests(unittest.TestCase):
             ):
                 _complete, conditions, details = sprintctl.final_conditions(state, run)
                 self.assertFalse(conditions["submission_bridge_drained"])
-                self.assertTrue(any("absent from Harbor ledger" in d for d in details))
+                self.assertTrue(any("absent from Harbor's ledger" in d for d in details))
 
                 ledger.write_text(json.dumps(row(1, "123456-abcd.pt", 0.0)) + "\n")
                 _complete, conditions, _details = sprintctl.final_conditions(state, run)
@@ -1423,7 +1423,7 @@ class DurableOpsTests(unittest.TestCase):
                 _complete, conditions, details = sprintctl.final_conditions(state, run)
                 self.assertFalse(conditions["submission_bridge_drained"])
                 self.assertTrue(
-                    any("did not finalize all declared submissions" in d for d in details)
+                    any("did not finalize every explicitly" in d for d in details)
                 )
 
                 registry_job.write_text(

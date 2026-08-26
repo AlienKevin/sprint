@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from event_runtime.control.integrity import build_integrity_report  # noqa: E402
+from event_runtime.control.integrity import submission_bridge_reasons  # noqa: E402
 
 
 def run_contract(run_id: str) -> dict[str, object]:
@@ -80,6 +81,62 @@ def test_gpu_submission_drain_timeout_is_invalid(tmp_path: Path) -> None:
     assert {reason["code"] for reason in report["reasons"]} == {
         "gpu_submission_drain_timeout"
     }
+
+
+def test_submission_bridge_requires_terminal_results_and_harbor_forwarding(
+    tmp_path: Path,
+) -> None:
+    registry = tmp_path / "gpu-job-registry"
+    registry.mkdir()
+    job = registry / "job-1.json"
+    job.write_text(
+        json.dumps(
+            {
+                "job_id": "job-1",
+                "submission_paths": ["/app/policy.pt"],
+            }
+        )
+    )
+    assert {reason["code"] for reason in submission_bridge_reasons(tmp_path)} == {
+        "gpu_submission_results_missing"
+    }
+
+    job.write_text(
+        json.dumps(
+            {
+                "job_id": "job-1",
+                "submission_paths": ["/app/policy.pt"],
+                "progress": {
+                    "submission_results": [
+                        {"path": "/app/policy.pt", "state": "staged"}
+                    ]
+                },
+            }
+        )
+    )
+    assert {reason["code"] for reason in submission_bridge_reasons(tmp_path)} == {
+        "gpu_submission_forwarding_incomplete"
+    }
+
+    bridge = tmp_path / "submission-bridge"
+    bridge.mkdir()
+    (bridge / "123456-abcd.json").write_text(
+        json.dumps(
+            {
+                "submission_id": "123456-abcd",
+                "gpu_job_id": "job-1",
+                "queue_name": "123456-abcd.pt",
+                "state": "forwarded",
+            }
+        )
+    )
+    ledger = (
+        tmp_path
+        / "harbor-jobs/run-1/task-1/artifacts/continuous/ledger.jsonl"
+    )
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(json.dumps({"name": "123456-abcd.pt"}) + "\n")
+    assert submission_bridge_reasons(tmp_path) == []
 
 
 def test_wrong_execution_policy_and_budget_telemetry_failure_are_invalid(

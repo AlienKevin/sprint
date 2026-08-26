@@ -2153,105 +2153,12 @@ def final_conditions(
     conditions["ledger_terminal"] = all(row_terminal(row) for row in ledger.rows)
     details.extend(ledger.errors)
 
-    bridge_root = state_dir / "submission-bridge"
-    bridge_records: list[dict[str, Any]] = []
-    bridge_errors: list[str] = []
-    if bridge_root.is_dir():
-        for path in sorted(bridge_root.glob("*.json")):
-            try:
-                record = json.loads(path.read_text())
-            except (OSError, json.JSONDecodeError) as exc:
-                bridge_errors.append(
-                    f"invalid submission bridge record {path.name}: {exc}"
-                )
-                continue
-            if not isinstance(record, dict):
-                bridge_errors.append(
-                    f"invalid submission bridge record {path.name}: not an object"
-                )
-                continue
-            bridge_records.append(record)
-    ledger_names = {str(row.get("name") or "") for row in ledger.rows}
-    missing_bridge_names = [
-        str(record.get("queue_name") or "")
-        for record in bridge_records
-        if record.get("state") == "forwarded"
-        and str(record.get("queue_name") or "") not in ledger_names
-    ]
-    nonforwarded_bridge = [
-        str(record.get("submission_id") or "unknown")
-        for record in bridge_records
-        if record.get("state") != "forwarded"
-    ]
-    try:
-        stop_ack_payload = json.loads((state_dir / "STOP_ACK.json").read_text())
-    except (OSError, json.JSONDecodeError):
-        stop_ack_payload = {}
-    gpu_submission_drain_timed_out = bool(
-        isinstance(stop_ack_payload, dict)
-        and stop_ack_payload.get("gpu_submission_drain_timed_out")
+    bridge_reasons = run_integrity.submission_bridge_reasons(
+        state_dir,
+        ledger_names={str(row.get("name") or "") for row in ledger.rows},
     )
-    declared_gpu_submission_errors: list[str] = []
-    forwarded_by_job: dict[str, int] = {}
-    for record in bridge_records:
-        if record.get("state") == "forwarded":
-            job_id = str(record.get("gpu_job_id") or "")
-            forwarded_by_job[job_id] = forwarded_by_job.get(job_id, 0) + 1
-    registry = state_dir / "gpu-job-registry"
-    if registry.is_dir():
-        for path in sorted(registry.glob("*.json")):
-            try:
-                gpu_job = json.loads(path.read_text())
-            except (OSError, json.JSONDecodeError):
-                continue
-            declared = [str(item) for item in gpu_job.get("submission_paths") or []]
-            if not declared:
-                continue
-            progress = gpu_job.get("progress")
-            results = (
-                progress.get("submission_results")
-                if isinstance(progress, dict)
-                else None
-            )
-            job_id = str(gpu_job.get("job_id") or path.stem)
-            if not isinstance(results, list) or len(results) != len(declared):
-                declared_gpu_submission_errors.append(
-                    f"GPU job {job_id} did not finalize all declared submissions"
-                )
-                continue
-            staged = sum(
-                1
-                for item in results
-                if isinstance(item, dict) and item.get("state") == "staged"
-            )
-            if forwarded_by_job.get(job_id, 0) < staged:
-                declared_gpu_submission_errors.append(
-                    f"GPU job {job_id} staged {staged} submission(s) but only "
-                    f"{forwarded_by_job.get(job_id, 0)} reached Harbor"
-                )
-    conditions["submission_bridge_drained"] = not (
-        bridge_errors
-        or missing_bridge_names
-        or nonforwarded_bridge
-        or declared_gpu_submission_errors
-        or gpu_submission_drain_timed_out
-    )
-    details.extend(bridge_errors)
-    details.extend(declared_gpu_submission_errors)
-    if gpu_submission_drain_timed_out:
-        details.append(
-            "CPU teardown timed out before the GPU submission bridge proved drained"
-        )
-    if missing_bridge_names:
-        details.append(
-            "GPU submission(s) forwarded but absent from Harbor ledger: "
-            + ", ".join(missing_bridge_names)
-        )
-    if nonforwarded_bridge:
-        details.append(
-            "GPU submission bridge request(s) not forwarded: "
-            + ", ".join(nonforwarded_bridge)
-        )
+    conditions["submission_bridge_drained"] = not bridge_reasons
+    details.extend(reason["detail"] for reason in bridge_reasons)
 
     manifest_path = trial / "artifacts" / "manifest.json"
     try:
