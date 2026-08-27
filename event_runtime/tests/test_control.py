@@ -3304,6 +3304,39 @@ else:
             self.assertEqual(status, expected_status)
             dispatch.assert_not_called()
 
+    def test_monitor_never_reenters_dispatch_after_terminal_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state_dir = Path(raw)
+            run = {
+                "run_id": "terminal-dispatch",
+                "agent_kind": "codex",
+                "cpu_agent_gpu_worker": True,
+            }
+            expected_status = {"run_id": "terminal-dispatch"}
+            with (
+                mock.patch.object(sprintctl, "load_run", return_value=(state_dir, run)),
+                mock.patch.object(
+                    sprintctl, "run_services_should_exit", return_value=True
+                ),
+                mock.patch.object(
+                    sprintctl, "gpu_dispatch_loop_alive", return_value=False
+                ),
+                mock.patch("event_runtime.compute.worker.dispatch_once") as dispatch,
+                mock.patch("event_runtime.telemetry.host.poll_once"),
+                mock.patch.object(
+                    sprintctl, "discover_job_and_trial", return_value=(None, None)
+                ),
+                mock.patch.object(
+                    sprintctl, "status_snapshot", return_value=expected_status
+                ),
+            ):
+                status = sprintctl.monitor_once(
+                    "terminal-dispatch", upload=False, include_remote=False
+                )
+
+            self.assertEqual(status, expected_status)
+            dispatch.assert_not_called()
+
     def test_status_reports_explicit_agent_kind(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             state_dir = Path(raw)

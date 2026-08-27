@@ -1710,7 +1710,11 @@ def monitor_once(
     # Dispatch before telemetry: Modal Volume scans/uploads are intentionally
     # best-effort and can take close to their one-minute timeout.  A dead lease
     # must be fenced/retried without waiting behind observability I/O.
-    if run.get("cpu_agent_gpu_worker") and not gpu_dispatch_loop_alive(state_dir):
+    if (
+        run.get("cpu_agent_gpu_worker")
+        and not run_services_should_exit(state_dir, run)
+        and not gpu_dispatch_loop_alive(state_dir)
+    ):
         try:
             from event_runtime.compute import worker as gpu_worker
 
