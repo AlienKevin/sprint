@@ -3694,6 +3694,12 @@ def stop_batch(batch_id: str, *, env_file: Path | None = None) -> dict[str, Any]
                 output["error"] = str(
                     result.get("forced_stop_error")
                     or result.get("agent_stop_error")
+                    or result.get("gpu_stop_error")
+                    or (
+                        "GPU termination remains pending"
+                        if result.get("status") == "gpu_stop_pending"
+                        else None
+                    )
                     or "CPU resource termination was not acknowledged"
                 )
             return run_id, output

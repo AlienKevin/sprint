@@ -3042,7 +3042,9 @@ def test_dq_replay_is_queued_and_public_index_is_path_safe(tmp_path: Path) -> No
             {
                 "valid_run": False,
                 "max_distance_m": 14.5,
-                "max_distance_semantics": ("legal_prefix_until_first_disqualification"),
+                "max_distance_semantics": (
+                    "legal_prefix_until_first_terminal_condition"
+                ),
                 "failed_gates": ["in_lane"],
             }
         )
@@ -3077,14 +3079,25 @@ def test_dq_replay_is_queued_and_public_index_is_path_safe(tmp_path: Path) -> No
         "valid": True,
         "web_html": f"replay/frontier-{digest[:12]}.html",
     }
+    registry = state_path.parent / "gpu-job-registry"
+    registry.mkdir()
+    (registry / "job-1.json").write_text(
+        json.dumps(
+            {
+                "created_at": "2026-08-07T23:58:00Z",
+                "progress": {"submission_results": [{"policy_sha256": digest}]},
+            }
+        )
+    )
     frontier_update.write_web_policy_indexes(state_path, state, web)
     public = json.loads((web / "data/policies/eval-deepseek-1.json").read_text())
     encoded = json.dumps(public)
     assert str(tmp_path) not in encoded
     assert public["policies"][0]["replay_ready"] is True
     assert public["policies"][0]["replay_url"].startswith("/replay/frontier-")
+    assert public["policies"][0]["enqueued_at"] == "2026-08-07T23:58:00Z"
     assert public["policies"][0]["max_distance_semantics"] == (
-        "legal_prefix_until_first_disqualification"
+        "legal_prefix_until_first_terminal_condition"
     )
 
 
@@ -4062,8 +4075,8 @@ def test_website_javascript_parses_and_has_no_legacy_opus_copy() -> None:
     assert "GPT‑5.6 Luna" in source
     assert "GPT‑5.6 Sol" in source
     assert "value.includes('gpt-5.6-sol')?'sol'" in source
-    assert "did not finish" in source
-    assert "left the lane" in source
+    assert "Officially disqualified or unfinished" in source
+    assert "lane exit" in source
     assert "Opus" not in source
     spec = importlib.util.find_spec("json")
     assert spec is not None

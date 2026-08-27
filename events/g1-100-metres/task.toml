@@ -13,8 +13,8 @@ keywords = ["robotics", "control", "isaac-lab", "humanoid", "locomotion", "gpu"]
 
 [verifier]
 # Current A10G evidence is about two minutes for the nominal three-lane 64 s
-# rollout. A valid policy also runs two one-lane held-out trials. The internal
-# 12-minute and outer 15-minute ceilings leave more than 2x headroom while
+# rollout. The internal 12-minute and outer 15-minute ceilings leave more than
+# 2x headroom while
 # failing a regression before it can consume an hour-long GPU allocation.
 timeout_sec = 900
 # Isaac Lab is installed editable at /opt/IsaacLab, so a verifier sharing the

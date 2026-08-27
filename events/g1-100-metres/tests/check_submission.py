@@ -33,16 +33,21 @@ ACT_DIM = 37
 BATCH_WIDTHS = (1, 3, 32)
 MAX_ABS_ACTION = 100.0
 
-# Official scoring contract. These are the checks the verifier actually
-# applies. Printed by `event check --rules` and
-# again at the top of every interface check so the bar is never only in prose.
+# Official scoring contract. Printed by `event check --rules` and again at the
+# top of every interface check so the metric is never only in prose.
 SCORING_RULES = """
-Official verifier gates (a valid 100 m time needs every gating check to pass):
-  finished          GATING   torso reaches 100 m inside the 60 s window
-  in_lane           GATING   every collision shape stays between the vertical
-                             lane planes at +/-0.61 m from centre (1.22 m lane)
-  self_collision    GATING   non-adjacent padded overlap <= 1 cm (2 cm radius pad;
-                             ancestors<=3 and siblings excluded; PhysX self-collisions on)
+Official metric (higher is better):
+  Effective Speed = d^2 / (100 m * t)
+
+  d is the greatest forward distance before evaluation stops, capped at 100 m.
+  t is the first time the policy reaches d. Evaluation stops at the first:
+    finish          torso reaches 100 m
+    timeout         60 s expires
+    lane exit       any collision shape crosses +/-0.61 m from lane centre
+    self-collision  non-adjacent padded overlap exceeds 1 cm (2 cm radius pad;
+                    ancestors<=3 and siblings excluded)
+
+  A finish is not required to receive a score; legal partial progress counts.
 
 Trusted verification:
   event gpu --submit-output explicitly marks a returned policy for official
@@ -65,7 +70,7 @@ def main() -> int:
     ap.add_argument(
         "--rules",
         action="store_true",
-        help="print the official verifier gate contract and exit",
+        help="print the official verifier scoring contract and exit",
     )
     args = ap.parse_args()
 

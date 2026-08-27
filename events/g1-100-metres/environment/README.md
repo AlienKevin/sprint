@@ -46,41 +46,62 @@ event history                                      # inspect Harbor admission
 event cost                                         # cumulative agent-cost JSON
 ```
 
-Declare files that must return from the isolated GPU sandbox with repeatable
-`--output /app/...` options. Use `--submit-output /app/POLICY.pt` only for a
-policy you intentionally want considered by the blind official verifier; it
-also returns that file as an output. Intermediate checkpoints and ordinary
-outputs are never inferred as submissions. If the budget closes while an
-explicit submission job is still queued, a policy that already existed in its
-immutable enqueue snapshot is considered without running the queued command;
-an output that did not yet exist is rejected. A submitted policy must be a
-valid TorchScript `.pt` file no larger than 32 MiB. Each trial may submit at
-most 32 unique policies that pass the structural interface check; invalid or
-duplicate policies do not consume the allowance. Declared files are required,
-bounded, checksummed, and copied into a trusted mirror when the job ends; use
-`event gpu get` to install each returned file into `/app`. Do not encode model
-files into logs. A job may return at most 512 regular files, each no larger than
-128 MiB and together no larger than 512 MiB. Only one A10G job runs at a time;
-later jobs run FIFO. Cancellation is asynchronous once a GPU sandbox has been
-allocated, so inspect `event gpu status JOB_ID` for the terminal acknowledgement.
+### Outputs and submissions
+
+- Declare every file that must return from the isolated GPU sandbox with a
+  repeatable `--output /app/...` option.
+- Use `--submit-output /app/POLICY.pt` only for a policy you intentionally want
+  considered by the blind official verifier. This also returns the file as an
+  output.
+- Intermediate checkpoints and ordinary outputs are never inferred as policy
+  submissions.
+- If the budget closes while an explicit submission job is still queued, a
+  policy that existed in the job's immutable enqueue snapshot is considered
+  without running the queued command. An output that did not exist then is
+  rejected.
+
+### Submission limits
+
+- A submitted policy must be a valid TorchScript `.pt` file no larger than
+  32 MiB.
+- Each trial may submit at most 32 unique policies that pass the structural
+  interface check. Invalid and duplicate policies do not consume this
+  allowance.
+
+### Returned artifacts
+
+- Declared files are required, bounded, checksummed, and copied into a trusted
+  mirror when the job ends.
+- Use `event gpu get` to install each returned file into `/app`.
+- Do not encode model files into logs.
+- One job may return at most 512 regular files. Each file may be at most
+  128 MiB, and all returned files together may be at most 512 MiB.
+
+### Job lifecycle
+
+- Only one A10G job runs at a time. Later jobs wait in FIFO order.
+- Cancellation is asynchronous after a GPU sandbox has been allocated. Inspect
+  `event gpu status JOB_ID` for the terminal acknowledgement.
 
 The worker automatically bootstraps Python scripts that use Isaac Lab; do not
 wrap them in another launcher or pass wrapper-reserved device flags. `/app`,
 `/opt`, and the published verifier are already on `PYTHONPATH`. The exact nominal
 verifier is read-only at `/app/verifier` and `event test` runs it on the current
 GPU allocation. Official scoring separately evaluates explicitly submitted
-bytes and does not return results or traces during the run.
+bytes and does not return scores or traces during the run.
 
 ## Checkpointing
 
 GPU jobs may be preempted. The runtime reports the job as preempted and does not
 silently restart it. State left only in RAM is lost; use
 `event gpu checkpoint save STATE --sequence N` when you want the option to
-submit a later job that resumes from a durable checkpoint. Run
-`event gpu checkpoint --help` for details.
+submit a later job that resumes from a durable checkpoint. The later job must
+reuse the same `--checkpoint-dir`, and its training program must load the path
+in `SPRINT_GPU_RESUME_CHECKPOINT`. Run `event gpu checkpoint --help` for
+details.
 
 ## Cost
 
 `event cost` returns a JSON snapshot of cumulative model API, CPU, and training
 cost, including the equation, rates, and component totals. Run
-`event check --rules` for the complete gating contract.
+`event check --rules` for the complete scoring contract.

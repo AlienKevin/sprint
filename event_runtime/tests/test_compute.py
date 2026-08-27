@@ -71,7 +71,9 @@ class ClaimSelectionTests(unittest.TestCase):
 
 class WorkerRuntimeBoundaryTests(unittest.TestCase):
     def test_runtime_limit_is_enforced_inside_started_sandbox(self) -> None:
-        with mock.patch.object(worker_run.shutil, "which", return_value="/usr/bin/timeout"):
+        with mock.patch.object(
+            worker_run.shutil, "which", return_value="/usr/bin/timeout"
+        ):
             command = worker_run.runtime_bounded_command(["python3", "train.py"], 120)
 
         self.assertEqual(
@@ -87,10 +89,10 @@ class WorkerRuntimeBoundaryTests(unittest.TestCase):
         )
 
     def test_runtime_limit_is_clamped_to_supported_bounds(self) -> None:
-        with mock.patch.object(worker_run.shutil, "which", return_value="/usr/bin/timeout"):
-            self.assertEqual(
-                worker_run.runtime_bounded_command(["true"], 1)[3], "60s"
-            )
+        with mock.patch.object(
+            worker_run.shutil, "which", return_value="/usr/bin/timeout"
+        ):
+            self.assertEqual(worker_run.runtime_bounded_command(["true"], 1)[3], "60s")
             self.assertEqual(
                 worker_run.runtime_bounded_command(["true"], 100_000)[3], "86400s"
             )
@@ -1791,7 +1793,9 @@ class SubmissionBridgeTests(unittest.TestCase):
             queued = trial / "artifacts/continuous/incoming/123456-abcd.pt"
             self.assertEqual(queued.read_bytes(), content)
             self.assertEqual(result["returncode"], 0)
-            self.assertIn("Modal Sandbox is shutting down", result["agent_mirror_error"])
+            self.assertIn(
+                "Modal Sandbox is shutting down", result["agent_mirror_error"]
+            )
 
     def test_drain_forwards_once_and_persists_host_record(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -2107,9 +2111,7 @@ class SubmissionBridgeTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
-            run, job, _content = self.enqueue_snapshot_job(
-                root, include_policy=False
-            )
+            run, job, _content = self.enqueue_snapshot_job(root, include_policy=False)
             with (
                 mock.patch.object(
                     gpu_worker, "submit_worker_policy_to_cpu_agent"
@@ -2323,7 +2325,9 @@ class SubmissionBridgeTests(unittest.TestCase):
 
             self.assertEqual(detail["retry_wait"], 1)
             self.assertTrue(recovered["submission_enqueue_snapshot_recovery_pending"])
-            self.assertIn("digest", recovered["submission_enqueue_snapshot_recovery_error"])
+            self.assertIn(
+                "digest", recovered["submission_enqueue_snapshot_recovery_error"]
+            )
             submit.assert_not_called()
 
     def test_terminal_submission_evidence_is_attached_without_undoing_fence(
@@ -2343,15 +2347,11 @@ class SubmissionBridgeTests(unittest.TestCase):
             "lease_id": "lease-1",
             "status": "succeeded",
             "progress": {
-                "submission_results": [
-                    {"path": "/app/policy.pt", "state": "staged"}
-                ]
+                "submission_results": [{"path": "/app/policy.pt", "state": "staged"}]
             },
         }
         with (
-            mock.patch.object(
-                gpu_worker, "load_attempt_record", return_value=attempt
-            ),
+            mock.patch.object(gpu_worker, "load_attempt_record", return_value=attempt),
             mock.patch.object(
                 gpu_worker, "persist_job", side_effect=lambda _run, payload: payload
             ),
@@ -2359,9 +2359,7 @@ class SubmissionBridgeTests(unittest.TestCase):
             attached = gpu_worker.attach_terminal_submission_evidence(run, job)
 
         self.assertEqual(attached["status"], "terminated")
-        self.assertEqual(
-            attached["termination_reason"], "agent_cost_budget_exhausted"
-        )
+        self.assertEqual(attached["termination_reason"], "agent_cost_budget_exhausted")
         self.assertEqual(
             attached["progress"]["submission_results"],
             attempt["progress"]["submission_results"],
@@ -3871,6 +3869,33 @@ class RetryAndFencingTests(unittest.TestCase):
             timeout_sec=gpu_worker.STOP_DISPATCH_LOCK_TIMEOUT_SEC,
         )
 
+    def test_gpu_terminality_audit_requires_every_registered_job(self) -> None:
+        run = {"run_id": "unit"}
+        with (
+            mock.patch.object(
+                gpu_worker, "list_job_ids", return_value=["done", "active"]
+            ),
+            mock.patch.object(
+                gpu_worker,
+                "load_job",
+                side_effect=[
+                    {"job_id": "done", "status": "succeeded"},
+                    {"job_id": "active", "status": "running"},
+                ],
+            ),
+        ):
+            self.assertFalse(gpu_worker.all_jobs_terminal(run))
+
+        with (
+            mock.patch.object(gpu_worker, "list_job_ids", return_value=["done"]),
+            mock.patch.object(
+                gpu_worker,
+                "load_job",
+                return_value={"job_id": "done", "status": "succeeded"},
+            ),
+        ):
+            self.assertTrue(gpu_worker.all_jobs_terminal(run))
+
     def test_operator_stop_releases_cpu_only_after_terminal_bridge_proof(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             state = Path(raw)
@@ -4430,9 +4455,7 @@ class RetryAndFencingTests(unittest.TestCase):
             "agent_cancelled_during_spawn",
         )
         self.assertEqual(jobs["queued"]["sandbox_id"], "sb-cancelled")
-        self.assertEqual(
-            result["actions"][0]["action"], "agent_cancelled_during_spawn"
-        )
+        self.assertEqual(result["actions"][0]["action"], "agent_cancelled_during_spawn")
         terminate.assert_called_once()
 
     def test_preemption_is_terminal_and_fences_lease(self) -> None:
@@ -4642,16 +4665,12 @@ class RetryAndFencingTests(unittest.TestCase):
             mock.patch.object(gpu_worker, "_close_attempt_timeline"),
             mock.patch.object(gpu_worker, "_timeline_event"),
             mock.patch.object(gpu_worker, "_terminate_sandbox") as terminate,
-            mock.patch.object(
-                gpu_worker, "drain_worker_submission_outbox"
-            ) as drain,
+            mock.patch.object(gpu_worker, "drain_worker_submission_outbox") as drain,
         ):
             stopped = gpu_worker._stop_all_locked(run)
 
         self.assertEqual(stopped[0]["status"], "terminated")
-        self.assertTrue(
-            persisted[0]["submission_enqueue_snapshot_recovery_pending"]
-        )
+        self.assertTrue(persisted[0]["submission_enqueue_snapshot_recovery_pending"])
         drain.assert_not_called()
         terminate.assert_called_once_with(job)
 
@@ -4716,9 +4735,7 @@ class RetryAndFencingTests(unittest.TestCase):
             mock.patch.object(
                 gpu_worker,
                 "indexed_agent_jobs",
-                return_value={
-                    job_id: {"job": job} for job_id, job in jobs.items()
-                },
+                return_value={job_id: {"job": job} for job_id, job in jobs.items()},
             ) as read_index,
             mock.patch.object(gpu_worker, "list_job_ids", return_value=list(jobs)),
             mock.patch.object(
@@ -4874,9 +4891,7 @@ class RetryAndFencingTests(unittest.TestCase):
             ),
         ):
             repaired = gpu_worker.reconcile_terminal_attempt_before_stop(run, job)
-        self.assertEqual(
-            repaired["progress"]["submission_results"], recovered_results
-        )
+        self.assertEqual(repaired["progress"]["submission_results"], recovered_results)
 
     def test_reconcile_reports_lost_running_worker_as_preempted(self) -> None:
         job = {
@@ -5570,9 +5585,7 @@ class ModalProviderTerminationTests(unittest.TestCase):
             mock.patch.object(
                 gpu_worker.modal.Sandbox, "from_id", return_value=sandbox
             ),
-            mock.patch.object(
-                gpu_worker.time, "monotonic", side_effect=[0.0, 31.0]
-            ),
+            mock.patch.object(gpu_worker.time, "monotonic", side_effect=[0.0, 31.0]),
         ):
             error = gpu_worker.ModalSandboxProvider({}).terminate(
                 resilience.ProviderHandle(

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Publish performance readouts for an active or completed event batch.
 
-Trusted verifier captures provide the trajectory and explicit disqualification
-provenance used to reconstruct maximum legal forward distance, time to that
-distance, and the continuous score::
+Trusted verifier captures provide the trajectory and supplementary stop reason
+used to independently reconstruct maximum legal forward distance, time to that
+distance, and the official score::
 
-    completion_adjusted_speed_mps = distance_m ** 2 / (100 * elapsed_s)
+    effective_speed_mps = distance_m ** 2 / (100 * elapsed_s)
 
-Official validity and failed-gate fields remain unchanged.
+Completion and terminal-condition fields remain outcome diagnostics.
 """
 
 from __future__ import annotations
@@ -72,8 +72,8 @@ def configured_per_trial_cost_cap_usd() -> float:
     return value
 
 
-def completion_adjusted_speed(distance_m: float, elapsed_s: float) -> float:
-    """Legal-prefix average speed discounted by the uncompleted course fraction."""
+def effective_speed(distance_m: float, elapsed_s: float) -> float:
+    """Return the benchmark's sole metric from legal distance and elapsed time."""
 
     if distance_m <= 0.0 or elapsed_s <= 0.0:
         return 0.0
@@ -205,18 +205,24 @@ def score_capture(path: Path) -> dict[str, Any]:
     elif finish is not None:
         legal_times.append(finish_time)
         legal_forward.append(COURSE_DISTANCE_M)
+    else:
+        # Timeout is itself a terminal condition. Include the sample at the
+        # public time boundary, matching the trusted verifier's rollout loop.
+        legal_times.append(horizon)
+        legal_forward.append(float(forward[-1]))
     if not legal_forward:
         legal_times = [float(times[0])]
         legal_forward = [float(forward[0])]
 
     distance = max(0.0, max(legal_forward))
     max_index = legal_forward.index(max(legal_forward))
-    elapsed = float(legal_times[max_index])
+    elapsed = float(legal_times[max_index]) - float(times[0])
     valid = bool(run.get("valid")) and finish_time is not None and reason is None
     if valid:
         distance = COURSE_DISTANCE_M
         elapsed = float(finish_time)
-    score = completion_adjusted_speed(distance, elapsed)
+    score = effective_speed(distance, elapsed)
+    termination_reason = reason or ("finished" if finish_time is not None else "timeout")
     return {
         "continuous_score_mps": round(score, 6),
         "max_legal_distance_m": round(distance, 3),
@@ -225,6 +231,7 @@ def score_capture(path: Path) -> dict[str, Any]:
         "first_disqualification_time_s": (
             None if first_dq is None else round(first_dq[0], 3)
         ),
+        "termination_reason": termination_reason,
         "valid_run": valid,
         "capture_sha256": hashlib.sha256(raw).hexdigest(),
         "capture_fps": capture.get("fps"),
@@ -424,8 +431,6 @@ def aggregate_models(
         grouped.setdefault(model_family(run.get("model")), []).append(run)
     if not grouped:
         raise RuntimeError("expected at least one model family")
-    family_sizes = {family: len(runs) for family, runs in grouped.items()}
-
     if per_trial_cost_cap is None:
         per_trial_cost_cap = configured_per_trial_cost_cap_usd()
     if finite_number(per_trial_cost_cap) is None or per_trial_cost_cap <= 0:
@@ -761,8 +766,8 @@ def build(
             "formula": "distance_m^2 / (100m * time_to_distance_s)",
             "unit": "m/s",
             "higher_is_better": True,
-            "distance_semantics": "maximum forward distance before first reconstructed lane/self-collision DQ",
-            "provenance": "reconstruction from trusted 50 Hz verifier pose captures; official verdict fields are unchanged",
+            "distance_semantics": "maximum forward distance before the first finish, timeout, lane exit, or self-collision",
+            "provenance": "official Effective Speed independently reconstructed from the trusted 50 Hz verifier pose capture",
             "coverage_policy": "fail closed unless every published policy has an exact trusted pose trajectory; website rendering is not a scoring dependency",
         },
         "cost": {

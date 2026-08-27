@@ -47,7 +47,7 @@ from event_runtime.container.sprint_resilience import (  # noqa: E402
 
 WORKER_TAG_ROLE = "gpu-worker"
 MAX_ACTIVE_TRAINING_JOBS_PER_RUN = 1
-STOP_DISPATCH_LOCK_TIMEOUT_SEC = 10 * 60
+STOP_DISPATCH_LOCK_TIMEOUT_SEC = 5.0
 STOP_TERMINATE_MAX_WORKERS = 8
 STOP_PROVIDER_CONFIRM_TIMEOUT_SEC = 30.0
 STOP_PROVIDER_CONFIRM_POLL_SEC = 1.0
@@ -602,20 +602,23 @@ def stage_worker_policy_on_host(
     raw_trial = run.get("trial_path")
     trial = Path(str(raw_trial)).resolve() if raw_trial else None
     if trial is None or not trial.is_dir():
-        _job, trial = sprintctl.discover_job_and_trial(
-            Path(str(run["state_dir"])), run
-        )
+        _job, trial = sprintctl.discover_job_and_trial(Path(str(run["state_dir"])), run)
     if trial is None:
-        raise RuntimeError("Harbor trial directory is unavailable for submission staging")
+        raise RuntimeError(
+            "Harbor trial directory is unavailable for submission staging"
+        )
 
     incoming = trial / HOST_CONTINUOUS_INCOMING
     incoming.mkdir(parents=True, exist_ok=True)
     target = incoming / f"{submission_id}.pt"
     if target.exists():
-        if target.stat().st_size != len(content) or hashlib.sha256(
-            target.read_bytes()
-        ).hexdigest() != digest:
-            raise RuntimeError("submission bridge request id already has different bytes")
+        if (
+            target.stat().st_size != len(content)
+            or hashlib.sha256(target.read_bytes()).hexdigest() != digest
+        ):
+            raise RuntimeError(
+                "submission bridge request id already has different bytes"
+            )
         return target
 
     fd, temporary_name = tempfile.mkstemp(
@@ -631,9 +634,10 @@ def stage_worker_policy_on_host(
         try:
             os.link(temporary, target)
         except FileExistsError:
-            if target.stat().st_size != len(content) or hashlib.sha256(
-                target.read_bytes()
-            ).hexdigest() != digest:
+            if (
+                target.stat().st_size != len(content)
+                or hashlib.sha256(target.read_bytes()).hexdigest() != digest
+            ):
                 raise RuntimeError(
                     "submission bridge request id concurrently staged different bytes"
                 )
@@ -1018,9 +1022,7 @@ def terminal_submission_bridge_complete(
     if not isinstance(results, list) or len(results) != len(declared):
         return False
     result_paths = [
-        str(item.get("path") or "")
-        for item in results
-        if isinstance(item, dict)
+        str(item.get("path") or "") for item in results if isinstance(item, dict)
     ]
     if result_paths != declared:
         return False
@@ -1992,9 +1994,7 @@ def _enqueue_snapshot_submission_id(
         created_epoch = 0
     prefix = time.strftime("%H%M%S", time.gmtime(max(0, created_epoch)))
     suffix = hashlib.sha256(
-        "\0".join(
-            (str(run["run_id"]), str(job["job_id"]), path, digest)
-        ).encode()
+        "\0".join((str(run["run_id"]), str(job["job_id"]), path, digest)).encode()
     ).hexdigest()[:4]
     return f"{prefix}-{suffix}"
 
@@ -2556,9 +2556,7 @@ def spawn_gpu_sandbox(run: dict[str, Any], job: dict[str, Any]) -> str:
     volume = modal.Volume.from_name(str(run["volume_name"]))
     command_timeout = int(job.get("timeout_sec") or 3600)
     command_timeout = max(60, min(command_timeout, 24 * 60 * 60))
-    sandbox_timeout = (
-        command_timeout + GPU_SANDBOX_STARTUP_FINALIZATION_ALLOWANCE_SEC
-    )
+    sandbox_timeout = command_timeout + GPU_SANDBOX_STARTUP_FINALIZATION_ALLOWANCE_SEC
     worker_command = (
         "python3 /opt/sprint-gpu-worker-run.py "
         + shlex.quote(run_id)
@@ -3360,9 +3358,7 @@ def reconcile_job(
         terminal["attempt_record"] = attempt_path(
             str(run["run_id"]), str(job["job_id"]), int(job["attempt"])
         )
-        if terminal_submission_bridge_complete(
-            run, terminal, submission_bridge_detail
-        ):
+        if terminal_submission_bridge_complete(run, terminal, submission_bridge_detail):
             terminal["submission_bridge_terminal_drained_at"] = utc_now()
         terminal, log_detail = archive_provider_logs(run, terminal)
         persist_job(run, terminal)
@@ -3552,9 +3548,7 @@ def reconcile_terminal_attempt_before_stop(
                 if isinstance(worker_progress, dict)
                 else None
             )
-            if isinstance(host_results, list) and not isinstance(
-                worker_results, list
-            ):
+            if isinstance(host_results, list) and not isinstance(worker_results, list):
                 continue
         payload[key] = attempt_record[key]
     payload["attempt_record"] = attempt_path(
@@ -3606,9 +3600,7 @@ def reconcile_agent_cancelled_jobs(
         except (TypeError, ValueError):
             cancelled_at = 0.0
         try:
-            provider_exit_at = float(
-                job.get("provider_exit_observed_epoch_s") or 0
-            )
+            provider_exit_at = float(job.get("provider_exit_observed_epoch_s") or 0)
         except (TypeError, ValueError):
             provider_exit_at = 0.0
         # Sandbox.create and the agent's queued-job cancellation can cross in
@@ -4069,16 +4061,27 @@ def stop_all(
     run: dict[str, Any], *, reason: str = "operator_stop"
 ) -> list[dict[str, Any]]:
     state_dir = Path(str(run["state_dir"]))
-    # A Modal Sandbox.create call can legitimately hold this lock for longer
-    # than the normal 30-second monitor budget.  The durable stop marker is
-    # already present before this function is called, so wait for the in-flight
-    # dispatch and then fence it instead of returning a misleading partial stop.
+    # STOP_REQUESTED is durable before this function runs. An in-flight
+    # dispatcher rechecks that marker before releasing this same lock and
+    # fences any sandbox it just created. Do not block operator or budget stop
+    # behind minutes of artifact mirroring performed by the lock owner; report
+    # the pending state so the monitor can retry and prove terminality.
     with gpu_claim.dispatch_lock(
         state_dir, timeout_sec=STOP_DISPATCH_LOCK_TIMEOUT_SEC
     ) as got_lock:
         if not got_lock:
             raise RuntimeError("dispatch lock busy while stopping GPU workers")
         return _stop_all_locked(run, reason=reason)
+
+
+def all_jobs_terminal(run: dict[str, Any]) -> bool:
+    """Return whether every registered training job is durably terminal."""
+
+    for job_id in list_job_ids(run):
+        job = load_job(run, job_id)
+        if not job or str(job.get("status") or "") not in gpu_claim.TERMINAL:
+            return False
+    return True
 
 
 def _terminate_job_locked(
@@ -4197,12 +4200,9 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
             # can consume the entire drain timeout despite there being nothing
             # to forward.
             job_ids = list_job_ids(run)
-            jobs_before_stop = {
-                job_id: load_job(run, job_id) for job_id in job_ids
-            }
+            jobs_before_stop = {job_id: load_job(run, job_id) for job_id in job_ids}
             has_explicit_submissions = any(
-                job and job.get("submission_paths")
-                for job in jobs_before_stop.values()
+                job and job.get("submission_paths") for job in jobs_before_stop.values()
             )
             # STOP_ACK is written only after the CPU wrapper either observes
             # the drain marker or exhausts its bounded wait.  A host-authored
@@ -4244,10 +4244,9 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
                     continue
                 job = reconcile_terminal_attempt_before_stop(run, job)
                 job = attach_terminal_submission_evidence(run, job)
-                if (
-                    str(job.get("status") or "") not in gpu_claim.TERMINAL
-                    or not job.get("submission_bridge_enabled")
-                ):
+                if str(
+                    job.get("status") or ""
+                ) not in gpu_claim.TERMINAL or not job.get("submission_bridge_enabled"):
                     continue
                 bridged, detail = drain_worker_submission_outbox(run, job)
                 bridged = attach_terminal_submission_evidence(run, bridged)
@@ -4296,9 +4295,7 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
                 ],
                 "reconciled": reconciled,
                 "submission_bridge_pending_jobs": bridge_pending,
-                "enqueue_snapshot_submission_recoveries": (
-                    enqueue_snapshot_recoveries
-                ),
+                "enqueue_snapshot_submission_recoveries": (enqueue_snapshot_recoveries),
                 "submission_bridge_drain_signal_error": drain_signal_error,
                 "skipped": True,
                 "reason": "operator_stop",

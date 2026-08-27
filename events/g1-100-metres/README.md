@@ -4,14 +4,14 @@
 
 Produce a TorchScript policy that moves a Unitree G1 humanoid through a
 100-metre lane in Isaac Lab. Each trial has the same configured agent-cost
-budget and is scored by the fastest valid policy it submits before that budget
+budget and is scored by the highest Effective Speed policy it submits before that budget
 is exhausted. The concise task is in `instruction.md`; the complete
 agent-facing contract is in `environment/README.md`.
 
 ## Difficulty Explanation
 
-The policy must move the robot quickly, keep its entire collision envelope
-within the lane, and avoid geometric self-collision.
+The challenge is to maximize legal forward progress and pace before evaluation
+ends.
 
 ## Verification Explanation
 

@@ -63,3 +63,43 @@ with keyword or regex templates.
 
 The website is an observer. Outline generation and publishing must never
 control, restart, stop, or otherwise affect an experiment.
+
+## Local Harbor publication sanitization
+
+Never upload a live job directory directly. Build a separate, Harbor-compatible
+staging tree first:
+
+```bash
+uv run --project harbor python -m event_runtime.export.harbor_job \
+  --job-dir runs/ops/<run-id>/harbor-jobs/<run-id> \
+  --output-root .artifacts/harbor-sanitized \
+  --secret-env-file /data/harbor-adapters-experiments/.env
+```
+
+Install the pinned local secret scanner once:
+
+```bash
+uv tool install kingfisher-bin==2.0.0
+```
+
+Repeat `--job-dir` to stage a batch. The command also discovers the run's
+ephemeral `harbor.env` from `run.json`, if it still exists. It never modifies
+the source run and it never uploads anything.
+
+The sanitizer copies only Harbor metadata, raw/sanitized harness traces,
+normalized ATIF, text telemetry, and submission-result metadata. Transient
+Codex SQLite/WAL state, symlinks, policy binaries, unknown agent files, and
+unknown binary artifacts are excluded. DeepSeek ATIF is materialized into the
+staged job without writing derived files back into the source run.
+
+Every staged job contains `SANITIZATION_REPORT.json` with hashes, exclusions,
+redaction counts, and the audit-archive digest. The tree and a generated tarball
+are both scanned by the built-in focused detector and Kingfisher 2.0.0. The
+Kingfisher invocation disables live validation, update checks, and Git history;
+its report never leaves the machine. Before publishing the stage, the command
+also exercises the same job/result/lock parsers and per-trial archive builder
+used by `harbor upload`. Any surviving credential or PII signature, malformed
+Harbor metadata, or archive failure blocks publication and leaves a sibling
+`*.SANITIZATION_FAILED.json` report instead of a staged job. Review a clean
+report and the staged prose before running `harbor upload`; automated detectors
+cannot prove that arbitrary natural-language text contains no semantic PII.

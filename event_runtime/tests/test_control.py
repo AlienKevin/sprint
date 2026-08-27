@@ -42,8 +42,8 @@ def write_policy(trial: Path, index: int, name: str, data: bytes) -> Path:
     return path
 
 
-def row(index: int, name: str, best: float | None) -> dict:
-    if best is None:
+def row(index: int, name: str, score: float | None) -> dict:
+    if score is None:
         return {
             "index": index,
             "name": name,
@@ -59,7 +59,13 @@ def row(index: int, name: str, best: float | None) -> dict:
         "submitted_at": "2026-08-02T00:00:00Z",
         "started_at": "2026-08-02T00:00:01Z",
         "finished_at": "2026-08-02T00:01:00Z",
-        "rewards": {"valid_run": 1, "best_100m_s": best},
+        "rewards": {
+            "reward": score,
+            "effective_speed_mps": score,
+            "submission_contract_valid": 1,
+            "valid_run": 1,
+            "best_100m_s": 100.0 / score if score > 0 else 0.0,
+        },
         "error": None,
     }
 
@@ -261,9 +267,7 @@ class DurableOpsTests(unittest.TestCase):
 
             self.assertFalse(first_complete)
             self.assertFalse(second_complete)
-            self.assertTrue(
-                sprintctl.final_reconciliation_ready(state, run)
-            )
+            self.assertTrue(sprintctl.final_reconciliation_ready(state, run))
             monitor.assert_called_once()
             api_sync.assert_called_once_with(state, run, force=True)
             trace_sync.assert_called_once_with(state, run, force=True)
@@ -568,9 +572,7 @@ class DurableOpsTests(unittest.TestCase):
             self.assertEqual(payload["total_usd"], 1.25)
             self.assertEqual(payload["upstream_watchdog_age_seconds"], 10.0)
             persisted = json.loads((state / "telemetry/budget-pulse.json").read_text())
-            self.assertEqual(
-                persisted["gpu_mirror"], "delegated_to_gpu_budget_pulse"
-            )
+            self.assertEqual(persisted["gpu_mirror"], "delegated_to_gpu_budget_pulse")
 
     def test_gpu_budget_pulse_mirrors_latest_host_snapshot(self) -> None:
         from event_runtime.compute import worker as gpu_worker
@@ -587,9 +589,7 @@ class DurableOpsTests(unittest.TestCase):
                 "stop_threshold_usd": 10.0,
                 "status": "within_budget",
             }
-            (state / "telemetry" / "agent-cost.json").write_text(
-                json.dumps(snapshot)
-            )
+            (state / "telemetry" / "agent-cost.json").write_text(json.dumps(snapshot))
             with (
                 mock.patch.object(sprintctl, "load_run", return_value=(state, run)),
                 mock.patch.object(
@@ -614,9 +614,7 @@ class DurableOpsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             state = Path(raw)
             run = {"run_id": "pulse-run"}
-            with mock.patch.object(
-                sprintctl, "load_run", return_value=(state, run)
-            ):
+            with mock.patch.object(sprintctl, "load_run", return_value=(state, run)):
                 result = sprintctl.gpu_budget_pulse_once("pulse-run")
 
             self.assertEqual(result["status"], "watchdog_starting")
@@ -1034,9 +1032,7 @@ class DurableOpsTests(unittest.TestCase):
                     sprintctl, "run_results_finished", return_value=False
                 ),
                 mock.patch.object(gpu_worker, "dispatch_once", side_effect=dispatch),
-                mock.patch.object(
-                    sprintctl, "seal_host_submission_bridge_complete"
-                ),
+                mock.patch.object(sprintctl, "seal_host_submission_bridge_complete"),
                 mock.patch.object(sprintctl.time, "sleep"),
             ):
                 self.assertEqual(sprintctl.gpu_dispatch_loop("dispatch-run", 5), 0)
@@ -1318,8 +1314,7 @@ class DurableOpsTests(unittest.TestCase):
             prefix = "runs/sync-run/telemetry"
             jobs = [f"job-{index}" for index in range(8)]
             timeline = "".join(
-                json.dumps({"job_id": job_id, "attempt": 1}) + "\n"
-                for job_id in jobs
+                json.dumps({"job_id": job_id, "attempt": 1}) + "\n" for job_id in jobs
             )
             active = 0
             peak = 0
@@ -1341,9 +1336,7 @@ class DurableOpsTests(unittest.TestCase):
                     active -= 1
                 return "{}\n"
 
-            with mock.patch.object(
-                sprintctl, "volume_get_text", side_effect=fetch
-            ):
+            with mock.patch.object(sprintctl, "volume_get_text", side_effect=fetch):
                 self.assertTrue(
                     sprintctl.sync_durable_telemetry(state, run, force=True)
                 )
@@ -1578,7 +1571,9 @@ class DurableOpsTests(unittest.TestCase):
             ):
                 _complete, conditions, details = sprintctl.final_conditions(state, run)
                 self.assertFalse(conditions["submission_bridge_drained"])
-                self.assertTrue(any("absent from Harbor's ledger" in d for d in details))
+                self.assertTrue(
+                    any("absent from Harbor's ledger" in d for d in details)
+                )
 
                 ledger.write_text(json.dumps(row(1, "123456-abcd.pt", 0.0)) + "\n")
                 _complete, conditions, _details = sprintctl.final_conditions(state, run)
@@ -1617,9 +1612,7 @@ class DurableOpsTests(unittest.TestCase):
                         }
                     )
                 )
-                bridge_record = json.loads(
-                    (bridge / "123456-abcd.json").read_text()
-                )
+                bridge_record = json.loads((bridge / "123456-abcd.json").read_text())
                 bridge_record["gpu_job_id"] = "job-1"
                 (bridge / "123456-abcd.json").write_text(json.dumps(bridge_record))
                 _complete, conditions, _details = sprintctl.final_conditions(state, run)
@@ -2639,8 +2632,7 @@ raise SystemExit(2)
             )
             try:
                 first_seen = (
-                    durable
-                    / "runs/test-drain-timeout/supervisor/first-codex-seen"
+                    durable / "runs/test-drain-timeout/supervisor/first-codex-seen"
                 )
                 deadline = time.time() + 10
                 while not first_seen.exists() and time.time() < deadline:
@@ -2887,7 +2879,7 @@ else:
             ledger.write_text(
                 "\n".join(
                     [
-                        json.dumps(row(1, "one.pt", 8.0)),
+                        json.dumps(row(1, "one.pt", 10.0)),
                         json.dumps(row(2, "two.pt", 9.0)),
                     ]
                 )
@@ -2905,7 +2897,7 @@ else:
             )
             self.assertEqual(old["status"], "skipped_dominated")
 
-    def test_frontier_uses_only_valid_time_with_tolerance(self) -> None:
+    def test_frontier_uses_only_effective_speed(self) -> None:
         candidate = frontier_update.Candidate
         speed_only = [
             candidate(1, "one", 10.0, "a", "/a"),
@@ -2921,7 +2913,7 @@ else:
         ]
         frontier, has_secondary_objective = frontier_update.compute_frontier(faster)
         self.assertFalse(has_secondary_objective)
-        self.assertEqual([item.index for item in frontier], [1])
+        self.assertEqual([item.index for item in frontier], [2])
 
     def test_stop_and_finalize_are_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -3054,6 +3046,41 @@ else:
 
             self.assertEqual(events, ["cpu-signalled", "gpu-cleanup", "ack-fetched"])
             self.assertEqual(result["status"], "requested")
+
+    def test_cpu_ack_does_not_hide_pending_gpu_termination(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state_dir = Path(raw)
+            run = {
+                "run_id": "test-gpu-stop-pending",
+                "agent_kind": "codex",
+                "cpu_agent_gpu_worker": True,
+                "state_dir": raw,
+            }
+            with (
+                mock.patch.object(sprintctl, "load_run", return_value=(state_dir, run)),
+                mock.patch.object(sprintctl, "fetch_remote_json", return_value=None),
+                mock.patch.object(
+                    sprintctl, "discover_agent_container", return_value=None
+                ),
+                mock.patch(
+                    "event_runtime.compute.worker.stop_all",
+                    side_effect=RuntimeError("dispatch lock busy"),
+                ),
+                mock.patch(
+                    "event_runtime.compute.worker.all_jobs_terminal",
+                    return_value=False,
+                ),
+            ):
+                result = sprintctl.request_stop(
+                    "test-gpu-stop-pending",
+                    reason="operator_batch_stop",
+                    wait_for_termination=True,
+                )
+
+            self.assertEqual(result["status"], "gpu_stop_pending")
+            self.assertFalse(result["gpu_stop_complete"])
+            self.assertIn("dispatch lock busy", result["gpu_stop_error"])
+            self.assertTrue((state_dir / "STOP_ACK.json").is_file())
 
     def test_waiting_stop_force_closes_cpu_and_persists_matching_ack(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

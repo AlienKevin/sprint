@@ -962,10 +962,7 @@ def seal_host_submission_bridge_complete(
     if trial is None:
         raise RuntimeError("Harbor trial directory is unavailable for bridge seal")
     marker = (
-        trial
-        / "artifacts"
-        / "continuous"
-        / ".host-submission-bridge-complete.json"
+        trial / "artifacts" / "continuous" / ".host-submission-bridge-complete.json"
     )
     atomic_write_json(
         marker,
@@ -1079,6 +1076,7 @@ def request_stop(
     # sees STOP_REQUESTED and repeats this idempotently if this call is cut off.
     gpu_stopped: list[str] = []
     gpu_stop_error = None
+    gpu_stop_complete = not bool(run.get("cpu_agent_gpu_worker"))
     try:
         from event_runtime.compute import worker as gpu_worker
 
@@ -1087,6 +1085,17 @@ def request_stop(
         ]
     except Exception as exc:  # noqa: BLE001
         gpu_stop_error = f"{type(exc).__name__}: {exc}"
+    if run.get("cpu_agent_gpu_worker"):
+        try:
+            gpu_stop_complete = gpu_worker.all_jobs_terminal(run)
+        except Exception as exc:  # noqa: BLE001
+            gpu_stop_complete = False
+            audit_error = f"GPU terminality audit failed: {type(exc).__name__}: {exc}"
+            gpu_stop_error = (
+                f"{gpu_stop_error}; {audit_error}" if gpu_stop_error else audit_error
+            )
+
+    acknowledged_status = "acknowledged" if gpu_stop_complete else "gpu_stop_pending"
 
     try:
         ack = fetch_remote_json(state_dir, run, "STOP_ACK", "STOP_ACK.json")
@@ -1095,12 +1104,13 @@ def request_stop(
     expected_reason = str(payload.get("reason") or reason)
     if ack and str(ack.get("reason") or "") == expected_reason:
         return {
-            "status": "acknowledged",
+            "status": acknowledged_status,
             "agent_kind": kind,
             "ack": ack,
             "agent_stop_error": agent_stop_error,
             "gpu_workers_stopped": gpu_stopped,
             "gpu_stop_error": gpu_stop_error,
+            "gpu_stop_complete": gpu_stop_complete,
         }
 
     requested_epoch = parse_iso(str(payload.get("requested_at") or ""))
@@ -1112,12 +1122,13 @@ def request_stop(
         if container is None:
             ack = persist_host_stop_ack(state_dir, run, payload, forced=False)
             return {
-                "status": "acknowledged",
+                "status": acknowledged_status,
                 "agent_kind": kind,
                 "ack": ack,
                 "agent_stop_error": agent_stop_error,
                 "gpu_workers_stopped": gpu_stopped,
                 "gpu_stop_error": gpu_stop_error,
+                "gpu_stop_complete": gpu_stop_complete,
             }
 
         grace_deadline = time.monotonic() + max(
@@ -1127,12 +1138,13 @@ def request_stop(
             if not agent_container_running(run, container):
                 ack = persist_host_stop_ack(state_dir, run, payload, forced=False)
                 return {
-                    "status": "acknowledged",
+                    "status": acknowledged_status,
                     "agent_kind": kind,
                     "ack": ack,
                     "agent_stop_error": agent_stop_error,
                     "gpu_workers_stopped": gpu_stopped,
                     "gpu_stop_error": gpu_stop_error,
+                    "gpu_stop_complete": gpu_stop_complete,
                 }
             time.sleep(AGENT_STOP_POLL_SECONDS)
 
@@ -1148,12 +1160,13 @@ def request_stop(
                 time.sleep(AGENT_STOP_POLL_SECONDS)
             ack = persist_host_stop_ack(state_dir, run, payload, forced=True)
             return {
-                "status": "acknowledged",
+                "status": acknowledged_status,
                 "agent_kind": kind,
                 "ack": ack,
                 "agent_stop_error": agent_stop_error,
                 "gpu_workers_stopped": gpu_stopped,
                 "gpu_stop_error": gpu_stop_error,
+                "gpu_stop_complete": gpu_stop_complete,
             }
         except Exception as exc:  # noqa: BLE001
             forced_error = f"{type(exc).__name__}: {exc}"
@@ -1165,13 +1178,14 @@ def request_stop(
                 if not agent_container_running(run, container):
                     ack = persist_host_stop_ack(state_dir, run, payload, forced=True)
                     return {
-                        "status": "acknowledged",
+                        "status": acknowledged_status,
                         "agent_kind": kind,
                         "ack": ack,
                         "agent_stop_error": agent_stop_error,
                         "forced_stop_warning": forced_error,
                         "gpu_workers_stopped": gpu_stopped,
                         "gpu_stop_error": gpu_stop_error,
+                        "gpu_stop_complete": gpu_stop_complete,
                     }
             except Exception as audit_exc:  # noqa: BLE001
                 forced_error += (
@@ -1186,6 +1200,7 @@ def request_stop(
             "forced_stop_error": forced_error,
             "gpu_workers_stopped": gpu_stopped,
             "gpu_stop_error": gpu_stop_error,
+            "gpu_stop_complete": gpu_stop_complete,
         }
 
     if wait_for_termination and not container_discovery_succeeded:
@@ -1196,6 +1211,7 @@ def request_stop(
             "agent_stop_error": agent_stop_error,
             "gpu_workers_stopped": gpu_stopped,
             "gpu_stop_error": gpu_stop_error,
+            "gpu_stop_complete": gpu_stop_complete,
         }
     return {
         "status": "requested",
@@ -1204,6 +1220,7 @@ def request_stop(
         "agent_stop_error": agent_stop_error,
         "gpu_workers_stopped": gpu_stopped,
         "gpu_stop_error": gpu_stop_error,
+        "gpu_stop_complete": gpu_stop_complete,
     }
 
 
@@ -1851,8 +1868,7 @@ def final_reconciliation_ready(state_dir: Path, run: dict[str, Any]) -> bool:
     return bool(
         payload.get("schema_version") == FINAL_RECONCILIATION_SCHEMA_VERSION
         and payload.get("run_id") == run.get("run_id")
-        and payload.get("timeline_schema_version")
-        == UNIFIED_TIMELINE_SCHEMA_VERSION
+        and payload.get("timeline_schema_version") == UNIFIED_TIMELINE_SCHEMA_VERSION
         and payload.get("complete") is True
     )
 
@@ -2391,9 +2407,7 @@ def _finalize_owned(
         # imports the immutable trace, job telemetry, and every provider
         # request record. Run it once after the lane becomes terminal, then
         # persist that sealed state while provider billing catches up.
-        if not (
-            terminal_before_refresh or run_services_should_exit(state_dir, run)
-        ):
+        if not (terminal_before_refresh or run_services_should_exit(state_dir, run)):
             return False, {
                 "schema_version": 1,
                 "timeline_schema_version": UNIFIED_TIMELINE_SCHEMA_VERSION,
@@ -2973,9 +2987,7 @@ def gpu_budget_pulse_once(run_id: str) -> dict[str, Any]:
     )
     if result.get("gpu_budget_mirror") == "error":
         detail = (
-            result.get("errors")
-            or result.get("gpu_budget_mirror_error")
-            or "unknown"
+            result.get("errors") or result.get("gpu_budget_mirror_error") or "unknown"
         )
         raise RuntimeError(f"GPU budget pulse mirror failed: {detail}")
     return result

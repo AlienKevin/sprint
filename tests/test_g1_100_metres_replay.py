@@ -23,42 +23,58 @@ def lane(
     valid: bool,
     distance: float,
     finish: float | None = None,
+    effective_speed: float = 0.0,
     peak: float = 0.0,
     failed: str | None = None,
 ) -> dict:
     checks = []
     if failed:
-        checks.append({"name": failed, "gating": True, "passed": False})
+        checks.append({"name": failed, "passed": False})
     return {
         "valid": valid,
         "distance_m": distance,
+        "max_distance_m": distance,
         "finish_time_s": finish,
+        "effective_speed_mps": effective_speed,
+        "termination_reason": failed or ("finished" if valid else "timeout"),
         "peak_speed_mps": peak,
         "checks": checks,
     }
 
 
-def test_representative_prefers_fastest_valid_lane() -> None:
+def test_representative_prefers_highest_effective_speed_lane() -> None:
     rows = [
-        lane(valid=False, distance=99.0, peak=9.0),
-        lane(valid=True, distance=100.0, finish=12.0),
-        lane(valid=True, distance=100.0, finish=9.5),
+        lane(valid=False, distance=99.0, peak=9.0, effective_speed=10.6),
+        lane(valid=True, distance=100.0, finish=12.0, effective_speed=8.333333),
+        lane(valid=True, distance=100.0, finish=9.5, effective_speed=10.526316),
     ]
-    assert representative_index(rows) == 2
+    assert representative_index(rows) == 0
 
 
 def test_representative_failure_is_furthest_then_fastest() -> None:
     rows = [
-        lane(valid=False, distance=25.0, peak=4.0),
-        lane(valid=False, distance=40.0, peak=3.0, failed="in_lane"),
-        lane(valid=False, distance=40.0, peak=5.0, failed="self_collision"),
+        lane(valid=False, distance=25.0, peak=4.0, effective_speed=0.0),
+        lane(
+            valid=False,
+            distance=40.0,
+            peak=3.0,
+            effective_speed=0.0,
+            failed="in_lane",
+        ),
+        lane(
+            valid=False,
+            distance=40.0,
+            peak=5.0,
+            effective_speed=0.0,
+            failed="self_collision",
+        ),
     ]
     assert representative_index(rows) == 2
     assert failure_modes(rows[2]) == ["self_collision"]
 
 
 def test_failure_without_explicit_gate_is_classified() -> None:
-    assert failure_modes(lane(valid=False, distance=0.0)) == ["no_valid_finish"]
+    assert failure_modes(lane(valid=False, distance=0.0)) == ["timeout"]
 
 
 def test_replay_records_every_50_hz_policy_state() -> None:

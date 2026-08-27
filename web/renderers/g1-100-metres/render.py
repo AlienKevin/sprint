@@ -378,8 +378,7 @@ def assemble_html(
             time_label = f"{policy['finish']:.2f}"
         labels.append(
             f'<div class="lc" id="lane{index}"><span class="sw" '
-            f'style="background:{color}"></span><span class="nm">'
-            f'{policy["label"]}</span><span class="tm" style="color:{color}">'
+            f'style="background:{color}"></span><span class="tm" style="color:{color}">'
             f'{time_label}s</span><span class="d">0.0 m</span></div>'
         )
     lanes_html = "\n".join(labels)

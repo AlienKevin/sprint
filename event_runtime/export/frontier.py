@@ -38,7 +38,7 @@ PLAYER_TEMPLATE = ROOT / "web/replay-template.html"
 PROJECT_ID = "prj_dgvTovRNwdSDcefYmo6oXfju9M3p"
 ORG_ID = "team_SNgoAcFfHYXYdUIXhj16bGek"
 VERCEL_SCOPE = "alienkevins-projects"
-TIME_TOLERANCE_SECONDS = 0.001
+SCORE_TOLERANCE_MPS = 1e-9
 DEPLOY_DEBOUNCE_SECONDS = 300
 # Vercel may spend several minutes retrieving and building a large replay-heavy
 # site after the upload has completed.  The CLI remains the authoritative wait
@@ -264,7 +264,7 @@ def policy_for_row(trial: Path, row: dict[str, Any]) -> Path | None:
 class Candidate:
     index: int
     name: str
-    time_seconds: float
+    effective_speed_mps: float
     policy_hash: str | None
     policy_path: str | None
 
@@ -277,9 +277,9 @@ def candidates_from_rows(
         rewards = row.get("rewards")
         if not isinstance(rewards, dict) or row.get("error"):
             continue
-        valid = _as_number(rewards.get("valid_run"))
-        best = _as_number(rewards.get("best_100m_s", rewards.get("best_valid_100m_s")))
-        if valid != 1.0 or best is None or best <= 0:
+        structurally_valid = _as_number(rewards.get("submission_contract_valid"))
+        score = _as_number(rewards.get("effective_speed_mps", rewards.get("reward")))
+        if structurally_valid != 1.0 or score is None or score < 0:
             continue
         try:
             index = int(row["index"])
@@ -291,7 +291,7 @@ def candidates_from_rows(
             Candidate(
                 index=index,
                 name=str(row.get("name") or f"attempt-{index}"),
-                time_seconds=best,
+                effective_speed_mps=score,
                 policy_hash=policy_hash,
                 policy_path=str(policy) if policy else None,
             )
@@ -331,6 +331,7 @@ def graded_policy_records(
             ]
         valid = _as_number(rewards.get("valid_run")) == 1.0
         best = _as_number(rewards.get("best_100m_s", rewards.get("best_valid_100m_s")))
+        score = _as_number(rewards.get("effective_speed_mps", rewards.get("reward")))
         records.append(
             {
                 "index": index,
@@ -340,8 +341,14 @@ def graded_policy_records(
                 "replay_path": str(replay) if replay and replay.is_file() else None,
                 "valid_run": valid,
                 "best_100m_s": best if valid and best and best > 0 else None,
+                "effective_speed_mps": score,
                 "max_distance_m": _as_number(details.get("max_distance_m")),
                 "max_distance_semantics": details.get("max_distance_semantics"),
+                "termination_reason": details.get("termination_reason"),
+                "stop_time_s": _as_number(details.get("stop_time_s")),
+                "time_to_max_distance_s": _as_number(
+                    details.get("time_to_max_distance_s")
+                ),
                 "peak_speed_mps": _as_number(rewards.get("peak_speed_mps")),
                 "failed_gates": sorted({str(name) for name in failed}),
                 "submitted_at": row.get("submitted_at"),
@@ -362,7 +369,10 @@ def compute_frontier(candidates: Sequence[Candidate]) -> tuple[list[Candidate], 
         return [], False
     best = candidates[0]
     for candidate in candidates[1:]:
-        if candidate.time_seconds < best.time_seconds - TIME_TOLERANCE_SECONDS:
+        if (
+            candidate.effective_speed_mps
+            > best.effective_speed_mps + SCORE_TOLERANCE_MPS
+        ):
             best = candidate
     return [best], False
 
@@ -564,7 +574,7 @@ def scan_frontier(
         policies[key] = {
             "index": candidate.index,
             "name": candidate.name,
-            "best_100m_s": candidate.time_seconds,
+            "effective_speed_mps": candidate.effective_speed_mps,
             "policy_hash": candidate.policy_hash,
             "policy_path": candidate.policy_path,
             "on_frontier": candidate.policy_hash in active,
@@ -650,7 +660,7 @@ def scan_frontier(
                 {
                     "index": candidate.index,
                     "policy_hash": candidate.policy_hash,
-                    "best_100m_s": candidate.time_seconds,
+                    "effective_speed_mps": candidate.effective_speed_mps,
                 }
                 for candidate in frontier
             ],
@@ -852,14 +862,16 @@ def capture_and_render(
         atomic_copy(source, capture_tmp)
         valid = bool(policy.get("valid_run"))
         time_value = policy.get("best_100m_s")
-        failure = ", ".join(policy.get("failed_gates") or ["no valid finish"])
+        termination = str(policy.get("termination_reason") or "timeout").replace(
+            "_", " "
+        )
         headline = (
             f"{float(time_value):.3f} s" if valid and time_value else "Did not finish"
         )
         lede = (
             f"Valid 100 m policy: <b>{float(time_value):.3f} s</b>."
             if valid and time_value
-            else f"Failed policy: <b>{failure}</b>."
+            else f"Evaluation stopped by <b>{termination}</b>."
         )
         run_checked(
             [
@@ -917,6 +929,26 @@ def write_web_policy_indexes(
 ) -> None:
     """Publish a public-safe policy history for the comparison dashboard."""
     run_id = state_path.parent.name
+    enqueue_times: dict[str, str] = {}
+    registry = state_path.parent / "gpu-job-registry"
+    for path in sorted(registry.glob("*.json")) if registry.is_dir() else []:
+        try:
+            job = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        created_at = job.get("created_at")
+        if not isinstance(created_at, str) or not created_at:
+            continue
+        progress = job.get("progress")
+        results = (
+            progress.get("submission_results") if isinstance(progress, dict) else []
+        )
+        for result in results if isinstance(results, list) else []:
+            policy_hash = (
+                result.get("policy_sha256") if isinstance(result, dict) else None
+            )
+            if isinstance(policy_hash, str) and policy_hash:
+                enqueue_times.setdefault(policy_hash, created_at)
     try:
         run = json.loads((state_path.parent / "run.json").read_text())
     except (OSError, json.JSONDecodeError):
@@ -930,12 +962,17 @@ def write_web_policy_indexes(
             {
                 "submission_index": policy.get("index"),
                 "policy_sha256": policy_hash,
+                "enqueued_at": enqueue_times.get(policy_hash),
                 "submitted_at": policy.get("submitted_at"),
                 "finished_at": policy.get("finished_at"),
                 "valid_run": bool(policy.get("valid_run")),
                 "best_100m_s": policy.get("best_100m_s"),
+                "effective_speed_mps": policy.get("effective_speed_mps"),
                 "max_distance_m": policy.get("max_distance_m"),
                 "max_distance_semantics": policy.get("max_distance_semantics"),
+                "termination_reason": policy.get("termination_reason"),
+                "stop_time_s": policy.get("stop_time_s"),
+                "time_to_max_distance_s": policy.get("time_to_max_distance_s"),
                 "peak_speed_mps": policy.get("peak_speed_mps"),
                 "failed_gates": policy.get("failed_gates") or [],
                 "on_frontier": bool(policy.get("on_frontier")),

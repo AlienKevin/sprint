@@ -19,21 +19,15 @@ def result_dict(result: Any) -> dict[str, Any]:
 
 
 def representative_index(results: Sequence[Any]) -> int:
-    """Choose the fastest valid lane, otherwise the lane that got furthest."""
+    """Choose the lane with the highest official Effective Speed."""
     rows = [result_dict(result) for result in results]
     if not rows:
         raise ValueError("a replay requires at least one lane result")
-    valid = [
-        (index, row)
-        for index, row in enumerate(rows)
-        if row.get("valid") and row.get("finish_time_s") is not None
-    ]
-    if valid:
-        return min(valid, key=lambda item: float(item[1]["finish_time_s"]))[0]
     return max(
         enumerate(rows),
         key=lambda item: (
-            float(item[1].get("distance_m") or 0.0),
+            float(item[1].get("effective_speed_mps") or 0.0),
+            float(item[1].get("max_distance_m") or 0.0),
             float(item[1].get("peak_speed_mps") or 0.0),
             -item[0],
         ),
@@ -41,17 +35,10 @@ def representative_index(results: Sequence[Any]) -> int:
 
 
 def failure_modes(row: dict[str, Any]) -> list[str]:
-    modes = [
-        str(check.get("name"))
-        for check in row.get("checks", [])
-        if isinstance(check, dict)
-        and check.get("gating")
-        and not check.get("passed")
-        and check.get("name")
-    ]
-    if not modes and not row.get("valid"):
-        modes.append("no_valid_finish")
-    return sorted(set(modes))
+    """Return the supplementary stop reason used by replay visualization."""
+
+    reason = row.get("termination_reason")
+    return [] if reason in {None, "finished"} else [str(reason)]
 
 
 class PoseRecorder:
@@ -88,9 +75,7 @@ class PoseRecorder:
                 .detach()
                 .clone()
             )
-            self._quaternions.append(
-                self.robot.data.body_quat_w.detach().clone()
-            )
+            self._quaternions.append(self.robot.data.body_quat_w.detach().clone())
         self._step += 1
 
     def payload(self, results: Sequence[Any], *, policy_path: str) -> dict[str, Any]:
@@ -101,13 +86,17 @@ class PoseRecorder:
         if self._times:
             import torch
 
-            positions = torch.stack(
-                [sample[selected] for sample in self._positions], dim=0
-            ).cpu().tolist()
+            positions = (
+                torch.stack([sample[selected] for sample in self._positions], dim=0)
+                .cpu()
+                .tolist()
+            )
             # Isaac stores quaternions wxyz. The renderer contract is xyzw.
-            quaternions = torch.stack(
-                [sample[selected] for sample in self._quaternions], dim=0
-            ).cpu().tolist()
+            quaternions = (
+                torch.stack([sample[selected] for sample in self._quaternions], dim=0)
+                .cpu()
+                .tolist()
+            )
             for t, frame_positions, frame_quaternions in zip(
                 self._times, positions, quaternions, strict=True
             ):

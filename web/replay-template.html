@@ -16,6 +16,7 @@
   .hud{position:absolute;inset:0;pointer-events:none;color:#EDE6D8;font-variant-numeric:tabular-nums}
   .clock{position:absolute;top:14px;left:16px;font-size:30px;font-weight:800;text-shadow:0 2px 8px rgba(0,0,0,.6)}
   .clock small{font-size:14px;opacity:.7;font-weight:600}
+  .clock-status{font-size:14px;color:#B6F24E;font-weight:800;margin-left:8px;text-shadow:0 2px 8px rgba(0,0,0,.6)}
   .lanes{position:absolute;top:12px;right:14px;display:flex;flex-direction:column;gap:6px}
   .lc{display:flex;align-items:center;gap:9px;background:rgba(10,14,20,.5);border:1px solid rgba(255,255,255,.1);border-radius:9px;padding:5px 11px;backdrop-filter:blur(4px);min-width:172px}
   .lc .sw{width:11px;height:11px;border-radius:3px;flex:none}.lc .nm{font-size:12px;opacity:.8;font-weight:600}
@@ -40,9 +41,9 @@
       <div class="stagewrap">
     <div id="stage"></div>
     <div class="hud">
-      <div class="clock"><span id="clock">0.00</span><small>s</small></div>
+      <div class="clock"><span id="clock">0.00</span><small>s</small><span class="clock-status" id="clock-status"></span></div>
       <div class="lanes">
-<div class="lc" id="lane0"><span class="sw" style="background:#6E97C4"></span><span class="nm">Seed 1</span><span class="tm" style="color:#6E97C4">DQ 0.90s</span><span class="d">0.0 m</span></div>
+<div class="lc" id="lane0"><span class="sw" style="background:#6E97C4"></span><span class="tm" style="color:#6E97C4">DQ 0.90s</span><span class="d">0.0 m</span></div>
 </div>
       <div class="ctl">
         <button class="btn primary" id="replay">&#9654; Replay</button>
@@ -360,16 +361,23 @@ function poseRobot(rb,p,t,laneY){
 
 // ---- HUD ----
 const clockEl=document.getElementById('clock');
+const clockStatusEl=document.getElementById('clock-status');
 const cards=POL.map((p,i)=>document.getElementById('lane'+i));
-function hud(t,xs,dones){clockEl.textContent=t.toFixed(2);
+const singlePolicy=POL.length===1;
+if(singlePolicy){const lanes=document.querySelector('.lanes');if(lanes)lanes.style.display='none';}
+function hud(t,xs,dones){
+  const primary=POL[0];
+  const primaryFinished=singlePolicy && dones[0] && !primary.disqualified;
+  const clockTime=primaryFinished && Number.isFinite(primary.finish)?primary.finish:t;
+  clockEl.textContent=clockTime.toFixed(2);
+  if(clockStatusEl) clockStatusEl.textContent=primaryFinished?'FINISHED':'';
   POL.forEach((p,i)=>{const el=cards[i]; if(!el)return; const d=Math.min(xs[i],100);
-    const lat=(p.max_lateral_m!=null)?(' · body≤'+p.max_lateral_m.toFixed(2)+'m'):'';
     let status;
     if(dones[i] && p.disqualified){
       const reason=(p.dq&&p.dq.reason)?p.dq.reason.replace(/_/g,' '):'DQ';
-      status='DQ '+p.freezeT.toFixed(2)+'s · '+reason+lat;
+      status='DQ '+p.freezeT.toFixed(2)+'s · '+reason;
     }else if(dones[i]){
-      status='FINISH '+p.finish.toFixed(2)+'s'+lat;
+      status='FINISHED';
     }else status=d.toFixed(1)+' m';
     el.querySelector('.d').textContent=status;
     el.classList.toggle('fin',dones[i] && !p.disqualified);

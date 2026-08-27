@@ -111,6 +111,12 @@ def test_documented_container_paths_match_the_built_agent_image() -> None:
     )
     assert network_contract in instruction
     assert network_contract in " ".join(guide.split())
+    assert "Policies must finish the course" not in instruction
+    assert "Optimize Effective Speed; higher is better." in guide
+    assert (
+        "A finish is not required to receive a score"
+        in (TASK / "tests/check_submission.py").read_text()
+    )
     assert "The writable workspace is `/app`" in guide
     assert (
         "event gpu --submit-output /app/policy.pt -- python3 -u /app/YOUR_SCRIPT.py"
@@ -118,10 +124,12 @@ def test_documented_container_paths_match_the_built_agent_image() -> None:
     )
     assert "`--output /app/...`" in guide
     normalized_guide = " ".join(guide.split())
-    assert "use `event gpu get` to install each returned file" in normalized_guide
+    assert "use `event gpu get` to install each returned file" in normalized_guide.lower()
     assert "at most 512 regular files" in normalized_guide
     assert "128 MiB" in normalized_guide
-    assert "together no larger than 512 MiB" in normalized_guide
+    assert "all returned files together may be at most 512 MiB" in normalized_guide
+    assert "reuse the same `--checkpoint-dir`" in normalized_guide
+    assert "`SPRINT_GPU_RESUME_CHECKPOINT`" in normalized_guide
     assert "copied automatically" not in guide
     assert "Isaac Lab 2.3.2" not in instruction
     assert "Isaac Lab 2.3.2" not in guide
@@ -216,6 +224,7 @@ def test_codex_comparison_models_pin_provider_compatible_tool_contracts(
     assert 'model_provider = "sprint_openrouter"' in config
     assert 'base_url = "http://127.0.0.1:18080/api/v1"' in config
     assert f'model_catalog_json = "{codex_home / "models.json"}"' in config
+
 
 def test_published_verifier_is_an_exact_reviewed_source_mirror() -> None:
     from event_runtime.event import load_event
@@ -374,10 +383,14 @@ def test_equivalence_gate_accepts_only_matching_canonical_outputs(
     official = tmp_path / "official.json"
     output = tmp_path / "proof.json"
     result = {
+        "effective_speed_mps": 0.01234,
+        "termination_reason": "timeout",
+        "stop_time_s": 60.0,
+        "time_to_max_distance_s": 1.5,
         "valid_run": False,
         "best_valid_100m_s": None,
         "max_distance_m": 1.2344,
-        "max_distance_semantics": "legal_prefix_until_first_disqualification",
+        "max_distance_semantics": "legal_prefix_until_first_terminal_condition",
         "lane_containment_semantics": "whole_body_collision_envelope_between_vertical_boundaries",
         "lanes_finished": 0,
         "lanes_valid": 0,

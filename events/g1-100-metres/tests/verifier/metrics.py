@@ -1,11 +1,11 @@
 # Copyright (c) 2026 Sprint contributors.
 # SPDX-License-Identifier: BSD-3-Clause
-"""Turn a recorded lane into the official time and three gate verdicts.
+"""Turn one recorded lane into its official Effective Speed.
 
-This event scores only whether the policy reached 100 m inside the
-window, stayed in its lane, and avoided disqualifying self-intersection.  Gait,
-posture, energy, fall, ground-contact, and robustness heuristics are not part of
-the benchmark and are neither computed nor reported here.
+Evaluation ends at the first finish, timeout, lane exit, or self-collision.
+Only legal progress through that point contributes to the score. Gait, posture,
+energy, fall, ground-contact, and robustness heuristics are not part of the
+benchmark and are neither computed nor reported here.
 """
 
 from __future__ import annotations
@@ -19,19 +19,18 @@ MAX_SELF_PENETRATION_M = 0.01
 
 @dataclass
 class Check:
-    """One official gate with its measured value and threshold."""
+    """One terminal-condition diagnostic retained in the trusted artifact."""
 
     name: str
     passed: bool
     value: float
     threshold: float
     detail: str = ""
-    gating: bool = True
 
 
 @dataclass
 class RunResult:
-    """One verifier lane's official result and minimal outcome diagnostics."""
+    """One verifier lane's score and minimal outcome diagnostics."""
 
     env_id: int
     commanded_speed: float
@@ -40,6 +39,10 @@ class RunResult:
     raw_max_distance_m: float
     duration_s: float
     finish_time_s: float | None
+    stop_time_s: float
+    time_to_max_distance_s: float
+    effective_speed_mps: float
+    termination_reason: str
     first_disqualification_gate: str | None = None
     first_disqualification_time_s: float | None = None
     first_disqualification_distance_m: float | None = None
@@ -119,7 +122,7 @@ def evaluate_run(
     finish_distance_m: float,
     self_penetration_m: list[float] | None,
 ) -> RunResult:
-    """Evaluate exactly the three public gates for one recorded lane."""
+    """Score one lane at its first public terminal condition."""
 
     if (
         not t
@@ -133,66 +136,110 @@ def evaluate_run(
     if self_penetration_m is None or len(self_penetration_m) != len(t):
         raise ValueError("the official self-collision trace is required")
 
-    gate_times = gate_crossing_times(x, t, gates)
-    finish_time = gate_times.get(f"{finish_distance_m:g}m")
-    end = len(t)
-    if finish_time is not None:
-        end = next((i + 1 for i, value in enumerate(t) if value >= finish_time), len(t))
-    count = min(max(end, 2), len(t))
+    # The finish line is authoritative even when a caller requests only a
+    # reduced set of intermediate split markers.
+    scoring_gates = tuple(sorted(set((*gates, finish_distance_m))))
+    gate_times = gate_crossing_times(x, t, scoring_gates)
+    raw_finish_time = gate_times.get(f"{finish_distance_m:g}m")
+    raw_max_distance = max(0.0, max(x) - x[0])
 
-    duration = t[count - 1] - t[0]
-    distance = x[count - 1] - x[0]
-    raw_max_distance = max(x[:count]) - x[0]
-    mean_speed = distance / duration if duration > 0 else 0.0
-    peak_speed = max(vx[:count]) if count else 0.0
-    achieved = sum(vx[:count]) / count if count else 0.0
-    max_lateral_extent = max(lateral_extent_m[:count])
-    max_self = max(self_penetration_m[:count], default=0.0)
-
-    disqualifications: list[tuple[float, str, float]] = []
     lane_crossing = _threshold_crossing(
-        lateral_extent_m[:count],
-        t[:count],
-        x[:count],
+        lateral_extent_m,
+        t,
+        x,
         LANE_HALF_WIDTH_M,
     )
-    if lane_crossing is not None:
-        disqualifications.append((*lane_crossing[:1], "in_lane", lane_crossing[1]))
     self_crossing = _threshold_crossing(
-        self_penetration_m[:count],
-        t[:count],
-        x[:count],
+        self_penetration_m,
+        t,
+        x,
         MAX_SELF_PENETRATION_M,
     )
-    if self_crossing is not None:
-        disqualifications.append(
-            (*self_crossing[:1], "self_collision", self_crossing[1])
-        )
 
-    first_disqualification = min(disqualifications, default=None)
-    if first_disqualification is None:
-        max_distance = raw_max_distance
-    else:
-        disqualification_time, _, disqualification_x = first_disqualification
-        legal_x = [
-            position
-            for sample_time, position in zip(t[:count], x[:count], strict=True)
-            if sample_time < disqualification_time
-        ]
-        legal_x.append(disqualification_x)
-        max_distance = max(legal_x) - x[0]
+    # A DQ wins an exact tie with the finish line. This makes the boundary
+    # deterministic and prevents a simultaneous lane exit from becoming a
+    # clean finish merely because the finish event was appended first.
+    terminal_events: list[tuple[float, int, str, float]] = []
+    if lane_crossing is not None:
+        terminal_events.append((lane_crossing[0], 0, "in_lane", lane_crossing[1]))
+    if self_crossing is not None:
+        terminal_events.append(
+            (self_crossing[0], 0, "self_collision", self_crossing[1])
+        )
+    if raw_finish_time is not None:
+        terminal_events.append(
+            (raw_finish_time, 1, "finished", x[0] + finish_distance_m)
+        )
+    terminal_events.append((t[-1], 2, "timeout", x[-1]))
+    stop_time, _, termination_reason, stop_x = min(terminal_events)
+
+    first_disqualification = (
+        (stop_time, termination_reason, stop_x)
+        if termination_reason in {"in_lane", "self_collision"}
+        else None
+    )
+    finish_time = stop_time if termination_reason == "finished" else None
+
+    legal_t = [sample_time for sample_time in t if sample_time < stop_time]
+    legal_x = [
+        position
+        for sample_time, position in zip(t, x, strict=True)
+        if sample_time < stop_time
+    ]
+    if not legal_t or legal_t[-1] != stop_time:
+        legal_t.append(stop_time)
+        legal_x.append(stop_x)
+
+    legal_progress = [max(0.0, position - x[0]) for position in legal_x]
+    max_distance = min(finish_distance_m, max(legal_progress, default=0.0))
+    max_index = legal_progress.index(max(legal_progress)) if legal_progress else 0
+    time_to_max_distance = max(0.0, legal_t[max_index] - t[0])
+    effective_speed = (
+        max_distance * max_distance / (finish_distance_m * time_to_max_distance)
+        if max_distance > 0.0 and time_to_max_distance > 0.0
+        else 0.0
+    )
+
+    duration = max(0.0, stop_time - t[0])
+    distance = stop_x - x[0]
+    sampled_before_stop = [
+        i for i, sample_time in enumerate(t) if sample_time <= stop_time
+    ]
+    count = max(1, len(sampled_before_stop))
+    mean_speed = distance / duration if duration > 0 else 0.0
+    peak_speed = max(vx[:count])
+    achieved = sum(vx[:count]) / count
+    lateral_before_stop = [
+        value
+        for sample_time, value in zip(t, lateral_extent_m, strict=True)
+        if sample_time < stop_time
+    ]
+    self_before_stop = [
+        value
+        for sample_time, value in zip(t, self_penetration_m, strict=True)
+        if sample_time < stop_time
+    ]
+    if termination_reason == "in_lane":
+        lateral_before_stop.append(LANE_HALF_WIDTH_M)
+    if termination_reason == "self_collision":
+        self_before_stop.append(MAX_SELF_PENETRATION_M)
+    max_lateral_extent = max(lateral_before_stop, default=lateral_extent_m[0])
+    max_self = max(self_before_stop, default=self_penetration_m[0])
+
+    lane_failed = lane_crossing is not None and lane_crossing[0] <= stop_time
+    self_failed = self_crossing is not None and self_crossing[0] <= stop_time
 
     checks = [
         Check(
             "finished",
-            finish_time is not None,
+            termination_reason == "finished",
             max_distance,
             finish_distance_m,
             f"covered {max_distance:.1f} legal m of {finish_distance_m:g} m",
         ),
         Check(
             "in_lane",
-            max_lateral_extent <= LANE_HALF_WIDTH_M,
+            not lane_failed,
             max_lateral_extent,
             LANE_HALF_WIDTH_M,
             f"max whole-body lateral extent {max_lateral_extent:.2f} m "
@@ -201,7 +248,7 @@ def evaluate_run(
         ),
         Check(
             "self_collision",
-            max_self <= MAX_SELF_PENETRATION_M,
+            not self_failed,
             max_self,
             MAX_SELF_PENETRATION_M,
             f"max non-adjacent link penetration {max_self * 100:.2f} cm "
@@ -217,6 +264,10 @@ def evaluate_run(
         raw_max_distance_m=round(raw_max_distance, 3),
         duration_s=round(duration, 3),
         finish_time_s=None if finish_time is None else round(finish_time, 3),
+        stop_time_s=round(stop_time, 3),
+        time_to_max_distance_s=round(time_to_max_distance, 3),
+        effective_speed_mps=round(effective_speed, 6),
+        termination_reason=termination_reason,
         first_disqualification_gate=(
             None if first_disqualification is None else first_disqualification[1]
         ),
@@ -231,7 +282,7 @@ def evaluate_run(
             else round(first_disqualification[2] - x[0], 3)
         ),
         gate_times_s={
-            key: None if value is None else round(value, 3)
+            key: None if value is None or value > stop_time else round(value, 3)
             for key, value in gate_times.items()
         },
         mean_speed_mps=round(mean_speed, 4),

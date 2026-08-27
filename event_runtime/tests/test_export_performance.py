@@ -29,12 +29,44 @@ SPEC.loader.exec_module(continuous)
         (10.0, 0.0, 0.0),
     ],
 )
-def test_completion_adjusted_speed(
-    distance_m: float, elapsed_s: float, expected: float
-) -> None:
-    assert continuous.completion_adjusted_speed(distance_m, elapsed_s) == pytest.approx(
-        expected
+def test_effective_speed(distance_m: float, elapsed_s: float, expected: float) -> None:
+    assert continuous.effective_speed(distance_m, elapsed_s) == pytest.approx(expected)
+
+
+def test_capture_scoring_includes_progress_at_timeout(tmp_path: Path) -> None:
+    capture = tmp_path / "replay.json"
+    capture.write_text(
+        json.dumps(
+            {
+                "body_names": ["torso_link"],
+                "frames": [
+                    [
+                        [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                        [2.0, 10.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                    ]
+                ],
+                "runs": [
+                    {
+                        "valid": False,
+                        "termination_reason": "timeout",
+                        "checks": [
+                            {"name": "finished", "passed": False},
+                            {"name": "in_lane", "passed": True},
+                            {"name": "self_collision", "passed": True},
+                        ],
+                    }
+                ],
+                "fps": 50.0,
+                "representative_lane": 0,
+            }
+        )
     )
+
+    score = continuous.score_capture(capture)
+
+    assert score["max_legal_distance_m"] == pytest.approx(10.0)
+    assert score["time_to_max_legal_distance_s"] == pytest.approx(2.0)
+    assert score["continuous_score_mps"] == pytest.approx(0.5)
 
 
 def test_step_auc_uses_best_so_far_and_common_cap() -> None:
@@ -509,16 +541,25 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "value === 0 ? '0'" in app
     assert "AI AGENTS · ONE HUMANOID · ONE FINISH LINE" not in page
     assert "Can agents train a humanoid to run?" in page
-    assert "We give each agent an A10G GPU and $10 total budget to train their humanoid runner." in page
+    assert (
+        "We give each agent an A10G GPU and $10 total budget to train their humanoid runner."
+        in page
+    )
     assert ".intro-detail" in styles
     assert "font-size: clamp(17px, 2vw, 24px)" in styles
     assert 'class="experiment-table"' in app
     assert 'scope="rowgroup"' in app
     assert '<th scope="col">Effort</th>' in app
     assert '<th scope="col">Trial</th>' in app
-    assert "${isBest?`<strong>${esc(row.effort||'—')}</strong>`:esc(row.effort||'—')}" in app
-    assert 'aria-label="Open trial ${esc(row.arm.trial)} trace">${esc(row.arm.trial)}</a>' in app
-    assert '>Trial ${esc(row.arm.trial)}</a>' not in app
+    assert (
+        "${isBest?`<strong>${esc(row.effort||'—')}</strong>`:esc(row.effort||'—')}"
+        in app
+    )
+    assert (
+        'aria-label="Open trial ${esc(row.arm.trial)} trace">${esc(row.arm.trial)}</a>'
+        in app
+    )
+    assert ">Trial ${esc(row.arm.trial)}</a>" not in app
     assert "const familyBest=Math.max" in app
     assert "row.bestScore===familyBest" in app
     assert "${isBest?`<b>${speed}</b>`:speed}" in app
@@ -530,7 +571,7 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "box-shadow: inset -4px 0 var(--model-accent)" not in styles
     assert ".experiment-row:hover:not(:has(.experiment-model:hover))" in styles
     assert ".experiment-model.experiment-model-hover" in styles
-    assert "data-family=\"${esc(key)}\"" in app
+    assert 'data-family="${esc(key)}"' in app
     assert "experiment-model-hover" in app
     assert "best_continuous_score_mps" in app
     assert 'class="budget-table"' in app
@@ -546,7 +587,10 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert ".budget-group,\n.budget-row" not in styles
     assert "cost-stack" not in app
     assert ".budget-heat" in styles
-    assert "background: color-mix(in srgb, var(--text) var(--heat), var(--panel))" in styles
+    assert (
+        "background: color-mix(in srgb, var(--text) var(--heat), var(--panel))"
+        in styles
+    )
     assert ".cost-trial-row" not in styles
     preview = trajectory_app.split("function stepPreview", 1)[1].split(
         "function matchesFilter", 1
@@ -558,16 +602,16 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "meta.append(el('b','',`#" in trajectory_app
     assert "fmtClock(step.timestamp)" not in trajectory_app
     assert 'class="right-rail"' not in trajectory_page
-    assert "trajectory.css?v=20260826-1" in trajectory_page
+    assert "trajectory.css?v=20260827-4" in trajectory_page
     assert "trajectory.js?v=20260825-23" in trajectory_page
-    assert "trajectory-overview.js?v=20260825-4" in trajectory_page
+    assert "trajectory-overview.js?v=20260827-8" in trajectory_page
     assert 'id="rollout-outline"' in trajectory_page
     assert '<h2 id="rollout-outline-title">Trial Outline</h2>' in trajectory_page
     assert 'aria-label="Trial outline chapters"' in trajectory_page
     assert ">Rollout outline</h2>" not in trajectory_page
-    assert trajectory_page.index('class="utilization-overview"') < trajectory_page.index(
-        'id="rollout-outline"'
-    )
+    assert trajectory_page.index(
+        'class="utilization-overview"'
+    ) < trajectory_page.index('id="rollout-outline"')
     assert trajectory_page.index('id="rollout-outline"') < trajectory_page.index(
         'class="trace-column"'
     )
@@ -583,9 +627,15 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "flex: 0 0 auto" in trajectory_styles
     assert "function authoredChapters" in trajectory_app
     assert "· Start time: ${elapsed(" in trajectory_app
-    assert "function chapterTarget(chapter){return document.getElementById(chapter.id)}" in trajectory_app
+    assert (
+        "function chapterTarget(chapter){return document.getElementById(chapter.id)}"
+        in trajectory_app
+    )
     assert "target.scrollIntoView({behavior:'auto',block:'center'})" in trajectory_app
-    assert "window.scrollBy({top:rect.top+rect.height/2-window.innerHeight/2" in trajectory_app
+    assert (
+        "window.scrollBy({top:rect.top+rect.height/2-window.innerHeight/2"
+        in trajectory_app
+    )
     assert "state.outlineLockUntil=performance.now()+500" in trajectory_app
     assert "setActiveChapter(chapter,false)" in trajectory_app
     assert "step.classList.add('jump-flash')" in trajectory_app
@@ -593,18 +643,32 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "$('#jump-step')" not in trajectory_app
     assert "$('#search')" not in trajectory_app
     assert "function hasPrimaryContent(group)" in trajectory_app
-    assert "const pulse=document.querySelector('.utilization-overview')" in trajectory_app
-    assert "current.offsetTop-chapterNav.offsetTop-(chapterNav.clientHeight-current.offsetHeight)/2" in trajectory_app
+    assert (
+        "const pulse=document.querySelector('.utilization-overview')" in trajectory_app
+    )
+    assert (
+        "current.offsetTop-chapterNav.offsetTop-(chapterNav.clientHeight-current.offsetHeight)/2"
+        in trajectory_app
+    )
     assert "const anchor=Math.max(traceAnchor(),window.innerHeight/2)" in trajectory_app
-    assert "Math.abs(target.getBoundingClientRect().top+target.offsetHeight/2-anchor)" in trajectory_app
+    assert (
+        "Math.abs(target.getBoundingClientRect().top+target.offsetHeight/2-anchor)"
+        in trajectory_app
+    )
     assert "current.scrollIntoView({block:'nearest'})" not in trajectory_app
     assert "el('span','chapter-divider-number',number)" in trajectory_app
     assert "scrollTargetForStep(target).scrollIntoView" in trajectory_overview
-    assert "classList.contains('chapter-divider') ? divider : target" in trajectory_overview
+    assert (
+        "classList.contains('chapter-divider') ? divider : target"
+        in trajectory_overview
+    )
     assert "const anchor = traceAnchor();" in trajectory_overview
     assert "{key: 'training', label: 'GPU'" in trajectory_overview
     assert "TRAIN GPU" not in trajectory_overview
-    assert "const laneTop = state.docked ? 23 : 24" in trajectory_overview
+    assert "const laneTop = state.docked ? 15 : 18" in trajectory_overview
+    assert "ctx.fillText('SUBMISSIONS'" in trajectory_overview
+    assert "drawPolicies(policyY, laneHeight, accent)" in trajectory_overview
+    assert 'id="trajectory-policy-replay"' in trajectory_page
     assert "tip.style.top" not in trajectory_overview
     assert "trajectory-outline/v1" in trajectory_app
     assert "generator.model!=='gpt-5.6-sol'" in trajectory_app
@@ -636,7 +700,10 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "--luna: #66D693" in styles
     assert "--deepseek: #7c54cd" in trajectory_styles
     assert "--sol: #2279dc" in trajectory_styles
-    assert "border-right: 2px solid color-mix(in srgb, var(--model-accent) 72%, var(--line))" in styles
+    assert (
+        "border-right: 2px solid color-mix(in srgb, var(--model-accent) 72%, var(--line))"
+        in styles
+    )
     assert "--cost-cpu" not in styles
     assert "--cost-training" not in styles
     assert "--deepseek:#7C54CD" in timeline_page
@@ -702,9 +769,9 @@ def test_trajectory_exec_parser_preserves_escaped_shell_quotes() -> None:
     command = r"""date -u +%H:%M:%S; event gpu status fcc0bce2c548 | rg '\"provider_live_logs_checked_at\"|\"status\"' | head -n 8; event cost | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get(\"total_usd\"))'"""
     program = (
         "text((await tools.exec_command({"
-        f"cmd:{json.dumps(command)},workdir:\"/app\",yield_time_ms:10000"
+        f'cmd:{json.dumps(command)},workdir:"/app",yield_time_ms:10000'
         "})).output);"
-        "text(await tools.write_stdin({session_id:7,chars:\"\"}));"
+        'text(await tools.write_stdin({session_id:7,chars:""}));'
     )
     script = "\n".join(
         [

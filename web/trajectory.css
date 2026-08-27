@@ -116,6 +116,30 @@ input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
 .legend-swatch.summary { background: var(--luna); }
 
 .trace-column { min-width: 0; }
+.trajectory-policy-replay {
+  overflow: hidden;
+  margin-bottom: 14px;
+  scroll-margin-top: 74px;
+  border: 1px solid color-mix(in srgb, var(--accent) 48%, var(--line));
+  border-radius: 8px;
+  background: var(--panel);
+}
+.trajectory-policy-replay > header {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.trajectory-policy-replay > header div { display: flex; min-width: 0; align-items: baseline; gap: 10px; }
+.trajectory-policy-replay > header strong { overflow: hidden; font: 750 13px/1.2 Inter, ui-sans-serif, system-ui, sans-serif; text-overflow: ellipsis; white-space: nowrap; }
+.trajectory-policy-replay > header small { color: var(--muted); font-size: 9px; white-space: nowrap; }
+.trajectory-policy-replay > header small::before { content: '·'; margin-right: 10px; }
+.trajectory-policy-replay > header button { flex: 0 0 auto; padding: 4px 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--panel-raised); cursor: pointer; font-size: 9px; }
+.trajectory-policy-replay > header button:hover { border-color: var(--accent); }
+.trajectory-policy-replay iframe { display: block; width: 100%; height: min(33vw, 420px); border: 0; background: var(--bg); }
 .utilization-overview {
   flex: 0 0 auto;
   overflow: hidden;
@@ -293,6 +317,7 @@ pre { max-height: 70vh; overflow: auto; margin: 0; padding: 13px; border: 1px so
   .utilization-head { flex-wrap: nowrap; }
   .utilization-head .pulse-stats { width: min(360px, 55%); flex: 0 1 360px; }
   .trace-column { grid-row: auto; }
+  .trajectory-policy-replay { scroll-margin-top: 112px; }
   .chapter-divider, .step { scroll-margin-top: 118px; }
   .rollout-outline { min-height: 0; max-height: none; margin-bottom: 24px; }
   .chapter-nav { max-height: 360px; }
@@ -309,6 +334,8 @@ pre { max-height: 70vh; overflow: auto; margin: 0; padding: 13px; border: 1px so
   .utilization-head { flex-wrap: wrap; }
   .utilization-head .pulse-stats { width: 100%; flex: 1 0 100%; }
   .left-rail { grid-template-columns: 1fr; }
+  .trajectory-policy-replay > header div { display: grid; gap: 1px; }
+  .trajectory-policy-replay iframe { height: min(58vw, 360px); }
   .steps::before { left: 47px; }
   .chapter-divider { grid-template-columns: 59px minmax(0, 1fr); gap: 9px; }
   .chapter-divider::after { left: 68px; }

@@ -23,7 +23,11 @@ from __future__ import annotations
 
 import torch
 
-from .metrics import evaluate_run
+from .metrics import (
+    LANE_HALF_WIDTH_M,
+    MAX_SELF_PENETRATION_M,
+    evaluate_run,
+)
 
 # Unitree G1 kinematic parents for bodies that carry collision geometry.  Used
 # only to skip ancestor/descendant pairs within SELF_COLLISION_ANCESTRY hops so
@@ -86,6 +90,24 @@ SELF_COLLISION_SPHERE_MARGIN_M = 0.02
 # 17.9 s gait stays under the 1 cm DQ threshold; the 6.9–7.4 s tight gaits do
 # not.  3 cm false-DQs the clean gait.
 SELF_COLLISION_RADIUS_PAD_M = 0.02
+
+
+def terminal_reason_for_sample(
+    *,
+    forward_m: float,
+    lateral_extent_m: float,
+    self_penetration_m: float,
+    distance_m: float,
+) -> str | None:
+    """Return the terminal condition triggered by one control sample."""
+
+    if lateral_extent_m > LANE_HALF_WIDTH_M:
+        return "in_lane"
+    if self_penetration_m > MAX_SELF_PENETRATION_M:
+        return "self_collision"
+    if forward_m >= distance_m:
+        return "finished"
+    return None
 
 
 def _is_chain_neighbor(a: str, b: str, max_dist: int = SELF_COLLISION_ANCESTRY) -> bool:
@@ -406,10 +428,24 @@ def run_trial(
         trace["self"].append([r[3] for r in rows])
 
         xs = trace["x"][-1]
+        lane_extents = trace["lane_extent"][-1]
+        self_penetrations = trace["self"][-1]
+        newly_resolved: list[int] = []
         for i in range(n):
-            if not resolved[i] and xs[i] >= distance:
-                command.hold(torch.tensor([i], device=device))
+            if (
+                not resolved[i]
+                and terminal_reason_for_sample(
+                    forward_m=xs[i],
+                    lateral_extent_m=lane_extents[i],
+                    self_penetration_m=self_penetrations[i],
+                    distance_m=distance,
+                )
+                is not None
+            ):
                 resolved[i] = True
+                newly_resolved.append(i)
+        if newly_resolved:
+            command.hold(torch.tensor(newly_resolved, device=device))
 
         if on_step is not None:
             on_step(t, trace, resolved)
@@ -425,6 +461,12 @@ def run_trial(
         # semantics, and the simulator step stays outside either context.
         with torch.no_grad():
             actions = policy(obs_t)
+            # Other lanes in the batched rollout may still be active. A lane
+            # whose evaluation ended receives neutral joint offsets from this
+            # point onward; its later simulator state is not scored.
+            if any(resolved):
+                actions = actions.clone()
+                actions[torch.tensor(resolved, dtype=torch.bool, device=device)] = 0
         obs, *_ = env.step(actions)
         obs_t = obs["policy"] if isinstance(obs, dict) else obs
         t += dt

@@ -275,16 +275,23 @@ function poseRobot(rb,p,t,laneY){
 
 // ---- HUD ----
 const clockEl=document.getElementById('clock');
+const clockStatusEl=document.getElementById('clock-status');
 const cards=POL.map((p,i)=>document.getElementById('lane'+i));
-function hud(t,xs,dones){clockEl.textContent=t.toFixed(2);
+const singlePolicy=POL.length===1;
+if(singlePolicy){const lanes=document.querySelector('.lanes');if(lanes)lanes.style.display='none';}
+function hud(t,xs,dones){
+  const primary=POL[0];
+  const primaryFinished=singlePolicy && dones[0] && !primary.disqualified;
+  const clockTime=primaryFinished && Number.isFinite(primary.finish)?primary.finish:t;
+  clockEl.textContent=clockTime.toFixed(2);
+  if(clockStatusEl) clockStatusEl.textContent=primaryFinished?'FINISHED':'';
   POL.forEach((p,i)=>{const el=cards[i]; if(!el)return; const d=Math.min(xs[i],100);
-    const lat=(p.max_lateral_m!=null)?(' · body≤'+p.max_lateral_m.toFixed(2)+'m'):'';
     let status;
     if(dones[i] && p.disqualified){
       const reason=(p.dq&&p.dq.reason)?p.dq.reason.replace(/_/g,' '):'DQ';
-      status='DQ '+p.freezeT.toFixed(2)+'s · '+reason+lat;
+      status='DQ '+p.freezeT.toFixed(2)+'s · '+reason;
     }else if(dones[i]){
-      status='FINISH '+p.finish.toFixed(2)+'s'+lat;
+      status='FINISHED';
     }else status=d.toFixed(1)+' m';
     el.querySelector('.d').textContent=status;
     el.classList.toggle('fin',dones[i] && !p.disqualified);

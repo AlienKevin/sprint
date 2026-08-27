@@ -18,16 +18,23 @@ NUMERIC_TOLERANCES = {
     # below any meaningful configuration or scoring difference while covering
     # one control-step worth of motion for the deliberately slow probe policy.
     "max_distance_m": Decimal("0.01"),
+    "stop_time_s": Decimal("0.02"),
+    "time_to_max_distance_s": Decimal("0.02"),
+    "effective_speed_mps": Decimal("0.001"),
 }
 
 
-def rounded(value: Any) -> float | None:
-    return None if value is None else round(float(value), 3)
+def rounded(value: Any, digits: int = 3) -> float | None:
+    return None if value is None else round(float(value), digits)
 
 
 def canonical(payload: dict[str, Any]) -> dict[str, Any]:
     """Canonical score fields, at the precision published by the benchmark."""
     return {
+        "effective_speed_mps": rounded(payload.get("effective_speed_mps"), 6),
+        "termination_reason": payload.get("termination_reason"),
+        "stop_time_s": rounded(payload.get("stop_time_s")),
+        "time_to_max_distance_s": rounded(payload.get("time_to_max_distance_s")),
         "valid_run": bool(payload.get("valid_run")),
         "best_valid_100m_s": rounded(payload.get("best_valid_100m_s")),
         "max_distance_m": rounded(payload.get("max_distance_m")),
@@ -48,7 +55,13 @@ def equivalent(
     agent: dict[str, Any], official: dict[str, Any]
 ) -> tuple[bool, dict[str, float]]:
     """Compare verifier results with a tight allowance for GPU-physics jitter."""
-    numeric_fields = ("best_valid_100m_s", "max_distance_m")
+    numeric_fields = (
+        "effective_speed_mps",
+        "stop_time_s",
+        "time_to_max_distance_s",
+        "best_valid_100m_s",
+        "max_distance_m",
+    )
     numeric_list_fields = ("all_valid_times_s",)
     exact_agent = {
         key: value
