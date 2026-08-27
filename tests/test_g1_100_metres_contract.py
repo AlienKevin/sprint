@@ -360,7 +360,7 @@ def test_local_verifier_uses_only_the_trial_training_queue() -> None:
     helper = (ROOT / "event_runtime/agent/test_policy.py").read_text()
     image = (ROOT / "event_runtime/image.py").read_text()
     assert '"gpu"' in helper
-    assert '"--max-attempts",\n        "3"' in helper
+    assert '"--max-attempts"' not in helper
     assert "/opt/event-verifier/test.sh" in helper
     assert 'public_verifier, "/opt/event-verifier"' in image
     assert '"chmod -R a-w /opt/event-verifier; "' in image

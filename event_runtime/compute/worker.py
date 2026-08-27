@@ -3585,6 +3585,53 @@ def reconcile_agent_cancelled_jobs(
         if not job:
             continue
         status = str(job.get("status") or "")
+        indexed_detail = (indexed or {}).get(job_id) or {}
+        indexed_job = indexed_detail.get("job") or {}
+        try:
+            cancelled_at = float(indexed_job.get("terminated_at_epoch_s") or 0)
+        except (TypeError, ValueError):
+            cancelled_at = 0.0
+        try:
+            provider_exit_at = float(
+                job.get("provider_exit_observed_epoch_s") or 0
+            )
+        except (TypeError, ValueError):
+            provider_exit_at = 0.0
+        # Sandbox.create and the agent's queued-job cancellation can cross in
+        # flight. The worker then sees the already-fenced lease and exits 75
+        # before writing an attempt record. If the Volume cancellation marker
+        # arrives after liveness reconciliation, that exit was historically
+        # mislabelled as provider preemption. Correct the canonical outcome as
+        # soon as the marker becomes visible; the cancellation timestamp must
+        # predate the provider exit so a later cancel cannot mask real loss.
+        if (
+            status == "preempted"
+            and str(job.get("failure_reason") or "") == "worker_lost"
+            and cancelled_at > 0
+            and provider_exit_at > 0
+            and cancelled_at <= provider_exit_at
+        ):
+            payload = dict(job)
+            payload.update(
+                {
+                    "status": "terminated",
+                    "termination_reason": "agent_cancelled_during_spawn",
+                    "terminated_at": indexed_job.get("terminated_at") or utc_now(),
+                    "terminated_at_epoch_s": cancelled_at,
+                }
+            )
+            payload.pop("failure_reason", None)
+            payload.pop("retry_policy", None)
+            persist_job(run, payload)
+            reconciled.append(
+                {
+                    "job_id": job_id,
+                    "attempt": payload.get("attempt"),
+                    "status": "terminated",
+                    "decision": "agent_cancelled_during_spawn_reconciled",
+                }
+            )
+            continue
         # Never infer cancellation for an allocated worker.  A running worker
         # requires the explicit terminate path so its lease and sandbox are
         # fenced together.

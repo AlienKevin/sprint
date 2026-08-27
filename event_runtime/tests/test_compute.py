@@ -3094,6 +3094,86 @@ class GpuConcurrencyLimitTests(unittest.TestCase):
         self.assertEqual(persisted[0]["fenced_lease_id"], "old-lease")
         self.assertEqual(persisted[0]["fence_epoch"], 1)
 
+    def test_cancel_during_spawn_corrects_worker_lost_preemption(self) -> None:
+        job = {
+            "job_id": "cancelled",
+            "run_id": "unit",
+            "status": "preempted",
+            "attempt": 1,
+            "failure_reason": "worker_lost",
+            "retry_policy": "agent_decides_new_job",
+            "provider_exit_observed_epoch_s": 200,
+        }
+        indexed = {
+            "cancelled": {
+                "cancel_state": "cancelled_before_dispatch",
+                "job": {
+                    "terminated_at": "1970-01-01T00:02:30Z",
+                    "terminated_at_epoch_s": 150,
+                },
+            }
+        }
+        persisted: list[dict] = []
+        with (
+            mock.patch.object(
+                gpu_worker,
+                "list_agent_cancelled_job_ids",
+                return_value=["cancelled"],
+            ),
+            mock.patch.object(gpu_worker, "load_host_job", return_value=job),
+            mock.patch.object(
+                gpu_worker,
+                "persist_job",
+                side_effect=lambda _run, payload: (
+                    persisted.append(dict(payload)) or payload
+                ),
+            ),
+        ):
+            result = gpu_worker.reconcile_agent_cancelled_jobs(
+                {"run_id": "unit"}, indexed=indexed
+            )
+
+        self.assertEqual(
+            result[0]["decision"], "agent_cancelled_during_spawn_reconciled"
+        )
+        self.assertEqual(persisted[0]["status"], "terminated")
+        self.assertEqual(
+            persisted[0]["termination_reason"], "agent_cancelled_during_spawn"
+        )
+        self.assertEqual(persisted[0]["terminated_at_epoch_s"], 150)
+        self.assertNotIn("failure_reason", persisted[0])
+        self.assertNotIn("retry_policy", persisted[0])
+
+    def test_late_cancel_does_not_mask_real_worker_loss(self) -> None:
+        job = {
+            "job_id": "lost",
+            "run_id": "unit",
+            "status": "preempted",
+            "failure_reason": "worker_lost",
+            "provider_exit_observed_epoch_s": 100,
+        }
+        indexed = {
+            "lost": {
+                "cancel_state": "cancelled_before_dispatch",
+                "job": {"terminated_at_epoch_s": 150},
+            }
+        }
+        with (
+            mock.patch.object(
+                gpu_worker,
+                "list_agent_cancelled_job_ids",
+                return_value=["lost"],
+            ),
+            mock.patch.object(gpu_worker, "load_host_job", return_value=job),
+            mock.patch.object(gpu_worker, "persist_job") as persist,
+        ):
+            result = gpu_worker.reconcile_agent_cancelled_jobs(
+                {"run_id": "unit"}, indexed=indexed
+            )
+
+        self.assertEqual(result, [])
+        persist.assert_not_called()
+
     def test_agent_cancel_marker_does_not_terminate_allocated_worker(self) -> None:
         job = {
             "job_id": "running",
