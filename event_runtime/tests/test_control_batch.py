@@ -3096,9 +3096,52 @@ def test_dq_replay_is_queued_and_public_index_is_path_safe(tmp_path: Path) -> No
     assert public["policies"][0]["replay_ready"] is True
     assert public["policies"][0]["replay_url"].startswith("/replay/frontier-")
     assert public["policies"][0]["enqueued_at"] == "2026-08-07T23:58:00Z"
+    assert public["policies"][0]["enqueued_at_basis"] == "gpu_job_enqueued"
     assert public["policies"][0]["max_distance_semantics"] == (
         "legal_prefix_until_first_terminal_condition"
     )
+
+
+def test_public_policy_index_uses_bridge_observation_before_verifier_admission(
+    tmp_path: Path,
+) -> None:
+    web = tmp_path / "web"
+    state_path = tmp_path / "eval-sol-1" / "frontier-state.json"
+    state_path.parent.mkdir()
+    (state_path.parent / "run.json").write_text(
+        json.dumps({"run_id": "eval-sol-1", "created_at": "2026-08-07T12:00:00Z"})
+    )
+    bridge = state_path.parent / "submission-bridge"
+    bridge.mkdir()
+    digest = "a" * 64
+    (bridge / "120500-policy.json").write_text(
+        json.dumps(
+            {
+                "policy_sha256": digest,
+                "observed_at": "2026-08-07T12:05:00Z",
+                "forwarded_at": "2026-08-07T12:05:06Z",
+            }
+        )
+    )
+    state = {
+        "captures": {},
+        "policies": {
+            digest: {
+                "index": 1,
+                "submitted_at": "2026-08-07T12:40:00Z",
+                "finished_at": "2026-08-07T12:41:00Z",
+                "effective_speed_mps": 2.5,
+            }
+        },
+    }
+
+    frontier_update.write_web_policy_indexes(state_path, state, web)
+
+    public = json.loads((web / "data/policies/eval-sol-1.json").read_text())
+    policy = public["policies"][0]
+    assert policy["enqueued_at"] == "2026-08-07T12:05:00Z"
+    assert policy["enqueued_at_basis"] == "gpu_output_observed"
+    assert policy["submitted_at"] == "2026-08-07T12:40:00Z"
 
 
 def test_public_policy_index_keeps_only_configured_newest_runs(

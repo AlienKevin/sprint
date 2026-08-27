@@ -930,6 +930,7 @@ def write_web_policy_indexes(
     """Publish a public-safe policy history for the comparison dashboard."""
     run_id = state_path.parent.name
     enqueue_times: dict[str, str] = {}
+    enqueue_time_bases: dict[str, str] = {}
     registry = state_path.parent / "gpu-job-registry"
     for path in sorted(registry.glob("*.json")) if registry.is_dir() else []:
         try:
@@ -949,6 +950,26 @@ def write_web_policy_indexes(
             )
             if isinstance(policy_hash, str) and policy_hash:
                 enqueue_times.setdefault(policy_hash, created_at)
+                enqueue_time_bases.setdefault(policy_hash, "gpu_job_enqueued")
+    # Normal GPU outputs acquire their digest only after the worker finishes,
+    # so older registry rows cannot join them to the job's creation time.  The
+    # trusted submission bridge is the canonical record of when those immutable
+    # bytes first became visible to the host.  Use that observation time rather
+    # than the much later serial-verifier admission time.
+    bridge = state_path.parent / "submission-bridge"
+    for path in sorted(bridge.glob("*.json")) if bridge.is_dir() else []:
+        try:
+            record = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        policy_hash = record.get("policy_sha256")
+        observed_at = record.get("observed_at") or record.get("forwarded_at")
+        if not isinstance(policy_hash, str) or not policy_hash:
+            continue
+        if not isinstance(observed_at, str) or not observed_at:
+            continue
+        enqueue_times.setdefault(policy_hash, observed_at)
+        enqueue_time_bases.setdefault(policy_hash, "gpu_output_observed")
     try:
         run = json.loads((state_path.parent / "run.json").read_text())
     except (OSError, json.JSONDecodeError):
@@ -963,6 +984,7 @@ def write_web_policy_indexes(
                 "submission_index": policy.get("index"),
                 "policy_sha256": policy_hash,
                 "enqueued_at": enqueue_times.get(policy_hash),
+                "enqueued_at_basis": enqueue_time_bases.get(policy_hash),
                 "submitted_at": policy.get("submitted_at"),
                 "finished_at": policy.get("finished_at"),
                 "valid_run": bool(policy.get("valid_run")),

@@ -1833,22 +1833,40 @@ class Builder:
         if self.events:
             origin = self.events[0]["epoch_ms"]
             observer_end = self.events[-1]["epoch_ms"]
-            terminal_epochs = [
+            stop_ack_epochs = [
                 event["epoch_ms"]
                 for event in self.events
-                if event["kind"] in {"stop_acknowledged", "cpu_interrupted"}
+                if event["kind"] == "stop_acknowledged"
+            ]
+            cpu_exit_epochs = [
+                event["epoch_ms"]
+                for event in self.events
+                if event["kind"] == "cpu_interrupted"
             ]
             # Provider-ledger reconciliation and final publication may happen long
             # after the agent has stopped. Keep those durable observer events in
             # the payload, but do not let them stretch the experiment activity
             # clock and create a misleading blank tail in the public timeline.
-            end = max(terminal_epochs) if terminal_epochs else observer_end
+            # A stop acknowledgement is the authoritative agent boundary. The
+            # outer CPU process may remain allocated while already-enqueued blind
+            # verification drains, so its later cleanup is only a fallback when
+            # no acknowledgement exists.
+            if stop_ack_epochs:
+                end = max(stop_ack_epochs)
+                activity_end_basis = "stop_acknowledged"
+            elif cpu_exit_epochs:
+                end = max(cpu_exit_epochs)
+                activity_end_basis = "cpu_interrupted"
+            else:
+                end = observer_end
+                activity_end_basis = "last_observed_event"
             for event in self.events:
                 event["elapsed_ms"] = event["epoch_ms"] - origin
                 if event["epoch_ms"] > end:
                     event["post_run"] = True
         else:
             origin = end = observer_end = None
+            activity_end_basis = None
 
         buckets: dict[int, Counter[str]] = defaultdict(Counter)
         for event in self.events:
@@ -2879,6 +2897,7 @@ class Builder:
                 "unit": "epoch_ms",
                 "origin_epoch_ms": origin,
                 "end_epoch_ms": end,
+                "activity_end_basis": activity_end_basis,
                 "observer_end_epoch_ms": observer_end,
                 "post_run_event_count": sum(
                     bool(event.get("post_run")) for event in self.events

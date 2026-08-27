@@ -532,9 +532,9 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "class:'submission-target'" in app
     assert "el.getScreenCTM()" in app
     assert "nearest.distance<=22**2" in app
-    assert "styles.css?v=20260827-1" in page
-    assert "app.js?v=20260827-1" in page
-    assert '"version":"20260827-1"' in (ROOT / "web/version.json").read_text()
+    assert "styles.css?v=20260827-2" in page
+    assert "app.js?v=20260827-2" in page
+    assert '"version":"20260827-2"' in (ROOT / "web/version.json").read_text()
     assert "AUC cutoff" not in app
     assert "auc-cap-line" not in app
     assert ".auc-cap-line" not in styles
@@ -584,13 +584,26 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert 'class="budget-table"' in app
     assert 'scope="rowgroup"' in app
     assert "Cell shading and percentages use the shared $10 trial budget" in app
-    assert "Math.max(0,budget-row.total)" in app
     assert '<th scope="col">Total</th>' not in app
     assert 'class="budget-total"' not in app
     assert 'class="budget-col-model"' in app
+    assert 'class="budget-col-effort"' not in app
+    assert 'class="budget-model-effort"' in app
+    assert '<th scope="col">Effort</th>' not in app.split(
+        'class="budget-table"', 1
+    )[1]
+    assert '<th scope="col">Unspent</th>' not in app
+    assert '<th scope="col">CPU agent</th>' not in app
+    assert '<th scope="col">Training</th>' not in app
+    assert (
+        '<th scope="col">Model API</th><th scope="col">GPU</th>'
+        '<th scope="col">CPU</th>' in app
+    )
+    assert "${costCell(parts.api)}${costCell(parts.training)}${costCell(parts.cpu)}" in app
     assert "table-layout: fixed" in styles
     assert ".budget-col-model" in styles
-    assert "width: 22%" in styles
+    assert "width: 26%" in styles
+    assert ".budget-col-effort" not in styles
     assert ".budget-group,\n.budget-row" not in styles
     assert "cost-stack" not in app
     assert ".budget-heat" in styles
@@ -611,7 +624,12 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert 'class="right-rail"' not in trajectory_page
     assert "trajectory.css?v=20260827-4" in trajectory_page
     assert "trajectory.js?v=20260825-23" in trajectory_page
-    assert "trajectory-overview.js?v=20260827-8" in trajectory_page
+    assert "trajectory-overview.js?v=20260827-9" in trajectory_page
+    assert "Number(policy.effective_speed_mps)" in trajectory_overview
+    assert "100 / finish" not in trajectory_overview
+    assert "function policyFinished(policy)" in trajectory_overview
+    assert "drawDiamond(policy.x, policy.y, policyFinished(policy), color)" in trajectory_overview
+    assert "gpu_output_observed" in (ROOT / "event_runtime/export/frontier.py").read_text()
     assert 'id="rollout-outline"' in trajectory_page
     assert '<h2 id="rollout-outline-title">Trial Outline</h2>' in trajectory_page
     assert 'aria-label="Trial outline chapters"' in trajectory_page

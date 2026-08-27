@@ -871,6 +871,22 @@ def test_post_run_accounting_does_not_stretch_activity_clock(tmp_path: Path) -> 
     (state / "STOP_ACK.json").write_text(
         json.dumps({"acknowledged_at": "2026-08-07T12:00:20Z"})
     )
+    write_jsonl(
+        state / "telemetry" / "cpu_lifecycle.jsonl",
+        [
+            {
+                "event": "cpu_launch_started",
+                "attempt": 1,
+                "at": "2026-08-07T12:00:01Z",
+            },
+            {
+                "event": "cpu_launch_exited",
+                "attempt": 1,
+                "at": "2026-08-07T14:00:00Z",
+                "exit_code": 0,
+            },
+        ],
+    )
     audit = {
         "session_id": "late-accounting",
         "request_count": 1,
@@ -895,6 +911,7 @@ def test_post_run_accounting_does_not_stretch_activity_clock(tmp_path: Path) -> 
     payload = unified_timeline.build_timeline(state)
 
     assert payload["clock"]["end_epoch_ms"] == 1786104020000
+    assert payload["clock"]["activity_end_basis"] == "stop_acknowledged"
     assert payload["clock"]["observer_end_epoch_ms"] == 1786111200000
     assert payload["clock"]["post_run_event_count"] >= 1
     late = next(

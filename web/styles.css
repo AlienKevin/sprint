@@ -525,22 +525,19 @@ main {
 }
 .budget-table {
   width: 100%;
-  min-width: 860px;
+  min-width: 700px;
   border-collapse: collapse;
   font-family: var(--mono);
   table-layout: fixed;
 }
 .budget-col-model {
-  width: 22%;
-}
-.budget-col-effort {
-  width: 10%;
+  width: 26%;
 }
 .budget-col-trial {
-  width: 8%;
+  width: 10%;
 }
 .budget-col-cost {
-  width: 15%;
+  width: 21.333%;
 }
 .budget-table caption {
   padding: 13px 18px;
@@ -602,6 +599,13 @@ main {
 }
 .budget-model:hover {
   background: color-mix(in srgb, var(--model-accent) 10%, var(--panel));
+}
+.budget-model-effort {
+  display: block;
+  margin: 3px 0 0 14px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 400;
 }
 .budget-table td {
   color: var(--muted);

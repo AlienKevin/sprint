@@ -147,8 +147,13 @@
   }
 
   function policyScore(policy) {
+    const score = Number(policy.effective_speed_mps);
+    return Number.isFinite(score) && score > 0 ? score : 0;
+  }
+
+  function policyFinished(policy) {
     const finish = Number(policy.best_100m_s);
-    return Number.isFinite(finish) && finish > 0 ? 100 / finish : 0;
+    return policy.termination_reason === 'finished' || (Number.isFinite(finish) && finish > 0);
   }
 
   function drawDiamond(x, y, filled, color) {
@@ -213,7 +218,7 @@
 
     const top = y + 3;
     const bottom = y + laneHeight - 3;
-    const maxScore = Math.max(1, ...policies.map(policy => policy.score));
+    const maxScore = Math.max(Number.EPSILON, ...policies.map(policy => policy.score));
     const bestScore = Math.max(0, ...policies.map(policy => policy.score));
     const failedSlots = new Map();
     const plotted = policies.map(policy => {
@@ -258,7 +263,7 @@
     for (const policy of orderedPolicies) {
       const isBest = policy.isBest;
       if (isBest) drawStar(policy.x, policy.y, color);
-      else drawDiamond(policy.x, policy.y, policy.score > 0, color);
+      else drawDiamond(policy.x, policy.y, policyFinished(policy), color);
     }
     const selected = orderedPolicies.find(policy => state.selectedPolicyHash === policy.policy_sha256);
     if (selected) {
@@ -386,7 +391,7 @@
     const isBest = Boolean(policy.on_frontier) || policyScore(policy) === Math.max(0, ...state.policies.map(policyScore));
     state.selectedPolicyHash = policy.policy_sha256;
     replayTitle.textContent = `Policy #${policy.submission_index}`;
-    replayMeta.textContent = `${isBest ? 'Best · ' : ''}${policyScore(policy) > 0 ? 'Finished' : 'Did not finish'}`;
+    replayMeta.textContent = `${isBest ? 'Best · ' : ''}${policyScore(policy).toFixed(3)} m/s · ${policyFinished(policy) ? 'Finished' : 'Did not finish'}`;
     replayPanel.hidden = false;
     if (replayFrame.getAttribute('src') !== policy.replay_url) replayFrame.src = policy.replay_url;
     draw();
@@ -477,8 +482,8 @@
     if (policy) {
       state.hoverEpoch = null;
       const isBest = Boolean(policy.on_frontier) || policyScore(policy) === Math.max(0, ...state.policies.map(policyScore));
-      const result = policyScore(policy) > 0 ? 'Finished' : 'Did not finish';
-      tip.textContent = `Policy #${policy.submission_index} · ${isBest ? 'Best · ' : ''}${result}${policy.replay_ready ? ' · Click to replay' : ' · Replay unavailable'}`;
+      const result = policyFinished(policy) ? 'Finished' : 'Did not finish';
+      tip.textContent = `Policy #${policy.submission_index} · ${isBest ? 'Best · ' : ''}${policyScore(policy).toFixed(3)} m/s · ${result}${policy.replay_ready ? ' · Click to replay' : ' · Replay unavailable'}`;
       tip.hidden = false;
       tip.style.left = `${clamp(event.clientX - rect.left + 12, 8, rect.width - tip.offsetWidth - 8)}px`;
       canvas.style.cursor = policy.replay_ready ? 'pointer' : 'default';
