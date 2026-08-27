@@ -238,7 +238,10 @@ def _resolve_asset(source: Path, relative: Path) -> tuple[Path, Path]:
 
 
 def _copy_current_dynamic_tree(
-    source: Path, destination: Path, batch_path: Path
+    source: Path,
+    destination: Path,
+    batch_path: Path,
+    performance_path: Path | None = None,
 ) -> tuple[str, ...]:
     batch = _read_json(batch_path)
     run_ids = _run_ids(batch)
@@ -260,7 +263,9 @@ def _copy_current_dynamic_tree(
                 root=source,
             )
 
-    performance = source / "data" / "performance" / "current.json"
+    performance = (
+        performance_path or source / "data" / "performance" / "current.json"
+    ).resolve()
     if performance.is_file():
         performance_payload = _read_json(performance)
         observed = {
@@ -371,6 +376,7 @@ def build_site_bundle(
     destination: Path,
     *,
     batch_path: Path | None = None,
+    performance_path: Path | None = None,
     require_current: bool = False,
     include_project_link: bool = True,
 ) -> dict[str, Any]:
@@ -393,7 +399,12 @@ def build_site_bundle(
     mode = "current_batch"
     run_ids: tuple[str, ...] = ()
     if current.is_file():
-        run_ids = _copy_current_dynamic_tree(source, destination, current)
+        run_ids = _copy_current_dynamic_tree(
+            source,
+            destination,
+            current,
+            performance_path,
+        )
     elif require_current:
         raise RuntimeError(f"current batch index is missing: {current}")
     else:
@@ -436,6 +447,11 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--performance",
+        type=Path,
+        help="explicit performance payload for the selected observer cohort",
+    )
+    parser.add_argument(
         "--allow-missing-current",
         action="store_true",
         help="permit a static-only bundle before a current batch exists",
@@ -445,6 +461,7 @@ def main() -> int:
         args.web,
         args.output,
         batch_path=args.batch,
+        performance_path=args.performance,
         require_current=not args.allow_missing_current,
     )
     print(json.dumps(report, indent=2, sort_keys=True))

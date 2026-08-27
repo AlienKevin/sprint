@@ -142,7 +142,9 @@ def test_bundle_can_publish_explicit_observer_cohort_without_mutating_live_batch
 ) -> None:
     web, bundle = build_fixture(tmp_path)
     observer = tmp_path / "observer.json"
+    observer_performance = tmp_path / "observer-performance.json"
     live = (web / "data/batches/current.json").read_bytes()
+    live_performance = (web / "data/performance/current.json").read_bytes()
     write_json(
         observer,
         {
@@ -151,18 +153,32 @@ def test_bundle_can_publish_explicit_observer_cohort_without_mutating_live_batch
             "arms": [{"run_id": "batch-current-luna-1"}],
         },
     )
+    write_json(
+        observer_performance,
+        {
+            "schema_version": 1,
+            "runs": [{"run_id": "batch-current-luna-1", "observer": True}],
+            "models": [],
+        },
+    )
 
     report = build_site_bundle(
         web,
         bundle,
         batch_path=observer,
+        performance_path=observer_performance,
         require_current=True,
     )
 
     assert report["run_ids"] == ["batch-current-luna-1"]
     published = json.loads((bundle / "data/batches/current.json").read_text())
     assert published["batch_id"] == "observer-current"
+    published_performance = json.loads(
+        (bundle / "data/performance/current.json").read_text()
+    )
+    assert published_performance["runs"][0]["observer"] is True
     assert (web / "data/batches/current.json").read_bytes() == live
+    assert (web / "data/performance/current.json").read_bytes() == live_performance
 
 
 def test_bundle_fails_closed_on_missing_current_replay(tmp_path: Path) -> None:
