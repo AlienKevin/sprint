@@ -1004,11 +1004,9 @@ def terminal_submission_bridge_complete(
     if not declared:
         return True
     attempt = owned_terminal_attempt(run, job)
-    enqueue_snapshot_recovered = (
-        int(job.get("attempt") or 0) == 0
-        and bool(job.get("submission_enqueue_snapshot_recovered_at"))
-        and not job.get("submission_enqueue_snapshot_recovery_pending")
-    )
+    enqueue_snapshot_recovered = bool(
+        job.get("submission_enqueue_snapshot_recovered_at")
+    ) and not job.get("submission_enqueue_snapshot_recovery_pending")
     if attempt is None and not enqueue_snapshot_recovered:
         return False
     progress = (
@@ -2011,29 +2009,51 @@ def _submission_bytes_from_work_archive(
 def recover_pending_submission_snapshots(
     run: dict[str, Any], job: dict[str, Any]
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Finish explicit attempt-0 submissions without post-budget GPU compute.
+    """Finish explicit submissions from their immutable enqueue snapshot.
 
     ``event gpu --submit-output`` snapshots /app before enqueue. If that job is
     still waiting behind another FIFO job when the budget closes, the exact
     bytes that already existed at enqueue can be admitted without starting the
-    queued command. Missing files are a normal rejected result: they would have
-    been produced by a command that the agent queued too late. Transport or
-    digest ambiguity remains fail-closed and is retried while the CPU supervisor
-    waits for the submission-drain handshake.
+    queued command. The same recovery applies when a budget/operator fence lands
+    after the command exits but before the worker commits its submission
+    manifest: the pinned enqueue archive still proves which bytes already
+    existed when the agent explicitly requested submission. Worker-authored
+    submission results always win when present. Missing files are a normal
+    rejected result; transport or digest ambiguity remains fail-closed and is
+    retried while the CPU supervisor waits for the submission-drain handshake.
     """
     declared = [str(path) for path in job.get("submission_paths") or []]
     payload = dict(job)
-    eligible_status = str(payload.get("status") or "") == "pending" or (
-        str(payload.get("status") or "") == "terminated"
-        and bool(payload.get("submission_enqueue_snapshot_recovery_pending"))
+    attempt = owned_terminal_attempt(run, payload)
+    attempt_progress = attempt.get("progress") if isinstance(attempt, dict) else None
+    worker_results = (
+        attempt_progress.get("submission_results")
+        if isinstance(attempt_progress, dict)
+        else None
+    )
+    status = str(payload.get("status") or "")
+    pending_undispatched = (
+        status == "pending"
+        and int(payload.get("attempt") or 0) == 0
+        and not payload.get("sandbox_id")
+        and not payload.get("started_at")
+    )
+    stopped_without_worker_results = (
+        status == "terminated"
+        and str(payload.get("termination_reason") or "")
+        in {
+            "agent_cost_budget_exhausted",
+            "budget_telemetry_unavailable",
+            "operator_stop",
+            "operator_batch_stop",
+        }
+        and not isinstance(worker_results, list)
+        and not payload.get("submission_bridge_terminal_drained_at")
     )
     eligible = (
         bool(declared)
         and bool(payload.get("submission_bridge_enabled"))
-        and eligible_status
-        and int(payload.get("attempt") or 0) == 0
-        and not payload.get("sandbox_id")
-        and not payload.get("started_at")
+        and (pending_undispatched or stopped_without_worker_results)
     )
     if not eligible:
         return payload, {"eligible": False, "error": 0, "retry_wait": 0}
@@ -2081,6 +2101,21 @@ def recover_pending_submission_snapshots(
                 record = json.loads(record_path.read_text())
             except (OSError, json.JSONDecodeError):
                 record = {}
+            if isinstance(record, dict) and record.get("state") == "forwarded":
+                # Older recovery code recorded all enqueue-snapshot receipts as
+                # attempt zero. Repair the idempotency record from the current
+                # authoritative job so later audits identify the real worker
+                # attempt without forwarding the policy a second time.
+                actual_attempt = int(payload.get("attempt") or 0)
+                actual_lease = str(payload.get("lease_id") or "")
+                if (
+                    int(record.get("gpu_attempt") or 0) != actual_attempt
+                    or str(record.get("gpu_lease_id") or "") != actual_lease
+                ):
+                    record = dict(record)
+                    record["gpu_attempt"] = actual_attempt
+                    record["gpu_lease_id"] = actual_lease
+                    sprintctl.atomic_write_json(record_path, record, mode=0o600)
             if not isinstance(record, dict) or record.get("state") != "forwarded":
                 receipt = {
                     "schema_version": 2,
@@ -2089,8 +2124,8 @@ def recover_pending_submission_snapshots(
                     "queue_name": f"{submission_id}.pt",
                     "run_id": str(run["run_id"]),
                     "gpu_job_id": str(payload["job_id"]),
-                    "gpu_attempt": 0,
-                    "gpu_lease_id": "",
+                    "gpu_attempt": int(payload.get("attempt") or 0),
+                    "gpu_lease_id": str(payload.get("lease_id") or ""),
                     "policy_sha256": digest,
                     "policy_size_bytes": len(content),
                     "note": str(payload.get("note") or ""),
@@ -2111,7 +2146,7 @@ def recover_pending_submission_snapshots(
                     "submission_id": submission_id,
                     "queue_name": f"{submission_id}.pt",
                     "gpu_job_id": str(payload["job_id"]),
-                    "gpu_attempt": 0,
+                    "gpu_attempt": int(payload.get("attempt") or 0),
                     "policy_sha256": digest,
                     "policy_size_bytes": len(content),
                     "observed_at": utc_now(),
@@ -3456,8 +3491,30 @@ def reconcile_terminal_attempt_before_stop(
         "progress",
         "checkpoint",
     ):
-        if key in attempt_record:
-            payload[key] = attempt_record[key]
+        if key not in attempt_record:
+            continue
+        if key == "progress":
+            # A worker record can finish before its submission manifest reaches
+            # durable storage. Stop-time recovery then writes newer host-owned
+            # submission evidence into the registry. Never let the older
+            # attempt record erase that evidence with a missing/null manifest.
+            host_progress = payload.get("progress")
+            host_results = (
+                host_progress.get("submission_results")
+                if isinstance(host_progress, dict)
+                else None
+            )
+            worker_progress = attempt_record.get("progress")
+            worker_results = (
+                worker_progress.get("submission_results")
+                if isinstance(worker_progress, dict)
+                else None
+            )
+            if isinstance(host_results, list) and not isinstance(
+                worker_results, list
+            ):
+                continue
+        payload[key] = attempt_record[key]
     payload["attempt_record"] = attempt_path(
         str(run["run_id"]), str(job["job_id"]), int(job["attempt"])
     )
@@ -4077,7 +4134,12 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
             bridge_pending: list[str] = []
             reconciled: list[dict[str, Any]] = []
             for job_id in job_ids:
-                job = load_job(run, job_id) or jobs_before_stop.get(job_id)
+                # Recovery may have added host-authored submission evidence
+                # that is intentionally newer than the worker Volume record.
+                # Prefer that exact post-recovery object; reloading here can
+                # resurrect the pre-recovery terminal record and lose the
+                # proof before terminal_submission_bridge_complete sees it.
+                job = jobs_before_stop.get(job_id) or load_job(run, job_id)
                 if not job:
                     continue
                 job = reconcile_terminal_attempt_before_stop(run, job)

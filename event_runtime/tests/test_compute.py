@@ -2006,6 +2006,168 @@ class SubmissionBridgeTests(unittest.TestCase):
                 )
             )
 
+    def test_budget_stop_recovers_dispatched_submission_when_worker_manifest_is_lost(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            run, job, content = self.enqueue_snapshot_job(root)
+            job.update(
+                {
+                    "status": "terminated",
+                    "attempt": 1,
+                    "lease_id": "lease-1",
+                    "sandbox_id": "sb-worker",
+                    "started_at": "2026-08-27T06:12:08Z",
+                    "termination_reason": "agent_cost_budget_exhausted",
+                }
+            )
+            terminal_attempt = {
+                "attempt": 1,
+                "lease_id": "lease-1",
+                "status": "terminated",
+                "progress": None,
+            }
+            with (
+                mock.patch.object(
+                    gpu_worker,
+                    "owned_terminal_attempt",
+                    return_value=terminal_attempt,
+                ),
+                mock.patch.object(
+                    gpu_worker,
+                    "submit_worker_policy_to_cpu_agent",
+                    return_value={"returncode": 0, "stdout": "staged", "stderr": ""},
+                ) as submit,
+                mock.patch.object(
+                    gpu_worker,
+                    "persist_job",
+                    side_effect=lambda _run, payload: dict(payload),
+                ),
+            ):
+                recovered, detail = gpu_worker.recover_pending_submission_snapshots(
+                    run, job
+                )
+
+            self.assertEqual(detail["forwarded"], 1)
+            self.assertEqual(submit.call_args.args[2], content)
+            receipt = submit.call_args.args[1]
+            self.assertEqual(receipt["gpu_attempt"], 1)
+            self.assertEqual(receipt["gpu_lease_id"], "lease-1")
+            self.assertTrue(
+                gpu_worker.terminal_submission_bridge_complete(
+                    run, recovered, {"error": 0, "retry_wait": 0}
+                )
+            )
+
+    def test_budget_stop_does_not_replace_worker_submission_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            run, job, _content = self.enqueue_snapshot_job(root)
+            job.update(
+                {
+                    "status": "terminated",
+                    "attempt": 1,
+                    "lease_id": "lease-1",
+                    "sandbox_id": "sb-worker",
+                    "started_at": "2026-08-27T06:12:08Z",
+                    "termination_reason": "agent_cost_budget_exhausted",
+                }
+            )
+            terminal_attempt = {
+                "attempt": 1,
+                "lease_id": "lease-1",
+                "status": "terminated",
+                "progress": {
+                    "submission_results": [
+                        {"path": "/app/policy.pt", "state": "staged"}
+                    ]
+                },
+            }
+            with (
+                mock.patch.object(
+                    gpu_worker,
+                    "owned_terminal_attempt",
+                    return_value=terminal_attempt,
+                ),
+                mock.patch.object(
+                    gpu_worker, "submit_worker_policy_to_cpu_agent"
+                ) as submit,
+            ):
+                recovered, detail = gpu_worker.recover_pending_submission_snapshots(
+                    run, job
+                )
+
+            self.assertFalse(detail["eligible"])
+            self.assertEqual(recovered, job)
+            submit.assert_not_called()
+
+    def test_budget_stop_repairs_attempt_identity_on_forwarded_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            run, job, content = self.enqueue_snapshot_job(root)
+            job.update(
+                {
+                    "status": "terminated",
+                    "attempt": 1,
+                    "lease_id": "lease-1",
+                    "sandbox_id": "sb-worker",
+                    "started_at": "2026-08-27T06:12:08Z",
+                    "termination_reason": "agent_cost_budget_exhausted",
+                }
+            )
+            digest = hashlib.sha256(content).hexdigest()
+            submission_id = gpu_worker._enqueue_snapshot_submission_id(
+                run, job, "/app/policy.pt", digest
+            )
+            bridge = root / "submission-bridge"
+            bridge.mkdir()
+            record_path = bridge / f"{submission_id}.json"
+            record_path.write_text(
+                json.dumps(
+                    {
+                        "state": "forwarded",
+                        "submission_id": submission_id,
+                        "gpu_job_id": "job-1",
+                        "gpu_attempt": 0,
+                        "policy_sha256": digest,
+                    }
+                )
+            )
+            terminal_attempt = {
+                "attempt": 1,
+                "lease_id": "lease-1",
+                "status": "terminated",
+                "progress": None,
+            }
+            with (
+                mock.patch.object(
+                    gpu_worker,
+                    "owned_terminal_attempt",
+                    return_value=terminal_attempt,
+                ),
+                mock.patch.object(
+                    gpu_worker, "submit_worker_policy_to_cpu_agent"
+                ) as submit,
+                mock.patch.object(
+                    gpu_worker,
+                    "persist_job",
+                    side_effect=lambda _run, payload: dict(payload),
+                ),
+            ):
+                recovered, detail = gpu_worker.recover_pending_submission_snapshots(
+                    run, job
+                )
+
+            submit.assert_not_called()
+            self.assertEqual(detail["forwarded"], 1)
+            repaired = json.loads(record_path.read_text())
+            self.assertEqual(repaired["gpu_attempt"], 1)
+            self.assertEqual(repaired["gpu_lease_id"], "lease-1")
+            self.assertEqual(
+                recovered["progress"]["submission_results"][0]["state"], "staged"
+            )
+
     def test_budget_stop_fails_closed_on_enqueue_archive_digest_mismatch(
         self,
     ) -> None:
@@ -3643,6 +3805,81 @@ class RetryAndFencingTests(unittest.TestCase):
         self.assertEqual(result["submission_bridge_pending_jobs"], [])
         release.assert_called_once_with(run)
 
+    def test_operator_stop_keeps_post_recovery_submission_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            run = {
+                "run_id": "unit",
+                "state_dir": raw,
+                "cpu_agent_gpu_worker": True,
+            }
+            terminal = {
+                "job_id": "done",
+                "status": "terminated",
+                "attempt": 1,
+                "submission_bridge_enabled": True,
+                "submission_paths": ["/app/policy.pt"],
+            }
+            recovered = {
+                **terminal,
+                "progress": {
+                    "submission_results": [
+                        {"path": "/app/policy.pt", "state": "staged"}
+                    ]
+                },
+                "submission_enqueue_snapshot_recovered_at": "now",
+                "submission_enqueue_snapshot_recovery_pending": False,
+            }
+            stale_reload = dict(terminal)
+
+            def reconcile(_run, payload):
+                self.assertEqual(payload, recovered)
+                return dict(payload)
+
+            with (
+                mock.patch.object(
+                    gpu_worker.sprintctl, "load_run", return_value=(state, run)
+                ),
+                mock.patch.object(
+                    gpu_worker, "operator_stop_requested", return_value=True
+                ),
+                mock.patch.object(gpu_worker, "list_job_ids", return_value=["done"]),
+                mock.patch.object(
+                    gpu_worker,
+                    "load_job",
+                    side_effect=[dict(terminal), dict(terminal), stale_reload],
+                ),
+                mock.patch.object(gpu_worker, "_stop_all_locked", return_value=[]),
+                mock.patch.object(
+                    gpu_worker,
+                    "recover_pending_submission_snapshots",
+                    return_value=(dict(recovered), {"eligible": True, "forwarded": 1}),
+                ),
+                mock.patch.object(
+                    gpu_worker,
+                    "reconcile_terminal_attempt_before_stop",
+                    side_effect=reconcile,
+                ),
+                mock.patch.object(
+                    gpu_worker,
+                    "attach_terminal_submission_evidence",
+                    side_effect=lambda _run, payload: payload,
+                ),
+                mock.patch.object(
+                    gpu_worker,
+                    "drain_worker_submission_outbox",
+                    return_value=(dict(recovered), {"error": 0, "retry_wait": 0}),
+                ),
+                mock.patch.object(
+                    gpu_worker, "terminal_submission_bridge_complete", return_value=True
+                ),
+                mock.patch.object(gpu_worker, "persist_job"),
+                mock.patch.object(gpu_worker, "signal_gpu_submission_drain_complete"),
+            ):
+                result = gpu_worker.dispatch_once("unit")
+
+        self.assertEqual(result["submission_bridge_pending_jobs"], [])
+
     def test_operator_stop_without_submissions_releases_cpu_before_gpu_cleanup(
         self,
     ) -> None:
@@ -4238,6 +4475,44 @@ class RetryAndFencingTests(unittest.TestCase):
             repaired = gpu_worker.reconcile_terminal_attempt_before_stop(run, job)
         self.assertEqual(repaired["status"], "terminated")
         self.assertEqual(repaired["termination_reason"], "agent_cost_budget_exhausted")
+
+    def test_stop_repair_preserves_newer_host_submission_recovery(self) -> None:
+        run = {"run_id": "unit"}
+        recovered_results = [
+            {
+                "path": "/app/policy.pt",
+                "state": "staged",
+                "submission_id": "recovered",
+            }
+        ]
+        job = {
+            "job_id": "logical",
+            "status": "terminated",
+            "attempt": 1,
+            "lease_id": "lease",
+            "finished_at_epoch_s": 100,
+            "progress": {"submission_results": recovered_results},
+            "submission_enqueue_snapshot_recovered_at": "now",
+        }
+        attempt = {
+            "job_id": "logical",
+            "status": "terminated",
+            "attempt": 1,
+            "lease_id": "lease",
+            "finished_at_epoch_s": 100,
+            "termination_reason": "agent_cost_budget_exhausted",
+            "progress": None,
+        }
+        with (
+            mock.patch.object(gpu_worker, "load_attempt_record", return_value=attempt),
+            mock.patch.object(
+                gpu_worker, "persist_job", side_effect=lambda _run, payload: payload
+            ),
+        ):
+            repaired = gpu_worker.reconcile_terminal_attempt_before_stop(run, job)
+        self.assertEqual(
+            repaired["progress"]["submission_results"], recovered_results
+        )
 
     def test_reconcile_reports_lost_running_worker_as_preempted(self) -> None:
         job = {
