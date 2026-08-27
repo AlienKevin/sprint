@@ -259,6 +259,13 @@ main {
 .experiment-model.experiment-model-hover {
   background: color-mix(in srgb, var(--model-accent) 10%, var(--panel));
 }
+.experiment-model-effort {
+  display: block;
+  margin: 3px 0 0 14px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 400;
+}
 .trial-dot {
   display: inline-block;
   width: 7px;

@@ -532,9 +532,9 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "class:'submission-target'" in app
     assert "el.getScreenCTM()" in app
     assert "nearest.distance<=22**2" in app
-    assert "styles.css?v=20260826-3" in page
-    assert "app.js?v=20260826-3" in page
-    assert '"version":"20260826-3"' in (ROOT / "web/version.json").read_text()
+    assert "styles.css?v=20260827-1" in page
+    assert "app.js?v=20260827-1" in page
+    assert '"version":"20260827-1"' in (ROOT / "web/version.json").read_text()
     assert "AUC cutoff" not in app
     assert "auc-cap-line" not in app
     assert ".auc-cap-line" not in styles
@@ -549,12 +549,18 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "font-size: clamp(17px, 2vw, 24px)" in styles
     assert 'class="experiment-table"' in app
     assert 'scope="rowgroup"' in app
-    assert '<th scope="col">Effort</th>' in app
-    assert '<th scope="col">Trial</th>' in app
     assert (
-        "${isBest?`<strong>${esc(row.effort||'—')}</strong>`:esc(row.effort||'—')}"
-        in app
+        '<table class="experiment-table"><thead><tr><th scope="col">Model</th>'
+        '<th scope="col">Trial</th>' in app
     )
+    assert (
+        '<table class="experiment-table"><thead><tr><th scope="col">Model</th>'
+        '<th scope="col">Effort</th>' not in app
+    )
+    assert 'class="experiment-model-effort"' in app
+    assert 'colspan="6"' in app
+    assert '<th scope="col">Trial</th>' in app
+    assert "(${esc(familyEfforts)})" in app
     assert (
         'aria-label="Open trial ${esc(row.arm.trial)} trace">${esc(row.arm.trial)}</a>'
         in app
@@ -571,6 +577,7 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "box-shadow: inset -4px 0 var(--model-accent)" not in styles
     assert ".experiment-row:hover:not(:has(.experiment-model:hover))" in styles
     assert ".experiment-model.experiment-model-hover" in styles
+    assert ".experiment-model-effort" in styles
     assert 'data-family="${esc(key)}"' in app
     assert "experiment-model-hover" in app
     assert "best_continuous_score_mps" in app
