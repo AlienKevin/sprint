@@ -45,6 +45,7 @@ def host_append_event(
     lease_id: str = "",
     epoch_s: int | None = None,
     detail: dict[str, Any] | None = None,
+    upload: bool = True,
 ) -> dict[str, Any]:
     run_id = str(run["run_id"])
     event = {
@@ -61,6 +62,18 @@ def host_append_event(
         "event_id": uuid.uuid4().hex[:12],
         "source": "host",
     }
+    line = json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n"
+    state_dir = Path(str(run["state_dir"]))
+    local = state_dir / "telemetry"
+    local.mkdir(parents=True, exist_ok=True)
+    with (local / "gpu_timeline.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(line)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+    if not upload:
+        return event
+
     prefix = _telem_prefix(run_id)
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
         handle.write(json.dumps(event, indent=2, sort_keys=True) + "\n")
@@ -79,7 +92,6 @@ def host_append_event(
     existing = sprintctl.volume_get_text(run, remote_jsonl) or ""
     if "✓ Finished" in existing:
         existing = existing.split("✓ Finished")[0]
-    line = json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n"
     with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as handle:
         handle.write(existing)
         if existing and not existing.endswith("\n"):
@@ -92,13 +104,6 @@ def host_append_event(
     finally:
         tmp2.unlink(missing_ok=True)
 
-    state_dir = Path(str(run["state_dir"]))
-    local = state_dir / "telemetry"
-    local.mkdir(parents=True, exist_ok=True)
-    with (local / "gpu_timeline.jsonl").open("a", encoding="utf-8") as handle:
-        handle.write(line)
-        handle.flush()
-        os.fsync(handle.fileno())
     return event
 
 

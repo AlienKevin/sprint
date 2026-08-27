@@ -2952,9 +2952,8 @@ def archive_provider_logs(
     }
 
 
-def persist_job(run: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]:
-    """Write the host canonical record, then agent-visible Volume mirrors."""
-    prefix = jobs_prefix(str(run["run_id"]))
+def persist_host_job(run: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]:
+    """Durably write only the host-authoritative GPU job record."""
     job_id = str(job["job_id"])
     local_path = host_job_path(run, job_id)
     if local_path is not None:
@@ -2992,6 +2991,14 @@ def persist_job(run: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]:
                 command_sha256=command_sha256,
             )
         sprintctl.atomic_write_json(local_path, job, mode=0o600)
+    return job
+
+
+def persist_job(run: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]:
+    """Write the host canonical record, then agent-visible Volume mirrors."""
+    prefix = jobs_prefix(str(run["run_id"]))
+    persist_host_job(run, job)
+    job_id = str(job["job_id"])
     put_json(run, f"{prefix}/status/{job_id}.json", job)
     mirror_agent_job(run, job)
     return job
@@ -3095,6 +3102,7 @@ def _timeline_event(
     phase: str,
     action: str,
     epoch_s: int | None = None,
+    upload: bool = True,
     **detail: Any,
 ) -> None:
     try:
@@ -3109,6 +3117,7 @@ def _timeline_event(
             lease_id=str(job.get("lease_id") or ""),
             epoch_s=epoch_s,
             detail=detail,
+            upload=upload,
         )
     except Exception as exc:  # noqa: BLE001
         print(
@@ -3123,6 +3132,7 @@ def _close_attempt_timeline(
     *,
     epoch_s: int,
     reason: str,
+    upload: bool = True,
 ) -> None:
     for phase in ("gpu_active", "isaac_starting", "gpu_worker_starting"):
         _timeline_event(
@@ -3133,6 +3143,7 @@ def _close_attempt_timeline(
             epoch_s=epoch_s,
             reason=reason,
             synthetic=True,
+            upload=upload,
         )
 
 
@@ -3885,8 +3896,13 @@ def _stop_all_locked(
 ) -> list[dict[str, Any]]:
     stopped: list[dict[str, Any]] = []
     provider_terminations: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    for job_id in list_job_ids(run):
-        job = load_job(run, job_id)
+    # The agent queue is immutable after the CPU stop signal. Read its index
+    # exactly once: independently rereading the same Modal Volume snapshot for
+    # every queued job makes stop latency grow by a control-plane round trip per
+    # job and can delay the bounded CPU teardown by many minutes.
+    indexed = indexed_agent_jobs(run)
+    for job_id in list_job_ids(run, indexed=indexed):
+        job = load_job(run, job_id, indexed=indexed)
         if job:
             job = reconcile_terminal_attempt_before_stop(run, job)
         if not job or str(job.get("status") or "") in gpu_claim.TERMINAL:
@@ -3912,12 +3928,17 @@ def _stop_all_locked(
         payload["termination_reason"] = reason
         payload["terminated_at"] = utc_now()
         payload["terminated_at_epoch_s"] = time.time()
-        persist_job(run, payload)  # fence before issuing terminate
+        # Stop intent and the host registry are authoritative.  Do not make
+        # teardown latency proportional to queue depth by synchronously
+        # uploading a Volume status file and exec-mirroring every terminal
+        # record into a CPU sandbox that has already received its stop signal.
+        persist_host_job(run, payload)  # fence before issuing terminate
         _close_attempt_timeline(
             run,
             job,
             epoch_s=int(gpu_claim.heartbeat_epoch(heartbeat) or time.time()),
             reason=reason,
+            upload=False,
         )
         _timeline_event(
             run,
@@ -3926,6 +3947,7 @@ def _stop_all_locked(
             action="instant",
             event="gpu_released",
             reason=reason,
+            upload=False,
         )
         stopped.append(payload)
         provider_terminations.append((payload, job))
@@ -3951,7 +3973,7 @@ def _stop_all_locked(
                     error = f"{type(exc).__name__}: {exc}"
                 if error:
                     payload["terminate_error"] = error
-                    persist_job(run, payload)
+                    persist_host_job(run, payload)
     return stopped
 
 

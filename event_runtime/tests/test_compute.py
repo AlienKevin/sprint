@@ -4132,6 +4132,9 @@ class RetryAndFencingTests(unittest.TestCase):
                 mock.patch.object(gpu_worker, "load_job", side_effect=load_job),
                 mock.patch.object(gpu_worker, "persist_job", side_effect=persist_job),
                 mock.patch.object(
+                    gpu_worker, "persist_host_job", side_effect=persist_job
+                ),
+                mock.patch.object(
                     gpu_worker, "pin_work_archive", side_effect=lambda _run, job: job
                 ),
                 mock.patch.object(gpu_worker, "restore_pinned_work_archive"),
@@ -4338,7 +4341,7 @@ class RetryAndFencingTests(unittest.TestCase):
             with mock.patch.object(gpu_worker, "load_job", return_value=job):
                 with mock.patch.object(gpu_worker, "load_heartbeat", return_value=None):
                     with mock.patch.object(
-                        gpu_worker, "persist_job", side_effect=persist
+                        gpu_worker, "persist_host_job", side_effect=persist
                     ):
                         with mock.patch.object(gpu_worker, "_close_attempt_timeline"):
                             with mock.patch.object(
@@ -4366,7 +4369,7 @@ class RetryAndFencingTests(unittest.TestCase):
             mock.patch.object(gpu_worker, "load_heartbeat", return_value=None),
             mock.patch.object(
                 gpu_worker,
-                "persist_job",
+                "persist_host_job",
                 side_effect=lambda _run, payload: (
                     persisted.append(dict(payload)) or payload
                 ),
@@ -4414,10 +4417,12 @@ class RetryAndFencingTests(unittest.TestCase):
         with (
             mock.patch.object(gpu_worker, "list_job_ids", return_value=list(jobs)),
             mock.patch.object(
-                gpu_worker, "load_job", side_effect=lambda _run, job_id: jobs[job_id]
+                gpu_worker,
+                "load_job",
+                side_effect=lambda _run, job_id, indexed=None: jobs[job_id],
             ),
             mock.patch.object(gpu_worker, "load_heartbeat", return_value=None),
-            mock.patch.object(gpu_worker, "persist_job", side_effect=persist),
+            mock.patch.object(gpu_worker, "persist_host_job", side_effect=persist),
             mock.patch.object(gpu_worker, "_close_attempt_timeline"),
             mock.patch.object(gpu_worker, "_timeline_event"),
             mock.patch.object(gpu_worker, "_terminate_sandbox", side_effect=terminate),
@@ -4425,6 +4430,59 @@ class RetryAndFencingTests(unittest.TestCase):
             out = gpu_worker._stop_all_locked(run)
 
         self.assertEqual([item["status"] for item in out], ["terminated", "terminated"])
+
+    def test_stop_queue_depth_does_not_use_remote_job_or_timeline_mirrors(self) -> None:
+        run = {"run_id": "unit"}
+        jobs = {
+            str(index): {
+                "job_id": str(index),
+                "status": "pending",
+                "attempt": 0,
+            }
+            for index in range(32)
+        }
+        persisted: list[str] = []
+        timeline_uploads: list[bool] = []
+
+        def timeline(_run, _job, **kwargs):
+            timeline_uploads.append(kwargs["upload"])
+
+        with (
+            mock.patch.object(
+                gpu_worker,
+                "indexed_agent_jobs",
+                return_value={
+                    job_id: {"job": job} for job_id, job in jobs.items()
+                },
+            ) as read_index,
+            mock.patch.object(gpu_worker, "list_job_ids", return_value=list(jobs)),
+            mock.patch.object(
+                gpu_worker,
+                "load_job",
+                side_effect=lambda _run, job_id, indexed=None: jobs[job_id],
+            ),
+            mock.patch.object(gpu_worker, "load_heartbeat", return_value=None),
+            mock.patch.object(
+                gpu_worker,
+                "persist_host_job",
+                side_effect=lambda _run, payload: (
+                    persisted.append(payload["job_id"]) or payload
+                ),
+            ),
+            mock.patch.object(gpu_worker, "persist_job") as remote_persist,
+            mock.patch.object(
+                gpu_worker, "_close_attempt_timeline", side_effect=timeline
+            ),
+            mock.patch.object(gpu_worker, "_timeline_event", side_effect=timeline),
+            mock.patch.object(gpu_worker, "_terminate_sandbox", return_value=None),
+        ):
+            stopped = gpu_worker._stop_all_locked(run)
+
+        self.assertEqual(len(stopped), 32)
+        self.assertEqual(persisted, list(jobs))
+        self.assertEqual(timeline_uploads, [False] * 64)
+        read_index.assert_called_once_with(run)
+        remote_persist.assert_not_called()
 
     def test_stop_preserves_completed_attempt_and_does_not_terminate(self) -> None:
         run = {"run_id": "unit"}
