@@ -3956,9 +3956,14 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
                 job and job.get("submission_paths")
                 for job in jobs_before_stop.values()
             )
-            drain_pre_signaled = False
+            # STOP_ACK is written only after the CPU wrapper either observes
+            # the drain marker or exhausts its bounded wait.  A host-authored
+            # acknowledgement means the CPU sandbox is already gone.  In
+            # either case there is no live wrapper left to signal, although
+            # explicit GPU submissions below must still be reconciled.
+            drain_pre_signaled = sprintctl.terminal_stop_acknowledged(state_dir)
             drain_signal_error = None
-            if not has_explicit_submissions:
+            if not has_explicit_submissions and not drain_pre_signaled:
                 try:
                     signal_gpu_submission_drain_complete(run)
                     drain_pre_signaled = True
