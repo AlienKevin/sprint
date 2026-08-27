@@ -157,7 +157,8 @@ def submission_bridge_reasons(
             # Submission results are produced by the worker's terminal drain.
             # A live job has not reached that boundary yet, so treating its
             # absent results as loss would make live integrity monitoring lie.
-            if str(job.get("status") or "") not in GPU_TERMINAL_STATUSES:
+            status = str(job.get("status") or "")
+            if status and status not in GPU_TERMINAL_STATUSES:
                 continue
             job_id = str(job.get("job_id") or path.stem)
             progress = job.get("progress")

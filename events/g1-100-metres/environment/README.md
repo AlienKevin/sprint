@@ -50,11 +50,14 @@ Declare files that must return from the isolated GPU sandbox with repeatable
 `--output /app/...` options. Use `--submit-output /app/POLICY.pt` only for a
 policy you intentionally want considered by the blind official verifier; it
 also returns that file as an output. Intermediate checkpoints and ordinary
-outputs are never inferred as submissions. A submitted policy must be a valid
-TorchScript `.pt` file no larger than 32 MiB. Each trial may submit at most 32
-unique policies that pass the structural interface check; invalid or duplicate
-policies do not consume the allowance. Declared files are required, bounded,
-checksummed, and copied into a trusted mirror when the job ends; use
+outputs are never inferred as submissions. If the budget closes while an
+explicit submission job is still queued, a policy that already existed in its
+immutable enqueue snapshot is considered without running the queued command;
+an output that did not yet exist is rejected. A submitted policy must be a
+valid TorchScript `.pt` file no larger than 32 MiB. Each trial may submit at
+most 32 unique policies that pass the structural interface check; invalid or
+duplicate policies do not consume the allowance. Declared files are required,
+bounded, checksummed, and copied into a trusted mirror when the job ends; use
 `event gpu get` to install each returned file into `/app`. Do not encode model
 files into logs. A job may return at most 512 regular files, each no larger than
 128 MiB and together no larger than 512 MiB. Only one A10G job runs at a time;

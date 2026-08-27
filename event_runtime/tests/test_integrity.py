@@ -193,6 +193,25 @@ def test_submission_bridge_waits_for_active_job_terminal_drain(
         assert submission_bridge_reasons(tmp_path) == []
 
 
+def test_submission_bridge_fails_closed_when_terminal_status_is_missing(
+    tmp_path: Path,
+) -> None:
+    registry = tmp_path / "gpu-job-registry"
+    registry.mkdir()
+    (registry / "job-1.json").write_text(
+        json.dumps(
+            {
+                "job_id": "job-1",
+                "submission_paths": ["/app/policy.pt"],
+            }
+        )
+    )
+
+    assert {reason["code"] for reason in submission_bridge_reasons(tmp_path)} == {
+        "gpu_submission_results_missing"
+    }
+
+
 def test_wrong_execution_policy_and_budget_telemetry_failure_are_invalid(
     tmp_path: Path,
 ) -> None:

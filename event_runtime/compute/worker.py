@@ -20,6 +20,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import uuid
@@ -912,9 +913,16 @@ def terminal_submission_bridge_complete(
     if not declared:
         return True
     attempt = owned_terminal_attempt(run, job)
-    if attempt is None:
+    enqueue_snapshot_recovered = (
+        int(job.get("attempt") or 0) == 0
+        and bool(job.get("submission_enqueue_snapshot_recovered_at"))
+        and not job.get("submission_enqueue_snapshot_recovery_pending")
+    )
+    if attempt is None and not enqueue_snapshot_recovered:
         return False
-    progress = attempt.get("progress")
+    progress = (
+        job.get("progress") if enqueue_snapshot_recovered else attempt.get("progress")
+    )
     results = progress.get("submission_results") if isinstance(progress, dict) else None
     if not isinstance(results, list) or len(results) != len(declared):
         return False
@@ -1782,7 +1790,13 @@ def work_archive_retry_delay(attempt: int) -> float:
     return float(min(8, 2 ** max(0, attempt - 1)))
 
 
-def pin_work_archive(run: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]:
+def pin_work_archive(
+    run: dict[str, Any],
+    job: dict[str, Any],
+    *,
+    transfer_attempts: int = WORK_ARCHIVE_TRANSFER_ATTEMPTS,
+    transfer_timeout_seconds: int = 180,
+) -> dict[str, Any]:
     """Snapshot the workspace at lease claim for identical retries.
 
     The queue and its Volume workspace are agent-owned until the controller
@@ -1805,25 +1819,25 @@ def pin_work_archive(run: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]
         canonical.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory() as raw:
             downloaded = Path(raw) / "app.tar.gz"
-            for attempt in range(1, WORK_ARCHIVE_TRANSFER_ATTEMPTS + 1):
+            for attempt in range(1, transfer_attempts + 1):
                 try:
                     available = sprintctl.volume_download_exact(
                         run,
                         remote,
                         downloaded,
-                        timeout_seconds=180,
+                        timeout_seconds=transfer_timeout_seconds,
                         max_bytes=MAX_WORK_ARCHIVE_BYTES,
                     )
                 except (OSError, subprocess.SubprocessError, TimeoutError):
                     available = False
                 if available:
                     break
-                if attempt < WORK_ARCHIVE_TRANSFER_ATTEMPTS:
+                if attempt < transfer_attempts:
                     time.sleep(work_archive_retry_delay(attempt))
             else:
                 raise RuntimeError(
                     "unable to pin GPU work archive after "
-                    f"{WORK_ARCHIVE_TRANSFER_ATTEMPTS} attempts: {remote}"
+                    f"{transfer_attempts} attempts: {remote}"
                 )
             size = downloaded.stat().st_size
             digest = _file_sha256(downloaded)
@@ -1849,6 +1863,231 @@ def pin_work_archive(run: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]
     if submitted and submitted != digest:
         payload["work_archive_changed_before_claim"] = True
     return payload
+
+
+def _enqueue_snapshot_submission_id(
+    run: dict[str, Any], job: dict[str, Any], path: str, digest: str
+) -> str:
+    """Return a stable Harbor request id for an enqueue-snapshot policy."""
+    try:
+        created_epoch = float(job.get("created_at_epoch_s") or 0)
+    except (TypeError, ValueError):
+        created_epoch = 0
+    prefix = time.strftime("%H%M%S", time.gmtime(max(0, created_epoch)))
+    suffix = hashlib.sha256(
+        "\0".join(
+            (str(run["run_id"]), str(job["job_id"]), path, digest)
+        ).encode()
+    ).hexdigest()[:4]
+    return f"{prefix}-{suffix}"
+
+
+def _submission_bytes_from_work_archive(
+    archive: Path, declared_path: str
+) -> tuple[bytes | None, str | None]:
+    """Read one exact regular-file policy without extracting the workspace."""
+    candidate = Path(declared_path)
+    try:
+        relative = candidate.relative_to("/app")
+    except ValueError:
+        return None, "submission path is outside /app"
+    if not relative.parts or ".." in relative.parts:
+        return None, "submission path is invalid"
+    member_name = str(Path("app") / relative)
+    try:
+        with tarfile.open(archive, "r:gz") as handle:
+            matches = [
+                member for member in handle.getmembers() if member.name == member_name
+            ]
+            if len(matches) != 1:
+                return None, "policy was not a unique file in the enqueue snapshot"
+            member = matches[0]
+            if not member.isfile():
+                return None, "policy was not a regular file in the enqueue snapshot"
+            if not (0 < member.size <= GPU_SUBMISSION_BRIDGE_MAX_POLICY_BYTES):
+                return None, "policy size was outside the submission limit"
+            source = handle.extractfile(member)
+            if source is None:
+                return None, "policy bytes were unavailable in the enqueue snapshot"
+            content = source.read(GPU_SUBMISSION_BRIDGE_MAX_POLICY_BYTES + 1)
+    except (OSError, tarfile.TarError) as exc:
+        raise RuntimeError(f"invalid enqueue work archive: {exc}") from exc
+    if len(content) != member.size:
+        raise RuntimeError("enqueue-snapshot policy size changed while reading")
+    return content, None
+
+
+def recover_pending_submission_snapshots(
+    run: dict[str, Any], job: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Finish explicit attempt-0 submissions without post-budget GPU compute.
+
+    ``event gpu --submit-output`` snapshots /app before enqueue. If that job is
+    still waiting behind another FIFO job when the budget closes, the exact
+    bytes that already existed at enqueue can be admitted without starting the
+    queued command. Missing files are a normal rejected result: they would have
+    been produced by a command that the agent queued too late. Transport or
+    digest ambiguity remains fail-closed and is retried while the CPU supervisor
+    waits for the submission-drain handshake.
+    """
+    declared = [str(path) for path in job.get("submission_paths") or []]
+    payload = dict(job)
+    eligible_status = str(payload.get("status") or "") == "pending" or (
+        str(payload.get("status") or "") == "terminated"
+        and bool(payload.get("submission_enqueue_snapshot_recovery_pending"))
+    )
+    eligible = (
+        bool(declared)
+        and bool(payload.get("submission_bridge_enabled"))
+        and eligible_status
+        and int(payload.get("attempt") or 0) == 0
+        and not payload.get("sandbox_id")
+        and not payload.get("started_at")
+    )
+    if not eligible:
+        return payload, {"eligible": False, "error": 0, "retry_wait": 0}
+
+    payload["submission_enqueue_snapshot_recovery_pending"] = True
+    try:
+        # The CPU supervisor's drain handshake is bounded at two minutes. Keep
+        # recovery within that same window so transport trouble fails closed
+        # without delaying teardown indefinitely.
+        payload = pin_work_archive(
+            run,
+            payload,
+            transfer_attempts=2,
+            transfer_timeout_seconds=45,
+        )
+        submitted_digest = str(payload.get("submitted_work_archive_sha256") or "")
+        pinned_digest = str(payload.get("work_archive_sha256") or "")
+        if not submitted_digest or submitted_digest != pinned_digest:
+            raise RuntimeError("enqueue work archive digest is not authoritative")
+        archive = host_work_archive_path(run, str(payload["job_id"]))
+        if archive is None or not archive.is_file():
+            raise RuntimeError("host-pinned enqueue work archive is unavailable")
+
+        results: list[dict[str, Any]] = []
+        forwarded = 0
+        rejected = 0
+        for path in declared:
+            content, rejection = _submission_bytes_from_work_archive(archive, path)
+            if rejection is not None:
+                rejected += 1
+                results.append(
+                    {
+                        "path": path,
+                        "state": "rejected",
+                        "reason": rejection,
+                        "source": "enqueue_snapshot_at_budget_stop",
+                    }
+                )
+                continue
+            assert content is not None
+            digest = hashlib.sha256(content).hexdigest()
+            submission_id = _enqueue_snapshot_submission_id(run, payload, path, digest)
+            record_path = submission_bridge_state_dir(run) / f"{submission_id}.json"
+            try:
+                record = json.loads(record_path.read_text())
+            except (OSError, json.JSONDecodeError):
+                record = {}
+            if not isinstance(record, dict) or record.get("state") != "forwarded":
+                receipt = {
+                    "schema_version": 2,
+                    "bridge": "host_owned_gpu_submission_v1",
+                    "submission_id": submission_id,
+                    "queue_name": f"{submission_id}.pt",
+                    "run_id": str(run["run_id"]),
+                    "gpu_job_id": str(payload["job_id"]),
+                    "gpu_attempt": 0,
+                    "gpu_lease_id": "",
+                    "policy_sha256": digest,
+                    "policy_size_bytes": len(content),
+                    "note": str(payload.get("note") or ""),
+                }
+                result = submit_worker_policy_to_cpu_agent(run, receipt, content)
+                raw_returncode = (
+                    result.get("returncode") if isinstance(result, dict) else None
+                )
+                if isinstance(raw_returncode, bool) or not isinstance(
+                    raw_returncode, int
+                ):
+                    raise RuntimeError(
+                        "CPU archive response omitted an integer returncode"
+                    )
+                record = {
+                    "schema_version": 1,
+                    "run_id": str(run["run_id"]),
+                    "submission_id": submission_id,
+                    "queue_name": f"{submission_id}.pt",
+                    "gpu_job_id": str(payload["job_id"]),
+                    "gpu_attempt": 0,
+                    "policy_sha256": digest,
+                    "policy_size_bytes": len(content),
+                    "observed_at": utc_now(),
+                    "source": "enqueue_snapshot_at_budget_stop",
+                    "archive_returncode": raw_returncode,
+                    "archive_stdout": str(result.get("stdout") or "")[-2000:],
+                    "archive_stderr": str(result.get("stderr") or "")[-2000:],
+                }
+                if raw_returncode == 0:
+                    record.update({"state": "forwarded", "forwarded_at": utc_now()})
+                    sprintctl.atomic_write_json(record_path, record, mode=0o600)
+                else:
+                    # A structural rejection is a complete submission result,
+                    # not a half-forwarded bridge record. Keeping it out of the
+                    # forwarding ledger lets integrity distinguish the two.
+                    record["state"] = "rejected"
+
+            state = "staged" if record.get("state") == "forwarded" else "rejected"
+            forwarded += state == "staged"
+            rejected += state == "rejected"
+            result_payload = {
+                "path": path,
+                "state": state,
+                "submission_id": submission_id,
+                "policy_sha256": digest,
+                "policy_size_bytes": len(content),
+                "source": "enqueue_snapshot_at_budget_stop",
+            }
+            if state == "rejected":
+                result_payload["reason"] = str(
+                    record.get("archive_stderr")
+                    or record.get("archive_stdout")
+                    or "policy failed structural admission"
+                )[-1000:]
+            results.append(result_payload)
+
+        progress = dict(payload.get("progress") or {})
+        progress["submission_results"] = results
+        payload.update(
+            {
+                "progress": progress,
+                "submission_enqueue_snapshot_recovered_at": utc_now(),
+                "submission_enqueue_snapshot_recovery_pending": False,
+                "work_archive_provenance": "host-pinned-enqueue-snapshot-at-budget-stop",
+            }
+        )
+        payload.pop("submission_enqueue_snapshot_recovery_error", None)
+        payload = persist_job(run, payload)
+        return payload, {
+            "eligible": True,
+            "forwarded": forwarded,
+            "rejected": rejected,
+            "error": 0,
+            "retry_wait": 0,
+        }
+    except Exception as exc:  # noqa: BLE001
+        payload["submission_enqueue_snapshot_recovery_error"] = (
+            f"{type(exc).__name__}: {exc}"
+        )
+        payload = persist_job(run, payload)
+        return payload, {
+            "eligible": True,
+            "forwarded": 0,
+            "rejected": 0,
+            "error": 0,
+            "retry_wait": 1,
+        }
 
 
 def restore_pinned_work_archive(run: dict[str, Any], job: dict[str, Any]) -> None:
@@ -3704,6 +3943,14 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
             jobs_before_stop = {
                 job_id: load_job(run, job_id) for job_id in job_ids
             }
+            enqueue_snapshot_recoveries: dict[str, dict[str, Any]] = {}
+            for job_id, job in jobs_before_stop.items():
+                if not job:
+                    continue
+                recovered, detail = recover_pending_submission_snapshots(run, job)
+                jobs_before_stop[job_id] = recovered
+                if detail.get("eligible"):
+                    enqueue_snapshot_recoveries[job_id] = detail
             has_explicit_submissions = any(
                 job and job.get("submission_paths")
                 for job in jobs_before_stop.values()
@@ -3767,6 +4014,9 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
                 ],
                 "reconciled": reconciled,
                 "submission_bridge_pending_jobs": bridge_pending,
+                "enqueue_snapshot_submission_recoveries": (
+                    enqueue_snapshot_recoveries
+                ),
                 "submission_bridge_drain_signal_error": drain_signal_error,
                 "skipped": True,
                 "reason": "operator_stop",
