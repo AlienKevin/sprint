@@ -117,6 +117,48 @@ def test_gpu_submission_drain_timeout_without_submissions_is_not_invalid(
     assert report["benchmark_valid"] is True
 
 
+def test_gpu_submission_drain_timeout_clears_after_terminal_reconciliation(
+    tmp_path: Path,
+) -> None:
+    run = run_contract("reconciled-drain-timeout")
+    (tmp_path / "STOP_ACK.json").write_text(
+        json.dumps(
+            {
+                "reason": "agent_cost_budget_exhausted",
+                "gpu_submission_drain_timed_out": True,
+            }
+        )
+    )
+    write_clean_exit(tmp_path / "CPU_TRIAL_EXIT.json")
+    registry = tmp_path / "gpu-job-registry"
+    registry.mkdir()
+    (registry / "job-1.json").write_text(
+        json.dumps(
+            {
+                "job_id": "job-1",
+                "status": "terminated",
+                "termination_reason": "agent_cost_budget_exhausted",
+                "submission_paths": ["/app/policy.pt"],
+                "submission_bridge_terminal_drained_at": "2026-08-27T01:00:00Z",
+                "progress": {
+                    "submission_results": [
+                        {
+                            "path": "/app/policy.pt",
+                            "state": "rejected",
+                            "stderr": "no such file: /app/policy.pt",
+                        }
+                    ]
+                },
+            }
+        )
+    )
+
+    report = build_integrity_report(tmp_path, run)
+
+    assert report["benchmark_valid"] is True
+    assert report["replacement_required"] is False
+
+
 def test_submission_bridge_requires_terminal_results_and_harbor_forwarding(
     tmp_path: Path,
 ) -> None:

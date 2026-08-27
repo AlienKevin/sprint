@@ -75,14 +75,24 @@ def submission_bridge_reasons(
         if registry.is_dir()
         else []
     )
-    has_explicit_submissions = any(
-        job.get("submission_paths") for job in registry_jobs
+    explicit_submission_jobs = [
+        job for job in registry_jobs if job.get("submission_paths")
+    ]
+    # STOP_ACK records whether the CPU-side bounded wait expired.  That is a
+    # useful fail-closed snapshot, but it is not permanent proof of loss: the
+    # trusted host bridge may finish reconciling terminal GPU jobs shortly
+    # after the CPU sandbox acknowledges its stop.  Keep the timeout invalid
+    # only while at least one declared submission job is still unresolved.
+    unresolved_after_drain_timeout = any(
+        str(job.get("status") or "") not in GPU_TERMINAL_STATUSES
+        or not job.get("submission_bridge_terminal_drained_at")
+        for job in explicit_submission_jobs
     )
     if (
         _read_json(state_dir / "STOP_ACK.json").get(
             "gpu_submission_drain_timed_out"
         )
-        and has_explicit_submissions
+        and unresolved_after_drain_timeout
     ):
         reasons.append(
             _reason(
