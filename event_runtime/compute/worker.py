@@ -1455,7 +1455,8 @@ print("STALE_IGNORED" if stale else "UPDATED")
     errors: dict[str, str] = {}
     for sandbox_id in targets:
         try:
-            process = modal.Sandbox.from_id(sandbox_id).exec(
+            sandbox = modal.Sandbox.from_id(sandbox_id)
+            process = sandbox.exec(
                 "python3",
                 "-c",
                 install,
@@ -1470,6 +1471,19 @@ print("STALE_IGNORED" if stale else "UPDATED")
                 detail = stderr or stdout or f"exit {return_code}"
                 if isinstance(detail, bytes):
                     detail = detail.decode(errors="replace")
+                # Modal may terminate the sandbox while an already-started
+                # exec is waiting.  In that race the exec commonly reports
+                # 137 instead of raising NotFound/Conflict.  Confirm that the
+                # sandbox itself is terminal before treating the missed write
+                # as harmless; a nonzero exec in a live sandbox remains a real
+                # budget-mirror error.
+                try:
+                    sandbox_exit = sandbox.poll()
+                except Exception:  # noqa: BLE001 - preserve the real exec error
+                    sandbox_exit = None
+                if sandbox_exit is not None:
+                    finished.append(sandbox_id)
+                    continue
                 raise RuntimeError(str(detail).strip()[-1000:])
             if "STALE_IGNORED" in str(stdout or ""):
                 stale_ignored.append(sandbox_id)

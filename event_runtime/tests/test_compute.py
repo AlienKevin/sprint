@@ -1060,6 +1060,64 @@ class WorkerRuntimeBoundaryTests(unittest.TestCase):
         self.assertEqual(detail["finished_sandbox_ids"], ["sb-finished"])
         self.assertEqual(detail["errors"], {})
 
+    def test_budget_mirror_accepts_exec_killed_as_sandbox_finishes(self) -> None:
+        payload = {
+            "schema_version": 2,
+            "run_id": "run-1",
+            "checked_at_epoch_s": 1234.5,
+            "total_usd": 2.25,
+            "stop_threshold_usd": 9.9,
+            "status": "within_budget",
+        }
+
+        class Reader:
+            def read(self) -> str:
+                return ""
+
+        class Process:
+            stdout = Reader()
+            stderr = Reader()
+
+            def wait(self) -> int:
+                return 137
+
+        class Sandbox:
+            def __init__(self, poll_result: int | None) -> None:
+                self.poll_result = poll_result
+
+            def exec(self, *_args: str, **_kwargs: object) -> Process:
+                return Process()
+
+            def poll(self) -> int | None:
+                return self.poll_result
+
+        with mock.patch.object(
+            gpu_worker.modal.Sandbox, "from_id", return_value=Sandbox(2)
+        ):
+            detail = gpu_worker.mirror_gpu_budget(
+                {"run_id": "run-1"},
+                payload,
+                jobs=[{"sandbox_id": "sb-finished", "status": "running"}],
+            )
+
+        self.assertEqual(detail["gpu_budget_mirror"], "updated")
+        self.assertEqual(detail["updated_sandbox_ids"], [])
+        self.assertEqual(detail["finished_sandbox_ids"], ["sb-finished"])
+        self.assertEqual(detail["errors"], {})
+
+        with mock.patch.object(
+            gpu_worker.modal.Sandbox, "from_id", return_value=Sandbox(None)
+        ):
+            live_detail = gpu_worker.mirror_gpu_budget(
+                {"run_id": "run-1"},
+                payload,
+                jobs=[{"sandbox_id": "sb-live", "status": "running"}],
+            )
+
+        self.assertEqual(live_detail["gpu_budget_mirror"], "error")
+        self.assertEqual(live_detail["finished_sandbox_ids"], [])
+        self.assertIn("exit 137", live_detail["errors"]["sb-live"])
+
     def test_gpu_budget_mirror_refuses_to_replace_newer_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             target = Path(raw) / "cost.json"
