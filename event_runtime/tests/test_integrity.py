@@ -127,6 +127,7 @@ def test_submission_bridge_requires_terminal_results_and_harbor_forwarding(
         json.dumps(
             {
                 "job_id": "job-1",
+                "status": "succeeded",
                 "submission_paths": ["/app/policy.pt"],
             }
         )
@@ -139,6 +140,7 @@ def test_submission_bridge_requires_terminal_results_and_harbor_forwarding(
         json.dumps(
             {
                 "job_id": "job-1",
+                "status": "succeeded",
                 "submission_paths": ["/app/policy.pt"],
                 "progress": {
                     "submission_results": [
@@ -171,6 +173,24 @@ def test_submission_bridge_requires_terminal_results_and_harbor_forwarding(
     ledger.parent.mkdir(parents=True)
     ledger.write_text(json.dumps({"name": "123456-abcd.pt"}) + "\n")
     assert submission_bridge_reasons(tmp_path) == []
+
+
+def test_submission_bridge_waits_for_active_job_terminal_drain(
+    tmp_path: Path,
+) -> None:
+    registry = tmp_path / "gpu-job-registry"
+    registry.mkdir()
+    for status in ("queued", "claiming", "dispatched", "running"):
+        (registry / "job-1.json").write_text(
+            json.dumps(
+                {
+                    "job_id": "job-1",
+                    "status": status,
+                    "submission_paths": ["/app/policy.pt"],
+                }
+            )
+        )
+        assert submission_bridge_reasons(tmp_path) == []
 
 
 def test_wrong_execution_policy_and_budget_telemetry_failure_are_invalid(

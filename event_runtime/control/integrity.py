@@ -33,6 +33,10 @@ INFRA_RETRY_REASONS = {
     "worker_lost",
 }
 
+GPU_TERMINAL_STATUSES = frozenset(
+    {"succeeded", "failed", "preempted", "terminated"}
+)
+
 
 def _read_json(path: Path) -> dict[str, Any]:
     try:
@@ -149,6 +153,11 @@ def submission_bridge_reasons(
         for path, job in zip(sorted(registry.glob("*.json")), registry_jobs):
             declared = [str(item) for item in job.get("submission_paths") or []]
             if not declared:
+                continue
+            # Submission results are produced by the worker's terminal drain.
+            # A live job has not reached that boundary yet, so treating its
+            # absent results as loss would make live integrity monitoring lie.
+            if str(job.get("status") or "") not in GPU_TERMINAL_STATUSES:
                 continue
             job_id = str(job.get("job_id") or path.stem)
             progress = job.get("progress")
