@@ -179,7 +179,14 @@ if ((ready != 1)); then
   exit 1
 fi
 
-session_root="$DURABLE_DIR/runs/$RUN_ID/deepseek-harness/sessions"
+# DeepSeek Harness synchronously checkpoints the complete event-sourced session
+# before it admits each native goal round.  Modal Volume FUSE is appropriate for
+# asynchronous archival, but a production-sized session can block that flush
+# past the continuation deadline.  This CPU sandbox is intentionally a single,
+# non-restarting process, so its local runtime disk is the authoritative live
+# session store for the rollout.  The versioned notification stream below is
+# mirrored independently to durable storage as the raw forensic trace.
+session_root="$AGENT_STATE_DIR/deepseek-harness/sessions"
 events="$AGENT_LOG_DIR/deepseek-harness-events.jsonl"
 lifecycle="$AGENT_LOG_DIR/goal-lifecycle.json"
 session_id="$RUN_ID"

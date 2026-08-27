@@ -119,8 +119,10 @@ def test_wrapper_seals_route_and_wire_parameters() -> None:
     assert "pending_request_count" in wrapper
     assert "fail_closed_proxy_recovery" in wrapper
     assert "DeepSeek Harness native goal bootstrap is missing" in wrapper
+    assert 'session_root="$AGENT_STATE_DIR/deepseek-harness/sessions"' in wrapper
     assert (
-        'session_root="$DURABLE_DIR/runs/$RUN_ID/deepseek-harness/sessions"' in wrapper
+        'session_root="$DURABLE_DIR/runs/$RUN_ID/deepseek-harness/sessions"'
+        not in wrapper
     )
     assert 'session_id="$RUN_ID"' in wrapper
     assert 'lifecycle="$AGENT_LOG_DIR/goal-lifecycle.json"' in wrapper
