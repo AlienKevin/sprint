@@ -354,6 +354,44 @@ class WorkerRuntimeBoundaryTests(unittest.TestCase):
             ["python3", "-u", str(bootstrap), str(script)],
         )
 
+    def test_worker_wraps_env_prefixed_isaac_python_with_local_asset_bootstrap(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            script = root / "train.py"
+            script.write_text("from isaaclab.app import AppLauncher\n")
+            bootstrap = root / "bootstrap.py"
+            bootstrap.write_text("# trusted bootstrap\n")
+            command = worker_run.build_attempt_command(
+                {
+                    "command": [
+                        "/usr/bin/env",
+                        "POP=64",
+                        "MAXS=12",
+                        "python3",
+                        "-u",
+                        str(script),
+                    ]
+                },
+                1,
+                None,
+                isaac_bootstrap=bootstrap,
+            )
+
+        self.assertEqual(
+            command,
+            [
+                "/usr/bin/env",
+                "POP=64",
+                "MAXS=12",
+                "python3",
+                "-u",
+                str(bootstrap),
+                str(script),
+            ],
+        )
+
     def test_worker_does_not_wrap_pure_torch_python(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -561,7 +599,7 @@ class WorkerRuntimeBoundaryTests(unittest.TestCase):
             )
         )
 
-    def test_missing_outputs_plus_vulkan_abort_is_provider_failure(self) -> None:
+    def test_missing_outputs_plus_vulkan_warning_is_not_provider_failure(self) -> None:
         stderr = "\n".join(
             (
                 "VkResult: ERROR_INITIALIZATION_FAILED",
@@ -569,7 +607,7 @@ class WorkerRuntimeBoundaryTests(unittest.TestCase):
                 "No device could be created",
             )
         )
-        self.assertEqual(
+        self.assertIsNone(
             gpu_worker.provider_terminal_error_for_job(
                 {
                     "status": "failed",
@@ -577,8 +615,7 @@ class WorkerRuntimeBoundaryTests(unittest.TestCase):
                 },
                 "",
                 stderr,
-            ),
-            "Isaac GPU/Vulkan initialization failed before required outputs were produced",
+            )
         )
 
     def test_vulkan_warning_does_not_mask_agent_traceback(self) -> None:
@@ -689,7 +726,7 @@ class WorkerRuntimeBoundaryTests(unittest.TestCase):
         self.assertTrue(audited["provider_terminal_error_detected"])
         self.assertEqual(detail["provider_logs"], "audited")
 
-    def test_audit_classifies_archived_vulkan_output_loss(self) -> None:
+    def test_audit_does_not_misclassify_archived_vulkan_output_loss(self) -> None:
         job = {
             "run_id": "run-1",
             "job_id": "job-1",
@@ -719,9 +756,13 @@ class WorkerRuntimeBoundaryTests(unittest.TestCase):
                 {"run_id": "run-1"}, job
             )
 
-        self.assertTrue(audited["provider_terminal_error_detected"])
-        self.assertIn("GPU/Vulkan", audited["provider_terminal_error"])
-        self.assertIn("GPU/Vulkan", detail["provider_terminal_error"])
+        self.assertFalse(audited["provider_terminal_error_detected"])
+        self.assertEqual(
+            audited["provider_terminal_error_classifier_version"],
+            gpu_worker.PROVIDER_TERMINAL_ERROR_CLASSIFIER_VERSION,
+        )
+        self.assertNotIn("provider_terminal_error", audited)
+        self.assertIsNone(detail["provider_terminal_error"])
 
     def test_pushes_fresh_status_and_log_to_cpu_agent_mirror(self) -> None:
         job = {

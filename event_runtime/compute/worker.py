@@ -2772,36 +2772,23 @@ def provider_terminal_error(stream_text: str) -> str | None:
     return None
 
 
+PROVIDER_TERMINAL_ERROR_CLASSIFIER_VERSION = 2
+
+
 def provider_terminal_error_for_job(
     job: dict[str, Any], stdout: str, stderr: str
 ) -> str | None:
     """Classify terminal provider output using the trusted worker outcome.
 
-    Headless Isaac can emit Vulkan diagnostics and still run a CUDA simulation,
-    so the diagnostics alone are not terminal.  They *are* definitive when the
-    worker also reports that every explicitly requested output is missing: in
-    that case Kit returned before the agent program could do useful work.
-    Prefer an ordinary traceback when one exists because that remains an
-    agent-authored program failure even if Kit printed unrelated warnings.
+    Headless Isaac routinely emits Vulkan device diagnostics and then runs a
+    CUDA simulation successfully.  Missing declared outputs do not make those
+    diagnostics terminal: an agent can simply write a different filename.  A
+    genuine AppLauncher abort is classified by the worker's trusted sidecar,
+    while archived provider streams are only used for semantic terminal errors
+    such as an unhandled traceback or dependency-resolution failure.
     """
-    terminal_error = provider_terminal_error(stderr)
-    if terminal_error:
-        return terminal_error
-    worker_error = str(job.get("error") or "")
-    vulkan_startup_failed = all(
-        marker in stderr
-        for marker in (
-            "VkResult: ERROR_INITIALIZATION_FAILED",
-            "vkCreateDevice failed",
-            "No device could be created",
-        )
-    )
-    if (
-        worker_error.startswith("required GPU output missing or invalid:")
-        and vulkan_startup_failed
-    ):
-        return "Isaac GPU/Vulkan initialization failed before required outputs were produced"
-    return None
+    del job, stdout
+    return provider_terminal_error(stderr)
 
 
 def split_archived_provider_streams(stream_text: str) -> tuple[str, str]:
@@ -2819,6 +2806,9 @@ def apply_provider_terminal_error(
 ) -> dict[str, Any]:
     payload = dict(job)
     payload["provider_terminal_error_checked_at"] = utc_now()
+    payload["provider_terminal_error_classifier_version"] = (
+        PROVIDER_TERMINAL_ERROR_CLASSIFIER_VERSION
+    )
     payload["provider_terminal_error_detected"] = bool(terminal_error)
     if terminal_error:
         payload["provider_terminal_error"] = terminal_error
@@ -4272,7 +4262,8 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
             if (
                 str(job.get("status") or "") in gpu_claim.TERMINAL
                 and job.get("provider_logs_archived_at")
-                and not job.get("provider_terminal_error_checked_at")
+                and int(job.get("provider_terminal_error_classifier_version") or 0)
+                < PROVIDER_TERMINAL_ERROR_CLASSIFIER_VERSION
             ):
                 if log_backfill is None:
                     log_backfill = job

@@ -473,8 +473,41 @@ def build_attempt_command(
             )
         if checkpoint and resume_arg:
             command.extend([resume_arg, checkpoint])
+    python_index: int | None = None
     if command and Path(command[0]).name.startswith("python"):
-        script_index = 1
+        python_index = 0
+    elif command and Path(command[0]).name == "env":
+        # ``env NAME=value python3 script.py`` is a normal way for agents to
+        # parameterize a job.  Keep the trusted Isaac bootstrap active for
+        # this form too; otherwise the sealed asset redirect is silently lost.
+        index = 1
+        while index < len(command):
+            token = command[index]
+            if token == "--":
+                index += 1
+                break
+            if token in {"-i", "--ignore-environment", "-0", "--null"}:
+                index += 1
+                continue
+            if token in {"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}:
+                index += 2
+                continue
+            if token.startswith(("--unset=", "--chdir=", "--split-string=")):
+                index += 1
+                continue
+            name, separator, _value = token.partition("=")
+            if (
+                separator
+                and name.replace("_", "a").isalnum()
+                and not name[0].isdigit()
+            ):
+                index += 1
+                continue
+            break
+        if index < len(command) and Path(command[index]).name.startswith("python"):
+            python_index = index
+    if python_index is not None:
+        script_index = python_index + 1
         while script_index < len(command) and command[script_index] in {
             "-u",
             "-B",
