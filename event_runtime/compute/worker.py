@@ -4205,6 +4205,16 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
                         **detail,
                     }
                 )
+            if not bridge_pending:
+                try:
+                    sprintctl.seal_host_submission_bridge_complete(
+                        state_dir,
+                        run,
+                        source="operator_stop_submission_drain",
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    drain_signal_error = f"{type(exc).__name__}: {exc}"
+                    bridge_pending.append("host_submission_bridge_seal")
             if not bridge_pending and not drain_pre_signaled:
                 try:
                     signal_gpu_submission_drain_complete(run)

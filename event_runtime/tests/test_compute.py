@@ -3777,12 +3777,16 @@ class RetryAndFencingTests(unittest.TestCase):
                 ),
                 mock.patch.object(gpu_worker, "persist_job"),
                 mock.patch.object(
+                    gpu_worker.sprintctl, "seal_host_submission_bridge_complete"
+                ) as seal,
+                mock.patch.object(
                     gpu_worker, "signal_gpu_submission_drain_complete"
                 ) as release,
             ):
                 result = gpu_worker.dispatch_once("unit")
 
         self.assertEqual(result["submission_bridge_pending_jobs"], [])
+        seal.assert_called_once()
         release.assert_called_once_with(run)
 
     def test_operator_stop_fences_gpu_before_recovering_queued_submission(self) -> None:
@@ -3866,6 +3870,9 @@ class RetryAndFencingTests(unittest.TestCase):
                 ),
                 mock.patch.object(gpu_worker, "persist_job"),
                 mock.patch.object(
+                    gpu_worker.sprintctl, "seal_host_submission_bridge_complete"
+                ),
+                mock.patch.object(
                     gpu_worker, "signal_gpu_submission_drain_complete"
                 ) as release,
             ):
@@ -3948,6 +3955,9 @@ class RetryAndFencingTests(unittest.TestCase):
                     gpu_worker, "terminal_submission_bridge_complete", return_value=True
                 ),
                 mock.patch.object(gpu_worker, "persist_job"),
+                mock.patch.object(
+                    gpu_worker.sprintctl, "seal_host_submission_bridge_complete"
+                ),
                 mock.patch.object(gpu_worker, "signal_gpu_submission_drain_complete"),
             ):
                 result = gpu_worker.dispatch_once("unit")
@@ -4010,6 +4020,9 @@ class RetryAndFencingTests(unittest.TestCase):
                 ),
                 mock.patch.object(gpu_worker, "persist_job"),
                 mock.patch.object(
+                    gpu_worker.sprintctl, "seal_host_submission_bridge_complete"
+                ),
+                mock.patch.object(
                     gpu_worker,
                     "signal_gpu_submission_drain_complete",
                     side_effect=release,
@@ -4069,12 +4082,16 @@ class RetryAndFencingTests(unittest.TestCase):
                 ),
                 mock.patch.object(gpu_worker, "persist_job"),
                 mock.patch.object(
+                    gpu_worker.sprintctl, "seal_host_submission_bridge_complete"
+                ) as seal,
+                mock.patch.object(
                     gpu_worker, "signal_gpu_submission_drain_complete"
                 ) as release,
             ):
                 result = gpu_worker.dispatch_once("unit")
 
         self.assertEqual(result["submission_bridge_pending_jobs"], [])
+        seal.assert_called_once()
         release.assert_not_called()
 
     def test_operator_stop_keeps_cpu_alive_while_submission_is_pending(self) -> None:

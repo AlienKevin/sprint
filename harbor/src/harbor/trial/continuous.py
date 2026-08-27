@@ -134,6 +134,9 @@ class ContinuousVerificationService:
         # queue beside the ledger makes ingestion independent of the sandbox's
         # shutdown timing while preserving the same immutable artifact trail.
         self._host_watch_dir = self._root / "incoming"
+        self._host_bridge_complete = (
+            self._root / ".host-submission-bridge-complete.json"
+        )
         self._ledger = self._root / "ledger.jsonl"
 
         self._summary = ContinuousVerificationSummary()
@@ -216,6 +219,28 @@ class ContinuousVerificationService:
                 await self._watcher
             self._watcher = None
 
+        # The agent process and the trusted GPU bridge are intentionally
+        # independent. A budget stop can end the former while the latter is
+        # still freezing the last explicitly declared outputs. Keep this
+        # host-side scorer open until the bridge seals its completion marker;
+        # otherwise valid deadline submissions can be staged after the final
+        # poll and silently disappear from the official ledger.
+        bridge_timeout = self._config.host_submission_bridge_timeout_sec
+        if bridge_timeout is not None:
+            deadline = asyncio.get_running_loop().time() + bridge_timeout
+            while not self._host_bridge_complete.is_file():
+                await self._poll(
+                    settle=False,
+                    allow_environment_unavailable=True,
+                    host_only=True,
+                )
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    raise RuntimeError(
+                        "trusted host submission bridge did not seal before timeout"
+                    )
+                await asyncio.sleep(min(0.25, remaining))
+
         # One last pass, so a submission written between the final poll and the
         # agent exiting is not lost to timing. Reward-qualified limits must
         # drain sequentially because structural validity decides whether the
@@ -279,6 +304,7 @@ class ContinuousVerificationService:
         *,
         settle: bool = True,
         allow_environment_unavailable: bool = False,
+        host_only: bool = False,
     ) -> int:
         # A reward-qualified submission limit can only be decided after the
         # trusted verifier has completed its structural preflight. Admit one
@@ -288,7 +314,8 @@ class ContinuousVerificationService:
             return 0
         spawned = 0
         entries = await self._list_watch_dir(
-            allow_environment_unavailable=allow_environment_unavailable
+            allow_environment_unavailable=allow_environment_unavailable,
+            host_only=host_only,
         )
         for name, size in sorted(entries.items()):
             if name in self._seen:
@@ -317,7 +344,10 @@ class ContinuousVerificationService:
         return spawned
 
     async def _list_watch_dir(
-        self, *, allow_environment_unavailable: bool = False
+        self,
+        *,
+        allow_environment_unavailable: bool = False,
+        host_only: bool = False,
     ) -> dict[str, int]:
         # Host entries win name collisions: they were already validated by the
         # GPU bridge, whereas the agent-visible queue is only a compatibility
@@ -327,6 +357,8 @@ class ContinuousVerificationService:
             for path in self._host_watch_dir.iterdir()
             if path.is_file()
         }
+        if host_only:
+            return entries
         try:
             result = await self._env.exec(
                 f"find {self._quoted_watch_dir} -maxdepth 1 -type f "

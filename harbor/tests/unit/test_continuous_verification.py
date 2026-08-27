@@ -826,6 +826,56 @@ async def test_result_survives_a_failed_handback(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_stop_waits_for_trusted_host_bridge_and_scores_late_policy(tmp_path):
+    env = FakeAgentEnv(tmp_path / "env")
+    scored: list[str] = []
+
+    async def run_verifier(key: str, _paths) -> VerifierResult:
+        scored.append(key)
+        return VerifierResult(rewards={"reward": 1.0})
+
+    service = _service(
+        tmp_path,
+        env,
+        run_verifier,
+        drain_pending_on_stop=True,
+        host_submission_bridge_timeout_sec=1.0,
+    )
+    await service.start()
+    stop = asyncio.create_task(service.stop())
+    await asyncio.sleep(0.05)
+    host_queue = tmp_path / "artifacts/continuous/incoming"
+    (host_queue / "late.pt").write_bytes(b"late-policy")
+    await asyncio.sleep(0.05)
+    (tmp_path / "artifacts/continuous/.host-submission-bridge-complete.json").write_text(
+        "{}\n"
+    )
+    await stop
+
+    assert scored == ["continuous-0001"]
+    assert [row.name for row in service.summary.submissions] == ["late.pt"]
+    assert service.summary.submissions[0].reward == 1.0
+
+
+@pytest.mark.asyncio
+async def test_stop_fails_closed_when_trusted_host_bridge_never_seals(tmp_path):
+    env = FakeAgentEnv(tmp_path / "env")
+
+    async def run_verifier(_key: str, _paths) -> VerifierResult:
+        return VerifierResult(rewards={"reward": 1.0})
+
+    service = _service(
+        tmp_path,
+        env,
+        run_verifier,
+        host_submission_bridge_timeout_sec=0.05,
+    )
+    await service.start()
+    with pytest.raises(RuntimeError, match="host submission bridge"):
+        await service.stop()
+
+
+@pytest.mark.asyncio
 async def test_ledger_records_every_attempt_in_order(tmp_path):
     env = FakeAgentEnv(tmp_path / "env")
     rewards = iter([0.0, 1.0])

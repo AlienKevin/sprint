@@ -944,6 +944,42 @@ def discover_job_and_trial(
     return job, trial
 
 
+def seal_host_submission_bridge_complete(
+    state_dir: Path,
+    run: dict[str, Any],
+    *,
+    source: str,
+) -> Path:
+    """Seal the trusted host queue only after every GPU submission is staged.
+
+    Harbor watches this dotfile outside the agent sandbox. The marker closes a
+    race at the budget boundary: the agent can exit while the host is still
+    recovering an explicitly declared policy from an immutable GPU enqueue
+    snapshot. Harbor must keep its blind scoring service alive until this
+    trusted producer declares that no later artifact can arrive.
+    """
+    _job, trial = discover_job_and_trial(state_dir, run)
+    if trial is None:
+        raise RuntimeError("Harbor trial directory is unavailable for bridge seal")
+    marker = (
+        trial
+        / "artifacts"
+        / "continuous"
+        / ".host-submission-bridge-complete.json"
+    )
+    atomic_write_json(
+        marker,
+        {
+            "schema_version": 1,
+            "run_id": str(run["run_id"]),
+            "source": source,
+            "sealed_at": utc_now(),
+        },
+        mode=0o400,
+    )
+    return marker
+
+
 def persist_stop_request(
     run_id: str, *, reason: str = "operator_stop"
 ) -> tuple[Path, dict[str, Any], dict[str, Any]]:
@@ -3017,6 +3053,11 @@ def gpu_dispatch_loop(run_id: str, poll_seconds: int) -> int:
                     and not payload.get("pending")
                     and not payload.get("submission_bridge_pending_jobs")
                 ):
+                    seal_host_submission_bridge_complete(
+                        state_dir,
+                        run,
+                        source="gpu_dispatch_loop_terminal_drain",
+                    )
                     return 0
                 elapsed = time.monotonic() - started
                 time.sleep(max(1.0, float(poll_seconds) - elapsed))

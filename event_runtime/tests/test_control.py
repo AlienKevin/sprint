@@ -1034,6 +1034,9 @@ class DurableOpsTests(unittest.TestCase):
                     sprintctl, "run_results_finished", return_value=False
                 ),
                 mock.patch.object(gpu_worker, "dispatch_once", side_effect=dispatch),
+                mock.patch.object(
+                    sprintctl, "seal_host_submission_bridge_complete"
+                ),
                 mock.patch.object(sprintctl.time, "sleep"),
             ):
                 self.assertEqual(sprintctl.gpu_dispatch_loop("dispatch-run", 5), 0)
@@ -1076,11 +1079,50 @@ class DurableOpsTests(unittest.TestCase):
                 mock.patch.object(
                     gpu_worker, "dispatch_once", side_effect=payloads
                 ) as dispatch,
+                mock.patch.object(
+                    sprintctl, "seal_host_submission_bridge_complete"
+                ) as seal,
                 mock.patch.object(sprintctl.time, "sleep"),
             ):
                 self.assertEqual(sprintctl.gpu_dispatch_loop("drain-run", 5), 0)
 
             self.assertEqual(dispatch.call_count, 2)
+            seal.assert_called_once_with(
+                state,
+                run,
+                source="gpu_dispatch_loop_terminal_drain",
+            )
+
+    def test_host_submission_bridge_seal_uses_trusted_trial_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw) / "state"
+            jobs = Path(raw) / "jobs"
+            trial = jobs / "job" / "rendered-task__model"
+            trial.mkdir(parents=True)
+            state.mkdir()
+            run = {
+                "run_id": "bridge-run",
+                "state_dir": str(state),
+                "jobs_root": str(jobs),
+            }
+            (state / "run.json").write_text(json.dumps(run))
+
+            marker = sprintctl.seal_host_submission_bridge_complete(
+                state,
+                run,
+                source="unit_test",
+            )
+
+            self.assertEqual(
+                marker,
+                trial
+                / "artifacts"
+                / "continuous"
+                / ".host-submission-bridge-complete.json",
+            )
+            payload = json.loads(marker.read_text())
+            self.assertEqual(payload["run_id"], "bridge-run")
+            self.assertEqual(payload["source"], "unit_test")
 
     def test_agent_exit_keeps_budget_feed_alive_while_gpu_dispatch_drains(
         self,

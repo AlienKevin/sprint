@@ -690,6 +690,15 @@ class ContinuousVerificationConfig(BaseModel):
             "bounded feedback queue with at most one outstanding submission."
         ),
     )
+    host_submission_bridge_timeout_sec: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Optional time to keep the trusted continuous-verification service "
+            "open after the agent exits while an external host submission bridge "
+            "finishes staging artifacts. Disabled when None."
+        ),
+    )
     continuous_only: bool = Field(
         default=False,
         description=(
