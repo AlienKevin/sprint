@@ -828,6 +828,22 @@ class WorkerRuntimeBoundaryTests(unittest.TestCase):
                 b"complete child output\n",
             )
 
+    def test_terminal_run_skips_dead_cpu_agent_mirror(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            (state / "STOP_ACK.json").write_text("{}\n")
+            with mock.patch.object(gpu_worker.sprintctl, "exec_container") as execute:
+                detail = gpu_worker.mirror_agent_job(
+                    {
+                        "state_dir": str(state),
+                        "agent_container_id": "ta-agent",
+                    },
+                    {"job_id": "job-1", "attempt": 1, "status": "succeeded"},
+                    log_content=b"complete child output\n",
+                )
+        self.assertEqual(detail["agent_mirror"], "terminal_cpu_unavailable")
+        execute.assert_not_called()
+
     def test_streams_large_agent_mirror_payload_over_sandbox_stdin(self) -> None:
         captured = bytearray()
 
@@ -5274,6 +5290,7 @@ class StandingWorkerTests(unittest.TestCase):
 class ModalProviderTerminationTests(unittest.TestCase):
     def test_termination_waits_for_provider_acknowledgement(self) -> None:
         sandbox = mock.Mock()
+        sandbox.poll.return_value = 0
         with mock.patch.object(
             gpu_worker.modal.Sandbox, "from_id", return_value=sandbox
         ):
@@ -5283,7 +5300,27 @@ class ModalProviderTerminationTests(unittest.TestCase):
                 )
             )
         self.assertIsNone(error)
-        sandbox.terminate.assert_called_once_with(wait=True)
+        sandbox.terminate.assert_called_once_with(wait=False)
+        sandbox.poll.assert_called_once_with()
+
+    def test_termination_confirmation_is_bounded(self) -> None:
+        sandbox = mock.Mock()
+        sandbox.poll.return_value = None
+        with (
+            mock.patch.object(
+                gpu_worker.modal.Sandbox, "from_id", return_value=sandbox
+            ),
+            mock.patch.object(
+                gpu_worker.time, "monotonic", side_effect=[0.0, 31.0]
+            ),
+        ):
+            error = gpu_worker.ModalSandboxProvider({}).terminate(
+                resilience.ProviderHandle(
+                    provider="modal-sandbox", attempt_id="sb-test"
+                )
+            )
+        self.assertIn("did not confirm", str(error))
+        sandbox.terminate.assert_called_once_with(wait=False)
 
     def test_already_stopped_termination_is_idempotent(self) -> None:
         sandbox = mock.Mock()

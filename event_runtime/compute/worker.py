@@ -49,6 +49,8 @@ WORKER_TAG_ROLE = "gpu-worker"
 MAX_ACTIVE_TRAINING_JOBS_PER_RUN = 1
 STOP_DISPATCH_LOCK_TIMEOUT_SEC = 10 * 60
 STOP_TERMINATE_MAX_WORKERS = 8
+STOP_PROVIDER_CONFIRM_TIMEOUT_SEC = 30.0
+STOP_PROVIDER_CONFIRM_POLL_SEC = 1.0
 CLAIM_STALE_SEC = int(os.environ.get("SPRINT_GPU_CLAIM_STALE_SEC", "900"))
 HEARTBEAT_TIMEOUT_SEC = int(
     os.environ.get(
@@ -1092,6 +1094,13 @@ def mirror_agent_job(
     no-control-plane-credentials boundary. The complete log remains on the
     durable Volume.
     """
+    state_dir_raw = str(run.get("state_dir") or "")
+    if state_dir_raw:
+        state_dir = Path(state_dir_raw)
+        if (state_dir / "STOP_ACK.json").is_file() or (
+            state_dir / "FINALIZED.json"
+        ).is_file():
+            return {"agent_mirror": "terminal_cpu_unavailable"}
     container_id = str(run.get("agent_container_id") or "")
     job_id = str(job.get("job_id") or "")
     if not container_id.startswith("ta-") or not job_id:
@@ -2618,10 +2627,21 @@ class ModalSandboxProvider:
         try:
             import modal
 
-            # wait=True makes the host acknowledgement authoritative: after
-            # this returns, Modal no longer bills/runs the sandbox. Repeated
-            # termination is intentionally idempotent for controller replay.
-            modal.Sandbox.from_id(handle.attempt_id).terminate(wait=True)
+            # Submit the idempotent termination first, then confirm it with a
+            # bounded poll. Modal's wait=True path can remain blocked after an
+            # already-finished Sandbox disappears from the app container list;
+            # an unbounded provider wait must never stall the run's budget
+            # teardown state machine.
+            sandbox = modal.Sandbox.from_id(handle.attempt_id)
+            sandbox.terminate(wait=False)
+            deadline = time.monotonic() + STOP_PROVIDER_CONFIRM_TIMEOUT_SEC
+            while sandbox.poll() is None:
+                if time.monotonic() >= deadline:
+                    return (
+                        "TimeoutError: Modal did not confirm Sandbox termination "
+                        f"within {STOP_PROVIDER_CONFIRM_TIMEOUT_SEC:.0f}s"
+                    )
+                time.sleep(STOP_PROVIDER_CONFIRM_POLL_SEC)
         except Exception as exc:  # noqa: BLE001
             error = f"{type(exc).__name__}: {exc}"
             normalized = error.lower()
