@@ -2332,7 +2332,7 @@ if sys.argv[1:3] == ["app-server", "--stdio"]:
 if sys.argv[1] == "exec":
     turns = int(counter.read_text()) + 1 if counter.exists() else 1
     counter.write_text(str(turns))
-    time.sleep(0.4)
+    time.sleep(1.1)
     print(json.dumps({{"type": "turn.completed", "turn": turns}}), flush=True)
     raise SystemExit(0)
 raise SystemExit(2)
