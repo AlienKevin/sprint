@@ -370,6 +370,7 @@ def build_site_bundle(
     source: Path,
     destination: Path,
     *,
+    batch_path: Path | None = None,
     require_current: bool = False,
     include_project_link: bool = True,
 ) -> dict[str, Any]:
@@ -388,7 +389,7 @@ def build_site_bundle(
         root=source,
         skipped_top_level=DYNAMIC_DIRECTORIES,
     )
-    current = source / "data" / "batches" / "current.json"
+    current = (batch_path or source / "data" / "batches" / "current.json").resolve()
     mode = "current_batch"
     run_ids: tuple[str, ...] = ()
     if current.is_file():
@@ -427,6 +428,14 @@ def main() -> int:
     parser.add_argument("--web", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
+        "--batch",
+        type=Path,
+        help=(
+            "explicit observer cohort manifest to publish as current.json; "
+            "the live experiment manifest is left untouched"
+        ),
+    )
+    parser.add_argument(
         "--allow-missing-current",
         action="store_true",
         help="permit a static-only bundle before a current batch exists",
@@ -435,6 +444,7 @@ def main() -> int:
     report = build_site_bundle(
         args.web,
         args.output,
+        batch_path=args.batch,
         require_current=not args.allow_missing_current,
     )
     print(json.dumps(report, indent=2, sort_keys=True))

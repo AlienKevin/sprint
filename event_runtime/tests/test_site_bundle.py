@@ -137,6 +137,34 @@ def test_bundle_contains_only_current_batch_results(tmp_path: Path) -> None:
     ).exists()
 
 
+def test_bundle_can_publish_explicit_observer_cohort_without_mutating_live_batch(
+    tmp_path: Path,
+) -> None:
+    web, bundle = build_fixture(tmp_path)
+    observer = tmp_path / "observer.json"
+    live = (web / "data/batches/current.json").read_bytes()
+    write_json(
+        observer,
+        {
+            "schema_version": 1,
+            "batch_id": "observer-current",
+            "arms": [{"run_id": "batch-current-luna-1"}],
+        },
+    )
+
+    report = build_site_bundle(
+        web,
+        bundle,
+        batch_path=observer,
+        require_current=True,
+    )
+
+    assert report["run_ids"] == ["batch-current-luna-1"]
+    published = json.loads((bundle / "data/batches/current.json").read_text())
+    assert published["batch_id"] == "observer-current"
+    assert (web / "data/batches/current.json").read_bytes() == live
+
+
 def test_bundle_fails_closed_on_missing_current_replay(tmp_path: Path) -> None:
     web, bundle = build_fixture(tmp_path)
     (web / "replay/frontier-current.html").unlink()
