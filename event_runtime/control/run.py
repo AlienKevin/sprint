@@ -65,6 +65,7 @@ BUDGET_PULSE_MAX_CLOCK_SKEW_SECONDS = 60.0
 BUDGET_PULSE_STARTUP_GRACE_SECONDS = 60.0
 DURABLE_TRACE_LIVE_SYNC_TIMEOUT_SECONDS = 60
 DURABLE_TRACE_FINAL_SYNC_TIMEOUT_SECONDS = 300
+FINAL_RECONCILIATION_SCHEMA_VERSION = 1
 AGENT_STOP_GRACE_SECONDS = 15.0
 AGENT_STOP_FORCE_WAIT_SECONDS = 30.0
 AGENT_STOP_POLL_SECONDS = 1.0
@@ -1792,6 +1793,45 @@ def unified_timeline_ready(payload: dict[str, Any], run_id: str) -> bool:
     )
 
 
+def final_reconciliation_ready(state_dir: Path, run: dict[str, Any]) -> bool:
+    """Return whether immutable, non-billing evidence was already sealed."""
+    try:
+        payload = json.loads((state_dir / "FINAL_RECONCILED.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    return bool(
+        payload.get("schema_version") == FINAL_RECONCILIATION_SCHEMA_VERSION
+        and payload.get("run_id") == run.get("run_id")
+        and payload.get("timeline_schema_version")
+        == UNIFIED_TIMELINE_SCHEMA_VERSION
+        and payload.get("complete") is True
+    )
+
+
+def seal_final_reconciliation(
+    state_dir: Path,
+    run: dict[str, Any],
+    conditions: dict[str, bool],
+) -> None:
+    """Persist that all immutable evidence except provider billing is ready."""
+    atomic_write_json(
+        state_dir / "FINAL_RECONCILED.json",
+        {
+            "schema_version": FINAL_RECONCILIATION_SCHEMA_VERSION,
+            "timeline_schema_version": UNIFIED_TIMELINE_SCHEMA_VERSION,
+            "run_id": run["run_id"],
+            "complete": True,
+            "reconciled_at": utc_now(),
+            "conditions": {
+                name: value
+                for name, value in conditions.items()
+                if name != "modal_billing_complete"
+            },
+        },
+        mode=0o444,
+    )
+
+
 def modal_billing_ready(state_dir: Path, run_id: str) -> tuple[bool, list[str]]:
     path = state_dir / "telemetry" / "modal-cost.json"
     try:
@@ -2288,49 +2328,48 @@ def _finalize_owned(
             )
         ):
             return True, existing
-    terminal_before_refresh = run_services_should_exit(state_dir, run)
-    monitor_once(
-        run_id,
-        upload=upload,
-        include_remote=include_remote,
-    )
-    # Final reconciliation is intentionally expensive: it recursively imports
-    # the immutable trace and every provider request record.  It must never run
-    # on each live monitor tick.  The previous behavior doubled monitor work
-    # and forced six lanes through at least twelve recursive VolumeListFiles
-    # scans per minute before any GPU queue polling was counted.
-    if not (terminal_before_refresh or run_services_should_exit(state_dir, run)):
-        return False, {
-            "schema_version": 1,
-            "timeline_schema_version": UNIFIED_TIMELINE_SCHEMA_VERSION,
-            "run_id": run_id,
-            "agent_kind": agent_kind(run),
-            "complete": False,
-            "conditions": {"run_terminal": False},
-            "details": ["run is still active; final reconciliation deferred"],
-            "checked_at": utc_now(),
-        }
-    # Natural completion and an explicit budget/operator stop both close the
-    # allocation window. Recover per-job streams in either case; otherwise a
-    # naturally completing lane can finalize from a stale five-minute live
-    # telemetry snapshot.
-    if run.get("unified_timeline_required"):
-        sync_durable_telemetry(state_dir, run, force=True)
+    reconciled = final_reconciliation_ready(state_dir, run)
     provider_usage_required = bool(run.get("provider_usage_ledger_required"))
-    if provider_usage_required:
-        sync_durable_api_usage(state_dir, run, force=True)
-    if run.get("usage_audit_required"):
-        sync_durable_trace(state_dir, run, force=True)
-        reconstruct_model_usage(state_dir, run)
-    if (provider_usage_required or run.get("usage_audit_required")) and run.get(
-        "unified_timeline_required"
-    ):
-        build_unified_timeline(state_dir, run, upload=upload)
-    if run.get("modal_billing_required"):
-        # Do not declare a provider report complete while accepted verifier
-        # work can still extend the run-owned allocation window. All other
-        # finalization conditions must be green first. FINALIZED itself is a
-        # host-side timestamp and is deliberately excluded from run bounds.
+    non_billing_ready = reconciled
+    if not reconciled:
+        terminal_before_refresh = run_services_should_exit(state_dir, run)
+        monitor_once(
+            run_id,
+            upload=upload,
+            include_remote=include_remote,
+        )
+        # Final reconciliation is intentionally expensive: it recursively
+        # imports the immutable trace, job telemetry, and every provider
+        # request record. Run it once after the lane becomes terminal, then
+        # persist that sealed state while provider billing catches up.
+        if not (
+            terminal_before_refresh or run_services_should_exit(state_dir, run)
+        ):
+            return False, {
+                "schema_version": 1,
+                "timeline_schema_version": UNIFIED_TIMELINE_SCHEMA_VERSION,
+                "run_id": run_id,
+                "agent_kind": agent_kind(run),
+                "complete": False,
+                "conditions": {"run_terminal": False},
+                "details": ["run is still active; final reconciliation deferred"],
+                "checked_at": utc_now(),
+            }
+        # Natural completion and an explicit budget/operator stop both close
+        # the allocation window. Recover per-job streams in either case;
+        # otherwise a naturally completing lane can finalize from a stale
+        # five-minute live telemetry snapshot.
+        if run.get("unified_timeline_required"):
+            sync_durable_telemetry(state_dir, run, force=True)
+        if provider_usage_required:
+            sync_durable_api_usage(state_dir, run, force=True)
+        if run.get("usage_audit_required"):
+            sync_durable_trace(state_dir, run, force=True)
+            reconstruct_model_usage(state_dir, run)
+        if (provider_usage_required or run.get("usage_audit_required")) and run.get(
+            "unified_timeline_required"
+        ):
+            build_unified_timeline(state_dir, run, upload=upload)
         _, preliminary_conditions, _ = final_conditions(state_dir, run)
         non_billing_ready = all(
             value
@@ -2338,18 +2377,27 @@ def _finalize_owned(
             if name != "modal_billing_complete"
         )
         if non_billing_ready:
+            seal_final_reconciliation(state_dir, run, preliminary_conditions)
+            reconciled = True
+    if run.get("modal_billing_required"):
+        # Do not declare a provider report complete while accepted verifier
+        # work can still extend the run-owned allocation window. All other
+        # finalization conditions must be green first. FINALIZED itself is a
+        # host-side timestamp and is deliberately excluded from run bounds.
+        if non_billing_ready:
             billing = modal_cost.collect_provider_billing(state_dir)
             billing_path = state_dir / "telemetry" / "modal-cost.json"
-            if billing.get("provider_complete") is True and upload:
-                # The reconciled report must win over any older pending copy
-                # on the durable Volume before FINALIZED can be written.
-                volume_upload(
-                    run,
-                    billing_path,
-                    f"runs/{run_id}/telemetry/modal-cost.json",
-                )
-            if run.get("unified_timeline_required"):
-                build_unified_timeline(state_dir, run, upload=upload)
+            if billing.get("provider_complete") is True:
+                if upload:
+                    # The reconciled report must win over any older pending
+                    # copy on the durable Volume before FINALIZED is written.
+                    volume_upload(
+                        run,
+                        billing_path,
+                        f"runs/{run_id}/telemetry/modal-cost.json",
+                    )
+                if run.get("unified_timeline_required"):
+                    build_unified_timeline(state_dir, run, upload=upload)
     complete, conditions, details = final_conditions(state_dir, run)
     payload = {
         "schema_version": 1,
@@ -2362,6 +2410,13 @@ def _finalize_owned(
         "checked_at": utc_now(),
     }
     if not complete:
+        non_billing_still_ready = all(
+            value
+            for name, value in conditions.items()
+            if name != "modal_billing_complete"
+        )
+        if reconciled and not non_billing_still_ready:
+            (state_dir / "FINAL_RECONCILED.json").unlink(missing_ok=True)
         return False, payload
     payload["finalized_at"] = utc_now()
     integrity = run_integrity.build_integrity_report(state_dir, run)

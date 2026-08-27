@@ -210,6 +210,68 @@ class DurableOpsTests(unittest.TestCase):
             trace_sync.assert_not_called()
             telemetry.assert_not_called()
 
+    def test_final_reconciliation_is_sealed_and_not_repeated_while_billing_waits(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            run = {
+                "run_id": "terminal-run",
+                "agent_kind": "codex",
+                "unified_timeline_required": True,
+                "provider_usage_ledger_required": True,
+                "usage_audit_required": True,
+                "modal_billing_required": True,
+            }
+            non_billing = {
+                "ledger_terminal": True,
+                "artifact_manifest": True,
+                "unified_timeline_ready": True,
+                "usage_audit_complete": True,
+                "modal_billing_complete": False,
+            }
+            with (
+                mock.patch.object(sprintctl, "load_run", return_value=(state, run)),
+                mock.patch.object(
+                    sprintctl, "run_services_should_exit", return_value=True
+                ),
+                mock.patch.object(sprintctl, "monitor_once") as monitor,
+                mock.patch.object(sprintctl, "sync_durable_api_usage") as api_sync,
+                mock.patch.object(sprintctl, "sync_durable_trace") as trace_sync,
+                mock.patch.object(sprintctl, "sync_durable_telemetry") as telemetry,
+                mock.patch.object(sprintctl, "reconstruct_model_usage") as usage,
+                mock.patch.object(sprintctl, "build_unified_timeline") as timeline,
+                mock.patch.object(
+                    sprintctl,
+                    "final_conditions",
+                    side_effect=[
+                        (False, non_billing, ["billing pending"]),
+                        (False, non_billing, ["billing pending"]),
+                        (False, non_billing, ["billing pending"]),
+                    ],
+                ),
+                mock.patch.object(
+                    sprintctl.modal_cost,
+                    "collect_provider_billing",
+                    return_value={"provider_complete": False},
+                ) as billing,
+            ):
+                first_complete, _ = sprintctl._finalize_owned("terminal-run")
+                second_complete, _ = sprintctl._finalize_owned("terminal-run")
+
+            self.assertFalse(first_complete)
+            self.assertFalse(second_complete)
+            self.assertTrue(
+                sprintctl.final_reconciliation_ready(state, run)
+            )
+            monitor.assert_called_once()
+            api_sync.assert_called_once_with(state, run, force=True)
+            trace_sync.assert_called_once_with(state, run, force=True)
+            telemetry.assert_called_once_with(state, run, force=True)
+            usage.assert_called_once_with(state, run)
+            timeline.assert_called_once_with(state, run, upload=True)
+            self.assertEqual(billing.call_count, 2)
+
     def test_live_api_usage_sync_reads_only_exact_summary(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             state = Path(raw)
