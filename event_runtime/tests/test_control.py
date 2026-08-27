@@ -1269,6 +1269,45 @@ class DurableOpsTests(unittest.TestCase):
             stamp = json.loads((state / "telemetry" / "durable-sync.json").read_text())
             self.assertIn(f"{prefix}/by-job/missing/samples.jsonl", stamp["sources"])
 
+    def test_final_gpu_telemetry_recovery_uses_bounded_parallel_reads(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            run = {"run_id": "sync-run", "volume_name": "sync-volume"}
+            prefix = "runs/sync-run/telemetry"
+            jobs = [f"job-{index}" for index in range(8)]
+            timeline = "".join(
+                json.dumps({"job_id": job_id, "attempt": 1}) + "\n"
+                for job_id in jobs
+            )
+            active = 0
+            peak = 0
+            lock = threading.Lock()
+
+            def fetch(_run: dict, path: str, **_kwargs: object) -> str | None:
+                nonlocal active, peak
+                if path == f"{prefix}/samples.jsonl":
+                    return '{"role":"cpu-agent"}\n'
+                if path == f"{prefix}/gpu-stream/samples.jsonl":
+                    return ""
+                if path == f"{prefix}/gpu_timeline.jsonl":
+                    return timeline
+                with lock:
+                    active += 1
+                    peak = max(peak, active)
+                time.sleep(0.02)
+                with lock:
+                    active -= 1
+                return "{}\n"
+
+            with mock.patch.object(
+                sprintctl, "volume_get_text", side_effect=fetch
+            ):
+                self.assertTrue(
+                    sprintctl.sync_durable_telemetry(state, run, force=True)
+                )
+
+            self.assertEqual(peak, sprintctl.DURABLE_TELEMETRY_FETCH_WORKERS)
+
     def test_terra_usage_audit_requires_checksums_and_matching_atif_cost(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             trial = Path(raw)

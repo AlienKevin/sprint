@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import datetime as dt
 import hashlib
 import json
@@ -65,6 +66,7 @@ BUDGET_PULSE_MAX_CLOCK_SKEW_SECONDS = 60.0
 BUDGET_PULSE_STARTUP_GRACE_SECONDS = 60.0
 DURABLE_TRACE_LIVE_SYNC_TIMEOUT_SECONDS = 60
 DURABLE_TRACE_FINAL_SYNC_TIMEOUT_SECONDS = 300
+DURABLE_TELEMETRY_FETCH_WORKERS = 4
 FINAL_RECONCILIATION_SCHEMA_VERSION = 1
 AGENT_STOP_GRACE_SECONDS = 15.0
 AGENT_STOP_FORCE_WAIT_SECONDS = 30.0
@@ -719,31 +721,38 @@ def sync_durable_telemetry(
                 sampled_jobs.add(job_id)
     by_job_dir = out_dir / "durable-by-job"
     by_job_targets = lifecycle_jobs if force else lifecycle_jobs - sampled_jobs
+    recovery_sources: list[tuple[str, Path]] = []
     for job_id in sorted(by_job_targets):
         remote = f"{prefix}/by-job/{job_id}/samples.jsonl"
-        text = fetch(remote)
-        if text is None:
-            continue
         local = by_job_dir / job_id / "samples.jsonl"
-        atomic_write_text(local, text, mode=0o600)
-        captured[remote] = {
-            "local": str(local.relative_to(state_dir)),
-            "bytes": len(text.encode()),
-            "sha256": hashlib.sha256(text.encode()).hexdigest(),
-        }
+        recovery_sources.append((remote, local))
     if force:
         for job_id, attempt in sorted(lifecycle_attempts):
             remote = f"runs/{run['run_id']}/gpu-jobs/attempts/{job_id}/{attempt}.json"
-            text = fetch(remote)
-            if text is None:
-                continue
             local = out_dir / "durable-gpu-attempts" / job_id / f"{attempt}.json"
-            atomic_write_text(local, text, mode=0o600)
-            captured[remote] = {
-                "local": str(local.relative_to(state_dir)),
-                "bytes": len(text.encode()),
-                "sha256": hashlib.sha256(text.encode()).hexdigest(),
-            }
+            recovery_sources.append((remote, local))
+
+    # Exact immutable per-job files are independent. Fetch them with a small,
+    # fixed pool so final reconciliation latency is bounded by work volume
+    # rather than one full Modal control-plane round trip per job. Keep the
+    # bound conservative because many trials can finalize concurrently.
+    def recover(source: tuple[str, Path]) -> tuple[str, Path, str | None]:
+        remote, local = source
+        return remote, local, fetch(remote)
+
+    if recovery_sources:
+        workers = min(DURABLE_TELEMETRY_FETCH_WORKERS, len(recovery_sources))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            recovered = pool.map(recover, recovery_sources)
+            for remote, local, text in recovered:
+                if text is None:
+                    continue
+                atomic_write_text(local, text, mode=0o600)
+                captured[remote] = {
+                    "local": str(local.relative_to(state_dir)),
+                    "bytes": len(text.encode()),
+                    "sha256": hashlib.sha256(text.encode()).hexdigest(),
+                }
     ok = bool(captured) and not errors
     atomic_write_json(
         stamp,
