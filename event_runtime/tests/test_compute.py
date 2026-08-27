@@ -1636,6 +1636,31 @@ class SubmissionBridgeTests(unittest.TestCase):
                     run, job, self.request(attempt=2)
                 )
 
+    def test_host_queue_remains_authoritative_when_cpu_mirror_is_gone(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            trial = root / "jobs/job/trial__model"
+            trial.mkdir(parents=True)
+            run, job = self.run_and_job(root)
+            run["trial_path"] = str(trial)
+            receipt, content = gpu_worker.validate_worker_submission_request(
+                run, job, self.request()
+            )
+
+            with mock.patch.object(
+                gpu_worker,
+                "_mirror_worker_policy_to_cpu_agent",
+                side_effect=RuntimeError("Modal Sandbox is shutting down"),
+            ):
+                result = gpu_worker.submit_worker_policy_to_cpu_agent(
+                    run, receipt, content
+                )
+
+            queued = trial / "artifacts/continuous/incoming/123456-abcd.pt"
+            self.assertEqual(queued.read_bytes(), content)
+            self.assertEqual(result["returncode"], 0)
+            self.assertIn("Modal Sandbox is shutting down", result["agent_mirror_error"])
+
     def test_drain_forwards_once_and_persists_host_record(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             run, job = self.run_and_job(Path(raw))

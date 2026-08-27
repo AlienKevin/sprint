@@ -129,6 +129,11 @@ class ContinuousVerificationService:
         self._quoted_watch_dir = quote_shell_arg(config.watch_dir, TaskOS.LINUX)
         self._artifacts_dir = artifacts_dir
         self._root = artifacts_dir / config.artifact_name
+        # GPU-origin submissions are staged here by the trusted host bridge
+        # before any best-effort copy into the agent sandbox.  Keeping this
+        # queue beside the ledger makes ingestion independent of the sandbox's
+        # shutdown timing while preserving the same immutable artifact trail.
+        self._host_watch_dir = self._root / "incoming"
         self._ledger = self._root / "ledger.jsonl"
 
         self._summary = ContinuousVerificationSummary()
@@ -171,7 +176,7 @@ class ContinuousVerificationService:
                 f"got {self._env.os.value}."
             )
 
-        self._root.mkdir(parents=True, exist_ok=True)
+        self._host_watch_dir.mkdir(parents=True, exist_ok=True)
         recover = self._hydrate_ledger()
         directories = [self._quoted_watch_dir]
         if self._config.return_acknowledgments_to_agent:
@@ -216,7 +221,7 @@ class ContinuousVerificationService:
         # drain sequentially because structural validity decides whether the
         # next queued artifact is still eligible for admission.
         with contextlib.suppress(Exception):
-            await self._poll(settle=False)
+            await self._poll(settle=False, allow_environment_unavailable=True)
         if (
             self._config.drain_pending_on_stop
             and self._config.submission_limit_reward_key is not None
@@ -225,7 +230,9 @@ class ContinuousVerificationService:
                 await asyncio.gather(*list(self._tasks), return_exceptions=True)
                 self._tasks = {task for task in self._tasks if not task.done()}
                 with contextlib.suppress(Exception):
-                    await self._poll(settle=False)
+                    await self._poll(
+                        settle=False, allow_environment_unavailable=True
+                    )
 
         self._draining = True
         if self._tasks:
@@ -267,7 +274,12 @@ class ContinuousVerificationService:
                 self._logger.warning(f"Continuous verification poll failed: {exc}")
             await asyncio.sleep(self._config.poll_interval_sec)
 
-    async def _poll(self, *, settle: bool = True) -> int:
+    async def _poll(
+        self,
+        *,
+        settle: bool = True,
+        allow_environment_unavailable: bool = False,
+    ) -> int:
         # A reward-qualified submission limit can only be decided after the
         # trusted verifier has completed its structural preflight. Admit one
         # candidate at a time so later queue entries are judged against the
@@ -275,7 +287,9 @@ class ContinuousVerificationService:
         if self._config.submission_limit_reward_key is not None and self._tasks:
             return 0
         spawned = 0
-        entries = await self._list_watch_dir()
+        entries = await self._list_watch_dir(
+            allow_environment_unavailable=allow_environment_unavailable
+        )
         for name, size in sorted(entries.items()):
             if name in self._seen:
                 continue
@@ -302,18 +316,37 @@ class ContinuousVerificationService:
                 break
         return spawned
 
-    async def _list_watch_dir(self) -> dict[str, int]:
-        result = await self._env.exec(
-            f"find {self._quoted_watch_dir} -maxdepth 1 -type f "
-            "-printf '%f\\t%s\\n' 2>/dev/null || true"
-        )
-        entries: dict[str, int] = {}
+    async def _list_watch_dir(
+        self, *, allow_environment_unavailable: bool = False
+    ) -> dict[str, int]:
+        # Host entries win name collisions: they were already validated by the
+        # GPU bridge, whereas the agent-visible queue is only a compatibility
+        # mirror. Atomic host writes mean these files are never observed midway.
+        entries = {
+            path.name: path.stat().st_size
+            for path in self._host_watch_dir.iterdir()
+            if path.is_file()
+        }
+        try:
+            result = await self._env.exec(
+                f"find {self._quoted_watch_dir} -maxdepth 1 -type f "
+                "-printf '%f\\t%s\\n' 2>/dev/null || true"
+            )
+        except Exception as exc:
+            if not allow_environment_unavailable:
+                raise
+            self._logger.warning(
+                "Agent submission queue unavailable during final drain; "
+                "continuing with trusted host queue: %s",
+                exc,
+            )
+            return entries
         for line in (result.stdout or "").splitlines():
             name, tab, size = line.partition("\t")
             if not tab:
                 continue
             with contextlib.suppress(ValueError):
-                entries[name] = int(size)
+                entries.setdefault(name, int(size))
         return entries
 
     def _spawn(self, name: str, *, record: ContinuousSubmission | None = None) -> None:
@@ -558,7 +591,13 @@ class ContinuousVerificationService:
                 # Archive before queueing for the verifier. The agent may
                 # overwrite its queue entry while earlier runs are being scored;
                 # only these immutable bytes define this accepted submission.
-                await self._env.download_file(f"{self._config.watch_dir}/{name}", local)
+                host_source = self._host_watch_dir / name
+                if host_source.is_file():
+                    shutil.copy2(host_source, local)
+                else:
+                    await self._env.download_file(
+                        f"{self._config.watch_dir}/{name}", local
+                    )
                 record.artifact_path = str(local.relative_to(self._artifacts_dir))
                 record.artifact_sha256 = hashlib.sha256(local.read_bytes()).hexdigest()
                 record.artifact_size_bytes = local.stat().st_size

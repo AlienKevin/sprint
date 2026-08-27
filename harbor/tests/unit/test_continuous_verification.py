@@ -967,6 +967,35 @@ async def test_blind_mode_drains_every_submission_after_agent_exit(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_final_drain_uses_host_queue_after_agent_environment_shutdown(tmp_path):
+    env = FakeAgentEnv(tmp_path / "env")
+    scored: list[bytes] = []
+
+    async def run_verifier(key: str, paths) -> VerifierResult:
+        policy = paths.artifacts_dir / "app/submission/policy.pt"
+        scored.append(policy.read_bytes())
+        return VerifierResult(rewards={"reward": 1.0})
+
+    service = _service(
+        tmp_path,
+        env,
+        run_verifier,
+        poll_interval_sec=3600,
+        return_results_to_agent=False,
+        drain_pending_on_stop=True,
+    )
+    await service.start()
+    (service._host_watch_dir / "gpu-final.pt").write_bytes(b"host-policy")
+    env.list_error = RuntimeError("Modal Sandbox is shutting down")
+
+    await service.stop()
+
+    assert scored == [b"host-policy"]
+    assert len(service.summary.submissions) == 1
+    assert service.summary.submissions[0].rewards == {"reward": 1.0}
+
+
+@pytest.mark.asyncio
 async def test_shared_scheduler_serializes_independent_model_queues(tmp_path):
     concurrent = 0
     peak = 0

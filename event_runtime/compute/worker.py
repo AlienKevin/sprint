@@ -79,6 +79,7 @@ GPU_SUBMISSION_BRIDGE_MAX_BATCH_BYTES = 64 * 1024 * 1024
 GPU_SUBMISSION_BRIDGE_MAX_DRAIN_BATCHES = 65
 GPU_SUBMISSION_ID_RE = re.compile(r"^[0-9]{6}-[0-9a-f]{4}$")
 GPU_SUBMISSION_DRAIN_COMPLETE = "/run/sprint-gpu-drain-complete.json"
+HOST_CONTINUOUS_INCOMING = Path("artifacts/continuous/incoming")
 LIVE_PROVIDER_LOG_INTERVAL_SEC = 30
 LIVE_PROVIDER_LOG_TAIL_LINES = 2000
 AGENT_GPU_CLI_PATH = "/opt/event_runtime/agent/gpu.py"
@@ -585,10 +586,69 @@ def validate_worker_submission_request(
     return receipt, content
 
 
-def submit_worker_policy_to_cpu_agent(
+def stage_worker_policy_on_host(
+    run: dict[str, Any], receipt: dict[str, Any], content: bytes
+) -> Path:
+    """Atomically place validated policy bytes in Harbor's trusted host queue."""
+    submission_id = str(receipt.get("submission_id") or "")
+    if not GPU_SUBMISSION_ID_RE.fullmatch(submission_id):
+        raise ValueError("submission bridge request id is invalid")
+    digest = hashlib.sha256(content).hexdigest()
+    if digest != str(receipt.get("policy_sha256") or ""):
+        raise ValueError("submission bridge host staging checksum mismatch")
+
+    raw_trial = run.get("trial_path")
+    trial = Path(str(raw_trial)).resolve() if raw_trial else None
+    if trial is None or not trial.is_dir():
+        _job, trial = sprintctl.discover_job_and_trial(
+            Path(str(run["state_dir"])), run
+        )
+    if trial is None:
+        raise RuntimeError("Harbor trial directory is unavailable for submission staging")
+
+    incoming = trial / HOST_CONTINUOUS_INCOMING
+    incoming.mkdir(parents=True, exist_ok=True)
+    target = incoming / f"{submission_id}.pt"
+    if target.exists():
+        if target.stat().st_size != len(content) or hashlib.sha256(
+            target.read_bytes()
+        ).hexdigest() != digest:
+            raise RuntimeError("submission bridge request id already has different bytes")
+        return target
+
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{submission_id}.", suffix=".tmp", dir=incoming
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.chmod(0o400)
+        try:
+            os.link(temporary, target)
+        except FileExistsError:
+            if target.stat().st_size != len(content) or hashlib.sha256(
+                target.read_bytes()
+            ).hexdigest() != digest:
+                raise RuntimeError(
+                    "submission bridge request id concurrently staged different bytes"
+                )
+        directory_fd = os.open(incoming, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return target
+
+
+def _mirror_worker_policy_to_cpu_agent(
     run: dict[str, Any], receipt: dict[str, Any], content: bytes
 ) -> dict[str, Any]:
-    """Transfer exact bytes to the CPU sandbox and invoke its archive CLI."""
+    """Best-effort compatibility mirror through the CPU agent's archive CLI."""
     envelope = gzip.compress(
         json.dumps(
             {
@@ -637,6 +697,37 @@ finally:
     result = json.loads(stdout)
     if not isinstance(result, dict):
         raise RuntimeError("CPU archive bridge returned malformed output")
+    return result
+
+
+def submit_worker_policy_to_cpu_agent(
+    run: dict[str, Any], receipt: dict[str, Any], content: bytes
+) -> dict[str, Any]:
+    """Durably submit exact bytes, then mirror them to the agent if it is alive."""
+    host_path = stage_worker_policy_on_host(run, receipt, content)
+    result: dict[str, Any] = {
+        "returncode": 0,
+        "host_queue_path": str(host_path),
+    }
+    try:
+        mirrored = _mirror_worker_policy_to_cpu_agent(run, receipt, content)
+    except Exception as exc:  # noqa: BLE001
+        error = f"{type(exc).__name__}: {exc}"
+        result.update({"stderr": error, "agent_mirror_error": error})
+        return result
+    result.update(
+        {
+            "stdout": str(mirrored.get("stdout") or "")[-2000:],
+            "stderr": str(mirrored.get("stderr") or "")[-2000:],
+        }
+    )
+    result.update(
+        {
+            "agent_mirror_returncode": mirrored.get("returncode"),
+            "agent_mirror_stdout": str(mirrored.get("stdout") or "")[-2000:],
+            "agent_mirror_stderr": str(mirrored.get("stderr") or "")[-2000:],
+        }
+    )
     return result
 
 
