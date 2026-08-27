@@ -746,6 +746,7 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
             timeout=UPSTREAM_SOCKET_TIMEOUT_SECONDS,
             context=ssl.create_default_context(),
         )
+        downstream_headers_sent = False
         try:
             connection.request(
                 self.command,
@@ -772,6 +773,7 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                 self.send_header(name, value)
             self.send_header("Connection", "close")
             self.end_headers()
+            downstream_headers_sent = True
             self.close_connection = True
 
             content_type = upstream.getheader("Content-Type") or ""
@@ -959,25 +961,7 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                     self.ledger_server.complete_request(request_id, 0.0, 0.0)
                 else:
                     self.ledger_server.require_cost_recovery(request_id)
-                    recovered = self.ledger_server.recover_request_until(
-                        request_id,
-                        timeout_seconds=OPENROUTER_GENERATION_RECOVERY_TIMEOUT_SECONDS,
-                    )
-                    if not recovered:
-                        recovered = (
-                            self.ledger_server.resolve_unbilled_request_from_key_usage(
-                                request_id
-                            )
-                        )
-                    if not recovered:
-                        self.ledger_server.write_stop(
-                            {
-                                "schema_version": 2,
-                                "run_id": self.ledger_server.run_id,
-                                "reason": "budget_telemetry_unavailable",
-                                "status": "fail_closed",
-                            }
-                        )
+                    self.ledger_server.recover_request_charge_or_stop(request_id)
                 if valid_cost:
                     try:
                         _allowed, snapshot = self.ledger_server.budget_snapshot()
@@ -1012,7 +996,8 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                     )
                     atomic_json(record_path, record)
                     self.ledger_server.require_cost_recovery(request_id)
-            if not self.wfile.closed:
+                    self.ledger_server.recover_request_charge_or_stop(request_id)
+            if not downstream_headers_sent and not self.wfile.closed:
                 try:
                     self.send_error(HTTPStatus.BAD_GATEWAY, "upstream request failed")
                 except (BrokenPipeError, ConnectionResetError, OSError):
@@ -1584,6 +1569,32 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
                 return False
             time.sleep(min(OPENROUTER_GENERATION_RECOVERY_POLL_SECONDS, remaining))
         return True
+
+    def recover_request_charge_or_stop(self, request_id: str) -> bool:
+        """Resolve one ambiguous charge before releasing its billing turn.
+
+        Both a clean stream that omits terminal usage and an upstream stream
+        exception can represent a successfully billed OpenRouter generation.
+        Keep the per-trial billing lock held while the provider audit catches
+        up, then use the isolated child-key total to prove a genuinely unbilled
+        request.  Only an ambiguity that survives both checks may stop the run.
+        """
+        recovered = self.recover_request_until(
+            request_id,
+            timeout_seconds=OPENROUTER_GENERATION_RECOVERY_TIMEOUT_SECONDS,
+        )
+        if not recovered:
+            recovered = self.resolve_unbilled_request_from_key_usage(request_id)
+        if not recovered:
+            self.write_stop(
+                {
+                    "schema_version": 2,
+                    "run_id": self.run_id,
+                    "reason": "budget_telemetry_unavailable",
+                    "status": "fail_closed",
+                }
+            )
+        return recovered
 
     def resolve_unbilled_request_from_key_usage(self, request_id: str) -> bool:
         """Seal a missing generation only when the isolated key proves $0 billed.

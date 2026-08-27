@@ -1349,6 +1349,91 @@ def test_proxy_generation_recovery_has_hard_deadline(
         server.server_close()
 
 
+def test_proxy_ambiguous_charge_recovery_stops_only_after_both_checks_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_root = tmp_path / "runs/run-1"
+    write_run_contract(run_root)
+    server = proxy.LedgerProxyServer(
+        ("127.0.0.1", 0),
+        upstream="https://openrouter.ai/api/v1",
+        ledger_root=run_root / "api-usage",
+        run_id="run-1",
+        cpu_attempt=1,
+        runtime_dir=tmp_path / "runtime",
+    )
+    server.cost_recovery_required_request_ids.add(REQUEST_1)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        server,
+        "recover_request_until",
+        lambda request_id, *, timeout_seconds: (
+            calls.append(f"generation:{request_id}:{timeout_seconds}") or False
+        ),
+    )
+    monkeypatch.setattr(
+        server,
+        "resolve_unbilled_request_from_key_usage",
+        lambda request_id: calls.append(f"key:{request_id}") or False,
+    )
+    try:
+        assert server.recover_request_charge_or_stop(REQUEST_1) is False
+        assert calls == [
+            f"generation:{REQUEST_1}:120.0",
+            f"key:{REQUEST_1}",
+        ]
+        marker = json.loads((run_root / "BUDGET_STOP_REQUESTED.json").read_text())
+        assert marker == {
+            "schema_version": 2,
+            "run_id": "run-1",
+            "reason": "budget_telemetry_unavailable",
+            "status": "fail_closed",
+        }
+    finally:
+        server.server_close()
+
+
+@pytest.mark.parametrize("generation_recovered", [True, False])
+def test_proxy_ambiguous_charge_recovery_does_not_stop_after_exact_resolution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    generation_recovered: bool,
+) -> None:
+    run_root = tmp_path / "runs/run-1"
+    write_run_contract(run_root)
+    server = proxy.LedgerProxyServer(
+        ("127.0.0.1", 0),
+        upstream="https://openrouter.ai/api/v1",
+        ledger_root=run_root / "api-usage",
+        run_id="run-1",
+        cpu_attempt=1,
+        runtime_dir=tmp_path / "runtime",
+    )
+    server.cost_recovery_required_request_ids.add(REQUEST_1)
+    key_calls = 0
+    monkeypatch.setattr(
+        server,
+        "recover_request_until",
+        lambda _request_id, *, timeout_seconds: generation_recovered,
+    )
+
+    def recover_from_key(_request_id: str) -> bool:
+        nonlocal key_calls
+        key_calls += 1
+        return True
+
+    monkeypatch.setattr(
+        server, "resolve_unbilled_request_from_key_usage", recover_from_key
+    )
+    try:
+        assert server.recover_request_charge_or_stop(REQUEST_1) is True
+        assert key_calls == (0 if generation_recovered else 1)
+        assert not (run_root / "BUDGET_STOP_REQUESTED.json").exists()
+        assert not (tmp_path / "runtime/sprint-stop").exists()
+    finally:
+        server.server_close()
+
+
 def test_proxy_resolves_missing_generation_only_when_child_key_proves_unbilled(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1439,6 +1524,106 @@ def test_proxy_keeps_missing_generation_fail_closed_when_child_key_usage_grew(
         assert json.loads(record.read_text())["state"] == "cost_recovery_required"
     finally:
         server.server_close()
+
+
+def test_upstream_incomplete_read_waits_for_charge_recovery_before_returning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_root = tmp_path / "runs/run-1"
+    write_run_contract(run_root, model="openai/gpt-5.6-luna")
+    monkeypatch.setattr(
+        proxy,
+        "capture_endpoint_discount_snapshot",
+        lambda **_: (_ for _ in ()).throw(
+            proxy.OpenRouterPricingError("transient metadata outage")
+        ),
+    )
+
+    class IncompleteResponse:
+        status = 200
+        reason = "OK"
+
+        def getheader(self, name: str) -> str | None:
+            return {
+                "Content-Type": "text/event-stream",
+                "X-Generation-Id": "gen-incomplete",
+            }.get(name)
+
+        def getheaders(self) -> list[tuple[str, str]]:
+            return [("Content-Type", "text/event-stream")]
+
+        def read(self, _size: int) -> bytes:
+            raise http.client.IncompleteRead(b"", 1)
+
+    class IncompleteConnection:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def request(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def getresponse(self) -> IncompleteResponse:
+            return IncompleteResponse()
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(proxy.http.client, "HTTPSConnection", IncompleteConnection)
+    server = proxy.LedgerProxyServer(
+        ("127.0.0.1", 0),
+        upstream="https://openrouter.ai/api/v1",
+        ledger_root=run_root / "api-usage",
+        run_id="run-1",
+        cpu_attempt=1,
+        runtime_dir=tmp_path / "runtime",
+        provider_endpoint="openai",
+        request_contract={
+            "model": "openai/gpt-5.6-luna",
+            "max_output_tokens": 128_000,
+            "reasoning": {"effort": "max", "summary": "auto"},
+            "service_tier": "default",
+        },
+        allowed_inference_path="responses",
+        upstream_api_key="sealed-child-key-123456",
+    )
+    recovered: list[str] = []
+
+    def recover(request_id: str) -> bool:
+        assert server.cost_recovery_required_request_ids == {request_id}
+        record = json.loads((server.requests_dir / f"{request_id}.json").read_text())
+        assert record["state"] == "cost_recovery_required"
+        assert record["generation_id"] == "gen-incomplete"
+        assert record["proxy_error_type"] == "IncompleteRead"
+        server.cost_recovery_required_request_ids.remove(request_id)
+        server.write_summary()
+        recovered.append(request_id)
+        return True
+
+    monkeypatch.setattr(server, "recover_request_charge_or_stop", recover)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        client.request(
+            "POST",
+            "/api/v1/responses",
+            body=json.dumps({"model": "caller/model", "input": "hello"}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        response = client.getresponse()
+        assert response.status == 200
+        assert response.read() == b""
+        client.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert len(recovered) == 1
+    summary = json.loads((run_root / "api-usage/summary.json").read_text())
+    assert summary["pending_request_count"] == 0
+    assert not (run_root / "BUDGET_STOP_REQUESTED.json").exists()
+    assert not (tmp_path / "runtime/sprint-stop").exists()
 
 
 def test_streaming_chat_completions_is_sealed_metered_and_peak_normalized(
