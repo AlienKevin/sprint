@@ -4220,6 +4220,83 @@ class RetryAndFencingTests(unittest.TestCase):
             )
         )
 
+    def test_agent_cancel_during_spawn_fences_new_sandbox(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            run = {
+                "run_id": "unit",
+                "state_dir": raw,
+                "cpu_agent_gpu_worker": True,
+            }
+            jobs = {
+                "queued": {
+                    "job_id": "queued",
+                    "run_id": "unit",
+                    "status": "pending",
+                    "command": ["python3", "train.py"],
+                }
+            }
+
+            def load_job(_run, job_id, **_kwargs):
+                return dict(jobs[job_id])
+
+            def persist_job(_run, payload):
+                jobs[str(payload["job_id"])] = dict(payload)
+                return dict(payload)
+
+            handle = mock.Mock(attempt_id="sb-cancelled")
+            with (
+                mock.patch.object(
+                    gpu_worker.sprintctl,
+                    "load_run",
+                    return_value=(Path(raw), run),
+                ),
+                mock.patch.object(
+                    gpu_worker,
+                    "indexed_agent_jobs",
+                    side_effect=[
+                        {"queued": {"job": dict(jobs["queued"])}},
+                        {
+                            "queued": {
+                                "job": dict(jobs["queued"]),
+                                "cancel_state": "cancelled_before_dispatch",
+                            }
+                        },
+                    ],
+                ),
+                mock.patch.object(gpu_worker, "list_job_ids", return_value=["queued"]),
+                mock.patch.object(gpu_worker, "load_job", side_effect=load_job),
+                mock.patch.object(gpu_worker, "persist_job", side_effect=persist_job),
+                mock.patch.object(
+                    gpu_worker, "persist_host_job", side_effect=persist_job
+                ),
+                mock.patch.object(
+                    gpu_worker, "pin_work_archive", side_effect=lambda _run, job: job
+                ),
+                mock.patch.object(gpu_worker, "restore_pinned_work_archive"),
+                mock.patch.object(
+                    gpu_worker.ModalSandboxProvider,
+                    "start",
+                    return_value=handle,
+                ),
+                mock.patch.object(gpu_worker, "_close_attempt_timeline"),
+                mock.patch.object(gpu_worker, "_timeline_event"),
+                mock.patch.object(
+                    gpu_worker, "_terminate_sandbox", return_value=None
+                ) as terminate,
+            ):
+                result = gpu_worker.dispatch_once("unit")
+
+        self.assertEqual(jobs["queued"]["status"], "terminated")
+        self.assertEqual(
+            jobs["queued"]["termination_reason"],
+            "agent_cancelled_during_spawn",
+        )
+        self.assertEqual(jobs["queued"]["sandbox_id"], "sb-cancelled")
+        self.assertEqual(
+            result["actions"][0]["action"], "agent_cancelled_during_spawn"
+        )
+        terminate.assert_called_once()
+
     def test_preemption_is_terminal_and_fences_lease(self) -> None:
         job = {
             "job_id": "logical",
@@ -5003,6 +5080,17 @@ class AgentGpuCliTests(unittest.TestCase):
             enriched["artifact_retrieval"]["retry_commands"],
             ["event gpu get job-1 /app/diagnostics.json"],
         )
+
+    def test_cancelled_job_does_not_claim_missing_artifact_is_syncing(self) -> None:
+        payload = {
+            "status": "terminated",
+            "termination_reason": "agent_cancelled_during_spawn",
+            "output_paths": ["/app/diagnostics.json"],
+        }
+
+        enriched = train_cli.status_with_artifact_retrieval(payload, "job-1")
+
+        self.assertNotIn("artifact_retrieval", enriched)
 
     def test_get_retrieves_non_policy_declared_output(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

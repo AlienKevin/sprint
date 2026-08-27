@@ -641,7 +641,12 @@ def artifact_mirrors(payload: dict) -> dict[str, dict]:
 
 def artifact_expected(payload: dict, destination: str | None = None) -> bool:
     """Whether a terminal job returned a declared artifact awaiting mirroring."""
-    if str(payload.get("status") or "") not in TERMINAL_STATUSES:
+    # A failed, cancelled, or preempted worker may declare outputs that it
+    # never produced.  Without positive mirror evidence, only a successful job
+    # should tell the agent that an artifact is still syncing; otherwise the
+    # interface can send the agent into an endless retry loop for a file that
+    # cannot exist.
+    if str(payload.get("status") or "") != "succeeded":
         return False
     declared = declared_artifact_destinations(payload)
     return destination in declared if destination else bool(declared)

@@ -4388,6 +4388,23 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
                 )
                 handle = ModalSandboxProvider(run).start(claimed, lease)
                 sandbox_id = handle.attempt_id
+                # Sandbox.create may take tens of seconds while the dispatch
+                # lock is held.  The agent can cancel the still-undispatched
+                # job during that window by updating the durable delivery
+                # index.  Re-read that exact index before publishing the
+                # allocation so the new sandbox is fenced immediately instead
+                # of starting with a lease the agent has already cancelled.
+                try:
+                    post_spawn_indexed = indexed_agent_jobs(run) or {}
+                except (RuntimeError, ValueError, json.JSONDecodeError):
+                    # A transient Volume read must not orphan a sandbox that
+                    # Modal has already allocated.  The normal ownership and
+                    # worker-side lease checks remain authoritative fallbacks.
+                    post_spawn_indexed = {}
+                cancelled_during_spawn = (
+                    post_spawn_indexed.get(job_id, {}).get("cancel_state")
+                    == "cancelled_before_dispatch"
+                )
                 # Re-confirm ownership before publishing sandbox_id.
                 latest = load_job(run, job_id)
                 if not gpu_claim.ownership_matches(latest, claim_id):
@@ -4401,6 +4418,22 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
                     )
                     continue
                 payload = mark_dispatched(run, latest or claimed, sandbox_id)
+                if cancelled_during_spawn:
+                    payload = _terminate_job_locked(
+                        run,
+                        job_id,
+                        reason="agent_cancelled_during_spawn",
+                    )
+                    actions.append(
+                        {
+                            "job_id": job_id,
+                            "attempt": payload.get("attempt"),
+                            "sandbox_id": sandbox_id,
+                            "status": payload.get("status"),
+                            "action": "agent_cancelled_during_spawn",
+                        }
+                    )
+                    break
                 _timeline_event(
                     run,
                     payload,
