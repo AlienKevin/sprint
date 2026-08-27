@@ -1077,6 +1077,16 @@ def attach_terminal_submission_evidence(
     return persist_job(run, payload)
 
 
+def terminal_cpu_unavailable(run: dict[str, Any]) -> bool:
+    state_dir_raw = str(run.get("state_dir") or "")
+    if not state_dir_raw:
+        return False
+    state_dir = Path(state_dir_raw)
+    return (state_dir / "STOP_ACK.json").is_file() or (
+        state_dir / "FINALIZED.json"
+    ).is_file()
+
+
 def mirror_agent_job(
     run: dict[str, Any],
     job: dict[str, Any],
@@ -1094,13 +1104,8 @@ def mirror_agent_job(
     no-control-plane-credentials boundary. The complete log remains on the
     durable Volume.
     """
-    state_dir_raw = str(run.get("state_dir") or "")
-    if state_dir_raw:
-        state_dir = Path(state_dir_raw)
-        if (state_dir / "STOP_ACK.json").is_file() or (
-            state_dir / "FINALIZED.json"
-        ).is_file():
-            return {"agent_mirror": "terminal_cpu_unavailable"}
+    if terminal_cpu_unavailable(run):
+        return {"agent_mirror": "terminal_cpu_unavailable"}
     container_id = str(run.get("agent_container_id") or "")
     job_id = str(job.get("job_id") or "")
     if not container_id.startswith("ta-") or not job_id:
@@ -3018,6 +3023,8 @@ def persist_job(run: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]:
     """Write the host canonical record, then agent-visible Volume mirrors."""
     prefix = jobs_prefix(str(run["run_id"]))
     persist_host_job(run, job)
+    if terminal_cpu_unavailable(run):
+        return job
     job_id = str(job["job_id"])
     put_json(run, f"{prefix}/status/{job_id}.json", job)
     mirror_agent_job(run, job)

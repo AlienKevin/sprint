@@ -844,6 +844,23 @@ class WorkerRuntimeBoundaryTests(unittest.TestCase):
         self.assertEqual(detail["agent_mirror"], "terminal_cpu_unavailable")
         execute.assert_not_called()
 
+    def test_terminal_run_persists_job_without_remote_delivery_mirrors(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            (state / "STOP_ACK.json").write_text("{}\n")
+            run = {"run_id": "run-1", "state_dir": str(state)}
+            job = {"job_id": "job-1", "status": "succeeded"}
+            with (
+                mock.patch.object(gpu_worker, "persist_host_job") as persist_host,
+                mock.patch.object(gpu_worker, "put_json") as put_remote,
+                mock.patch.object(gpu_worker, "mirror_agent_job") as mirror_agent,
+            ):
+                result = gpu_worker.persist_job(run, job)
+        self.assertEqual(result, job)
+        persist_host.assert_called_once_with(run, job)
+        put_remote.assert_not_called()
+        mirror_agent.assert_not_called()
+
     def test_streams_large_agent_mirror_payload_over_sandbox_stdin(self) -> None:
         captured = bytearray()
 
