@@ -1544,6 +1544,55 @@ def test_host_registry_clamps_pre_spawn_training_interval(
     assert payload["coverage"]["requirements"]["training_gpu_metrics"] is True
 
 
+def test_host_registry_clamps_telemetry_to_worker_start(tmp_path: Path) -> None:
+    state = fixture_run(tmp_path)
+    lifecycle = state / "telemetry" / "gpu_timeline.jsonl"
+    rows = [json.loads(line) for line in lifecycle.read_text().splitlines()]
+    rows.append(
+        {
+            "event_id": "sandbox-create-job-1",
+            "epoch_s": 1786104004,
+            "phase": "gpu_sandbox_create",
+            "action": "enter",
+            "job_id": "job-1",
+            "attempt": 1,
+        }
+    )
+    write_jsonl(lifecycle, rows)
+    registry = state / "gpu-job-registry" / "job-1.json"
+    registry.parent.mkdir(parents=True)
+    registry.write_text(
+        json.dumps(
+            {
+                "job_id": "job-1",
+                "attempt": 1,
+                "status": "succeeded",
+                "dispatched_at_epoch_s": 1786104006,
+                "started_at_epoch_s": 1786104010,
+                "finished_at_epoch_s": 1786104020,
+            }
+        )
+    )
+
+    payload = unified_timeline.build_timeline(state)
+
+    attempt_one = next(
+        item
+        for item in payload["coverage"]["gpu_metric_coverage"]["training"]
+        if item.get("gpu_job_id") == "job-1" and item.get("gpu_attempt") == 1
+    )
+    assert attempt_one["raw_start_epoch_ms"] == 1786104005000
+    assert attempt_one["start_epoch_ms"] == 1786104010000
+    assert attempt_one["leading_gap_ms"] == 1000
+    assert attempt_one["covered"] is True
+    assert (
+        payload["resource_usage_summary"]["training_gpu"][
+            "billing_upper_bound_intervals"
+        ][0]["start_epoch_ms"]
+        == 1786104004000
+    )
+
+
 def test_preworker_terminated_allocation_does_not_require_impossible_gpu_samples(
     tmp_path: Path,
 ) -> None:

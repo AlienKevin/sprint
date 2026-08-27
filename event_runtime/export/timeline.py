@@ -698,6 +698,17 @@ class Builder:
                     )
                     if worker_started_at is not None:
                         bounds["worker_started"] = True
+                        # Resource sampling starts with the worker, not when
+                        # Modal first returns the allocated sandbox.  Billing
+                        # intentionally retains the earlier create/allocation
+                        # boundary in ``training_billing_intervals`` below;
+                        # telemetry coverage must use the independently
+                        # attested worker start or normal container startup
+                        # latency is misclassified as a missing sample gap.
+                        bounds["start_epoch_ms"] = max(
+                            worker_started_at,
+                            bounds.get("start_epoch_ms", worker_started_at),
+                        )
                     elif (
                         terminal_values
                         and str(record.get("status") or "") == "terminated"
