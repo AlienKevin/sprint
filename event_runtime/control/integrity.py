@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 DEFAULT_MIN_BUDGET_UTILIZATION_FOR_REVIEW = 0.90
@@ -386,6 +386,14 @@ def build_integrity_report(state_dir: Path, run: dict[str, Any]) -> dict[str, An
                     path.name,
                     f"GPU job used attempt {attempt}"
                     + (f" after {retry_reason}" if retry_reason else ""),
+                )
+            )
+        if str(job.get("status") or "") == "preempted":
+            reasons.append(
+                _reason(
+                    "gpu_worker_preempted",
+                    path.name,
+                    "GPU provider preempted the job before it completed",
                 )
             )
         terminate_error = str(job.get("terminate_error") or "").strip()

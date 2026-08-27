@@ -433,6 +433,28 @@ def test_gpu_retry_and_unconfirmed_termination_are_invalid(tmp_path: Path) -> No
     }
 
 
+def test_gpu_preemption_is_invalid_without_a_hidden_retry(tmp_path: Path) -> None:
+    registry = tmp_path / "gpu-job-registry"
+    registry.mkdir()
+    (registry / "job-1.json").write_text(
+        json.dumps(
+            {
+                "job_id": "job-1",
+                "attempt": 1,
+                "status": "preempted",
+            }
+        )
+    )
+
+    report = build_integrity_report(tmp_path, run_contract("gpu-preempted"))
+
+    assert report["benchmark_valid"] is False
+    assert report["replacement_required"] is True
+    assert {reason["code"] for reason in report["reasons"]} == {
+        "gpu_worker_preempted"
+    }
+
+
 def test_gpu_budget_feed_failure_is_invalid_even_when_attributed(
     tmp_path: Path,
 ) -> None:
