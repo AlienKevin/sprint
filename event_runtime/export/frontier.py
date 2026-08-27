@@ -661,15 +661,33 @@ def scan_frontier(
 
 
 @contextlib.contextmanager
-def file_lock(path: Path, *, blocking: bool = True) -> Iterator[bool]:
+def file_lock(
+    path: Path,
+    *,
+    blocking: bool = True,
+    timeout_seconds: float | None = None,
+) -> Iterator[bool]:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+") as handle:
-        operation = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
-        try:
-            fcntl.flock(handle, operation)
-        except BlockingIOError:
-            yield False
-            return
+        if blocking and timeout_seconds is None:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+        else:
+            deadline = (
+                None
+                if timeout_seconds is None
+                else time.monotonic() + max(0.0, float(timeout_seconds))
+            )
+            while True:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if not blocking or (
+                        deadline is not None and time.monotonic() >= deadline
+                    ):
+                        yield False
+                        return
+                    time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
         try:
             yield True
         finally:

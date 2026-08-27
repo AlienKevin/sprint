@@ -155,6 +155,38 @@ class DurableOpsTests(unittest.TestCase):
             self.assertFalse(state["rate_limited"])
             self.assertEqual(state["attempt"], 2)
 
+    def test_modal_volume_list_lock_wait_is_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            lock_path = root / "volume.lock"
+            with (
+                mock.patch.object(sprintctl, "MODAL_VOLUME_LIST_LOCK", lock_path),
+                mock.patch.object(
+                    sprintctl,
+                    "MODAL_VOLUME_LIST_STATE",
+                    root / "volume-state.json",
+                ),
+                frontier_update.file_lock(lock_path),
+                mock.patch.object(sprintctl.subprocess, "run") as runner,
+            ):
+                started_at = time.monotonic()
+                with self.assertRaisesRegex(
+                    TimeoutError,
+                    "Modal VolumeListFiles coordinator",
+                ):
+                    sprintctl.run_command(
+                        sprintctl.modal_command(
+                            "volume", "ls", "--json", "volume", "/queue"
+                        ),
+                        run={"run_id": "blocked-run"},
+                        check=False,
+                        timeout=0.05,
+                    )
+                elapsed = time.monotonic() - started_at
+
+            runner.assert_not_called()
+            self.assertLess(elapsed, 0.5)
+
     def test_live_finalize_defers_recursive_reconciliation(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             state = Path(raw)

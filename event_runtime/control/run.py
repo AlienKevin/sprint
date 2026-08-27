@@ -187,8 +187,18 @@ def run_modal_volume_list_command(
     argv = list(command)
     operation = _modal_volume_list_operation(argv) or "unknown"
     result: subprocess.CompletedProcess[str] | None = None
+    deadline = time.monotonic() + max(0.0, float(timeout))
     for attempt in range(1, MODAL_VOLUME_LIST_MAX_ATTEMPTS + 1):
-        with file_lock(MODAL_VOLUME_LIST_LOCK):
+        lock_wait_seconds = max(0.0, deadline - time.monotonic())
+        with file_lock(
+            MODAL_VOLUME_LIST_LOCK,
+            timeout_seconds=lock_wait_seconds,
+        ) as acquired:
+            if not acquired:
+                raise TimeoutError(
+                    f"timed out after {timeout}s waiting for the account-wide "
+                    f"Modal VolumeListFiles coordinator ({operation})"
+                )
             state = _modal_volume_list_state()
             now = time.time()
             not_before = max(
@@ -197,7 +207,19 @@ def run_modal_volume_list_command(
                 float(state.get("not_before_epoch_s") or 0),
             )
             if not_before > now:
-                time.sleep(not_before - now)
+                delay = not_before - now
+                if delay >= deadline - time.monotonic():
+                    raise TimeoutError(
+                        f"timed out after {timeout}s waiting for the account-wide "
+                        f"Modal VolumeListFiles cooldown ({operation})"
+                    )
+                time.sleep(delay)
+            command_timeout = deadline - time.monotonic()
+            if command_timeout <= 0:
+                raise TimeoutError(
+                    f"timed out after {timeout}s before the account-wide "
+                    f"Modal VolumeListFiles command could start ({operation})"
+                )
             started_at = time.time()
             result = subprocess.run(
                 argv,
@@ -206,7 +228,7 @@ def run_modal_volume_list_command(
                 stderr=subprocess.PIPE,
                 env=command_env(run or {}),
                 check=False,
-                timeout=timeout,
+                timeout=command_timeout,
             )
             finished_at = time.time()
             limited = result.returncode != 0 and _modal_volume_rate_limited(result)
