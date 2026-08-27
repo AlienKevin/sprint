@@ -46,6 +46,13 @@ def _read_json(path: Path) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _epoch(value: Any) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _reason(
     code: str, source: str, detail: str, *, severity: str = "invalid"
 ) -> dict[str, str]:
@@ -429,8 +436,9 @@ def build_integrity_report(state_dir: Path, run: dict[str, Any]) -> dict[str, An
     observations["gpu_jobs"] = gpu_jobs
     observations["gpu_jobs_retried"] = retried_jobs
 
-    requested_cancels: dict[str, str] = {}
+    requested_cancels: dict[str, tuple[str, float]] = {}
     acknowledged_cancels: set[str] = set()
+    terminal_acknowledgements: list[tuple[str, float]] = []
     try:
         control_lines = (state_dir / "control-events.jsonl").read_text().splitlines()
     except OSError:
@@ -444,10 +452,24 @@ def build_integrity_report(state_dir: Path, run: dict[str, Any]) -> dict[str, An
         if not request_id:
             continue
         if event.get("event") == "cancel_requested":
-            requested_cancels[request_id] = str(event.get("job_id") or "unknown")
+            requested_cancels[request_id] = (
+                str(event.get("job_id") or "unknown"),
+                _epoch(event.get("recorded_at_epoch_s")),
+            )
         elif event.get("event") == "cancel_acknowledged":
             acknowledged_cancels.add(request_id)
-    for request_id, job_id in requested_cancels.items():
+            if str(event.get("outcome") or "") in {
+                "already_terminal",
+                "terminated",
+                "forced_terminated",
+            }:
+                terminal_acknowledgements.append(
+                    (
+                        str(event.get("job_id") or "unknown"),
+                        _epoch(event.get("recorded_at_epoch_s")),
+                    )
+                )
+    for request_id, (job_id, requested_at) in requested_cancels.items():
         # The terminal registry record is itself durable provider evidence. A
         # controller can be stopped after persisting that record but before it
         # appends the redundant acknowledgement event; do not invalidate a
@@ -462,6 +484,24 @@ def build_integrity_report(state_dir: Path, run: dict[str, Any]) -> dict[str, An
         )
         if registry_acknowledged:
             acknowledged_cancels.add(request_id)
+        # The agent can repeat a cancellation after the command has already
+        # ended, replacing the live request file before the controller writes
+        # the first acknowledgement. A later terminal acknowledgement for the
+        # same job proves the earlier request cannot leave compute running. Do
+        # not apply this across missing timestamps or to a request made after
+        # the acknowledgement.
+        superseded_acknowledged = (
+            requested_at > 0
+            and str(job.get("status") or "") in GPU_TERMINAL_STATUSES
+            and not str(job.get("terminate_error") or "").strip()
+            and any(
+                ack_job_id == job_id and ack_at >= requested_at
+                for ack_job_id, ack_at in terminal_acknowledgements
+                if ack_at > 0
+            )
+        )
+        if superseded_acknowledged:
+            acknowledged_cancels.add(request_id)
         if request_id not in acknowledged_cancels:
             reasons.append(
                 _reason(
@@ -471,7 +511,9 @@ def build_integrity_report(state_dir: Path, run: dict[str, Any]) -> dict[str, An
                 )
             )
     observations["cancel_requests"] = len(requested_cancels)
-    observations["cancel_requests_acknowledged"] = len(acknowledged_cancels)
+    observations["cancel_requests_acknowledged"] = len(
+        set(requested_cancels) & acknowledged_cancels
+    )
 
     # These outcomes are suspicious, but not sufficient by themselves to call
     # a benchmark run invalid: a capable agent may intentionally withhold every

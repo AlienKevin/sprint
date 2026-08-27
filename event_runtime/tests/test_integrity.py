@@ -543,3 +543,74 @@ def test_terminal_cancel_registry_record_is_authoritative_acknowledgement(
 
     assert report["benchmark_valid"] is True
     assert report["observations"]["cancel_requests_acknowledged"] == 1
+
+
+def test_later_terminal_acknowledgement_covers_replaced_cancel_request(
+    tmp_path: Path,
+) -> None:
+    first_request = "a" * 32
+    replacement_request = "b" * 32
+    events = [
+        {
+            "event": "cancel_requested",
+            "request_id": first_request,
+            "job_id": "job-1",
+            "recorded_at_epoch_s": 10,
+        },
+        {
+            "event": "cancel_acknowledged",
+            "request_id": replacement_request,
+            "job_id": "job-1",
+            "outcome": "already_terminal",
+            "status": "failed",
+            "recorded_at_epoch_s": 20,
+        },
+    ]
+    (tmp_path / "control-events.jsonl").write_text(
+        "".join(json.dumps(event) + "\n" for event in events)
+    )
+    registry = tmp_path / "gpu-job-registry"
+    registry.mkdir()
+    (registry / "job-1.json").write_text(
+        json.dumps({"job_id": "job-1", "status": "failed"})
+    )
+
+    report = build_integrity_report(tmp_path, run_contract("cancel-replaced"))
+
+    assert report["benchmark_valid"] is True
+    assert report["observations"]["cancel_requests"] == 1
+    assert report["observations"]["cancel_requests_acknowledged"] == 1
+
+
+def test_earlier_terminal_ack_does_not_cover_later_cancel_request(tmp_path: Path) -> None:
+    events = [
+        {
+            "event": "cancel_acknowledged",
+            "request_id": "a" * 32,
+            "job_id": "job-1",
+            "outcome": "already_terminal",
+            "status": "failed",
+            "recorded_at_epoch_s": 10,
+        },
+        {
+            "event": "cancel_requested",
+            "request_id": "b" * 32,
+            "job_id": "job-1",
+            "recorded_at_epoch_s": 20,
+        },
+    ]
+    (tmp_path / "control-events.jsonl").write_text(
+        "".join(json.dumps(event) + "\n" for event in events)
+    )
+    registry = tmp_path / "gpu-job-registry"
+    registry.mkdir()
+    (registry / "job-1.json").write_text(
+        json.dumps({"job_id": "job-1", "status": "failed"})
+    )
+
+    report = build_integrity_report(tmp_path, run_contract("cancel-after-ack"))
+
+    assert report["benchmark_valid"] is False
+    assert {reason["code"] for reason in report["reasons"]} == {
+        "gpu_cancellation_unacknowledged"
+    }
