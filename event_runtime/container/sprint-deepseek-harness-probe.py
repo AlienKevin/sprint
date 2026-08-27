@@ -11,6 +11,7 @@ from pathlib import Path
 import sys
 import tempfile
 import threading
+import time
 
 from deepseek_harness import DeepSeekHarness
 
@@ -20,22 +21,26 @@ RUNTIME = os.environ.get("DSH_PROBE_RUNTIME", "/usr/local/bin/dsh-jsonrpc-agent"
 CORDIS = os.environ.get("DSH_PROBE_CORDIS", "/opt/deepseek-harness-minimal.cordis.yml")
 RUNNER = Path(
     os.environ.get(
-        "DSH_PROBE_RUNNER", "/opt/event_runtime/container/sprint-deepseek-harness-runner.py"
+        "DSH_PROBE_RUNNER",
+        "/opt/event_runtime/container/sprint-deepseek-harness-runner.py",
     )
 )
 FAILED_PARTIAL_TEXT = "partial-stream-content-must-not-surface"
+STRESS_CHUNKS = int(os.environ.get("DSH_PROBE_STRESS_CHUNKS", "20000"))
 
 
 class Handler(BaseHTTPRequestHandler):
     request_payloads: list[dict[str, object]] = []
+    request_times: list[float] = []
 
     def log_message(self, _format: str, *_args: object) -> None:
         return
 
     def _send_events(self, events: list[dict[str, object]]) -> None:
-        body = b"".join(
-            f"data: {json.dumps(event)}\n\n".encode() for event in events
-        ) + b"data: [DONE]\n\n"
+        body = (
+            b"".join(f"data: {json.dumps(event)}\n\n".encode() for event in events)
+            + b"data: [DONE]\n\n"
+        )
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Content-Length", str(len(body)))
@@ -48,6 +53,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         length = int(self.headers.get("Content-Length") or 0)
         type(self).request_payloads.append(json.loads(self.rfile.read(length)))
+        type(self).request_times.append(time.monotonic())
         request_number = len(type(self).request_payloads)
         if request_number == 1:
             # Simulate the observed provider failure: valid SSE content arrives,
@@ -80,38 +86,60 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(500, f"unexpected request {request_number}")
             return
         response_text = "smoke-ok" if request_number == 2 else "round-ok"
-        events = [
-            {
-                "id": "probe-generation",
-                "object": "chat.completion.chunk",
-                "model": MODEL,
-                "choices": [
-                    {
-                        "index": 0,
-                        "delta": {"role": "assistant", "content": response_text},
-                        "finish_reason": None,
-                    }
-                ],
-            },
-            {
-                "id": "probe-generation",
-                "object": "chat.completion.chunk",
-                "model": MODEL,
-                "choices": [
-                    {"index": 0, "delta": {}, "finish_reason": "stop"}
-                ],
-                "usage": {
-                    "prompt_tokens": 100,
-                    "completion_tokens": 2,
-                    "total_tokens": 102,
+        events = []
+        if request_number == 2:
+            # Exercise continuation after a substantial streamed first turn,
+            # not only the tiny happy path. Production sessions contain many
+            # more events, but this is large enough to cover write-behind,
+            # checkpoint, and queueing behavior in every warmed image.
+            events.extend(
+                {
+                    "id": "probe-generation",
+                    "object": "chat.completion.chunk",
+                    "model": MODEL,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"role": "assistant", "content": "x"},
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+                for _ in range(STRESS_CHUNKS)
+            )
+        events.extend(
+            [
+                {
+                    "id": "probe-generation",
+                    "object": "chat.completion.chunk",
+                    "model": MODEL,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"role": "assistant", "content": response_text},
+                            "finish_reason": None,
+                        }
+                    ],
                 },
-            },
-        ]
+                {
+                    "id": "probe-generation",
+                    "object": "chat.completion.chunk",
+                    "model": MODEL,
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                    "usage": {
+                        "prompt_tokens": 100,
+                        "completion_tokens": 2,
+                        "total_tokens": 102,
+                    },
+                },
+            ]
+        )
         self._send_events(events)
 
 
 def main() -> int:
     Handler.request_payloads = []
+    Handler.request_times = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -166,7 +194,7 @@ def main() -> int:
                     record=record,
                     stop_file=root / "stop",
                     lifecycle_path=root / "goal-lifecycle.json",
-                    continuation_timeout_seconds=10,
+                    continuation_timeout_seconds=120,
                 )
             finally:
                 if previous_objective is None:
@@ -199,6 +227,9 @@ def main() -> int:
         # executor opens a retry turn over the same surface history; it is not a
         # second goal round and it does not require a CPU-agent relaunch.
         assert len(Handler.request_payloads) == 3, len(Handler.request_payloads)
+        assert len(Handler.request_times) == 3, len(Handler.request_times)
+        continuation_seconds = Handler.request_times[2] - Handler.request_times[1]
+        assert continuation_seconds < 120, continuation_seconds
         first_request, retry_request, goal_round_request = Handler.request_payloads
         assert first_request == retry_request
         assert FAILED_PARTIAL_TEXT not in json.dumps(retry_request)
@@ -266,16 +297,20 @@ def main() -> int:
         ]
         assert len(goal_messages) == 1, goal_messages
         assert goal_messages[0]["data"]["source"]["round"] == 1
-        assert len(
-            [event for event in events if event.get("type") == "turn/start"]
-        ) == 2
+        assert (
+            len([event for event in events if event.get("type") == "turn/start"]) == 2
+        )
         assert "<goal_round>" in json.dumps(goal_round_request)
         assert objective in json.dumps(goal_round_request)
         assert not any(
             name in json.dumps(Handler.request_payloads)
             for name in ("create_goal", "get_goal", "update_goal")
         )
-        print("DEEPSEEK_HARNESS_PROTOCOL_OK")
+        print(
+            "DEEPSEEK_HARNESS_PROTOCOL_OK "
+            f"stress_chunks={STRESS_CHUNKS} "
+            f"continuation_seconds={continuation_seconds:.3f}"
+        )
         return 0
     finally:
         server.shutdown()

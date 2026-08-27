@@ -25,6 +25,8 @@ MODEL = "deepseek/deepseek-v4-flash-vision-exp"
 MAX_TOKENS = 384_000
 TERMINAL_GOAL_PHASES = frozenset({"blocked", "complete"})
 INFRA_FAILURE_EXIT = 70
+DEFAULT_CONTINUATION_TIMEOUT_SECONDS = 600
+MAX_RUNTIME_DIAGNOSTICS_CHARS = 16_000
 
 
 @dataclass(slots=True)
@@ -79,7 +81,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--continuation-timeout-seconds",
         type=float,
-        default=float(os.environ.get("DSH_GOAL_CONTINUATION_TIMEOUT_SECONDS", "60")),
+        default=float(
+            os.environ.get(
+                "DSH_GOAL_CONTINUATION_TIMEOUT_SECONDS",
+                str(DEFAULT_CONTINUATION_TIMEOUT_SECONDS),
+            )
+        ),
     )
     args = parser.parse_args()
     if args.continuation_timeout_seconds <= 0:
@@ -104,9 +111,11 @@ def notification_dict(notification: object) -> dict[str, Any]:
             "unsupported DeepSeek Harness notification schema; "
             "structured method/payload fields are required"
         )
-    if not isinstance(raw, dict) or not isinstance(
-        raw.get("method"), str
-    ) or not isinstance(raw.get("payload"), dict):
+    if (
+        not isinstance(raw, dict)
+        or not isinstance(raw.get("method"), str)
+        or not isinstance(raw.get("payload"), dict)
+    ):
         raise TypeError(
             "unsupported DeepSeek Harness notification payload; "
             "structured method/payload fields are required"
@@ -140,6 +149,23 @@ def assistant_text(event: dict[str, Any]) -> str:
         for block in content
         if isinstance(block, dict) and block.get("type") == "text"
     )
+
+
+def sanitized_runtime_diagnostics(harness: object) -> str:
+    """Return a bounded, secret-redacted tail from the pinned SDK runtime."""
+    client = getattr(harness, "client", None)
+    read = getattr(client, "_runtime_diagnostics", None)
+    if not callable(read):
+        return ""
+    try:
+        diagnostics = str(read() or "")
+    except Exception as exc:  # diagnostics must never hide the primary failure
+        diagnostics = f"runtime diagnostics unavailable: {type(exc).__name__}: {exc}"
+    for name in ("OPENROUTER_API_KEY", "DEEPSEEK_API_KEY"):
+        secret = os.environ.get(name)
+        if secret:
+            diagnostics = diagnostics.replace(secret, "[REDACTED]")
+    return diagnostics[-MAX_RUNTIME_DIAGNOSTICS_CHARS:]
 
 
 def run_goal_session(
@@ -256,6 +282,8 @@ def run_goal_session(
                             "DeepSeek Harness stayed idle with an active native goal; "
                             "the goal-round driver did not start the next turn"
                         ),
+                        continuation_timeout_seconds=continuation_timeout_seconds,
+                        runtime_diagnostics=sanitized_runtime_diagnostics(harness),
                     )
                 continue
 
@@ -291,7 +319,10 @@ def run_goal_session(
                             if message.get("id") == initial_message_id:
                                 initial_receipt_seen = True
                             source = message.get("source")
-                            if isinstance(source, dict) and source.get("kind") == "goal":
+                            if (
+                                isinstance(source, dict)
+                                and source.get("kind") == "goal"
+                            ):
                                 continuation_deadline = (
                                     time.monotonic() + continuation_timeout_seconds
                                 )
@@ -349,12 +380,12 @@ def run_goal_session(
                         continuation_deadline = (
                             time.monotonic() + continuation_timeout_seconds
                         )
-                        write_state("awaiting_continuation")
+                        write_state(
+                            "awaiting_continuation",
+                            continuation_timeout_seconds=continuation_timeout_seconds,
+                        )
 
-            if (
-                session_status == "idle"
-                and goal_status in TERMINAL_GOAL_PHASES
-            ):
+            if session_status == "idle" and goal_status in TERMINAL_GOAL_PHASES:
                 return finish(0, "terminal")
     finally:
         # Close the runtime while the subscription is still registered so the
@@ -380,7 +411,9 @@ def main() -> int:
     if not objective:
         raise SystemExit("DeepSeek Harness goal objective must be non-empty")
     if objective == "/goal" or objective.startswith("/goal "):
-        raise SystemExit("DeepSeek Harness uses native goal mode, not /goal prompt text")
+        raise SystemExit(
+            "DeepSeek Harness uses native goal mode, not /goal prompt text"
+        )
     os.environ["DSH_GOAL_OBJECTIVE"] = objective
 
     def record(notification: object) -> None:
