@@ -860,19 +860,29 @@ async def test_stop_waits_for_trusted_host_bridge_and_scores_late_policy(tmp_pat
 @pytest.mark.asyncio
 async def test_stop_fails_closed_when_trusted_host_bridge_never_seals(tmp_path):
     env = FakeAgentEnv(tmp_path / "env")
+    verifier_finished = asyncio.Event()
 
     async def run_verifier(_key: str, _paths) -> VerifierResult:
+        await asyncio.sleep(0.1)
+        verifier_finished.set()
         return VerifierResult(rewards={"reward": 1.0})
 
     service = _service(
         tmp_path,
         env,
         run_verifier,
+        drain_pending_on_stop=True,
         host_submission_bridge_timeout_sec=0.05,
     )
     await service.start()
+    (service._host_watch_dir / "accepted-before-timeout.pt").write_bytes(b"policy")
     with pytest.raises(RuntimeError, match="host submission bridge"):
         await service.stop()
+
+    assert verifier_finished.is_set()
+    assert len(service.summary.submissions) == 1
+    assert service.summary.submissions[0].rewards == {"reward": 1.0}
+    assert service.summary.submissions[0].error is None
 
 
 @pytest.mark.asyncio

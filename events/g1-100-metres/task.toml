@@ -35,8 +35,10 @@ drain_pending_on_stop = true
 # The trusted GPU bridge may still be freezing explicitly declared outputs when
 # the agent process reaches its budget boundary. Harbor keeps only its host-side
 # scorer alive until that bridge seals the queue; the agent receives no extra
-# model access or verifier feedback during this bounded drain.
-host_submission_bridge_timeout_sec = 180.0
+# model access or verifier feedback during this bounded drain. The timeout must
+# cover reconciliation of a full trial-wide submission allowance under shared
+# Volume contention across 15 concurrent trials.
+host_submission_bridge_timeout_sec = 1800.0
 # Every accepted policy is part of the benchmark result set. There is no
 # privileged final artifact or separate post-agent verification.
 continuous_only = true

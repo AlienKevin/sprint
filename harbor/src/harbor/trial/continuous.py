@@ -226,6 +226,7 @@ class ContinuousVerificationService:
         # otherwise valid deadline submissions can be staged after the final
         # poll and silently disappear from the official ledger.
         bridge_timeout = self._config.host_submission_bridge_timeout_sec
+        bridge_error: RuntimeError | None = None
         if bridge_timeout is not None:
             deadline = asyncio.get_running_loop().time() + bridge_timeout
             while not self._host_bridge_complete.is_file():
@@ -236,9 +237,10 @@ class ContinuousVerificationService:
                 )
                 remaining = deadline - asyncio.get_running_loop().time()
                 if remaining <= 0:
-                    raise RuntimeError(
+                    bridge_error = RuntimeError(
                         "trusted host submission bridge did not seal before timeout"
                     )
+                    break
                 await asyncio.sleep(min(0.25, remaining))
 
         # One last pass, so a submission written between the final poll and the
@@ -269,6 +271,13 @@ class ContinuousVerificationService:
         if self._config.drain_pending_on_stop:
             await pending
             self._write_ledger()
+            # A missing producer seal still invalidates the trial because the
+            # host may have had more submissions to stage.  Raise only after
+            # every artifact already accepted into the trusted ledger has
+            # finished verification; otherwise this error cancels an in-flight
+            # verifier and destroys a result we can recover deterministically.
+            if bridge_error is not None:
+                raise bridge_error
             return
         try:
             await asyncio.wait_for(
@@ -284,6 +293,8 @@ class ContinuousVerificationService:
                 task.cancel()
             await asyncio.gather(*list(self._tasks), return_exceptions=True)
         self._write_ledger()
+        if bridge_error is not None:
+            raise bridge_error
 
     # -- watching ------------------------------------------------------------
 
