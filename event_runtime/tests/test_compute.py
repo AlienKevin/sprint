@@ -3524,7 +3524,7 @@ class RetryAndFencingTests(unittest.TestCase):
         self.assertEqual(result["submission_bridge_pending_jobs"], [])
         release.assert_called_once_with(run)
 
-    def test_operator_stop_recovers_queued_submission_before_gpu_fence(self) -> None:
+    def test_operator_stop_fences_gpu_before_recovering_queued_submission(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             state = Path(raw)
             run = {
@@ -3577,7 +3577,7 @@ class RetryAndFencingTests(unittest.TestCase):
                 mock.patch.object(
                     gpu_worker,
                     "load_job",
-                    side_effect=[dict(pending), dict(terminal)],
+                    side_effect=[dict(pending), dict(terminal), dict(terminal)],
                 ),
                 mock.patch.object(
                     gpu_worker,
@@ -3610,7 +3610,7 @@ class RetryAndFencingTests(unittest.TestCase):
             ):
                 result = gpu_worker.dispatch_once("unit")
 
-        self.assertEqual(calls, ["recover", "stop"])
+        self.assertEqual(calls, ["stop", "recover"])
         self.assertEqual(
             result["enqueue_snapshot_submission_recoveries"]["queued"]["forwarded"],
             1,
@@ -3989,6 +3989,43 @@ class RetryAndFencingTests(unittest.TestCase):
                                 out = gpu_worker._stop_all_locked(run)
         self.assertEqual(out[0]["status"], "terminated")
         self.assertEqual(order[:2], ["persist:terminated", "terminate"])
+
+    def test_stop_fences_queued_submission_before_archive_recovery(self) -> None:
+        run = {"run_id": "unit"}
+        job = {
+            "job_id": "queued",
+            "status": "pending",
+            "attempt": 0,
+            "submission_bridge_enabled": True,
+            "submission_paths": ["/app/policy.pt"],
+        }
+        persisted: list[dict] = []
+        with (
+            mock.patch.object(gpu_worker, "list_job_ids", return_value=["queued"]),
+            mock.patch.object(gpu_worker, "load_job", return_value=job),
+            mock.patch.object(gpu_worker, "load_heartbeat", return_value=None),
+            mock.patch.object(
+                gpu_worker,
+                "persist_job",
+                side_effect=lambda _run, payload: (
+                    persisted.append(dict(payload)) or payload
+                ),
+            ),
+            mock.patch.object(gpu_worker, "_close_attempt_timeline"),
+            mock.patch.object(gpu_worker, "_timeline_event"),
+            mock.patch.object(gpu_worker, "_terminate_sandbox") as terminate,
+            mock.patch.object(
+                gpu_worker, "drain_worker_submission_outbox"
+            ) as drain,
+        ):
+            stopped = gpu_worker._stop_all_locked(run)
+
+        self.assertEqual(stopped[0]["status"], "terminated")
+        self.assertTrue(
+            persisted[0]["submission_enqueue_snapshot_recovery_pending"]
+        )
+        drain.assert_not_called()
+        terminate.assert_called_once_with(job)
 
     def test_stop_fences_all_jobs_before_parallel_provider_termination(self) -> None:
         run = {"run_id": "unit"}

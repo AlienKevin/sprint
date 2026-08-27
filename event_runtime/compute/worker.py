@@ -3753,12 +3753,21 @@ def _stop_all_locked(
             job = reconcile_terminal_attempt_before_stop(run, job)
         if not job or str(job.get("status") or "") in gpu_claim.TERMINAL:
             continue
-        # Drain archive intent before fencing the worker.  Unlike training,
-        # forwarding immutable policy bytes does not consume agent budget and
-        # must not be lost at the budget boundary.
-        job, _bridge_detail = drain_worker_submission_outbox(run, job)
         heartbeat = load_heartbeat(run, job)
         payload = dict(job)
+        # An undispatched explicit submission is already backed by the
+        # immutable enqueue snapshot. Mark it for recovery before changing its
+        # status so the slow archive transfer can happen after every lease has
+        # been fenced and every provider sandbox has been stopped.
+        if (
+            str(payload.get("status") or "") == "pending"
+            and payload.get("submission_paths")
+            and payload.get("submission_bridge_enabled")
+            and int(payload.get("attempt") or 0) == 0
+            and not payload.get("sandbox_id")
+            and not payload.get("started_at")
+        ):
+            payload["submission_enqueue_snapshot_recovery_pending"] = True
         payload["fence_epoch"] = int(payload.get("fence_epoch") or 0) + 1
         payload["fenced_lease_id"] = payload.get("lease_id")
         payload["status"] = "terminated"
@@ -3943,14 +3952,6 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
             jobs_before_stop = {
                 job_id: load_job(run, job_id) for job_id in job_ids
             }
-            enqueue_snapshot_recoveries: dict[str, dict[str, Any]] = {}
-            for job_id, job in jobs_before_stop.items():
-                if not job:
-                    continue
-                recovered, detail = recover_pending_submission_snapshots(run, job)
-                jobs_before_stop[job_id] = recovered
-                if detail.get("eligible"):
-                    enqueue_snapshot_recoveries[job_id] = detail
             has_explicit_submissions = any(
                 job and job.get("submission_paths")
                 for job in jobs_before_stop.values()
@@ -3964,6 +3965,19 @@ def dispatch_once(run_id: str) -> dict[str, Any]:
                 except Exception as exc:  # noqa: BLE001
                     drain_signal_error = f"{type(exc).__name__}: {exc}"
             stopped = _stop_all_locked(run, reason="operator_stop")
+            # Provider compute is now fenced and stopped. Recover explicit
+            # attempt-0 submissions from their immutable enqueue snapshots
+            # only after that safety boundary; archive transfer latency must
+            # never postpone budget enforcement.
+            enqueue_snapshot_recoveries: dict[str, dict[str, Any]] = {}
+            for job_id in job_ids:
+                job = load_job(run, job_id) or jobs_before_stop.get(job_id)
+                if not job:
+                    continue
+                recovered, detail = recover_pending_submission_snapshots(run, job)
+                jobs_before_stop[job_id] = recovered
+                if detail.get("eligible"):
+                    enqueue_snapshot_recoveries[job_id] = detail
             bridge_pending: list[str] = []
             reconciled: list[dict[str, Any]] = []
             for job_id in job_ids:
