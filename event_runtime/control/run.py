@@ -3117,6 +3117,7 @@ def gpu_dispatch_loop(run_id: str, poll_seconds: int) -> int:
         pid_path = state_dir / "gpu-dispatch-loop.pid"
         own_pid = os.getpid()
         atomic_write_text(pid_path, f"{own_pid}\n", 0o600)
+        consecutive_timeouts = 0
         try:
             while True:
                 started = time.monotonic()
@@ -3124,7 +3125,29 @@ def gpu_dispatch_loop(run_id: str, poll_seconds: int) -> int:
                     from event_runtime.compute import worker as gpu_worker
 
                     payload = gpu_worker.dispatch_once(run_id)
+                    consecutive_timeouts = 0
+                except subprocess.TimeoutExpired as exc:
+                    # Exact Modal Volume reads occasionally miss their 15s
+                    # deadline under a concurrent fleet. The queue is durable,
+                    # so retry the next dispatch tick and escalate only if the
+                    # control plane stays unavailable for three consecutive
+                    # attempts.
+                    consecutive_timeouts += 1
+                    if consecutive_timeouts == 3:
+                        record_controller_error(run_id, exc)
+                    payload = {
+                        "run_id": run_id,
+                        "updated_at": utc_now(),
+                        "status": (
+                            "gpu_dispatch_retrying"
+                            if consecutive_timeouts < 3
+                            else "gpu_dispatch_error"
+                        ),
+                        "timeout_streak": consecutive_timeouts,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
                 except Exception as exc:  # noqa: BLE001
+                    consecutive_timeouts = 0
                     record_controller_error(run_id, exc)
                     payload = {
                         "run_id": run_id,

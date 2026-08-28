@@ -1181,6 +1181,80 @@ class DurableOpsTests(unittest.TestCase):
             self.assertEqual(observed, [str(os.getpid())])
             self.assertFalse((state / "gpu-dispatch-loop.pid").exists())
 
+    def test_gpu_dispatch_loop_retries_transient_volume_timeouts(self) -> None:
+        from event_runtime.compute import worker as gpu_worker
+
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            run = {"run_id": "dispatch-run", "cpu_agent_gpu_worker": True}
+
+            @contextlib.contextmanager
+            def owned_lock(_path: Path, *, blocking: bool = True):
+                self.assertFalse(blocking)
+                yield True
+
+            timeout = subprocess.TimeoutExpired(["volume_read"], 15)
+            with (
+                mock.patch.object(sprintctl, "load_run", return_value=(state, run)),
+                mock.patch.object(sprintctl, "file_lock", side_effect=owned_lock),
+                mock.patch.object(
+                    sprintctl,
+                    "run_services_should_exit",
+                    side_effect=[False, False, True],
+                ),
+                mock.patch.object(
+                    gpu_worker,
+                    "dispatch_once",
+                    side_effect=[timeout, timeout, {"run_id": "dispatch-run"}],
+                ) as dispatch,
+                mock.patch.object(sprintctl, "record_controller_error") as record,
+                mock.patch.object(sprintctl, "seal_host_submission_bridge_complete"),
+                mock.patch.object(sprintctl.time, "sleep"),
+            ):
+                self.assertEqual(sprintctl.gpu_dispatch_loop("dispatch-run", 5), 0)
+
+            self.assertEqual(dispatch.call_count, 3)
+            record.assert_not_called()
+
+    def test_gpu_dispatch_loop_escalates_persistent_volume_timeouts(self) -> None:
+        from event_runtime.compute import worker as gpu_worker
+
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            run = {"run_id": "dispatch-run", "cpu_agent_gpu_worker": True}
+
+            @contextlib.contextmanager
+            def owned_lock(_path: Path, *, blocking: bool = True):
+                self.assertFalse(blocking)
+                yield True
+
+            timeout = subprocess.TimeoutExpired(["volume_read"], 15)
+            with (
+                mock.patch.object(sprintctl, "load_run", return_value=(state, run)),
+                mock.patch.object(sprintctl, "file_lock", side_effect=owned_lock),
+                mock.patch.object(
+                    sprintctl,
+                    "run_services_should_exit",
+                    side_effect=[False, False, False, True],
+                ),
+                mock.patch.object(
+                    gpu_worker,
+                    "dispatch_once",
+                    side_effect=[
+                        timeout,
+                        timeout,
+                        timeout,
+                        {"run_id": "dispatch-run"},
+                    ],
+                ),
+                mock.patch.object(sprintctl, "record_controller_error") as record,
+                mock.patch.object(sprintctl, "seal_host_submission_bridge_complete"),
+                mock.patch.object(sprintctl.time, "sleep"),
+            ):
+                self.assertEqual(sprintctl.gpu_dispatch_loop("dispatch-run", 5), 0)
+
+            record.assert_called_once_with("dispatch-run", timeout)
+
     def test_gpu_dispatch_loop_drains_declared_work_after_agent_exit(self) -> None:
         from event_runtime.compute import worker as gpu_worker
 
