@@ -17,6 +17,8 @@ PROCESS_FILE="$AGENT_STATE_DIR/agent-process"
 PROXY_PROCESS_FILE="$AGENT_STATE_DIR/openrouter-proxy.pid"
 EXPECTED_INTERRUPT="$AGENT_STATE_DIR/expected-interrupt"
 PROXY_BIN=${SPRINT_OPENROUTER_PROXY_BIN:-/opt/sprint-openrouter-ledger-proxy.py}
+GOAL_MODE=${SPRINT_CLAUDE_CODE_GOAL_MODE:-0}
+GOAL_RUNNER_BIN=${SPRINT_CLAUDE_CODE_GOAL_RUNNER_BIN:-/opt/sprint-claude-code-goal-runner.py}
 # Claude Code appends /v1/messages to its base URL. The proxy forwards the
 # resulting /api/v1/messages path to OpenRouter's Anthropic skin.
 PROXY_BASE_URL=${SPRINT_OPENROUTER_PROXY_BASE_URL:-http://127.0.0.1:18080/api}
@@ -55,6 +57,10 @@ esac
   echo "OpenRouter ledger proxy is missing" >&2
   exit 2
 }
+if [[ "$GOAL_MODE" == "1" && ! -x "$GOAL_RUNNER_BIN" ]]; then
+  echo "Claude Code persistent goal runner is missing" >&2
+  exit 2
+fi
 for value in "$STOP_ACK_TIMEOUT_SECONDS" "$PROXY_DRAIN_TIMEOUT_SECONDS"; do
   [[ "$value" =~ ^[1-9][0-9]*$ ]] || {
     echo "Claude Code wrapper timeouts must be positive integers" >&2
@@ -190,7 +196,18 @@ if ((ready != 1)); then
   exit 1
 fi
 
-setsid "$REAL_CLAUDE" "$@" &
+agent_command=("$REAL_CLAUDE" "$@")
+if [[ "$GOAL_MODE" == "1" ]]; then
+  agent_command=(
+    "$GOAL_RUNNER_BIN"
+    --claude-executable "$REAL_CLAUDE"
+    --bootstrap "$AGENT_LOG_DIR/goal-bootstrap.json"
+    --lifecycle "$AGENT_LOG_DIR/goal-lifecycle.json"
+    -- "$@"
+  )
+fi
+
+setsid "${agent_command[@]}" &
 agent_pid=$!
 agent_pgid=""
 start_time=""

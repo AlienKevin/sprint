@@ -326,6 +326,7 @@ def main() -> int:
                 "test -x /opt/sprint-codex-exec-wrapper.sh && "
                 "test -x /opt/sprint-codex-goal-runner.py && "
                 "test -x /opt/sprint-claude-code-exec-wrapper.sh && "
+                "test -x /opt/sprint-claude-code-goal-runner.py && "
                 "test -x /opt/sprint-deepseek-harness-exec-wrapper.sh && "
                 "test -x /opt/sprint-deepseek-harness-runner.py && "
                 "test -r /opt/event_runtime/container/sprint-deepseek-goal-bootstrap.mjs && "

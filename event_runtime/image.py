@@ -32,6 +32,7 @@ _CONTAINER_LINKS = (
     "sprint-codex-exec-wrapper.sh",
     "sprint-codex-goal-runner.py",
     "sprint-claude-code-exec-wrapper.sh",
+    "sprint-claude-code-goal-runner.py",
     "sprint-deepseek-harness-exec-wrapper.sh",
     "sprint-deepseek-harness-runner.py",
     "sprint-deepseek-harness-probe.py",
@@ -184,6 +185,7 @@ def agent_image(event: EventLayout, public_verifier: Path) -> modal.Image:
         "/opt/event_runtime/container/sprint-codex-exec-wrapper.sh "
         "/opt/event_runtime/container/sprint-codex-goal-runner.py "
         "/opt/event_runtime/container/sprint-claude-code-exec-wrapper.sh "
+        "/opt/event_runtime/container/sprint-claude-code-goal-runner.py "
         "/opt/event_runtime/container/sprint-deepseek-harness-exec-wrapper.sh "
         "/opt/event_runtime/container/sprint-deepseek-harness-runner.py "
         "/opt/event_runtime/container/sprint-openrouter-ledger-proxy.py "

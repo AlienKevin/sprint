@@ -1,5 +1,9 @@
 """The claude-code agent's `goal` kwarg."""
 
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
 from harbor.agents.installed.claude_code import ClaudeCode
 
 INSTRUCTION = "Train a control policy that runs the G1 100 m as fast as possible."
@@ -49,3 +53,17 @@ def test_the_instruction_survives_an_unrecognised_slash_command():
     """
     prompt = _agent(True)._apply_goal(INSTRUCTION)
     assert prompt.endswith(INSTRUCTION)
+
+
+@pytest.mark.asyncio
+async def test_goal_enables_external_persistence_runner(tmp_path):
+    agent = ClaudeCode(logs_dir=tmp_path, goal=True)
+    environment = MagicMock()
+    environment.exec = AsyncMock(
+        return_value=MagicMock(return_code=0, stdout="", stderr="")
+    )
+
+    await agent.run(INSTRUCTION, environment, AsyncMock())
+
+    run_env = environment.exec.call_args_list[-1].kwargs["env"]
+    assert run_env["SPRINT_CLAUDE_CODE_GOAL_MODE"] == "1"

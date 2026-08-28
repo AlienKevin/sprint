@@ -122,11 +122,10 @@ class ClaudeCode(BaseInstalledAgent):
     def _apply_goal(self, instruction: str) -> str:
         """Send the instruction as a ``/goal``, when the task asks for it.
 
-        ``/goal`` installs a session-scoped Stop hook: the CLI will not end the
-        session while the stated condition is unmet, so the agent keeps working
-        instead of declaring an early stopping point. That matters for tasks
-        whose value is in how far the agent gets over hours, not in whether it
-        produced an answer at all.
+        ``/goal`` records the objective inside the Claude session. In benchmark
+        goal mode, the trusted executable wrapper additionally resumes a clean
+        ``end_turn`` because headless ``--print`` can otherwise exit while the
+        native goal remains unmet.
 
         ``goal=true`` makes the instruction itself the condition.  Passing a
         string states the condition separately and keeps the instruction as the
@@ -617,16 +616,18 @@ class ClaudeCode(BaseInstalledAgent):
     def _parse_total_cost_from_stream_json(self) -> float | None:
         """Extract authoritative `total_cost_usd` from Claude Code's stdout stream.
 
-        Claude Code's `--output-format=stream-json --print` mode emits a final
-        ``{"type":"result", ..., "total_cost_usd": <float>, ...}`` line to stdout,
-        which Harbor tees to ``<logs_dir>/claude-code.txt``. Returns ``None`` if
-        the file is missing, malformed, or the result event lacks the field.
+        Each Claude Code ``--print`` invocation emits one result line. Goal
+        mode may resume the same session through several invocations, all
+        teeing into this file, so their invocation costs must be summed.
+        Returns ``None`` if no priced result event is available.
         """
         stream_path = self.logs_dir / "claude-code.txt"
         try:
             content = stream_path.read_text(encoding="utf-8")
         except OSError:
             return None
+        total = 0.0
+        priced_results = 0
         for line in content.splitlines():
             line = line.strip()
             if not line or not line.startswith("{"):
@@ -638,12 +639,13 @@ class ClaudeCode(BaseInstalledAgent):
             if event.get("type") == "result":
                 cost = event.get("total_cost_usd")
                 if cost is None:
-                    return None
+                    continue
                 try:
-                    return float(cost)
+                    total += float(cost)
+                    priced_results += 1
                 except (TypeError, ValueError):
-                    return None
-        return None
+                    continue
+        return total if priced_results else None
 
     def _estimate_total_cost_from_steps(self, steps: list[Step]) -> float | None:
         """Estimate cost from transcript usage when Claude omits its result event."""
@@ -1423,6 +1425,11 @@ class ClaudeCode(BaseInstalledAgent):
             # The trusted Claude executable wrapper consumes this key to start
             # the metered localhost proxy, then unsets it before Claude runs.
             env["OPENROUTER_API_KEY"] = openrouter_api_key
+        if self.goal:
+            # Keep the enforcement outside the model-controlled session. The
+            # native /goal remains useful session state, but it does not make
+            # one-shot --print invocations persistent by itself.
+            env["SPRINT_CLAUDE_CODE_GOAL_MODE"] = "1"
 
         # Bedrock configuration: pass through AWS credentials and region
         if use_bedrock:

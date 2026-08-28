@@ -1397,6 +1397,40 @@ class TestCostFallback:
         assert trajectory.final_metrics.total_cost_usd == 1.25
         assert trajectory.final_metrics.extra is None
 
+    def test_persistent_goal_sums_cost_from_resumed_invocations(
+        self, temp_dir, monkeypatch
+    ):
+        agent = ClaudeCode(logs_dir=temp_dir, model_name=None)
+        session_dir = _write_session(
+            temp_dir,
+            [
+                _make_assistant_event(
+                    [{"type": "text", "text": "Still working."}],
+                    model="claude-opus-4-6",
+                    msg_id="msg_working",
+                )
+            ],
+        )
+        (temp_dir / "claude-code.txt").write_text(
+            json.dumps({"type": "result", "total_cost_usd": 1.25})
+            + "\n"
+            + json.dumps({"type": "result", "total_cost_usd": 0.75})
+            + "\n"
+        )
+
+        monkeypatch.setattr(
+            "litellm.cost_per_token",
+            lambda **kwargs: pytest.fail(
+                f"pricing fallback unexpectedly called with {kwargs}"
+            ),
+        )
+
+        trajectory = agent._convert_events_to_trajectory(session_dir)
+
+        assert trajectory is not None
+        assert trajectory.final_metrics is not None
+        assert trajectory.final_metrics.total_cost_usd == 2.0
+
     def test_unpriceable_step_leaves_cost_unknown(self, temp_dir, monkeypatch):
         agent = ClaudeCode(logs_dir=temp_dir, model_name=None)
         session_dir = _write_session(
