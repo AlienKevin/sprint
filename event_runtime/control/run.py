@@ -2805,7 +2805,23 @@ def _budget_pulse_once_unlocked(
     if not isinstance(checked_at, (int, float)) or isinstance(checked_at, bool):
         raise RuntimeError("budget pulse watchdog timestamp is missing")
     pulse_source = "in_sandbox_watchdog"
-    upstream_age = _budget_watchdog_age(ref, float(checked_at))
+    terminal = budget_safety_should_exit(state_dir, run)
+    if terminal:
+        # STOP_ACK can become durable after the loop condition was checked but
+        # while this pulse was fetching the last sandbox snapshot.  Once host
+        # teardown is authoritative the in-sandbox producer is expected to be
+        # gone, so preserve its final accounting without misclassifying that
+        # normal race as a stale-heartbeat controller failure.
+        upstream_age = ref - float(checked_at)
+        if (
+            not math.isfinite(upstream_age)
+            or upstream_age < -BUDGET_PULSE_MAX_CLOCK_SKEW_SECONDS
+        ):
+            raise RuntimeError(
+                f"budget pulse watchdog snapshot is stale ({upstream_age:.1f}s)"
+            )
+    else:
+        upstream_age = _budget_watchdog_age(ref, float(checked_at))
 
     # The live safety path is deliberately O(number of GPU jobs): copy the
     # watchdog's compact API/CPU ledger and overlay host-owned GPU registry
@@ -2823,7 +2839,7 @@ def _budget_pulse_once_unlocked(
     # STOP_ACK can arrive while this pulse is rebuilding the local snapshot.
     # Preserve the final accounting, but never race Modal teardown by
     # contacting a sandbox after terminal state is durable.
-    if budget_safety_should_exit(state_dir, run):
+    if terminal or budget_safety_should_exit(state_dir, run):
         mirror_status = "terminal_snapshot_not_mirrored"
         atomic_write_json(
             state_dir / "telemetry" / "gpu-budget-mirror.json",
