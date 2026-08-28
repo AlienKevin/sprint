@@ -1045,6 +1045,7 @@ def request_stop(
     *,
     reason: str = "operator_stop",
     wait_for_termination: bool = False,
+    terminal_budget_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     state_dir, run, payload = persist_stop_request(run_id, reason=reason)
     kind = agent_kind(run)
@@ -1072,6 +1073,73 @@ def request_stop(
                 atomic_write_json(marker, payload, mode=0o600)
     except Exception as exc:  # noqa: BLE001
         agent_stop_error = f"{type(exc).__name__}: {exc}"
+
+    # Claude Code can spend the end of its budget waiting synchronously on a
+    # long GPU tool call.  If the dispatch lock is busy when the host requests
+    # the budget stop, the ordinary teardown retry can take longer than the
+    # GPU watchdog's freshness allowance.  Give only the Claude harness's
+    # active workers the same trusted terminal ledger before entering that
+    # cleanup path, so they stop as agent_cost_budget_exhausted rather than
+    # misclassifying a healthy controller as budget_telemetry_unavailable.
+    # Codex and DeepSeek never enter this branch and retain their exact stop
+    # ordering and mirroring semantics.
+    terminal_mirror_fields: dict[str, Any] = {}
+    if (
+        kind == "claude-code"
+        and reason == "agent_cost_budget_exhausted"
+        and run.get("cpu_agent_gpu_worker")
+    ):
+        try:
+            from event_runtime.compute import worker as gpu_worker
+
+            payload_source = "enforcement_snapshot"
+            if terminal_budget_payload is None:
+                payload_source = "trusted_host_stop_fallback"
+                try:
+                    terminal_budget_payload = json.loads(
+                        (state_dir / "telemetry" / "agent-cost.json").read_text()
+                    )
+                except (OSError, json.JSONDecodeError):
+                    terminal_budget_payload = {}
+            terminal_payload = json.loads(json.dumps(terminal_budget_payload))
+            threshold = float(
+                terminal_payload.get("stop_threshold_usd")
+                or run.get("agent_cost_budget_usd")
+            )
+            observed_total = float(terminal_payload.get("total_usd") or 0)
+            if not math.isfinite(threshold) or threshold <= 0:
+                raise ValueError("terminal GPU budget threshold is invalid")
+            if not math.isfinite(observed_total) or observed_total < 0:
+                raise ValueError("terminal GPU budget total is invalid")
+            terminal_payload.update(
+                {
+                    "schema_version": 2,
+                    "run_id": run_id,
+                    # This is a fresh host-authenticated stop heartbeat, not a
+                    # new provider usage observation. The unchanged component
+                    # ledger remains available for billing reconstruction.
+                    "checked_at_epoch_s": time.time(),
+                    "total_usd": max(observed_total, threshold),
+                    "stop_threshold_usd": threshold,
+                    "budget_remaining_usd": 0.0,
+                    "status": "stop_requested",
+                }
+            )
+            terminal_mirror = gpu_worker.mirror_gpu_budget(run, terminal_payload)
+            terminal_mirror_fields["terminal_gpu_budget_payload_source"] = (
+                payload_source
+            )
+            terminal_mirror_fields["terminal_gpu_budget_mirror"] = terminal_mirror
+            if terminal_mirror.get("gpu_budget_mirror") == "error":
+                terminal_mirror_fields["terminal_gpu_budget_mirror_error"] = str(
+                    terminal_mirror.get("errors")
+                    or terminal_mirror.get("gpu_budget_mirror_error")
+                    or "unknown"
+                )
+        except Exception as exc:  # noqa: BLE001
+            terminal_mirror_fields["terminal_gpu_budget_mirror_error"] = (
+                f"{type(exc).__name__}: {exc}"
+            )
 
     # Fence GPU leases after the CPU has received its stop signal. The monitor
     # sees STOP_REQUESTED and repeats this idempotently if this call is cut off.
@@ -1112,6 +1180,7 @@ def request_stop(
             "gpu_workers_stopped": gpu_stopped,
             "gpu_stop_error": gpu_stop_error,
             "gpu_stop_complete": gpu_stop_complete,
+            **terminal_mirror_fields,
         }
 
     requested_epoch = parse_iso(str(payload.get("requested_at") or ""))
@@ -1130,6 +1199,7 @@ def request_stop(
                 "gpu_workers_stopped": gpu_stopped,
                 "gpu_stop_error": gpu_stop_error,
                 "gpu_stop_complete": gpu_stop_complete,
+                **terminal_mirror_fields,
             }
 
         grace_deadline = time.monotonic() + max(
@@ -1146,6 +1216,7 @@ def request_stop(
                     "gpu_workers_stopped": gpu_stopped,
                     "gpu_stop_error": gpu_stop_error,
                     "gpu_stop_complete": gpu_stop_complete,
+                    **terminal_mirror_fields,
                 }
             time.sleep(AGENT_STOP_POLL_SECONDS)
 
@@ -1168,6 +1239,7 @@ def request_stop(
                 "gpu_workers_stopped": gpu_stopped,
                 "gpu_stop_error": gpu_stop_error,
                 "gpu_stop_complete": gpu_stop_complete,
+                **terminal_mirror_fields,
             }
         except Exception as exc:  # noqa: BLE001
             forced_error = f"{type(exc).__name__}: {exc}"
@@ -1187,6 +1259,7 @@ def request_stop(
                         "gpu_workers_stopped": gpu_stopped,
                         "gpu_stop_error": gpu_stop_error,
                         "gpu_stop_complete": gpu_stop_complete,
+                        **terminal_mirror_fields,
                     }
             except Exception as audit_exc:  # noqa: BLE001
                 forced_error += (
@@ -1202,6 +1275,7 @@ def request_stop(
             "gpu_workers_stopped": gpu_stopped,
             "gpu_stop_error": gpu_stop_error,
             "gpu_stop_complete": gpu_stop_complete,
+            **terminal_mirror_fields,
         }
 
     if wait_for_termination and not container_discovery_succeeded:
@@ -1213,6 +1287,7 @@ def request_stop(
             "gpu_workers_stopped": gpu_stopped,
             "gpu_stop_error": gpu_stop_error,
             "gpu_stop_complete": gpu_stop_complete,
+            **terminal_mirror_fields,
         }
     return {
         "status": "requested",
@@ -1222,6 +1297,7 @@ def request_stop(
         "gpu_workers_stopped": gpu_stopped,
         "gpu_stop_error": gpu_stop_error,
         "gpu_stop_complete": gpu_stop_complete,
+        **terminal_mirror_fields,
     }
 
 
@@ -1263,7 +1339,14 @@ def enforce_agent_cost_budget(
         or float(total) < float(threshold)
     ):
         return False
-    request_stop(run_id, reason="agent_cost_budget_exhausted")
+    if run.get("agent_kind") == "claude-code" and run.get("cpu_agent_gpu_worker"):
+        request_stop(
+            run_id,
+            reason="agent_cost_budget_exhausted",
+            terminal_budget_payload=cost_payload,
+        )
+    else:
+        request_stop(run_id, reason="agent_cost_budget_exhausted")
     return True
 
 

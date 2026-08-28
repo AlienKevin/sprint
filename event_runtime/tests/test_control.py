@@ -3388,6 +3388,183 @@ else:
             self.assertEqual(events, ["cpu-signalled", "gpu-cleanup", "ack-fetched"])
             self.assertEqual(result["status"], "requested")
 
+    def test_claude_budget_stop_mirrors_terminal_ledger_before_gpu_cleanup(
+        self,
+    ) -> None:
+        from event_runtime.compute import worker as gpu_worker
+
+        with tempfile.TemporaryDirectory() as raw:
+            state_dir = Path(raw)
+            run = {
+                "run_id": "claude-budget-drain",
+                "agent_kind": "claude-code",
+                "agent_container_id": "ta-claude",
+                "agent_cost_budget_usd": 10.0,
+                "cpu_agent_gpu_worker": True,
+            }
+            cost = {
+                "schema_version": 2,
+                "run_id": "claude-budget-drain",
+                "checked_at_epoch_s": 1000.0,
+                "total_usd": 10.0,
+                "stop_threshold_usd": 10.0,
+                "status": "within_budget",
+            }
+            events: list[str] = []
+
+            def signal_cpu(*_args, **_kwargs) -> None:
+                events.append("cpu-signalled")
+
+            def mirror_terminal(_run: dict, payload: dict) -> dict:
+                self.assertEqual(events, ["cpu-signalled"])
+                self.assertEqual(payload["schema_version"], 2)
+                self.assertEqual(payload["run_id"], "claude-budget-drain")
+                self.assertEqual(payload["status"], "stop_requested")
+                self.assertEqual(payload["total_usd"], 10.0)
+                self.assertGreater(payload["checked_at_epoch_s"], 1000.0)
+                events.append("terminal-gpu-mirror")
+                return {
+                    "gpu_budget_mirror": "updated",
+                    "updated_sandbox_ids": ["sb-training"],
+                }
+
+            def stop_gpu(*_args, **_kwargs) -> list[dict]:
+                self.assertEqual(
+                    events, ["cpu-signalled", "terminal-gpu-mirror"]
+                )
+                events.append("gpu-cleanup")
+                return []
+
+            with (
+                mock.patch.object(sprintctl, "load_run", return_value=(state_dir, run)),
+                mock.patch.object(sprintctl, "fetch_remote_json", return_value=None),
+                mock.patch.object(
+                    sprintctl, "discover_agent_container", return_value="ta-claude"
+                ),
+                mock.patch.object(sprintctl, "exec_container", side_effect=signal_cpu),
+                mock.patch.object(
+                    gpu_worker, "mirror_gpu_budget", side_effect=mirror_terminal
+                ),
+                mock.patch.object(gpu_worker, "stop_all", side_effect=stop_gpu),
+                mock.patch.object(gpu_worker, "all_jobs_terminal", return_value=True),
+            ):
+                result = sprintctl.request_stop(
+                    "claude-budget-drain",
+                    reason="agent_cost_budget_exhausted",
+                    terminal_budget_payload=cost,
+                )
+
+            self.assertEqual(
+                events, ["cpu-signalled", "terminal-gpu-mirror", "gpu-cleanup"]
+            )
+            self.assertEqual(
+                result["terminal_gpu_budget_payload_source"],
+                "enforcement_snapshot",
+            )
+            self.assertEqual(
+                result["terminal_gpu_budget_mirror"]["gpu_budget_mirror"],
+                "updated",
+            )
+
+    def test_non_claude_budget_stop_keeps_existing_gpu_cleanup_semantics(
+        self,
+    ) -> None:
+        from event_runtime.compute import worker as gpu_worker
+
+        with tempfile.TemporaryDirectory() as raw:
+            state_dir = Path(raw)
+            run = {
+                "run_id": "deepseek-budget-drain",
+                "agent_kind": "deepseek-harness",
+                "agent_container_id": "ta-deepseek",
+                "agent_cost_budget_usd": 10.0,
+                "cpu_agent_gpu_worker": True,
+            }
+            cost = {
+                "schema_version": 2,
+                "run_id": "deepseek-budget-drain",
+                "checked_at_epoch_s": 1000.0,
+                "total_usd": 10.0,
+                "stop_threshold_usd": 10.0,
+                "status": "stop_requested",
+            }
+            with (
+                mock.patch.object(sprintctl, "load_run", return_value=(state_dir, run)),
+                mock.patch.object(sprintctl, "fetch_remote_json", return_value=None),
+                mock.patch.object(
+                    sprintctl, "discover_agent_container", return_value="ta-deepseek"
+                ),
+                mock.patch.object(sprintctl, "exec_container"),
+                mock.patch.object(gpu_worker, "mirror_gpu_budget") as mirror,
+                mock.patch.object(gpu_worker, "stop_all", return_value=[]),
+                mock.patch.object(gpu_worker, "all_jobs_terminal", return_value=True),
+            ):
+                result = sprintctl.request_stop(
+                    "deepseek-budget-drain",
+                    reason="agent_cost_budget_exhausted",
+                    terminal_budget_payload=cost,
+                )
+
+            mirror.assert_not_called()
+            self.assertNotIn("terminal_gpu_budget_mirror", result)
+
+    def test_claude_budget_stop_retry_uses_trusted_host_snapshot_fallback(
+        self,
+    ) -> None:
+        from event_runtime.compute import worker as gpu_worker
+
+        with tempfile.TemporaryDirectory() as raw:
+            state_dir = Path(raw)
+            (state_dir / "telemetry").mkdir()
+            run = {
+                "run_id": "claude-budget-retry",
+                "agent_kind": "claude-code",
+                "agent_cost_budget_usd": 10.0,
+                "cpu_agent_gpu_worker": True,
+            }
+            (state_dir / "telemetry" / "agent-cost.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "run_id": "claude-budget-retry",
+                        "checked_at_epoch_s": 1000.0,
+                        "total_usd": 9.96,
+                        "stop_threshold_usd": 10.0,
+                        "status": "within_budget",
+                    }
+                )
+            )
+
+            def mirror_terminal(_run: dict, payload: dict) -> dict:
+                self.assertEqual(payload["status"], "stop_requested")
+                self.assertEqual(payload["total_usd"], 10.0)
+                self.assertEqual(payload["budget_remaining_usd"], 0.0)
+                self.assertGreater(payload["checked_at_epoch_s"], 1000.0)
+                return {"gpu_budget_mirror": "updated"}
+
+            with (
+                mock.patch.object(sprintctl, "load_run", return_value=(state_dir, run)),
+                mock.patch.object(sprintctl, "fetch_remote_json", return_value=None),
+                mock.patch.object(
+                    sprintctl, "discover_agent_container", return_value=None
+                ),
+                mock.patch.object(
+                    gpu_worker, "mirror_gpu_budget", side_effect=mirror_terminal
+                ) as mirror,
+                mock.patch.object(gpu_worker, "stop_all", return_value=[]),
+                mock.patch.object(gpu_worker, "all_jobs_terminal", return_value=True),
+            ):
+                result = sprintctl.request_stop(
+                    "claude-budget-retry",
+                    reason="agent_cost_budget_exhausted",
+                )
+
+            mirror.assert_called_once()
+            self.assertEqual(
+                result["terminal_gpu_budget_payload_source"],
+                "trusted_host_stop_fallback",
+            )
+
     def test_cpu_ack_does_not_hide_pending_gpu_termination(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             state_dir = Path(raw)
@@ -3572,6 +3749,37 @@ else:
             self.assertTrue(stopped)
             request_stop.assert_called_once_with(
                 "budget-run", reason="agent_cost_budget_exhausted"
+            )
+
+    def test_agent_cost_budget_forwards_terminal_snapshot_only_for_claude(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state_dir = Path(raw)
+            run = {
+                "run_id": "claude-budget-run",
+                "agent_kind": "claude-code",
+                "agent_cost_budget_usd": 10.0,
+                "cpu_agent_gpu_worker": True,
+            }
+            cost = {
+                "schema_version": 2,
+                "run_id": "claude-budget-run",
+                "status": "stop_requested",
+                "checked_at_epoch_s": 1000.0,
+                "total_usd": 10.0,
+                "stop_threshold_usd": 10.0,
+            }
+            with mock.patch.object(sprintctl, "request_stop") as request_stop:
+                stopped = sprintctl.enforce_agent_cost_budget(
+                    "claude-budget-run", state_dir, run, cost
+                )
+
+            self.assertTrue(stopped)
+            request_stop.assert_called_once_with(
+                "claude-budget-run",
+                reason="agent_cost_budget_exhausted",
+                terminal_budget_payload=cost,
             )
 
     def test_agent_cost_budget_does_not_stop_below_full_budget(self) -> None:
