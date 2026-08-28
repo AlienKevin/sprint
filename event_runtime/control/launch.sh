@@ -628,19 +628,19 @@ payload = {
     "state_dir": state,
     "jobs_root": jobs,
     "agent_kind": agent_kind,
-    "goal_mode": (
-        "claude_code_native_goal"
+    **(
+        {"goal_mode": "claude_code_native_goal"}
         if agent_kind == "claude-code"
-        else "deepseek_native_goal"
-        if agent_kind == "deepseek-harness"
-        else "codex_session_goal"
+        else {}
     ),
     "model": model,
     "endpoint": endpoint or None,
     "reasoning_effort": effort,
     "codex_version": codex_version if agent_kind == "codex" else None,
-    "claude_code_version": (
-        claude_code_version if agent_kind == "claude-code" else None
+    **(
+        {"claude_code_version": claude_code_version}
+        if agent_kind == "claude-code"
+        else {}
     ),
     "deepseek_harness_version": (
         os.environ.get("DEEPSEEK_HARNESS_VERSION")
@@ -907,12 +907,10 @@ payload = {
     "secret_dir": secrets,
     "modal_profile": profile,
     "agent_kind": agent_kind,
-    "goal_mode": (
-        "claude_code_native_goal"
+    **(
+        {"goal_mode": "claude_code_native_goal"}
         if agent_kind == "claude-code"
-        else "deepseek_native_goal"
-        if agent_kind == "deepseek-harness"
-        else "codex_session_goal"
+        else {}
     ),
     "model": model,
     "endpoint": endpoint or None,
@@ -923,8 +921,10 @@ payload = {
         else model.split("/", 1)[-1]
     ),
     "codex_version": codex_version if agent_kind == "codex" else None,
-    "claude_code_version": (
-        claude_code_version if agent_kind == "claude-code" else None
+    **(
+        {"claude_code_version": claude_code_version}
+        if agent_kind == "claude-code"
+        else {}
     ),
     "deepseek_harness_version": (
         os.environ.get("DEEPSEEK_HARNESS_VERSION")

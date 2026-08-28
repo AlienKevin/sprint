@@ -571,7 +571,11 @@ def agent_adapter_contract_ready(planned: list[dict[str, Any]]) -> bool:
                 if arm["agent_kind"] == "claude-code"
                 else None
             ),
-            "goal": arm.get("goal_mode") == "claude_code_native_goal",
+            **(
+                {"goal": True}
+                if arm["agent_kind"] == "claude-code"
+                else {}
+            ),
         }
         for arm in planned
     ]
