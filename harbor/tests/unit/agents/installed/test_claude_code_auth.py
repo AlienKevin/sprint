@@ -68,6 +68,8 @@ def _clear_auth_env(monkeypatch):
         "ANTHROPIC_BASE_URL",
         "CLAUDE_CODE_USE_BEDROCK",
         "AWS_BEARER_TOKEN_BEDROCK",
+        "OPENROUTER_API_KEY",
+        "SPRINT_OPENROUTER_LEDGER_REQUIRED",
     ):
         monkeypatch.delenv(var, raising=False)
 
@@ -86,6 +88,43 @@ class TestClaudeCodeRunAuth:
 
         envs = _exec_envs(mock_env)
         assert any(e.get("ANTHROPIC_API_KEY") == "sk-ant-default" for e in envs)
+
+    @pytest.mark.asyncio
+    async def test_openrouter_ledger_passes_sealed_key_to_wrapper(
+        self, monkeypatch, temp_dir
+    ):
+        _clear_auth_env(monkeypatch)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sprint-local-proxy-token")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-sealed-test")
+        agent = ClaudeCode(
+            logs_dir=temp_dir,
+            model_name="anthropic/claude-opus-5",
+            extra_env={"SPRINT_OPENROUTER_LEDGER_REQUIRED": "1"},
+        )
+        mock_env = _mock_env()
+
+        await agent.run("do something", mock_env, AsyncMock())
+
+        envs = _exec_envs(mock_env)
+        assert any(e.get("OPENROUTER_API_KEY") == "sk-or-sealed-test" for e in envs)
+
+    @pytest.mark.asyncio
+    async def test_openrouter_ledger_requires_sealed_key(
+        self, monkeypatch, temp_dir
+    ):
+        _clear_auth_env(monkeypatch)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sprint-local-proxy-token")
+        agent = ClaudeCode(
+            logs_dir=temp_dir,
+            model_name="anthropic/claude-opus-5",
+            extra_env={"SPRINT_OPENROUTER_LEDGER_REQUIRED": "1"},
+        )
+        mock_env = _mock_env()
+
+        with pytest.raises(ValueError, match="requires OPENROUTER_API_KEY"):
+            await agent.run("do something", mock_env, AsyncMock())
+
+        mock_env.exec.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_force_oauth_drops_api_key_keeps_token(self, monkeypatch, temp_dir):
