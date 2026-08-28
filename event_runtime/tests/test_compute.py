@@ -1120,6 +1120,59 @@ class WorkerRuntimeBoundaryTests(unittest.TestCase):
         self.assertEqual(live_detail["finished_sandbox_ids"], [])
         self.assertIn("exit 137", live_detail["errors"]["sb-live"])
 
+    def test_budget_mirror_rechecks_killed_exec_during_terminal_propagation(
+        self,
+    ) -> None:
+        payload = {
+            "schema_version": 2,
+            "run_id": "run-1",
+            "checked_at_epoch_s": 1234.5,
+            "total_usd": 2.25,
+            "stop_threshold_usd": 10.0,
+            "status": "within_budget",
+        }
+
+        class Reader:
+            def read(self) -> str:
+                return ""
+
+        class Process:
+            stdout = Reader()
+            stderr = Reader()
+
+            def wait(self) -> int:
+                return 137
+
+        class Sandbox:
+            def __init__(self) -> None:
+                self.poll_count = 0
+
+            def exec(self, *_args: str, **_kwargs: object) -> Process:
+                return Process()
+
+            def poll(self) -> int | None:
+                self.poll_count += 1
+                return None if self.poll_count == 1 else 0
+
+        sandbox = Sandbox()
+        with (
+            mock.patch.object(
+                gpu_worker.modal.Sandbox, "from_id", return_value=sandbox
+            ) as from_id,
+            mock.patch.object(gpu_worker.time, "sleep") as sleep,
+        ):
+            detail = gpu_worker.mirror_gpu_budget(
+                {"run_id": "run-1"},
+                payload,
+                jobs=[{"sandbox_id": "sb-finishing", "status": "running"}],
+            )
+
+        self.assertEqual(from_id.call_count, 2)
+        sleep.assert_called_once_with(0.5)
+        self.assertEqual(detail["gpu_budget_mirror"], "updated")
+        self.assertEqual(detail["finished_sandbox_ids"], ["sb-finishing"])
+        self.assertEqual(detail["errors"], {})
+
     def test_budget_mirror_accepts_fetchspec_race_after_sandbox_finishes(self) -> None:
         payload = {
             "schema_version": 2,

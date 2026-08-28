@@ -1479,10 +1479,25 @@ print("STALE_IGNORED" if stale else "UPDATED")
                 # sandbox itself is terminal before treating the missed write
                 # as harmless; a nonzero exec in a live sandbox remains a real
                 # budget-mirror error.
-                try:
-                    sandbox_exit = sandbox.poll()
-                except Exception:  # noqa: BLE001 - preserve the real exec error
-                    sandbox_exit = None
+                sandbox_exit = None
+                for probe_attempt in range(3):
+                    try:
+                        if probe_attempt:
+                            sandbox = modal.Sandbox.from_id(sandbox_id)
+                        sandbox_exit = sandbox.poll()
+                    except modal.exception.NotFoundError:
+                        sandbox_exit = 0
+                    except Exception:  # noqa: BLE001 - preserve the exec error
+                        break
+                    if sandbox_exit is not None:
+                        break
+                    if probe_attempt < 2:
+                        # Modal can briefly report a sandbox as live after the
+                        # provider has killed its last exec during teardown.
+                        # Re-open the handle so the terminal state can
+                        # propagate, while retaining fail-closed behavior for
+                        # a sandbox that remains live.
+                        time.sleep(0.5)
                 if sandbox_exit is not None:
                     finished.append(sandbox_id)
                     continue
