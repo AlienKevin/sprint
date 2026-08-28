@@ -3553,6 +3553,74 @@ else:
             self.assertEqual(status, expected_status)
             self.assertEqual(order, ["dispatch", "telemetry"])
 
+    def test_monitor_does_not_download_live_trace(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state_dir = Path(raw)
+            run = {
+                "run_id": "monitor-without-trace-download",
+                "agent_kind": "codex",
+                "cpu_agent_gpu_worker": False,
+                "unified_timeline_required": True,
+                "provider_usage_ledger_required": False,
+                "usage_audit_required": False,
+            }
+            job = state_dir / "job"
+            trial = job / "trial"
+            trial.mkdir(parents=True)
+            expected_status = {"run_id": run["run_id"]}
+            with (
+                mock.patch.object(sprintctl, "load_run", return_value=(state_dir, run)),
+                mock.patch("event_runtime.telemetry.host.poll_once"),
+                mock.patch.object(
+                    sprintctl,
+                    "discover_job_and_trial",
+                    return_value=(job, trial),
+                ),
+                mock.patch.object(sprintctl, "snapshot_host_history"),
+                mock.patch.object(sprintctl, "archive_completed_attempts"),
+                mock.patch.object(sprintctl, "sync_durable_telemetry"),
+                mock.patch.object(sprintctl, "fetch_remote_json"),
+                mock.patch.object(sprintctl, "sync_durable_trace") as trace_sync,
+                mock.patch.object(sprintctl, "build_unified_timeline", return_value={}),
+                mock.patch.object(sprintctl, "refresh_agent_cost_snapshot"),
+                mock.patch.object(
+                    sprintctl, "status_snapshot", return_value=expected_status
+                ),
+            ):
+                status = sprintctl.monitor_once(
+                    run["run_id"], upload=True, include_remote=False
+                )
+
+            self.assertEqual(status, expected_status)
+            trace_sync.assert_not_called()
+
+    def test_public_projection_downloads_live_trace(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state_dir = Path(raw)
+            run = {"run_id": "projection-trace", "site_dir": raw}
+            job = state_dir / "job"
+            trial = job / "trial"
+            trial.mkdir(parents=True)
+            expected = {"status": "ready"}
+            with (
+                mock.patch.object(sprintctl, "load_run", return_value=(state_dir, run)),
+                mock.patch.object(
+                    sprintctl,
+                    "discover_job_and_trial",
+                    return_value=(job, trial),
+                ),
+                mock.patch.object(sprintctl, "sync_durable_trace") as trace_sync,
+                mock.patch.object(sprintctl, "worker_alive", return_value=False),
+                mock.patch.object(sprintctl, "sync_frontier_artifacts"),
+                mock.patch.object(sprintctl, "scan_frontier", return_value=expected),
+                mock.patch.object(sprintctl, "volume_upload"),
+                mock.patch.object(sprintctl, "maybe_start_frontier_worker"),
+            ):
+                result = sprintctl.refresh_public_projection(run["run_id"])
+
+            self.assertEqual(result, expected)
+            trace_sync.assert_called_once_with(state_dir, run)
+
     def test_monitor_leaves_dispatch_to_healthy_dedicated_loop(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             state_dir = Path(raw)

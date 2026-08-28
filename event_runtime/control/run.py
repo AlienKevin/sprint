@@ -1808,8 +1808,6 @@ def monitor_once(
                     "budget/watchdog.json",
                     "telemetry/budget-watchdog.json",
                 )
-                if upload:
-                    sync_durable_trace(state_dir, run)
                 if run.get("provider_usage_ledger_required"):
                     sync_durable_api_usage(state_dir, run)
                 if run.get("usage_audit_required"):
@@ -1834,6 +1832,12 @@ def refresh_public_projection(
     job, trial = discover_job_and_trial(state_dir, run)
     if not job or not trial:
         return {"run_id": run_id, "status": "waiting_for_harbor_artifacts"}
+    # Live trace chunks exist only to render the public trajectory. Keep their
+    # recursive Modal Volume download in this observer-only path so a slow
+    # VolumeListFiles scan cannot delay the experiment monitor. Finalization
+    # still performs its own forced trace reconciliation after the run ends.
+    if upload:
+        sync_durable_trace(state_dir, run)
     frontier_path = state_dir / "frontier-state.json"
     if not worker_alive(state_dir):
         sync_frontier_artifacts(state_dir, run, upload=upload)
