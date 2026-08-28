@@ -1409,6 +1409,20 @@ class ClaudeCode(BaseInstalledAgent):
             "FORCE_AUTO_BACKGROUND_TASKS": "1",
             "ENABLE_BACKGROUND_TASKS": "1",
         }
+        ledger_required = parse_bool_env_value(
+            self._get_env("SPRINT_OPENROUTER_LEDGER_REQUIRED"),
+            name="SPRINT_OPENROUTER_LEDGER_REQUIRED",
+            default=False,
+        )
+        if ledger_required:
+            openrouter_api_key = self._get_env("OPENROUTER_API_KEY")
+            if not openrouter_api_key:
+                raise ValueError(
+                    "SPRINT_OPENROUTER_LEDGER_REQUIRED requires OPENROUTER_API_KEY"
+                )
+            # The trusted Claude executable wrapper consumes this key to start
+            # the metered localhost proxy, then unsets it before Claude runs.
+            env["OPENROUTER_API_KEY"] = openrouter_api_key
 
         # Bedrock configuration: pass through AWS credentials and region
         if use_bedrock:
@@ -1530,11 +1544,10 @@ class ClaudeCode(BaseInstalledAgent):
                 'export PATH="$HOME/.local/bin:$PATH"; '
                 f'{instruction_shell_var}="${instruction_env_var}"; '
                 f"unset {instruction_env_var}; "
-                f'printf "%s" "${instruction_shell_var}" | '
                 f"claude --verbose --output-format=stream-json "
                 f"{extra_flags}"
                 f"{resume_flag}"
-                f"--print 2>&1 | tee "
+                f'--print "${instruction_shell_var}" 2>&1 | tee '
                 f"/logs/agent/claude-code.txt"
             ),
             env=run_env,

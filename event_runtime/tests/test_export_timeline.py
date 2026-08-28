@@ -1987,6 +1987,28 @@ def test_trace_mirror_only_publishes_complete_lines_and_resumes(tmp_path: Path) 
     )
 
 
+def test_trace_mirror_discovers_claude_code_sessions_and_subagents(
+    tmp_path: Path,
+) -> None:
+    mirror = load_trace_mirror()
+    logs = tmp_path / "agent"
+    sessions = logs / "sessions"
+    main = sessions / "projects/-app/session.jsonl"
+    subagent = sessions / "projects/-app/session/subagents/agent-1.jsonl"
+    write_jsonl(main, [{"type": "user", "sessionId": "session"}])
+    write_jsonl(subagent, [{"type": "assistant", "sessionId": "session"}])
+
+    sources = list(
+        mirror.discover_sources(
+            agent_kind="claude-code",
+            codex_home=tmp_path / "unused-codex-home",
+            agent_log_dir=logs,
+        )
+    )
+
+    assert set(sources) == {(main, sessions), (subagent, sessions)}
+
+
 def test_trace_mirror_replays_safely_if_cursor_is_lost(tmp_path: Path) -> None:
     mirror = load_trace_mirror()
     home = tmp_path / "codex"

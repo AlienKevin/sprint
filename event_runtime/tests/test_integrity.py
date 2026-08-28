@@ -356,6 +356,20 @@ def test_deepseek_agent_exit_after_terminal_goal_is_clean(tmp_path: Path) -> Non
     assert report["benchmark_valid"] is True
 
 
+def test_claude_code_native_goal_exit_is_invalid(tmp_path: Path) -> None:
+    run = run_contract("claude-code-early-exit")
+    run["agent_kind"] = "claude-code"
+    (tmp_path / "STOP_ACK.json").write_text(json.dumps({"reason": "agent_exit"}))
+    write_clean_exit(tmp_path / "CPU_TRIAL_EXIT.json")
+
+    report = build_integrity_report(tmp_path, run)
+
+    assert report["benchmark_valid"] is False
+    assert {reason["code"] for reason in report["reasons"]} == {
+        "claude_code_goal_exited_early"
+    }
+
+
 def test_terminal_goal_runner_failure_is_invalid_even_after_operator_stop(
     tmp_path: Path,
 ) -> None:

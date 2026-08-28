@@ -64,10 +64,11 @@ FUNCTIONAL_CANARY_FIXTURE = PREFLIGHT_DIR / "training_canary" / "train_sprint.py
 BUDGET_CONFIG = MODULE_DIR / "budget.env"
 HARBOR_REVISION = "dafb1387151e1c32702963d44fe6c3cea66cf8cb"
 CODEX_VERSION = "0.149.1"
+CLAUDE_CODE_VERSION = "2.1.248"
 TRIALS_PER_MODEL = 3
 DEFAULT_FAMILIES = ("deepseek", "luna")
 # Production experiments use OpenRouter with the model author's official provider.
-SUPPORTED_FAMILIES = ("deepseek", "luna", "sol")
+SUPPORTED_FAMILIES = ("deepseek", "luna", "sol", "opus", "glm")
 OPENAI_FAMILY_SPECS: dict[str, dict[str, str]] = {
     "luna": {
         "model": "openai/gpt-5.6-luna",
@@ -101,6 +102,34 @@ DEEPSEEK_ROUTED_FAMILY_SPECS: dict[str, dict[str, str]] = {
         "wire_api": "chat_completions",
         "agent_kind": "deepseek-harness",
         "goal_mode": "deepseek_native_goal",
+    },
+}
+CLAUDE_CODE_ROUTED_FAMILY_SPECS: dict[str, dict[str, str]] = {
+    # Claude Code's native goal command keeps one headless session working
+    # until the trusted supervisor stops the trial at the shared dollar cap.
+    "opus": {
+        "model": "anthropic/claude-opus-5",
+        "resolved_model": "anthropic/claude-opus-5-20260723",
+        "provider": "Anthropic",
+        "provider_endpoint": "anthropic",
+        "quantization": "unknown",
+        "context_window": "1000000",
+        "wrapper": "anthropic_claude_code.sh",
+        "wire_api": "anthropic_messages",
+        "agent_kind": "claude-code",
+        "goal_mode": "claude_code_native_goal",
+    },
+    "glm": {
+        "model": "z-ai/glm-5.3-flash",
+        "resolved_model": "z-ai/glm-5.3-flash-20260826",
+        "provider": "Z.AI",
+        "provider_endpoint": "z-ai/fp8",
+        "quantization": "fp8",
+        "context_window": "1048576",
+        "wrapper": "z_ai_claude_code.sh",
+        "wire_api": "anthropic_messages",
+        "agent_kind": "claude-code",
+        "goal_mode": "claude_code_native_goal",
     },
 }
 DEFAULT_REASONING_EFFORT = "max"
@@ -449,6 +478,14 @@ def matrix(
             }
             for family, spec in DEEPSEEK_ROUTED_FAMILY_SPECS.items()
         },
+        **{
+            family: {
+                **spec,
+                "wrapper": spec["wrapper"],
+                "resolved_model_version": spec["resolved_model"],
+            }
+            for family, spec in CLAUDE_CODE_ROUTED_FAMILY_SPECS.items()
+        },
     }
     selected = tuple(dict.fromkeys(families))
     unknown = sorted(set(selected) - set(SUPPORTED_FAMILIES))
@@ -459,13 +496,21 @@ def matrix(
         raise ValueError(
             "reasoning effort must be max for " + ", ".join(fixed_max_families)
         )
+    if "glm" in selected and reasoning_effort != "max":
+        raise ValueError("reasoning effort must be max for glm")
     for family in selected:
         spec = specs[family]
+        effective_reasoning_effort = (
+            "medium" if family == "opus" else reasoning_effort
+        )
         model_owner = str(spec["model"]).split("/", 1)[0]
         provider_endpoint = str(spec.get("provider_endpoint") or "")
+        provider_matches_owner = provider_endpoint == model_owner or (
+            family == "glm" and provider_endpoint.split("/", 1)[0] == model_owner
+        )
         if (
-            model_owner not in {"deepseek", "openai"}
-            or provider_endpoint != model_owner
+            model_owner not in {"anthropic", "deepseek", "openai", "z-ai"}
+            or not provider_matches_owner
         ):
             raise ValueError(
                 f"{family} must use its model author's official OpenRouter provider"
@@ -480,10 +525,15 @@ def matrix(
                     "family": family,
                     "model": spec["model"],
                     "resolved_model_version": spec["resolved_model_version"],
-                    "reasoning_effort": reasoning_effort,
+                    "reasoning_effort": effective_reasoning_effort,
                     "agent_kind": spec["agent_kind"],
                     "goal_mode": spec["goal_mode"],
                     "codex_version": CODEX_VERSION,
+                    **(
+                        {"claude_code_version": CLAUDE_CODE_VERSION}
+                        if spec["agent_kind"] == "claude-code"
+                        else {}
+                    ),
                     "wrapper": str(MODULE_DIR / "providers" / spec["wrapper"]),
                     "trial": trial,
                     "status": "planned",
@@ -519,6 +569,14 @@ def agent_adapter_contract_ready(planned: list[dict[str, Any]]) -> bool:
             "agent_kind": arm["agent_kind"],
             "model": arm["model"],
             "reasoning_effort": arm["reasoning_effort"],
+            **(
+                {
+                    "goal": True,
+                    "version": arm.get("claude_code_version"),
+                }
+                if arm["agent_kind"] == "claude-code"
+                else {}
+            ),
         }
         for arm in planned
     ]
@@ -528,19 +586,28 @@ import sys
 import tempfile
 from pathlib import Path
 
+from harbor.agents.installed.claude_code import ClaudeCode
 from harbor.agents.installed.codex import Codex
 from harbor.agents.installed.deepseek_harness import DeepSeekHarness
 
-adapters = {"codex": Codex, "deepseek-harness": DeepSeekHarness}
+adapters = {
+    "claude-code": ClaudeCode,
+    "codex": Codex,
+    "deepseek-harness": DeepSeekHarness,
+}
 rows = json.loads(sys.argv[1])
 with tempfile.TemporaryDirectory(prefix="sprint-adapter-contract-") as root:
     for index, row in enumerate(rows):
         adapter = adapters[row["agent_kind"]]
-        adapter(
+        kwargs = dict(
             logs_dir=Path(root) / str(index),
             model_name=row["model"],
             reasoning_effort=row["reasoning_effort"],
         )
+        if row["agent_kind"] == "claude-code":
+            kwargs["goal"] = row["goal"]
+            kwargs["version"] = row["version"]
+        adapter(**kwargs)
 """
     try:
         completed = subprocess.run(
@@ -1509,6 +1576,7 @@ def preflight(
     reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     probe_training_fleet: bool = False,
     coexist_batch_ids: tuple[str, ...] = (),
+    coexist_batch_records: tuple[Path, ...] = (),
 ) -> dict[str, Any]:
     checks: dict[str, Any] = {}
     publication_checks: dict[str, Any] = {}
@@ -1666,8 +1734,30 @@ def preflight(
     except (subprocess.CalledProcessError, json.JSONDecodeError, OSError):
         pass
     if checks["modal_auth"]:
-        valid_coexistence = all(
-            RUN_ID_RE.fullmatch(existing_id) and batch_path(existing_id).is_file()
+        external_coexist_ids: set[str] = set()
+        valid_external_records = len(set(coexist_batch_records)) == len(
+            coexist_batch_records
+        )
+        for record_path in coexist_batch_records:
+            try:
+                external = json.loads(record_path.read_text())
+                external_id = str(external["batch_id"])
+                if (
+                    not RUN_ID_RE.fullmatch(external_id)
+                    or external_id not in coexist_batch_ids
+                    or external_id in external_coexist_ids
+                ):
+                    valid_external_records = False
+                    continue
+                external_coexist_ids.add(external_id)
+            except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+                valid_external_records = False
+        valid_coexistence = valid_external_records and all(
+            RUN_ID_RE.fullmatch(existing_id)
+            and (
+                batch_path(existing_id).is_file()
+                or existing_id in external_coexist_ids
+            )
             for existing_id in coexist_batch_ids
         )
         checks["coexisting_batches_valid"] = valid_coexistence
@@ -1878,6 +1968,71 @@ def preflight(
             key = f"deepseek_{family.replace('-', '_')}"
             checks[f"{key}_visible"] = not check_providers
             checks[f"{key}_inference"] = not check_providers
+    selected_claude_code_families = tuple(
+        family for family in families if family in CLAUDE_CODE_ROUTED_FAMILY_SPECS
+    )
+    if (
+        selected_claude_code_families
+        and check_providers
+        and checks["secret_openrouter_api_key"]
+    ):
+        models = provider_models(
+            "https://openrouter.ai/api/v1/models", str(preflight_api_key)
+        )
+        for family in selected_claude_code_families:
+            spec = CLAUDE_CODE_ROUTED_FAMILY_SPECS[family]
+            key = f"claude_code_{family.replace('-', '_')}"
+            checks[f"{key}_visible"] = spec["model"] in models
+            try:
+                provider_probes[key] = provider_inference_probe(
+                    "https://openrouter.ai/api/v1/messages",
+                    str(preflight_api_key),
+                    {
+                        "model": spec["model"],
+                        "max_tokens": 16,
+                        "messages": [{"role": "user", "content": "Return OK."}],
+                        **(
+                            {"output_config": {"effort": "medium"}}
+                            if family == "opus"
+                            else {"reasoning_effort": reasoning_effort}
+                        ),
+                        "provider": {
+                            "only": [spec["provider_endpoint"]],
+                            "order": [spec["provider_endpoint"]],
+                            "allow_fallbacks": False,
+                            "require_parameters": True,
+                        },
+                        "tools": [
+                            {
+                                "name": "sprint_preflight_noop",
+                                "description": "Preflight-only no-op tool.",
+                                "input_schema": {
+                                    "type": "object",
+                                    "properties": {},
+                                    "additionalProperties": False,
+                                },
+                            }
+                        ],
+                    },
+                    generation_audit_url="https://openrouter.ai/api/v1/generation",
+                )
+                probe = provider_probes[key]
+                checks[f"{key}_inference"] = (
+                    probe.get("provider") == spec["provider"]
+                    and probe.get("resolved_model") == spec["resolved_model"]
+                )
+                if not checks[f"{key}_inference"]:
+                    provider_errors[key] = (
+                        "sealed route response did not identify the requested model"
+                    )
+            except RuntimeError as exc:
+                checks[f"{key}_inference"] = False
+                provider_errors[key] = str(exc)
+    else:
+        for family in selected_claude_code_families:
+            key = f"claude_code_{family.replace('-', '_')}"
+            checks[f"{key}_visible"] = not check_providers
+            checks[f"{key}_inference"] = not check_providers
     checks["unique_runs"] = len({arm["run_id"] for arm in planned}) == len(planned)
     checks["fresh_run_ids"] = not any(
         (SCRIPT_DIR / arm["run_id"]).exists() for arm in planned
@@ -1909,6 +2064,15 @@ def preflight(
         "trial_numbers": list(trial_numbers) if trial_numbers is not None else None,
         "reasoning_effort": reasoning_effort,
         "coexist_batch_ids": list(coexist_batch_ids),
+        **(
+            {
+                "coexist_batch_records": [
+                    str(path.resolve()) for path in coexist_batch_records
+                ]
+            }
+            if coexist_batch_records
+            else {}
+        ),
         "env_file": str(env_file),
         "checks": checks,
         "publication_checks": publication_checks,
@@ -2139,6 +2303,7 @@ def start_batch_control_services(
     modal_profile: str,
     *,
     coexist_batch_ids: tuple[str, ...] = (),
+    publish_site: bool = True,
 ) -> None:
     """Start independent health supervision and website publication services.
 
@@ -2268,6 +2433,24 @@ def start_batch_control_services(
     run_checked(["systemctl", "--user", "enable", units["monitor"]])
     run_checked(["systemctl", "--user", "restart", units["monitor"]])
 
+    if not publish_site:
+        # An isolated comparison batch may share the Modal account with an
+        # explicitly admitted live batch, but it must not compete for the
+        # shared website pointer or retire that batch's publisher. Health and
+        # budget supervision remain fully active through the monitor above.
+        quiesce_batch_publisher(batch_id)
+        write_publication(
+            batch_id,
+            {
+                "schema_version": 1,
+                "batch_id": batch_id,
+                "site_status": "disabled",
+                "disabled_at": utc_now(),
+                "reason": "launch_no_publish",
+            },
+        )
+        return
+
     try:
         if not vercel:
             raise RuntimeError("vercel CLI is not available for the batch publisher")
@@ -2321,6 +2504,8 @@ def launch(
     trial_numbers: tuple[int, ...] | None = None,
     reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     coexist_batch_ids: tuple[str, ...] = (),
+    coexist_batch_records: tuple[Path, ...] = (),
+    publish_site: bool = True,
 ) -> dict[str, Any]:
     report = preflight(
         batch_id=batch_id,
@@ -2332,6 +2517,7 @@ def launch(
         reasoning_effort=reasoning_effort,
         probe_training_fleet=True,
         coexist_batch_ids=coexist_batch_ids,
+        coexist_batch_records=coexist_batch_records,
     )
     if not report["ready"]:
         failed = [name for name, passed in report["checks"].items() if not passed]
@@ -2345,10 +2531,25 @@ def launch(
         "created_at": started,
         "reasoning_effort": reasoning_effort,
         "codex_version": CODEX_VERSION,
+        **(
+            {"claude_code_version": CLAUDE_CODE_VERSION}
+            if any(family in CLAUDE_CODE_ROUTED_FAMILY_SPECS for family in families)
+            else {}
+        ),
         "trials_per_model": trials_per_model,
         "trial_numbers": list(trial_numbers) if trial_numbers is not None else None,
         "families": list(families),
         "coexist_batch_ids": list(coexist_batch_ids),
+        **(
+            {
+                "coexist_batch_records": [
+                    str(path.resolve()) for path in coexist_batch_records
+                ]
+            }
+            if coexist_batch_records
+            else {}
+        ),
+        **({"site_publication_enabled": False} if not publish_site else {}),
         "run_hours": RUN_HOURS,
         "site_deploy_interval_seconds": LIVE_SITE_DEPLOY_SECONDS,
         "modal_profile": modal_profile,
@@ -2419,6 +2620,9 @@ def launch(
             env["OPENROUTER_API_KEY"] = child_key
             env["RUN_ID"] = arm["run_id"]
             env["MODEL"] = arm["model"]
+            env["REASONING_EFFORT"] = arm["reasoning_effort"]
+            if arm.get("agent_kind") == "claude-code":
+                env["CLAUDE_CODE_VERSION"] = CLAUDE_CODE_VERSION
             if arm.get("openrouter_preset"):
                 env["OPENROUTER_PRESET"] = arm["openrouter_preset"]
             if arm.get("provider_endpoint"):
@@ -2474,6 +2678,7 @@ def launch(
             env_file,
             modal_profile,
             coexist_batch_ids=coexist_batch_ids,
+            publish_site=publish_site,
         )
     except Exception:
         retire_batch_control_services(batch_id)
@@ -3834,6 +4039,14 @@ def parser() -> argparse.ArgumentParser:
         )
         if name == "launch":
             command.add_argument("--confirm", action="store_true")
+            command.add_argument(
+                "--no-publish",
+                action="store_true",
+                help=(
+                    "keep health supervision active without starting a site "
+                    "publisher or quiescing publishers of coexisting batches"
+                ),
+            )
         if name in {"preflight", "launch"}:
             command.add_argument(
                 "--reasoning-effort",
@@ -3845,6 +4058,16 @@ def parser() -> argparse.ArgumentParser:
                 action="append",
                 default=[],
                 help="allow live Modal resources owned by this existing batch",
+            )
+            command.add_argument(
+                "--coexist-batch-record",
+                action="append",
+                type=Path,
+                default=[],
+                help=(
+                    "read-only batch.json for a coexisting batch owned by a "
+                    "different worktree"
+                ),
             )
             command.add_argument(
                 "--families",
@@ -3890,6 +4113,7 @@ def main() -> int:
             reasoning_effort=args.reasoning_effort,
             probe_training_fleet=True,
             coexist_batch_ids=tuple(args.coexist_with_batch),
+            coexist_batch_records=tuple(args.coexist_batch_record),
         )
     elif args.command == "launch":
         if not args.confirm:
@@ -3903,6 +4127,8 @@ def main() -> int:
             trial_numbers=(tuple(args.trial_numbers) if args.trial_numbers else None),
             reasoning_effort=args.reasoning_effort,
             coexist_batch_ids=tuple(args.coexist_with_batch),
+            coexist_batch_records=tuple(args.coexist_batch_record),
+            publish_site=not args.no_publish,
         )
     elif args.command == "monitor":
         output = run_monitor_command(

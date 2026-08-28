@@ -177,6 +177,113 @@ def write_deepseek_harness_session(state: Path, attempt: int) -> None:
     chunk.write_text("".join(json.dumps(row) + "\n" for row in rows))
 
 
+def write_claude_code_session(state: Path, attempt: int) -> None:
+    chunk = (
+        state
+        / "durable-trace"
+        / "raw"
+        / f"cpu-attempt-{attempt:03d}"
+        / "claude-code"
+        / f"claude-source-{attempt}"
+        / "chunks"
+        / "0000000000000000-0000000000001000-test.jsonl"
+    )
+    chunk.parent.mkdir(parents=True)
+    rows = [
+        {
+            "type": "user",
+            "timestamp": "2026-08-28T00:00:00Z",
+            "sessionId": "claude-session",
+            "message": {"role": "user", "content": "task"},
+        },
+        {
+            "type": "assistant",
+            "timestamp": "2026-08-28T00:00:01Z",
+            "sessionId": "claude-session",
+            "version": "2.1.248",
+            "message": {
+                "id": "message-1",
+                "model": "z-ai/glm-5.3-flash",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "working"}],
+                "usage": {"input_tokens": 200, "output_tokens": 30},
+            },
+        },
+    ]
+    chunk.write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+
+def test_reconstructs_claude_code_trace_with_provider_billing(tmp_path: Path) -> None:
+    run = {
+        "run_id": "claude-code-fixture",
+        "agent_kind": "claude-code",
+        "model": "z-ai/glm-5.3-flash",
+        "resolved_model_version": "z-ai/glm-5.3-flash-20260826",
+        "reasoning_effort": "max",
+        "cpu_launch_history": [{"attempt": 1}],
+        "budget_enforcement": {
+            "api_cost_source": "openrouter_reported_per_request",
+            "api_budget_cost_basis": "openrouter_list_price_before_endpoint_discount",
+        },
+    }
+    (tmp_path / "run.json").write_text(json.dumps(run))
+    write_claude_code_session(tmp_path, 1)
+    record = tmp_path / "provider-api-usage/api-usage/requests/request.json"
+    record.parent.mkdir(parents=True)
+    record.write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "run_id": run["run_id"],
+                "cpu_attempt": 1,
+                "ledger_request_id": "ledger-claude-1",
+                "generation_id": "generation-claude-1",
+                "requested_at": "2026-08-28T00:00:00Z",
+                "completed_at": "2026-08-28T00:00:01Z",
+                "state": "complete",
+                "requested_model": run["model"],
+                "response_model": run["model"],
+                "provider_reported_cost_usd": 0.04,
+                "undiscounted_cost_usd": 0.08,
+                "benchmark_cost_usd": 0.08,
+                "cost_basis": "openrouter_list_price_before_endpoint_discount",
+                "promotion_snapshot": {"discount_fraction": 0.5},
+                "usage": {
+                    "input_tokens": 200,
+                    "input_tokens_details": {
+                        "cached_tokens": 80,
+                        "cache_write_tokens": 20,
+                    },
+                    "output_tokens": 30,
+                    "output_tokens_details": {"reasoning_tokens": 10},
+                    "total_tokens": 230,
+                },
+            }
+        )
+    )
+
+    subprocess.run(
+        [sys.executable, str(SCRIPT), "--state-dir", str(tmp_path)],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    audit = json.loads((tmp_path / "usage/run-usage-audit.json").read_text())
+    assert audit["attempt_coverage_complete"] is True
+    assert audit["request_count"] == 1
+    assert audit["calculated_api_usage_usd"] == 0.08
+    assert audit["requests"][0]["provider_only_usage"] is True
+    assert audit["source_sessions"][0]["agent_kind"] == "claude-code"
+    assert audit["source_sessions"][0]["trajectory_sha256"]
+    trajectory_path = tmp_path / audit["source_sessions"][0]["trajectory_path"]
+    trajectory = json.loads(trajectory_path.read_text())
+    assert trajectory["agent"]["name"] == "claude-code"
+    assert any(step.get("message") == "working" for step in trajectory["steps"])
+    assert sprintctl.run_usage_audit_ready(tmp_path, run) == (True, [])
+
+
 def test_reconstructs_deepseek_harness_trace_with_provider_billing(
     tmp_path: Path,
 ) -> None:

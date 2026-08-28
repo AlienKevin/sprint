@@ -391,6 +391,10 @@ def publish_policy_replays(
 
 def model_family(model: str | None) -> str:
     value = (model or "").lower()
+    if "claude-opus-5" in value:
+        return "opus"
+    if "glm-5.3-flash" in value:
+        return "glm"
     if "deepseek-v4-pro" in value:
         return "pro-alibaba"
     if "deepseek-v4-flash-vision-exp" in value:

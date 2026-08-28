@@ -123,6 +123,71 @@ def test_batch_matrix_accepts_explicit_reasoning_effort() -> None:
     assert {row["reasoning_effort"] for row in rows} == {"medium"}
 
 
+def test_opus_matrix_uses_claude_code_goal_mode_and_official_route() -> None:
+    rows = batch_eval.matrix(
+        "eval-opus-medium",
+        families=("opus",),
+        trials_per_model=1,
+        reasoning_effort="medium",
+    )
+
+    assert rows == [
+        {
+            "run_id": "eval-opus-medium-opus-1",
+            "family": "opus",
+            "model": "anthropic/claude-opus-5",
+            "resolved_model_version": "anthropic/claude-opus-5-20260723",
+            "reasoning_effort": "medium",
+            "agent_kind": "claude-code",
+            "goal_mode": "claude_code_native_goal",
+            "codex_version": "0.149.1",
+            "claude_code_version": "2.1.248",
+            "wrapper": str(
+                ROOT / "event_runtime/control/providers/anthropic_claude_code.sh"
+            ),
+            "trial": 1,
+            "status": "planned",
+            "provider": "Anthropic",
+            "provider_endpoint": "anthropic",
+            "quantization": "unknown",
+            "context_window": "1000000",
+        }
+    ]
+
+
+def test_glm_matrix_defaults_to_max_and_official_zai_route() -> None:
+    rows = batch_eval.matrix("eval-glm-max", families=("glm",), trials_per_model=1)
+
+    assert rows[0]["model"] == "z-ai/glm-5.3-flash"
+    assert rows[0]["resolved_model_version"] == "z-ai/glm-5.3-flash-20260826"
+    assert rows[0]["reasoning_effort"] == "max"
+    assert rows[0]["agent_kind"] == "claude-code"
+    assert rows[0]["goal_mode"] == "claude_code_native_goal"
+    assert rows[0]["provider"] == "Z.AI"
+    assert rows[0]["provider_endpoint"] == "z-ai/fp8"
+    assert rows[0]["quantization"] == "fp8"
+    assert Path(rows[0]["wrapper"]).name == "z_ai_claude_code.sh"
+    assert batch_eval.agent_adapter_contract_ready(rows)
+
+
+def test_opus_matrix_forces_medium_when_batch_default_is_max() -> None:
+    rows = batch_eval.matrix(
+        "eval-opus-default", families=("opus",), trials_per_model=1
+    )
+
+    assert rows[0]["reasoning_effort"] == "medium"
+
+
+def test_glm_matrix_rejects_noncanonical_effort() -> None:
+    with pytest.raises(ValueError, match="must be max for glm"):
+        batch_eval.matrix(
+            "eval-glm-medium",
+            families=("glm",),
+            trials_per_model=1,
+            reasoning_effort="medium",
+        )
+
+
 @pytest.mark.parametrize("family", ["deepseek", "luna"])
 @pytest.mark.parametrize("reasoning_effort", ["medium", "high"])
 def test_batch_matrix_requires_max_for_fixed_effort_families(
@@ -549,8 +614,16 @@ def test_every_launchable_family_uses_its_official_openrouter_provider() -> None
     )
     assert rows
     for row in rows:
-        assert row["provider_endpoint"] == row["model"].split("/", 1)[0]
-        assert row["provider"] in {"DeepSeek", "OpenAI"}
+        assert row["provider_endpoint"].split("/", 1)[0] == row["model"].split(
+            "/", 1
+        )[0]
+        assert row["provider"] in {"Anthropic", "DeepSeek", "OpenAI", "Z.AI"}
+    assert {row["reasoning_effort"] for row in rows if row["family"] == "opus"} == {
+        "medium"
+    }
+    assert {row["reasoning_effort"] for row in rows if row["family"] == "glm"} == {
+        "max"
+    }
 
 
 def test_sol_model_lock_preserves_exact_codex_contract() -> None:
@@ -3531,6 +3604,45 @@ def test_tracking_batch_quiesces_only_coexisting_publishers(
     assert quiesced == ["source-a", "source-b"]
 
 
+def test_no_publish_keeps_monitor_without_quiescing_coexisting_publishers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands: list[list[str]] = []
+    quiesced: list[str] = []
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setattr(batch_eval, "BATCH_ROOT", tmp_path / "batches")
+    monkeypatch.setattr(batch_eval.shutil, "which", lambda _name: "/tools/vercel")
+    monkeypatch.setattr(
+        batch_eval,
+        "run_checked",
+        lambda command, **_kwargs: commands.append(command) or "ok",
+    )
+    monkeypatch.setattr(batch_eval.subprocess, "run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        batch_eval,
+        "quiesce_batch_publisher",
+        lambda batch_id: quiesced.append(batch_id),
+    )
+
+    batch_eval.start_batch_control_services(
+        "isolated",
+        tmp_path / ".env",
+        "profile-a",
+        coexist_batch_ids=("protected",),
+        publish_site=False,
+    )
+
+    assert commands == [
+        ["systemctl", "--user", "daemon-reload"],
+        ["systemctl", "--user", "enable", "sprint-batch-isolated-monitor.service"],
+        ["systemctl", "--user", "restart", "sprint-batch-isolated-monitor.service"],
+    ]
+    assert quiesced == ["isolated"]
+    publication = batch_eval.read_publication("isolated")
+    assert publication["site_status"] == "disabled"
+    assert publication["reason"] == "launch_no_publish"
+
+
 def test_batch_monitor_reads_live_lane_status_without_duplicate_poll(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -4111,7 +4223,7 @@ def test_recovered_log_alert_is_archived() -> None:
     )
 
 
-def test_website_javascript_parses_and_has_no_legacy_opus_copy() -> None:
+def test_website_javascript_recognizes_every_launchable_model_family() -> None:
     source = (ROOT / "web/app.js").read_text()
     assert "DeepSeek V4 Flash Vision Exp" in source
     assert "DeepSeek V4 Flash 0731 · Baidu" in source
@@ -4120,7 +4232,10 @@ def test_website_javascript_parses_and_has_no_legacy_opus_copy() -> None:
     assert "value.includes('gpt-5.6-sol')?'sol'" in source
     assert "Officially disqualified or unfinished" in source
     assert "lane exit" in source
-    assert "Opus" not in source
+    assert "Claude Opus 5" in source
+    assert "GLM‑5.3‑Flash" in source
+    assert "value.includes('claude-opus-5')?'opus'" in source
+    assert "value.includes('glm-5.3-flash')?'glm'" in source
     spec = importlib.util.find_spec("json")
     assert spec is not None
 
@@ -4206,6 +4321,7 @@ def test_partial_batch_launch_is_safely_rolled_back(
     with pytest.raises(subprocess.CalledProcessError):
         batch_eval.launch("eval", tmp_path / ".env", "test-profile")
     state = json.loads((tmp_path / "batches/eval/batch.json").read_text())
+    assert "claude_code_version" not in state
     assert state["status"] == "launch_error"
     assert state["arms"][0]["status"] == "stopping_after_launch_rollback"
     assert stopped == [("eval-luna-1", "partial_batch_launch_rollback")]

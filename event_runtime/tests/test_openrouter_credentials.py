@@ -13,6 +13,7 @@ from event_runtime.control.openrouter_credentials import (
     TrialCredentialSpec,
     provision_trial_credentials,
     revoke_trial_credentials,
+    validate_specs,
 )
 
 
@@ -82,6 +83,37 @@ def specs() -> list[TrialCredentialSpec]:
             provider="openai",
         ),
     ]
+
+
+def test_validate_specs_accepts_official_provider_variant_tag() -> None:
+    validate_specs(
+        [
+            TrialCredentialSpec(
+                run_id="eval-glm-1",
+                model="z-ai/glm-5.3-flash",
+                resolved_model="z-ai/glm-5.3-flash-20260826",
+                provider="z-ai/fp8",
+            )
+        ]
+    )
+
+
+@pytest.mark.parametrize(
+    "provider",
+    ("/fp8", "z-ai/", "z-ai/fp8/extra", "z-ai//fp8", "z-ai/fp 8"),
+)
+def test_validate_specs_rejects_malformed_provider_variant_tag(provider: str) -> None:
+    with pytest.raises(ValueError, match="invalid OpenRouter route"):
+        validate_specs(
+            [
+                TrialCredentialSpec(
+                    run_id="eval-glm-1",
+                    model="z-ai/glm-5.3-flash",
+                    resolved_model="z-ai/glm-5.3-flash-20260826",
+                    provider=provider,
+                )
+            ]
+        )
 
 
 def test_provision_seals_each_trial_and_never_journals_plaintext(

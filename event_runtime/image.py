@@ -20,6 +20,7 @@ CODEX_COST = (
 DEEPSEEK_HARNESS_NODE = CONTAINER / "deepseek-harness-node"
 NODE_VERSION = "22.22.0"
 CODEX_VERSION = "0.149.1"
+CLAUDE_CODE_VERSION = "2.1.248"
 DEEPSEEK_HARNESS_VERSION = "0.1.1-rc.2"
 
 _CONTAINER_LINKS = (
@@ -30,6 +31,7 @@ _CONTAINER_LINKS = (
     "sprint_gpu_pipeline.py",
     "sprint-codex-exec-wrapper.sh",
     "sprint-codex-goal-runner.py",
+    "sprint-claude-code-exec-wrapper.sh",
     "sprint-deepseek-harness-exec-wrapper.sh",
     "sprint-deepseek-harness-runner.py",
     "sprint-deepseek-harness-probe.py",
@@ -106,6 +108,7 @@ def agent_image(event: EventLayout, public_verifier: Path) -> modal.Image:
         "tar -xzf $archive -C /usr/local --strip-components=1; "
         "rm -f $archive SHASUMS256.txt; "
         f"npm install -g @openai/codex@{CODEX_VERSION}; "
+        f"npm install -g @anthropic-ai/claude-code@{CLAUDE_CODE_VERSION}; "
         "npm ci --prefix /opt/deepseek-harness --omit=dev --ignore-scripts; "
         "ln -sf /opt/deepseek-harness/node_modules/.bin/dsh-jsonrpc-agent "
         "/usr/local/bin/dsh-jsonrpc-agent; "
@@ -113,6 +116,8 @@ def agent_image(event: EventLayout, public_verifier: Path) -> modal.Image:
         'pip3 install --no-cache-dir --no-deps "deepseek-harness-sdk==0.1.1rc1"; '
         f"test \"$(codex --version | sed 's/^codex-cli //')\" = "
         f'"{CODEX_VERSION}"; '
+        "test \"$(claude --version | awk '{print $1}')\" = "
+        f'"{CLAUDE_CODE_VERSION}"; '
         "node -e 'const v=require(\"/opt/deepseek-harness/node_modules/"
         "@deepseek-ai/dsh-sdk-jsonrpc-demo/package.json\").version; "
         "if (v !== process.argv[1]) throw new Error(`unexpected DeepSeek Harness "
@@ -178,6 +183,7 @@ def agent_image(event: EventLayout, public_verifier: Path) -> modal.Image:
         "/opt/event_runtime/container/sprint-agent-supervisor.sh "
         "/opt/event_runtime/container/sprint-codex-exec-wrapper.sh "
         "/opt/event_runtime/container/sprint-codex-goal-runner.py "
+        "/opt/event_runtime/container/sprint-claude-code-exec-wrapper.sh "
         "/opt/event_runtime/container/sprint-deepseek-harness-exec-wrapper.sh "
         "/opt/event_runtime/container/sprint-deepseek-harness-runner.py "
         "/opt/event_runtime/container/sprint-openrouter-ledger-proxy.py "

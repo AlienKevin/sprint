@@ -531,6 +531,71 @@ def test_chat_completion_usage_event_exposes_exact_usage_cost() -> None:
     assert response["id"] == "gen-chat-1"
 
 
+def test_anthropic_message_usage_is_canonicalized_and_merged() -> None:
+    start_usage, response = proxy.usage_from_event(
+        {
+            "type": "message_start",
+            "message": {
+                "id": "gen-anthropic-1",
+                "model": "anthropic/claude-opus-5",
+                "usage": {
+                    "input_tokens": 100,
+                    "cache_creation_input_tokens": 20,
+                    "cache_read_input_tokens": 80,
+                    "output_tokens": 1,
+                },
+            },
+        }
+    )
+    end_usage, _ = proxy.usage_from_event(
+        {"type": "message_delta", "usage": {"output_tokens": 30}}
+    )
+
+    assert start_usage is not None and end_usage is not None
+    usage = proxy.merge_stream_usage(start_usage, end_usage)
+    assert usage["input_tokens"] == 200
+    assert usage["input_tokens_details"] == {
+        "cached_tokens": 80,
+        "cache_write_tokens": 20,
+    }
+    assert usage["output_tokens"] == 30
+    assert usage["total_tokens"] == 230
+    assert response["id"] == "gen-anthropic-1"
+
+
+def test_glm_messages_translates_claude_effort_without_openai_stream_options() -> None:
+    _body, payload = proxy.pin_provider_route(
+        json.dumps(
+            {
+                "model": "caller-alias",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": True,
+                "output_config": {"effort": "low"},
+            }
+        ).encode(),
+        provider_endpoint="z-ai/fp8",
+        quantization="fp8",
+        request_contract={
+            "model": "z-ai/glm-5.3-flash",
+            "max_tokens": 131_072,
+            "reasoning_effort": "max",
+            "stream": True,
+        },
+        inference_path="messages",
+    )
+
+    assert payload["provider"] == {
+        "only": ["z-ai/fp8"],
+        "order": ["z-ai/fp8"],
+        "allow_fallbacks": False,
+        "require_parameters": True,
+        "quantizations": ["fp8"],
+    }
+    assert payload["reasoning_effort"] == "max"
+    assert "output_config" not in payload
+    assert "stream_options" not in payload
+
+
 def test_generic_proxy_preserves_requested_parallel_tool_calls() -> None:
     _body, payload = proxy.pin_provider_route(
         json.dumps(
@@ -618,6 +683,52 @@ def test_endpoint_promotion_is_reversed_without_changing_cache_skus() -> None:
         "0.00000025"
     )
     assert proxy.undiscounted_cost_usd(0.25, parsed) == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize(
+    ("model", "provider_tag", "provider_name", "quantization", "discount"),
+    (
+        ("anthropic/claude-opus-5", "anthropic", "Anthropic", "unknown", 0.25),
+        ("z-ai/glm-5.3-flash", "z-ai/fp8", "Z.AI", "fp8", 0.5),
+    ),
+)
+def test_claude_code_models_reverse_openrouter_endpoint_discounts(
+    model: str,
+    provider_tag: str,
+    provider_name: str,
+    quantization: str,
+    discount: float,
+) -> None:
+    pricing = proxy.sys.modules["sprint_openrouter_pricing"]
+    parsed = pricing.parse_endpoint_discount_snapshot(
+        {
+            "data": {
+                "endpoints": [
+                    {
+                        "provider_name": provider_name,
+                        "tag": provider_tag,
+                        "quantization": quantization,
+                        "pricing": {"discount": discount},
+                    }
+                ]
+            }
+        },
+        model=model,
+        provider_tag=provider_tag,
+        captured_at="2026-08-28T00:00:00Z",
+        source_url=f"https://openrouter.ai/api/v1/models/{model}/endpoints",
+    )
+
+    multiplier = 1.0 / (1.0 - discount)
+    assert parsed["cost_basis"] == "openrouter_list_price_before_endpoint_discount"
+    assert parsed["discount_fraction"] == discount
+    assert parsed["gross_up_multiplier"] == pytest.approx(multiplier)
+    assert pricing.undiscounted_cost_usd(0.25, parsed) == pytest.approx(
+        0.25 * multiplier
+    )
+    assert pricing.benchmark_cost_usd(0.25, parsed, {}) == pytest.approx(
+        0.25 * multiplier
+    )
 
 
 def test_sol_removes_only_openrouter_endpoint_discount() -> None:
