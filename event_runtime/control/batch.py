@@ -505,9 +505,12 @@ def matrix(
         )
         model_owner = str(spec["model"]).split("/", 1)[0]
         provider_endpoint = str(spec.get("provider_endpoint") or "")
+        provider_matches_owner = provider_endpoint == model_owner or (
+            family == "glm" and provider_endpoint.split("/", 1)[0] == model_owner
+        )
         if (
             model_owner not in {"anthropic", "deepseek", "openai", "z-ai"}
-            or provider_endpoint.split("/", 1)[0] != model_owner
+            or not provider_matches_owner
         ):
             raise ValueError(
                 f"{family} must use its model author's official OpenRouter provider"
@@ -566,13 +569,11 @@ def agent_adapter_contract_ready(planned: list[dict[str, Any]]) -> bool:
             "agent_kind": arm["agent_kind"],
             "model": arm["model"],
             "reasoning_effort": arm["reasoning_effort"],
-            "version": (
-                arm.get("claude_code_version")
-                if arm["agent_kind"] == "claude-code"
-                else None
-            ),
             **(
-                {"goal": True}
+                {
+                    "goal": True,
+                    "version": arm.get("claude_code_version"),
+                }
                 if arm["agent_kind"] == "claude-code"
                 else {}
             ),
@@ -2530,7 +2531,11 @@ def launch(
         "created_at": started,
         "reasoning_effort": reasoning_effort,
         "codex_version": CODEX_VERSION,
-        "claude_code_version": CLAUDE_CODE_VERSION,
+        **(
+            {"claude_code_version": CLAUDE_CODE_VERSION}
+            if any(family in CLAUDE_CODE_ROUTED_FAMILY_SPECS for family in families)
+            else {}
+        ),
         "trials_per_model": trials_per_model,
         "trial_numbers": list(trial_numbers) if trial_numbers is not None else None,
         "families": list(families),
@@ -2601,7 +2606,6 @@ def launch(
             "CONFIRM_LAUNCH": "1",
             "REASONING_EFFORT": reasoning_effort,
             "CODEX_VERSION": CODEX_VERSION,
-            "CLAUDE_CODE_VERSION": CLAUDE_CODE_VERSION,
             "SPRINT_BATCH_ID": batch_id,
             "UV": str(UV),
         }
@@ -2617,6 +2621,8 @@ def launch(
             env["RUN_ID"] = arm["run_id"]
             env["MODEL"] = arm["model"]
             env["REASONING_EFFORT"] = arm["reasoning_effort"]
+            if arm.get("agent_kind") == "claude-code":
+                env["CLAUDE_CODE_VERSION"] = CLAUDE_CODE_VERSION
             if arm.get("openrouter_preset"):
                 env["OPENROUTER_PRESET"] = arm["openrouter_preset"]
             if arm.get("provider_endpoint"):

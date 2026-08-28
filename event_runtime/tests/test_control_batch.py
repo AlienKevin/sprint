@@ -4321,6 +4321,7 @@ def test_partial_batch_launch_is_safely_rolled_back(
     with pytest.raises(subprocess.CalledProcessError):
         batch_eval.launch("eval", tmp_path / ".env", "test-profile")
     state = json.loads((tmp_path / "batches/eval/batch.json").read_text())
+    assert "claude_code_version" not in state
     assert state["status"] == "launch_error"
     assert state["arms"][0]["status"] == "stopping_after_launch_rollback"
     assert stopped == [("eval-luna-1", "partial_batch_launch_rollback")]

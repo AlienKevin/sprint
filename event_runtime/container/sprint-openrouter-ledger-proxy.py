@@ -935,10 +935,16 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                                 )
                             usage, response = usage_from_event(event)
                             if usage is not None:
-                                terminal_usage = merge_stream_usage(
-                                    terminal_usage, usage
-                                )
-                                terminal_response.update(response)
+                                if (
+                                    self.ledger_server.allowed_inference_path
+                                    == "messages"
+                                ):
+                                    terminal_usage = merge_stream_usage(
+                                        terminal_usage, usage
+                                    )
+                                    terminal_response.update(response)
+                                else:
+                                    terminal_usage, terminal_response = usage, response
                         rewritten = (
                             goal_stream.rewrite_line(line) if goal_stream else [line]
                         )
