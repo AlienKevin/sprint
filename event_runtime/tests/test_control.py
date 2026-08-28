@@ -2247,7 +2247,12 @@ class DurableOpsTests(unittest.TestCase):
                 )
                 contract = config["openrouter_request_contract"]
                 self.assertEqual(contract["model"], model)
-                self.assertEqual(contract["output_config"], {"effort": effort})
+                if provider == "anthropic":
+                    self.assertEqual(contract["output_config"], {"effort": effort})
+                    self.assertNotIn("reasoning_effort", contract)
+                else:
+                    self.assertEqual(contract["reasoning_effort"], effort)
+                    self.assertNotIn("output_config", contract)
                 self.assertEqual(contract["max_tokens"], max_tokens)
                 self.assertTrue(contract["stream"])
 

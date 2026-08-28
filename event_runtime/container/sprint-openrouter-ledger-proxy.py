@@ -537,6 +537,7 @@ def pin_provider_route(
     provider_endpoint: str,
     quantization: str | None,
     request_contract: dict[str, Any] | None = None,
+    inference_path: str | None = None,
 ) -> tuple[bytes, dict[str, Any]]:
     """Replace any caller routing preference with the sealed eval route."""
     try:
@@ -558,8 +559,18 @@ def pin_provider_route(
     if request_contract:
         payload.update(request_contract)
         if (
+            "reasoning_effort" in request_contract
+            and "output_config" not in request_contract
+        ):
+            # Claude Code expresses effort with Anthropic's output_config.
+            # Non-Anthropic official endpoints can expose the same control as
+            # OpenRouter's portable reasoning_effort parameter and reject
+            # output_config under strict require_parameters routing.
+            payload.pop("output_config", None)
+        if (
             request_contract.get("stream") is True
             and "output_config" not in request_contract
+            and inference_path != "messages"
         ):
             # Chat Completions emits usage only on its final stream event when
             # include_usage is enabled.  The proxy owns this bit because a
@@ -736,12 +747,23 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
             return
         if record_usage and self.ledger_server.provider_endpoint:
+            request_path = self.path.split("?", 1)[0].rstrip("/")
+            inference_path = (
+                "responses"
+                if request_path in {"/responses", "/api/v1/responses"}
+                else "chat_completions"
+                if request_path in {"/chat/completions", "/api/v1/chat/completions"}
+                else "messages"
+                if request_path in {"/messages", "/v1/messages", "/api/v1/messages"}
+                else None
+            )
             try:
                 body, request_payload = pin_provider_route(
                     body,
                     provider_endpoint=self.ledger_server.provider_endpoint,
                     quantization=self.ledger_server.quantization,
                     request_contract=self.ledger_server.request_contract,
+                    inference_path=inference_path,
                 )
             except ValueError as exc:
                 self.send_error(HTTPStatus.BAD_REQUEST, str(exc))

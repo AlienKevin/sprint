@@ -563,13 +563,14 @@ def test_anthropic_message_usage_is_canonicalized_and_merged() -> None:
     assert response["id"] == "gen-anthropic-1"
 
 
-def test_anthropic_messages_contract_does_not_add_openai_stream_options() -> None:
+def test_glm_messages_translates_claude_effort_without_openai_stream_options() -> None:
     _body, payload = proxy.pin_provider_route(
         json.dumps(
             {
                 "model": "caller-alias",
                 "messages": [{"role": "user", "content": "hello"}],
                 "stream": True,
+                "output_config": {"effort": "low"},
             }
         ).encode(),
         provider_endpoint="z-ai/fp8",
@@ -577,9 +578,10 @@ def test_anthropic_messages_contract_does_not_add_openai_stream_options() -> Non
         request_contract={
             "model": "z-ai/glm-5.3-flash",
             "max_tokens": 131_072,
-            "output_config": {"effort": "max"},
+            "reasoning_effort": "max",
             "stream": True,
         },
+        inference_path="messages",
     )
 
     assert payload["provider"] == {
@@ -589,7 +591,8 @@ def test_anthropic_messages_contract_does_not_add_openai_stream_options() -> Non
         "require_parameters": True,
         "quantizations": ["fp8"],
     }
-    assert payload["output_config"] == {"effort": "max"}
+    assert payload["reasoning_effort"] == "max"
+    assert "output_config" not in payload
     assert "stream_options" not in payload
 
 

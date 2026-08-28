@@ -1571,6 +1571,7 @@ def preflight(
     reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     probe_training_fleet: bool = False,
     coexist_batch_ids: tuple[str, ...] = (),
+    coexist_batch_records: tuple[Path, ...] = (),
 ) -> dict[str, Any]:
     checks: dict[str, Any] = {}
     publication_checks: dict[str, Any] = {}
@@ -1728,8 +1729,30 @@ def preflight(
     except (subprocess.CalledProcessError, json.JSONDecodeError, OSError):
         pass
     if checks["modal_auth"]:
-        valid_coexistence = all(
-            RUN_ID_RE.fullmatch(existing_id) and batch_path(existing_id).is_file()
+        external_coexist_ids: set[str] = set()
+        valid_external_records = len(set(coexist_batch_records)) == len(
+            coexist_batch_records
+        )
+        for record_path in coexist_batch_records:
+            try:
+                external = json.loads(record_path.read_text())
+                external_id = str(external["batch_id"])
+                if (
+                    not RUN_ID_RE.fullmatch(external_id)
+                    or external_id not in coexist_batch_ids
+                    or external_id in external_coexist_ids
+                ):
+                    valid_external_records = False
+                    continue
+                external_coexist_ids.add(external_id)
+            except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+                valid_external_records = False
+        valid_coexistence = valid_external_records and all(
+            RUN_ID_RE.fullmatch(existing_id)
+            and (
+                batch_path(existing_id).is_file()
+                or existing_id in external_coexist_ids
+            )
             for existing_id in coexist_batch_ids
         )
         checks["coexisting_batches_valid"] = valid_coexistence
@@ -1963,9 +1986,11 @@ def preflight(
                         "model": spec["model"],
                         "max_tokens": 16,
                         "messages": [{"role": "user", "content": "Return OK."}],
-                        "output_config": {
-                            "effort": "medium" if family == "opus" else reasoning_effort
-                        },
+                        **(
+                            {"output_config": {"effort": "medium"}}
+                            if family == "opus"
+                            else {"reasoning_effort": reasoning_effort}
+                        ),
                         "provider": {
                             "only": [spec["provider_endpoint"]],
                             "order": [spec["provider_endpoint"]],
@@ -2034,6 +2059,15 @@ def preflight(
         "trial_numbers": list(trial_numbers) if trial_numbers is not None else None,
         "reasoning_effort": reasoning_effort,
         "coexist_batch_ids": list(coexist_batch_ids),
+        **(
+            {
+                "coexist_batch_records": [
+                    str(path.resolve()) for path in coexist_batch_records
+                ]
+            }
+            if coexist_batch_records
+            else {}
+        ),
         "env_file": str(env_file),
         "checks": checks,
         "publication_checks": publication_checks,
@@ -2465,6 +2499,7 @@ def launch(
     trial_numbers: tuple[int, ...] | None = None,
     reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     coexist_batch_ids: tuple[str, ...] = (),
+    coexist_batch_records: tuple[Path, ...] = (),
     publish_site: bool = True,
 ) -> dict[str, Any]:
     report = preflight(
@@ -2477,6 +2512,7 @@ def launch(
         reasoning_effort=reasoning_effort,
         probe_training_fleet=True,
         coexist_batch_ids=coexist_batch_ids,
+        coexist_batch_records=coexist_batch_records,
     )
     if not report["ready"]:
         failed = [name for name, passed in report["checks"].items() if not passed]
@@ -2495,7 +2531,16 @@ def launch(
         "trial_numbers": list(trial_numbers) if trial_numbers is not None else None,
         "families": list(families),
         "coexist_batch_ids": list(coexist_batch_ids),
-        "site_publication_enabled": publish_site,
+        **(
+            {
+                "coexist_batch_records": [
+                    str(path.resolve()) for path in coexist_batch_records
+                ]
+            }
+            if coexist_batch_records
+            else {}
+        ),
+        **({"site_publication_enabled": False} if not publish_site else {}),
         "run_hours": RUN_HOURS,
         "site_deploy_interval_seconds": LIVE_SITE_DEPLOY_SECONDS,
         "modal_profile": modal_profile,
@@ -4005,6 +4050,16 @@ def parser() -> argparse.ArgumentParser:
                 help="allow live Modal resources owned by this existing batch",
             )
             command.add_argument(
+                "--coexist-batch-record",
+                action="append",
+                type=Path,
+                default=[],
+                help=(
+                    "read-only batch.json for a coexisting batch owned by a "
+                    "different worktree"
+                ),
+            )
+            command.add_argument(
                 "--families",
                 nargs="+",
                 choices=SUPPORTED_FAMILIES,
@@ -4048,6 +4103,7 @@ def main() -> int:
             reasoning_effort=args.reasoning_effort,
             probe_training_fleet=True,
             coexist_batch_ids=tuple(args.coexist_with_batch),
+            coexist_batch_records=tuple(args.coexist_batch_record),
         )
     elif args.command == "launch":
         if not args.confirm:
@@ -4061,6 +4117,7 @@ def main() -> int:
             trial_numbers=(tuple(args.trial_numbers) if args.trial_numbers else None),
             reasoning_effort=args.reasoning_effort,
             coexist_batch_ids=tuple(args.coexist_with_batch),
+            coexist_batch_records=tuple(args.coexist_batch_record),
             publish_site=not args.no_publish,
         )
     elif args.command == "monitor":

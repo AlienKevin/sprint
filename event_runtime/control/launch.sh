@@ -356,7 +356,11 @@ if [[ "$MODEL_API_HOST" == "openrouter.ai" ]]; then
       SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON='{"max_tokens":128000,"model":"anthropic/claude-opus-5","output_config":{"effort":"medium"},"stream":true}'
       ;;
     claude-code:glm-5.3-flash)
-      SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON='{"max_tokens":131072,"model":"z-ai/glm-5.3-flash","output_config":{"effort":"max"},"stream":true,"temperature":1.0,"top_p":0.95}'
+      # Claude Code speaks Anthropic Messages and emits output_config.effort,
+      # but the official Z.AI endpoint advertises OpenRouter's portable
+      # reasoning_effort field instead. The trusted proxy replaces the former
+      # with this sealed max-effort contract before forwarding upstream.
+      SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON='{"max_tokens":131072,"model":"z-ai/glm-5.3-flash","reasoning_effort":"max","stream":true,"temperature":1.0,"top_p":0.95}'
       ;;
     *)
       SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON=''
