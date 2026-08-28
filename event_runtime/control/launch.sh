@@ -152,9 +152,9 @@ if [[ "$CODEX_VERSION" == -* || "$CODEX_VERSION" =~ [[:space:][:cntrl:]@] || -z 
   echo "--codex-version must be a non-empty npm version (no @ prefix)" >&2
   exit 2
 fi
-if [[ "$CLAUDE_CODE_VERSION" == -* \
+if [[ "$AGENT_KIND" == "claude-code" && ( "$CLAUDE_CODE_VERSION" == -* \
       || "$CLAUDE_CODE_VERSION" =~ [[:space:][:cntrl:]@] \
-      || -z "$CLAUDE_CODE_VERSION" ]]; then
+      || -z "$CLAUDE_CODE_VERSION" ) ]]; then
   echo "--claude-code-version must be a non-empty npm version (no @ prefix)" >&2
   exit 2
 fi
@@ -214,7 +214,8 @@ if [[ "$CODEX_VERSION" != "$BAKED_CODEX_VERSION" ]]; then
   echo "Codex $CODEX_VERSION is not baked into the offline image (expected $BAKED_CODEX_VERSION)" >&2
   exit 2
 fi
-if [[ "$CLAUDE_CODE_VERSION" != "$BAKED_CLAUDE_CODE_VERSION" ]]; then
+if [[ "$AGENT_KIND" == "claude-code" \
+      && "$CLAUDE_CODE_VERSION" != "$BAKED_CLAUDE_CODE_VERSION" ]]; then
   echo "Claude Code $CLAUDE_CODE_VERSION is not baked into the offline image (expected $BAKED_CLAUDE_CODE_VERSION)" >&2
   exit 2
 fi

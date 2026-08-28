@@ -526,10 +526,10 @@ def matrix(
                     "agent_kind": spec["agent_kind"],
                     "goal_mode": spec["goal_mode"],
                     "codex_version": CODEX_VERSION,
-                    "claude_code_version": (
-                        CLAUDE_CODE_VERSION
+                    **(
+                        {"claude_code_version": CLAUDE_CODE_VERSION}
                         if spec["agent_kind"] == "claude-code"
-                        else None
+                        else {}
                     ),
                     "wrapper": str(MODULE_DIR / "providers" / spec["wrapper"]),
                     "trial": trial,

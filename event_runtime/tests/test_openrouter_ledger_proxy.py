@@ -682,6 +682,52 @@ def test_endpoint_promotion_is_reversed_without_changing_cache_skus() -> None:
     assert proxy.undiscounted_cost_usd(0.25, parsed) == pytest.approx(0.5)
 
 
+@pytest.mark.parametrize(
+    ("model", "provider_tag", "provider_name", "quantization", "discount"),
+    (
+        ("anthropic/claude-opus-5", "anthropic", "Anthropic", "unknown", 0.25),
+        ("z-ai/glm-5.3-flash", "z-ai/fp8", "Z.AI", "fp8", 0.5),
+    ),
+)
+def test_claude_code_models_reverse_openrouter_endpoint_discounts(
+    model: str,
+    provider_tag: str,
+    provider_name: str,
+    quantization: str,
+    discount: float,
+) -> None:
+    pricing = proxy.sys.modules["sprint_openrouter_pricing"]
+    parsed = pricing.parse_endpoint_discount_snapshot(
+        {
+            "data": {
+                "endpoints": [
+                    {
+                        "provider_name": provider_name,
+                        "tag": provider_tag,
+                        "quantization": quantization,
+                        "pricing": {"discount": discount},
+                    }
+                ]
+            }
+        },
+        model=model,
+        provider_tag=provider_tag,
+        captured_at="2026-08-28T00:00:00Z",
+        source_url=f"https://openrouter.ai/api/v1/models/{model}/endpoints",
+    )
+
+    multiplier = 1.0 / (1.0 - discount)
+    assert parsed["cost_basis"] == "openrouter_list_price_before_endpoint_discount"
+    assert parsed["discount_fraction"] == discount
+    assert parsed["gross_up_multiplier"] == pytest.approx(multiplier)
+    assert pricing.undiscounted_cost_usd(0.25, parsed) == pytest.approx(
+        0.25 * multiplier
+    )
+    assert pricing.benchmark_cost_usd(0.25, parsed, {}) == pytest.approx(
+        0.25 * multiplier
+    )
+
+
 def test_sol_removes_only_openrouter_endpoint_discount() -> None:
     parsed = proxy.sys.modules[
         "sprint_openrouter_pricing"
