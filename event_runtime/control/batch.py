@@ -2264,6 +2264,7 @@ def start_batch_control_services(
     modal_profile: str,
     *,
     coexist_batch_ids: tuple[str, ...] = (),
+    publish_site: bool = True,
 ) -> None:
     """Start independent health supervision and website publication services.
 
@@ -2393,6 +2394,24 @@ def start_batch_control_services(
     run_checked(["systemctl", "--user", "enable", units["monitor"]])
     run_checked(["systemctl", "--user", "restart", units["monitor"]])
 
+    if not publish_site:
+        # An isolated comparison batch may share the Modal account with an
+        # explicitly admitted live batch, but it must not compete for the
+        # shared website pointer or retire that batch's publisher. Health and
+        # budget supervision remain fully active through the monitor above.
+        quiesce_batch_publisher(batch_id)
+        write_publication(
+            batch_id,
+            {
+                "schema_version": 1,
+                "batch_id": batch_id,
+                "site_status": "disabled",
+                "disabled_at": utc_now(),
+                "reason": "launch_no_publish",
+            },
+        )
+        return
+
     try:
         if not vercel:
             raise RuntimeError("vercel CLI is not available for the batch publisher")
@@ -2446,6 +2465,7 @@ def launch(
     trial_numbers: tuple[int, ...] | None = None,
     reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     coexist_batch_ids: tuple[str, ...] = (),
+    publish_site: bool = True,
 ) -> dict[str, Any]:
     report = preflight(
         batch_id=batch_id,
@@ -2475,6 +2495,7 @@ def launch(
         "trial_numbers": list(trial_numbers) if trial_numbers is not None else None,
         "families": list(families),
         "coexist_batch_ids": list(coexist_batch_ids),
+        "site_publication_enabled": publish_site,
         "run_hours": RUN_HOURS,
         "site_deploy_interval_seconds": LIVE_SITE_DEPLOY_SECONDS,
         "modal_profile": modal_profile,
@@ -2602,6 +2623,7 @@ def launch(
             env_file,
             modal_profile,
             coexist_batch_ids=coexist_batch_ids,
+            publish_site=publish_site,
         )
     except Exception:
         retire_batch_control_services(batch_id)
@@ -3962,6 +3984,14 @@ def parser() -> argparse.ArgumentParser:
         )
         if name == "launch":
             command.add_argument("--confirm", action="store_true")
+            command.add_argument(
+                "--no-publish",
+                action="store_true",
+                help=(
+                    "keep health supervision active without starting a site "
+                    "publisher or quiescing publishers of coexisting batches"
+                ),
+            )
         if name in {"preflight", "launch"}:
             command.add_argument(
                 "--reasoning-effort",
@@ -4031,6 +4061,7 @@ def main() -> int:
             trial_numbers=(tuple(args.trial_numbers) if args.trial_numbers else None),
             reasoning_effort=args.reasoning_effort,
             coexist_batch_ids=tuple(args.coexist_with_batch),
+            publish_site=not args.no_publish,
         )
     elif args.command == "monitor":
         output = run_monitor_command(

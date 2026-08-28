@@ -3604,6 +3604,45 @@ def test_tracking_batch_quiesces_only_coexisting_publishers(
     assert quiesced == ["source-a", "source-b"]
 
 
+def test_no_publish_keeps_monitor_without_quiescing_coexisting_publishers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands: list[list[str]] = []
+    quiesced: list[str] = []
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setattr(batch_eval, "BATCH_ROOT", tmp_path / "batches")
+    monkeypatch.setattr(batch_eval.shutil, "which", lambda _name: "/tools/vercel")
+    monkeypatch.setattr(
+        batch_eval,
+        "run_checked",
+        lambda command, **_kwargs: commands.append(command) or "ok",
+    )
+    monkeypatch.setattr(batch_eval.subprocess, "run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        batch_eval,
+        "quiesce_batch_publisher",
+        lambda batch_id: quiesced.append(batch_id),
+    )
+
+    batch_eval.start_batch_control_services(
+        "isolated",
+        tmp_path / ".env",
+        "profile-a",
+        coexist_batch_ids=("protected",),
+        publish_site=False,
+    )
+
+    assert commands == [
+        ["systemctl", "--user", "daemon-reload"],
+        ["systemctl", "--user", "enable", "sprint-batch-isolated-monitor.service"],
+        ["systemctl", "--user", "restart", "sprint-batch-isolated-monitor.service"],
+    ]
+    assert quiesced == ["isolated"]
+    publication = batch_eval.read_publication("isolated")
+    assert publication["site_status"] == "disabled"
+    assert publication["reason"] == "launch_no_publish"
+
+
 def test_batch_monitor_reads_live_lane_status_without_duplicate_poll(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
