@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
 from pathlib import Path
+import signal
+import subprocess
+import sys
+import time
 from typing import Any, Sequence
 
 import pytest
@@ -106,3 +112,99 @@ def test_wrapper_enables_stable_external_goal_runner() -> None:
     assert '--bootstrap "$AGENT_LOG_DIR/goal-bootstrap.json"' in wrapper
     assert '--lifecycle "$AGENT_LOG_DIR/goal-lifecycle.json"' in wrapper
     assert 'setsid "${agent_command[@]}" &' in wrapper
+
+
+def test_supervisor_recognizes_goal_runner_as_claude_process(tmp_path: Path) -> None:
+    durable = tmp_path / "durable"
+    runtime = tmp_path / "run"
+    agent_logs = tmp_path / "agent"
+    artifact_logs = tmp_path / "artifacts"
+    for path in (durable, runtime, agent_logs, artifact_logs):
+        path.mkdir()
+
+    fake_claude = tmp_path / "fake-claude.py"
+    fake_claude.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, signal, time\n"
+        "signal.signal(signal.SIGINT, lambda *_: os._exit(0))\n"
+        "signal.signal(signal.SIGTERM, lambda *_: os._exit(0))\n"
+        "while True: time.sleep(1)\n"
+    )
+    fake_claude.chmod(0o755)
+
+    runner = subprocess.Popen(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--claude-executable",
+            str(fake_claude),
+            "--bootstrap",
+            str(agent_logs / "goal-bootstrap.json"),
+            "--lifecycle",
+            str(agent_logs / "goal-lifecycle.json"),
+            "--",
+            "--print",
+            "/goal keep working",
+        ],
+        env={
+            **os.environ,
+            "SPRINT_RUNTIME_DIR": str(runtime),
+            "SPRINT_DURABLE_DIR": str(durable),
+            "SPRINT_RUN_ID": "test-claude-goal",
+        },
+        preexec_fn=os.setsid,
+    )
+    process_dir = runtime / "sprint-agent"
+    process_dir.mkdir()
+    start_time = Path(f"/proc/{runner.pid}/stat").read_text().split()[21]
+    (process_dir / "agent-process").write_text(
+        f"{runner.pid} {os.getpgid(runner.pid)} {start_time}\n"
+    )
+    supervisor = subprocess.Popen(
+        [
+            "bash",
+            str(ROOT / "event_runtime/container/sprint-agent-supervisor.sh"),
+            "--run-id",
+            "test-claude-goal",
+            "--agent-kind",
+            "claude-code",
+            "--poll-seconds",
+            "1",
+            "--durable-dir",
+            str(durable),
+            "--runtime-dir",
+            str(runtime),
+            "--agent-log-dir",
+            str(agent_logs),
+            "--artifact-log-dir",
+            str(artifact_logs),
+            "--budget-watchdog-bin",
+            "/bin/true",
+        ]
+    )
+    try:
+        first_seen = (
+            durable
+            / "runs/test-claude-goal/supervisor/first-claude-code-seen"
+        )
+        deadline = time.time() + 10
+        while not first_seen.exists() and time.time() < deadline:
+            time.sleep(0.1)
+        assert first_seen.exists()
+        heartbeat_path = (
+            durable / "runs/test-claude-goal/supervisor/heartbeat.json"
+        )
+        heartbeat: dict[str, Any] = {}
+        while time.time() < deadline:
+            heartbeat = json.loads(heartbeat_path.read_text())
+            if heartbeat.get("agent_seen") is True:
+                break
+            time.sleep(0.1)
+        assert heartbeat["agent_seen"] is True
+        assert heartbeat["agent_pid"] == runner.pid
+    finally:
+        supervisor.kill()
+        supervisor.wait()
+        if runner.poll() is None:
+            os.killpg(os.getpgid(runner.pid), signal.SIGKILL)
+        runner.wait()

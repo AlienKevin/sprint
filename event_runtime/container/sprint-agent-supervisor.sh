@@ -237,7 +237,14 @@ pid_is_claude_code() {
   mapfile -d '' -t args <"/proc/$pid/cmdline"
   ((${#args[@]} >= 1)) || return 1
   base=${args[0]##*/}
-  [[ "$base" == "claude" || "$base" == "claude.exe" ]]
+  if [[ "$base" == "claude" || "$base" == "claude.exe" ]]; then
+    return 0
+  fi
+  # Goal mode deliberately makes the trusted persistence runner the stable
+  # process-group owner while individual Claude --print children come and go.
+  # Mirror the Codex goal-runner identity rule so supervision spans turns.
+  ((${#args[@]} >= 2)) || return 1
+  [[ "$base" == python* && "${args[1]}" == */sprint-claude-code-goal-runner.py ]]
 }
 
 find_deepseek_harness_identity() {
