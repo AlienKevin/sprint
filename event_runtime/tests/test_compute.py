@@ -470,6 +470,51 @@ class WorkerRuntimeBoundaryTests(unittest.TestCase):
             archived["provider_logs_sha256"], hashlib.sha256(expected).hexdigest()
         )
 
+    def test_claude_terminal_stream_archive_confirms_late_termination(self) -> None:
+        job = {
+            "run_id": "run-1",
+            "job_id": "job-1",
+            "attempt": 1,
+            "status": "terminated",
+            "sandbox_id": "sb-1",
+            "terminate_error": (
+                "TimeoutError: Modal did not confirm Sandbox termination within 30s"
+            ),
+        }
+        with mock.patch.object(gpu_worker.sprintctl, "volume_upload"):
+            archived, _detail = gpu_worker.archive_provider_logs(
+                {"run_id": "run-1", "agent_kind": "claude-code"},
+                job,
+                read_output=lambda _sandbox_id: ("stopped\n", ""),
+            )
+
+        self.assertNotIn("terminate_error", archived)
+        self.assertEqual(
+            archived["provider_termination_confirmation_source"],
+            "terminal_modal_stream_archive",
+        )
+        self.assertTrue(archived["provider_termination_confirmed_at"])
+
+    def test_non_claude_terminal_stream_archive_keeps_termination_error(self) -> None:
+        job = {
+            "run_id": "run-1",
+            "job_id": "job-1",
+            "attempt": 1,
+            "status": "terminated",
+            "sandbox_id": "sb-1",
+            "terminate_error": (
+                "TimeoutError: Modal did not confirm Sandbox termination within 30s"
+            ),
+        }
+        with mock.patch.object(gpu_worker.sprintctl, "volume_upload"):
+            archived, _detail = gpu_worker.archive_provider_logs(
+                {"run_id": "run-1", "agent_kind": "deepseek-harness"},
+                job,
+                read_output=lambda _sandbox_id: ("stopped\n", ""),
+            )
+
+        self.assertEqual(archived["terminate_error"], job["terminate_error"])
+
     def test_mirrors_bounded_live_modal_streams_before_exit(self) -> None:
         mirrored: dict[str, object] = {}
 

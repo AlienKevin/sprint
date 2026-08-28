@@ -447,6 +447,68 @@ def test_gpu_retry_and_unconfirmed_termination_are_invalid(tmp_path: Path) -> No
     }
 
 
+def test_claude_late_provider_termination_confirmation_is_valid(
+    tmp_path: Path,
+) -> None:
+    registry = tmp_path / "gpu-job-registry"
+    registry.mkdir()
+    (registry / "job-1.json").write_text(
+        json.dumps(
+            {
+                "job_id": "job-1",
+                "attempt": 1,
+                "status": "terminated",
+                "termination_reason": "agent_cancelled_during_spawn",
+                "terminate_error": (
+                    "TimeoutError: Modal did not confirm Sandbox termination "
+                    "within 30s"
+                ),
+                "provider_logs_archived_at": "2026-08-28T20:42:21Z",
+                "provider_logs_source": "modal-sandbox-streams",
+            }
+        )
+    )
+    run = run_contract("claude-late-confirmation")
+    run["agent_kind"] = "claude-code"
+
+    report = build_integrity_report(tmp_path, run)
+
+    assert report["benchmark_valid"] is True
+    assert report["reasons"] == []
+    assert report["observations"]["claude_gpu_terminations_late_confirmed"] == 1
+
+
+def test_deepseek_late_provider_stream_archive_keeps_existing_semantics(
+    tmp_path: Path,
+) -> None:
+    registry = tmp_path / "gpu-job-registry"
+    registry.mkdir()
+    (registry / "job-1.json").write_text(
+        json.dumps(
+            {
+                "job_id": "job-1",
+                "attempt": 1,
+                "status": "terminated",
+                "termination_reason": "agent_cancelled_during_spawn",
+                "terminate_error": (
+                    "TimeoutError: Modal did not confirm Sandbox termination "
+                    "within 30s"
+                ),
+                "provider_logs_archived_at": "2026-08-28T20:42:21Z",
+                "provider_logs_source": "modal-sandbox-streams",
+            }
+        )
+    )
+    run = run_contract("deepseek-late-confirmation")
+    run["agent_kind"] = "deepseek-harness"
+
+    report = build_integrity_report(tmp_path, run)
+
+    assert {reason["code"] for reason in report["reasons"]} == {
+        "gpu_termination_unconfirmed"
+    }
+
+
 def test_gpu_preemption_is_invalid_without_a_hidden_retry(tmp_path: Path) -> None:
     registry = tmp_path / "gpu-job-registry"
     registry.mkdir()

@@ -406,7 +406,14 @@ def build_integrity_report(state_dir: Path, run: dict[str, Any]) -> dict[str, An
                 )
             )
         terminate_error = str(job.get("terminate_error") or "").strip()
-        if terminate_error and not any(
+        claude_late_termination_confirmation = bool(
+            agent_kind == "claude-code"
+            and "did not confirm sandbox termination" in terminate_error.lower()
+            and job.get("provider_logs_archived_at")
+            and str(job.get("provider_logs_source") or "")
+            == "modal-sandbox-streams"
+        )
+        if terminate_error and not claude_late_termination_confirmation and not any(
             marker in terminate_error.lower() for marker in EXPECTED_TEARDOWN_MARKERS
         ):
             reasons.append(
@@ -416,6 +423,10 @@ def build_integrity_report(state_dir: Path, run: dict[str, Any]) -> dict[str, An
                     terminate_error[-500:],
                 )
             )
+        if claude_late_termination_confirmation:
+            observations["claude_gpu_terminations_late_confirmed"] = int(
+                observations.get("claude_gpu_terminations_late_confirmed") or 0
+            ) + 1
         if (
             str(job.get("status") or "") == "terminated"
             and not str(job.get("termination_reason") or "").strip()

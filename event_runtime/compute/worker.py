@@ -2979,15 +2979,36 @@ def archive_provider_logs(
     payload = dict(job)
     payload.pop("provider_logs_archive_error", None)
     payload.pop("provider_logs_archive_retry_after_epoch_s", None)
+    archived_at = utc_now()
     payload.update(
         {
-            "provider_logs_archived_at": utc_now(),
+            "provider_logs_archived_at": archived_at,
             "provider_logs_path": remote_path,
             "provider_logs_sha256": hashlib.sha256(encoded).hexdigest(),
             "provider_logs_size_bytes": len(encoded),
             "provider_logs_source": "modal-sandbox-streams",
         }
     )
+    # Reading complete Modal streams is only possible after Sandbox.poll()
+    # reports a terminal state.  A Claude job cancelled while Sandbox.create
+    # was in flight can time out during the initial bounded termination poll,
+    # then become provider-confirmed before this asynchronous log backfill.
+    # Preserve Codex and DeepSeek's existing fail-closed semantics while
+    # recording that stronger late confirmation for Claude goal runs.
+    terminate_error = str(payload.get("terminate_error") or "")
+    if (
+        str(run.get("agent_kind") or "") == "claude-code"
+        and "did not confirm Sandbox termination" in terminate_error
+    ):
+        payload.pop("terminate_error", None)
+        payload.update(
+            {
+                "provider_termination_confirmed_at": archived_at,
+                "provider_termination_confirmation_source": (
+                    "terminal_modal_stream_archive"
+                ),
+            }
+        )
     terminal_error = provider_terminal_error_for_job(payload, stdout, stderr)
     payload = apply_provider_terminal_error(payload, terminal_error)
     payload, artifact_name, artifact_content, artifact_detail = (
