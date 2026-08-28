@@ -531,6 +531,68 @@ def test_chat_completion_usage_event_exposes_exact_usage_cost() -> None:
     assert response["id"] == "gen-chat-1"
 
 
+def test_anthropic_message_usage_is_canonicalized_and_merged() -> None:
+    start_usage, response = proxy.usage_from_event(
+        {
+            "type": "message_start",
+            "message": {
+                "id": "gen-anthropic-1",
+                "model": "anthropic/claude-opus-5",
+                "usage": {
+                    "input_tokens": 100,
+                    "cache_creation_input_tokens": 20,
+                    "cache_read_input_tokens": 80,
+                    "output_tokens": 1,
+                },
+            },
+        }
+    )
+    end_usage, _ = proxy.usage_from_event(
+        {"type": "message_delta", "usage": {"output_tokens": 30}}
+    )
+
+    assert start_usage is not None and end_usage is not None
+    usage = proxy.merge_stream_usage(start_usage, end_usage)
+    assert usage["input_tokens"] == 200
+    assert usage["input_tokens_details"] == {
+        "cached_tokens": 80,
+        "cache_write_tokens": 20,
+    }
+    assert usage["output_tokens"] == 30
+    assert usage["total_tokens"] == 230
+    assert response["id"] == "gen-anthropic-1"
+
+
+def test_anthropic_messages_contract_does_not_add_openai_stream_options() -> None:
+    _body, payload = proxy.pin_provider_route(
+        json.dumps(
+            {
+                "model": "caller-alias",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": True,
+            }
+        ).encode(),
+        provider_endpoint="z-ai/fp8",
+        quantization="fp8",
+        request_contract={
+            "model": "z-ai/glm-5.3-flash",
+            "max_tokens": 131_072,
+            "output_config": {"effort": "max"},
+            "stream": True,
+        },
+    )
+
+    assert payload["provider"] == {
+        "only": ["z-ai/fp8"],
+        "order": ["z-ai/fp8"],
+        "allow_fallbacks": False,
+        "require_parameters": True,
+        "quantizations": ["fp8"],
+    }
+    assert payload["output_config"] == {"effort": "max"}
+    assert "stream_options" not in payload
+
+
 def test_generic_proxy_preserves_requested_parallel_tool_calls() -> None:
     _body, payload = proxy.pin_provider_route(
         json.dumps(

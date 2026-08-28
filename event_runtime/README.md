@@ -90,7 +90,9 @@ The sanitizer copies only Harbor metadata, raw/sanitized harness traces,
 normalized ATIF, text telemetry, and submission-result metadata. Transient
 Codex SQLite/WAL state, symlinks, policy binaries, unknown agent files, and
 unknown binary artifacts are excluded. DeepSeek ATIF is materialized into the
-staged job without writing derived files back into the source run.
+staged job without writing derived files back into the source run. Claude Code
+session logs mirrored during Opus 5 and GLM-5.3-Flash goal-mode trials are also
+reconstructed into ATIF before staging.
 
 Every staged job contains `SANITIZATION_REPORT.json` with hashes, exclusions,
 redaction counts, and the audit-archive digest. The tree and a generated tarball

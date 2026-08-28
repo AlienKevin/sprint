@@ -52,6 +52,7 @@ def test_agent_image_marks_codex_shell_entrypoints_executable() -> None:
         "sprint-agent-supervisor.sh",
         "sprint-codex-exec-wrapper.sh",
         "sprint-codex-goal-runner.py",
+        "sprint-claude-code-exec-wrapper.sh",
         "sprint-apply-openai-codex-config.sh",
         "sprint-agent-shell-env.sh",
         "sprint-trace-mirror.py",
@@ -76,6 +77,7 @@ def test_warmup_checks_agent_shell_entrypoints() -> None:
         "sprint-agent-supervisor.sh",
         "sprint-codex-exec-wrapper.sh",
         "sprint-codex-goal-runner.py",
+        "sprint-claude-code-exec-wrapper.sh",
         "sprint-apply-openai-codex-config.sh",
         "sprint-agent-shell-env.sh",
     ):

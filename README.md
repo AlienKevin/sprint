@@ -52,3 +52,17 @@ uv run --project harbor python -m event_runtime.control.batch status \
 uv run --project harbor python -m event_runtime.control.batch stop \
   --batch-id "$BATCH_ID"
 ```
+
+Claude Code goal-mode comparisons use the pinned Claude Code 2.1.248 harness
+through OpenRouter's Anthropic Messages API. Opus 5 is fixed to medium effort
+and Anthropic's first-party route; GLM-5.3-Flash defaults to max effort and is
+fixed to Z.AI's first-party FP8 route:
+
+```bash
+uv run --project harbor python -m event_runtime.control.batch preflight \
+  --batch-id "$BATCH_ID-claude-code" --families opus glm \
+  --trials-per-model "$TRIALS_PER_MODEL"
+```
+
+Use the same arguments with `batch launch --confirm` after preflight. The batch
+default remains max; the Opus arm is sealed to medium independently.

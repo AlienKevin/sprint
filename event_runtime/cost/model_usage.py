@@ -18,6 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from harbor.agents.installed.claude_code import ClaudeCode  # noqa: E402
 from harbor.agents.installed.codex import Codex  # noqa: E402
 from harbor.agents.installed.codex_cost import (  # noqa: E402
     USAGE_AUDIT_SCHEMA_VERSION,
@@ -203,7 +204,7 @@ def recover_harbor_provenance(
 def source_groups(state_dir: Path) -> list[tuple[int, str, str, list[Path]]]:
     groups: dict[tuple[int, str, str], list[Path]] = {}
     root = state_dir / "durable-trace" / "raw"
-    for agent_kind in ("codex", "deepseek-harness"):
+    for agent_kind in ("claude-code", "codex", "deepseek-harness"):
         for chunks in root.glob(f"cpu-attempt-*/{agent_kind}/*/chunks"):
             match = ATTEMPT_RE.fullmatch(chunks.parents[2].name)
             if not match:
@@ -487,6 +488,19 @@ def reconstruct_group(
             )
         else:
             trajectory_path = None
+    elif agent_kind == "claude-code":
+        agent = ClaudeCode(
+            logs_dir=out,
+            model_name=str(run["model"]),
+            reasoning_effort=str(run["reasoning_effort"]),
+        )
+        trajectory = agent._convert_events_to_trajectory(sessions)
+        if trajectory is not None:
+            atomic_text(
+                trajectory_path, format_trajectory_json(trajectory.to_json_dict())
+            )
+        else:
+            trajectory_path = None
     elif agent_kind == "deepseek-harness":
         payload = deepseek_harness_trajectory(chunks, model=str(run["model"]))
         atomic_text(
@@ -526,7 +540,7 @@ def reconstruct_group(
                 "pricing_snapshots": [],
                 "note": (
                     "request usage is reconciled from the provider ledger"
-                    if agent_kind == "deepseek-harness"
+                    if agent_kind in {"claude-code", "deepseek-harness"}
                     else "no completed model request was present"
                 ),
             }

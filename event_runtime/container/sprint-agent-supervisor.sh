@@ -24,7 +24,7 @@ usage() {
 Usage: sprint-agent-supervisor.sh --run-id ID --agent-kind KIND [options]
 
 Options:
-  --agent-kind KIND        codex or deepseek-harness.
+  --agent-kind KIND        codex, claude-code, or deepseek-harness.
   --poll-seconds N         Watch interval (default: 2).
   --term-grace-seconds N   SIGINT grace period (default: 90).
   --budget-watchdog-bin PATH  In-sandbox budget watchdog executable.
@@ -54,8 +54,9 @@ if [[ ! "$RUN_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{2,80}$ ]]; then
   echo "invalid or missing --run-id" >&2
   exit 2
 fi
-if [[ "$AGENT_KIND" != "codex" && "$AGENT_KIND" != "deepseek-harness" ]]; then
-  echo "--agent-kind must be codex or deepseek-harness" >&2
+if [[ "$AGENT_KIND" != "codex" && "$AGENT_KIND" != "claude-code" \
+      && "$AGENT_KIND" != "deepseek-harness" ]]; then
+  echo "--agent-kind must be codex, claude-code, or deepseek-harness" >&2
   exit 2
 fi
 for value in "$POLL_SECONDS" "$TERM_GRACE_SECONDS" \
@@ -77,6 +78,8 @@ STOP_SIGNALLED="$RUNTIME_DIR/sprint-stop-signalled"
 GPU_DRAIN_COMPLETE="$RUNTIME_DIR/sprint-gpu-drain-complete.json"
 if [[ "$AGENT_KIND" == "deepseek-harness" ]]; then
   FIRST_SEEN="$STATE_DIR/first-deepseek-harness-seen"
+elif [[ "$AGENT_KIND" == "claude-code" ]]; then
+  FIRST_SEEN="$STATE_DIR/first-claude-code-seen"
 else
   FIRST_SEEN="$STATE_DIR/first-codex-seen"
 fi
@@ -227,6 +230,16 @@ pid_is_deepseek_harness() {
   [[ "$row" == *sprint-deepseek-harness-runner.py* ]]
 }
 
+pid_is_claude_code() {
+  local pid=$1 base
+  local -a args=()
+  [[ -r "/proc/$pid/cmdline" ]] || return 1
+  mapfile -d '' -t args <"/proc/$pid/cmdline"
+  ((${#args[@]} >= 1)) || return 1
+  base=${args[0]##*/}
+  [[ "$base" == "claude" || "$base" == "claude.exe" ]]
+}
+
 find_deepseek_harness_identity() {
   local pid pgid recorded_start actual_start actual_pgid watcher_pgid
   [[ -r "$HARNESS_PROCESS_FILE" ]] || return 1
@@ -246,6 +259,28 @@ find_deepseek_harness_identity() {
   actual_pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]')
   [[ "$actual_pgid" == "$pgid" ]] || return 1
   pid_is_deepseek_harness "$pid" || return 1
+  printf '%s %s\n' "$pid" "$pgid"
+}
+
+find_claude_code_identity() {
+  local pid pgid recorded_start actual_start actual_pgid watcher_pgid
+  [[ -r "$HARNESS_PROCESS_FILE" ]] || return 1
+  read -r pid pgid recorded_start <"$HARNESS_PROCESS_FILE" || return 1
+  [[ "$pid" =~ ^[0-9]+$ && "$pgid" =~ ^[0-9]+$ && "$recorded_start" =~ ^[0-9]+$ ]] \
+    || return 1
+  ((pid > 1 && pgid > 1 && pid == pgid)) || return 1
+  watcher_pgid=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d '[:space:]')
+  [[ "$pgid" != "$watcher_pgid" ]] || return 1
+  if ! pid_running "$pid"; then
+    group_running "$pgid" || return 1
+    printf '%s %s\n' "$pid" "$pgid"
+    return 0
+  fi
+  actual_start=$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null || true)
+  [[ "$actual_start" == "$recorded_start" ]] || return 1
+  actual_pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+  [[ "$actual_pgid" == "$pgid" ]] || return 1
+  pid_is_claude_code "$pid" || return 1
   printf '%s %s\n' "$pid" "$pgid"
 }
 
@@ -274,6 +309,8 @@ find_codex_identity() {
 find_agent_identity() {
   if [[ "$AGENT_KIND" == "codex" ]]; then
     find_codex_identity
+  elif [[ "$AGENT_KIND" == "claude-code" ]]; then
+    find_claude_code_identity
   else
     find_deepseek_harness_identity
   fi

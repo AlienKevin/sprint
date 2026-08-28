@@ -17,9 +17,11 @@ DEPLOY_DEBOUNCE_SECONDS=300
 # These exact CLI versions are baked into the task image. Harbor verifies them
 # locally during offline agent setup and skips installation.
 CODEX_VERSION=${CODEX_VERSION:-0.149.1}
+CLAUDE_CODE_VERSION=${CLAUDE_CODE_VERSION:-2.1.248}
 DEEPSEEK_HARNESS_VERSION=${DEEPSEEK_HARNESS_VERSION:-0.1.1-rc.2}
 DEEPSEEK_HARNESS_SDK_VERSION=${DEEPSEEK_HARNESS_SDK_VERSION:-0.1.1rc1}
 BAKED_CODEX_VERSION=0.149.1
+BAKED_CLAUDE_CODE_VERSION=2.1.248
 BAKED_DEEPSEEK_HARNESS_VERSION=0.1.1-rc.2
 export DEEPSEEK_HARNESS_VERSION
 export DEEPSEEK_HARNESS_SDK_VERSION
@@ -45,11 +47,13 @@ Usage: event_runtime/control/launch.sh [options]
 
 Options:
   --run-id ID                Explicit unique run ID.
-  --agent-kind KIND          codex or deepseek-harness.
+  --agent-kind KIND          codex, claude-code, or deepseek-harness.
   --model MODEL              Agent model (required).
   --endpoint HTTPS_URL       Optional Codex API endpoint (no credentials/query).
   --reasoning-effort VALUE   Agent reasoning effort.
   --codex-version VERSION    Pin @openai/codex npm version (codex only; default 0.149.1).
+  --claude-code-version VERSION
+                             Pin @anthropic-ai/claude-code (claude-code only; default 2.1.248).
   --prompt-template PATH     Goal template under event_runtime/control/templates.
   --standing-gpu             Hold a dedicated A10G for the whole run.
   --dry-run                  Print redacted configuration; launch nothing.
@@ -65,6 +69,7 @@ while (($#)); do
     --endpoint) ENDPOINT=${2:?}; shift 2 ;;
     --reasoning-effort) REASONING_EFFORT=${2:?}; shift 2 ;;
     --codex-version) CODEX_VERSION=${2:?}; shift 2 ;;
+    --claude-code-version) CLAUDE_CODE_VERSION=${2:?}; shift 2 ;;
     --prompt-template) PROMPT_TEMPLATE_OVERRIDE=${2:?}; shift 2 ;;
     --standing-gpu) STANDING_GPU=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
@@ -93,8 +98,9 @@ if [[ -n "$BATCH_ID" && ! "$BATCH_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{2,48}$ ]]; t
   echo "SPRINT_BATCH_ID must be 3-49 safe filename characters" >&2
   exit 2
 fi
-if [[ "$AGENT_KIND" != "codex" && "$AGENT_KIND" != "deepseek-harness" ]]; then
-  echo "--agent-kind must be codex or deepseek-harness" >&2
+if [[ "$AGENT_KIND" != "codex" && "$AGENT_KIND" != "claude-code" \
+      && "$AGENT_KIND" != "deepseek-harness" ]]; then
+  echo "--agent-kind must be codex, claude-code, or deepseek-harness" >&2
   exit 2
 fi
 if [[ -z "$MODEL" ]]; then
@@ -114,6 +120,15 @@ if [[ "$AGENT_KIND" == "deepseek-harness" ]]; then
     exit 2
   }
   ENDPOINT=${ENDPOINT:-https://openrouter.ai/api/v1}
+elif [[ "$AGENT_KIND" == "claude-code" ]]; then
+  case "$MODEL:$REASONING_EFFORT" in
+    anthropic/claude-opus-5:medium|z-ai/glm-5.3-flash:max) ;;
+    *)
+      echo "Claude Code supports Opus 5 at medium or GLM-5.3-Flash at max" >&2
+      exit 2
+      ;;
+  esac
+  ENDPOINT=${ENDPOINT:-https://openrouter.ai/api}
 elif [[ "${MODEL#*/}" == deepseek-* ]]; then
   echo "DeepSeek models must use the pinned deepseek-harness adapter" >&2
   exit 2
@@ -135,6 +150,12 @@ case "$REASONING_EFFORT" in
 esac
 if [[ "$CODEX_VERSION" == -* || "$CODEX_VERSION" =~ [[:space:][:cntrl:]@] || -z "$CODEX_VERSION" ]]; then
   echo "--codex-version must be a non-empty npm version (no @ prefix)" >&2
+  exit 2
+fi
+if [[ "$CLAUDE_CODE_VERSION" == -* \
+      || "$CLAUDE_CODE_VERSION" =~ [[:space:][:cntrl:]@] \
+      || -z "$CLAUDE_CODE_VERSION" ]]; then
+  echo "--claude-code-version must be a non-empty npm version (no @ prefix)" >&2
   exit 2
 fi
 if [[ -n "$PROMPT_TEMPLATE_OVERRIDE" ]]; then
@@ -184,8 +205,17 @@ if [[ ("${MODEL#*/}" == "gpt-5.6-luna" || "${MODEL#*/}" == "gpt-5.6-sol") \
   echo "GPT-5.6 OpenAI models are locked to the audited OpenRouter/OpenAI endpoint" >&2
   exit 2
 fi
+if [[ ("${MODEL#*/}" == "claude-opus-5" || "${MODEL#*/}" == "glm-5.3-flash") \
+      && "$MODEL_API_HOST" != "openrouter.ai" ]]; then
+  echo "Claude Code comparison models are locked to the audited OpenRouter endpoint" >&2
+  exit 2
+fi
 if [[ "$CODEX_VERSION" != "$BAKED_CODEX_VERSION" ]]; then
   echo "Codex $CODEX_VERSION is not baked into the offline image (expected $BAKED_CODEX_VERSION)" >&2
+  exit 2
+fi
+if [[ "$CLAUDE_CODE_VERSION" != "$BAKED_CLAUDE_CODE_VERSION" ]]; then
+  echo "Claude Code $CLAUDE_CODE_VERSION is not baked into the offline image (expected $BAKED_CLAUDE_CODE_VERSION)" >&2
   exit 2
 fi
 if [[ "$DEEPSEEK_HARNESS_VERSION" != "$BAKED_DEEPSEEK_HARNESS_VERSION" ]]; then
@@ -247,6 +277,41 @@ if [[ "$AGENT_KIND" == "deepseek-harness" ]]; then
 
 fi
 
+# Claude Code speaks OpenRouter's Anthropic Messages skin. Keep the public
+# model ID and route independently pinned so neither a CLI alias nor provider
+# fallback can drift during a long native-goal session.
+if [[ "$AGENT_KIND" == "claude-code" ]]; then
+  case "$MODEL" in
+    anthropic/claude-opus-5)
+      if [[ -n "${SPRINT_OPENROUTER_PROVIDER_ENDPOINT:-}" \
+            && "$SPRINT_OPENROUTER_PROVIDER_ENDPOINT" != "anthropic" ]]; then
+        echo "Claude Opus 5 is locked to the official Anthropic endpoint" >&2
+        exit 2
+      fi
+      if [[ -n "${SPRINT_OPENROUTER_QUANTIZATION:-}" ]]; then
+        echo "Claude Opus 5 official endpoint has no quantization override" >&2
+        exit 2
+      fi
+      export SPRINT_OPENROUTER_PROVIDER_ENDPOINT=anthropic
+      unset SPRINT_OPENROUTER_QUANTIZATION
+      ;;
+    z-ai/glm-5.3-flash)
+      if [[ -n "${SPRINT_OPENROUTER_PROVIDER_ENDPOINT:-}" \
+            && "$SPRINT_OPENROUTER_PROVIDER_ENDPOINT" != "z-ai/fp8" ]]; then
+        echo "GLM-5.3-Flash is locked to the official Z.AI endpoint" >&2
+        exit 2
+      fi
+      if [[ -n "${SPRINT_OPENROUTER_QUANTIZATION:-}" \
+            && "$SPRINT_OPENROUTER_QUANTIZATION" != "fp8" ]]; then
+        echo "GLM-5.3-Flash is locked to the official Z.AI FP8 endpoint" >&2
+        exit 2
+      fi
+      export SPRINT_OPENROUTER_PROVIDER_ENDPOINT=z-ai/fp8
+      export SPRINT_OPENROUTER_QUANTIZATION=fp8
+      ;;
+  esac
+fi
+
 # OpenAI comparison arms use the official OpenAI provider with no fallback.
 # The request contract below also replaces the caller's model slug, but route
 # pinning remains an independent defense against provider drift.
@@ -286,6 +351,12 @@ if [[ "$MODEL_API_HOST" == "openrouter.ai" ]]; then
     codex:gpt-5.6-sol)
       SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON='{"max_output_tokens":128000,"model":"openai/gpt-5.6-sol","reasoning":{"effort":"'"$REASONING_EFFORT"'","summary":"auto"},"service_tier":"default"}'
       ;;
+    claude-code:claude-opus-5)
+      SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON='{"max_tokens":128000,"model":"anthropic/claude-opus-5","output_config":{"effort":"medium"},"stream":true}'
+      ;;
+    claude-code:glm-5.3-flash)
+      SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON='{"max_tokens":131072,"model":"z-ai/glm-5.3-flash","output_config":{"effort":"max"},"stream":true,"temperature":1.0,"top_p":0.95}'
+      ;;
     *)
       SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON=''
       ;;
@@ -299,12 +370,14 @@ if [[ -z "${SPRINT_OPENROUTER_PROVIDER_ENDPOINT:-}" ]]; then
   # Family-specific launchers above still enforce their exact known route.
   export SPRINT_OPENROUTER_PROVIDER_ENDPOINT="${MODEL%%/*}"
 fi
-if [[ ! "$SPRINT_OPENROUTER_PROVIDER_ENDPOINT" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ ]]; then
+if [[ ! "$SPRINT_OPENROUTER_PROVIDER_ENDPOINT" =~ ^[a-z0-9][a-z0-9._/-]{0,127}$ ]]; then
   echo "OpenRouter evaluations require one safe pinned provider endpoint" >&2
   exit 2
 fi
 if [[ "$AGENT_KIND" == "deepseek-harness" ]]; then
   SPRINT_OPENROUTER_ALLOWED_INFERENCE_PATH=chat_completions
+elif [[ "$AGENT_KIND" == "claude-code" ]]; then
+  SPRINT_OPENROUTER_ALLOWED_INFERENCE_PATH=messages
 else
   SPRINT_OPENROUTER_ALLOWED_INFERENCE_PATH=responses
 fi
@@ -511,6 +584,7 @@ print_config() {
   python3 - "$RUN_ID" "$APP_NAME" "$TRAINING_APP_NAME" "$VERIFIER_APP_NAME" \
     "$VOLUME_NAME" "$STATE_DIR" "$JOBS_ROOT" \
     "$AGENT_KIND" "$MODEL" "$ENDPOINT" "$REASONING_EFFORT" "$CODEX_VERSION" \
+    "$CLAUDE_CODE_VERSION" \
     "$AGENT_SECRET_NAME" \
     "$SANDBOX_TIMEOUT_SECONDS" "$MODEL_API_HOST" "$MODAL_PROFILE" "$HARBOR" "$HARBOR_COMMIT" \
   "$HARBOR_BRANCH" "$VOLUMES_JSON" "$KEEPALIVE_JSON" "$AGENT_COST_BUDGET_USD" \
@@ -521,7 +595,7 @@ import os
 import sys
 
 (run_id, app, training_app, verifier_app, volume, state, jobs, agent_kind, model, endpoint, effort,
- codex_version, auth_name, sandbox_timeout, model_api_host, profile, harbor, commit, branch,
+ codex_version, claude_code_version, auth_name, sandbox_timeout, model_api_host, profile, harbor, commit, branch,
  volumes, keepalive, agent_cost_budget, shutdown_reserve, minimum_reserve,
  pricing_snapshot_json, model_api_cost_basis) = sys.argv[1:]
 pricing_snapshot = json.loads(pricing_snapshot_json) if pricing_snapshot_json else None
@@ -549,10 +623,20 @@ payload = {
     "state_dir": state,
     "jobs_root": jobs,
     "agent_kind": agent_kind,
+    "goal_mode": (
+        "claude_code_native_goal"
+        if agent_kind == "claude-code"
+        else "deepseek_native_goal"
+        if agent_kind == "deepseek-harness"
+        else "codex_session_goal"
+    ),
     "model": model,
     "endpoint": endpoint or None,
     "reasoning_effort": effort,
     "codex_version": codex_version if agent_kind == "codex" else None,
+    "claude_code_version": (
+        claude_code_version if agent_kind == "claude-code" else None
+    ),
     "deepseek_harness_version": (
         os.environ.get("DEEPSEEK_HARNESS_VERSION")
         if agent_kind == "deepseek-harness"
@@ -597,7 +681,9 @@ payload = {
     "agent_network_policy": "model-api-only",
     "agent_allowed_host": model_api_host,
     "hosted_model_tools_policy": (
-        "disabled" if agent_kind in {"codex", "deepseek-harness"} else None
+        "disabled"
+        if agent_kind in {"claude-code", "codex", "deepseek-harness"}
+        else None
     ),
     "service_tier": (
         "default"
@@ -735,6 +821,8 @@ python3 "$ROOT/event_runtime/control/credentials.py" "$ENV_FILE" "$AGENT_SECRET_
 
 if [[ "$AGENT_KIND" == "deepseek-harness" ]]; then
   PROMPT_TEMPLATE="${PROMPT_TEMPLATE_OVERRIDE:-$SOURCE_ROOT/event_runtime/control/templates/deepseek-harness.j2}"
+elif [[ "$AGENT_KIND" == "claude-code" ]]; then
+  PROMPT_TEMPLATE="${PROMPT_TEMPLATE_OVERRIDE:-$SOURCE_ROOT/event_runtime/control/templates/claude-code.j2}"
 else
   PROMPT_TEMPLATE="${PROMPT_TEMPLATE_OVERRIDE:-$SOURCE_ROOT/event_runtime/control/templates/codex.j2}"
 fi
@@ -743,6 +831,7 @@ python3 - "$STATE_DIR/run.json" "$RUN_ID" "$APP_NAME" "$TRAINING_APP_NAME" \
   "$VERIFIER_APP_NAME" "$VOLUME_NAME" \
   "$STATE_DIR" "$JOBS_ROOT" "$SECRET_DIR" "$MODAL_PROFILE" \
   "$AGENT_KIND" "$MODEL" "$ENDPOINT" "$REASONING_EFFORT" "$CODEX_VERSION" \
+  "$CLAUDE_CODE_VERSION" \
   "$SANDBOX_TIMEOUT_SECONDS" "$DEPLOY_DEBOUNCE_SECONDS" "$HARBOR" \
   "$HARBOR_COMMIT" "$HARBOR_BRANCH" \
   "$STANDING_GPU" "$MODEL_API_HOST" \
@@ -762,7 +851,7 @@ import pathlib
 import sys
 
 (path, run_id, app, training_app, verifier_app, volume, state, jobs, secrets, profile, agent_kind, model,
- endpoint, effort, codex_version, sandbox_timeout, debounce, harbor, commit,
+ endpoint, effort, codex_version, claude_code_version, sandbox_timeout, debounce, harbor, commit,
  branch, standing_gpu_flag,
  model_api_host, prompt_template, warmup_manifest_path, root, batch_id, source_root,
  sprint_source_commit, rendered_task_root, agent_cost_budget, shutdown_reserve, minimum_reserve,
@@ -813,6 +902,13 @@ payload = {
     "secret_dir": secrets,
     "modal_profile": profile,
     "agent_kind": agent_kind,
+    "goal_mode": (
+        "claude_code_native_goal"
+        if agent_kind == "claude-code"
+        else "deepseek_native_goal"
+        if agent_kind == "deepseek-harness"
+        else "codex_session_goal"
+    ),
     "model": model,
     "endpoint": endpoint or None,
     "reasoning_effort": effort,
@@ -822,6 +918,9 @@ payload = {
         else model.split("/", 1)[-1]
     ),
     "codex_version": codex_version if agent_kind == "codex" else None,
+    "claude_code_version": (
+        claude_code_version if agent_kind == "claude-code" else None
+    ),
     "deepseek_harness_version": (
         os.environ.get("DEEPSEEK_HARNESS_VERSION")
         if agent_kind == "deepseek-harness"
@@ -949,7 +1048,9 @@ payload = {
         )
     ),
     "hosted_model_tools_policy": (
-        "disabled" if agent_kind in {"codex", "deepseek-harness"} else None
+        "disabled"
+        if agent_kind in {"claude-code", "codex", "deepseek-harness"}
+        else None
     ),
     "service_tier": (
         "default"
@@ -1058,6 +1159,28 @@ if [[ "$AGENT_KIND" == "codex" ]]; then
     # Pin standard pricing. Leaving this unset lets Codex/project defaults pick
     # another service tier, which cannot be reconstructed from token counts.
     AGENT_HARBOR_ARGS+=(--ak "service_tier=default")
+  fi
+elif [[ "$AGENT_KIND" == "claude-code" ]]; then
+  AGENT_HARBOR_ARGS=(
+    --ak "version=$CLAUDE_CODE_VERSION"
+    --ak "goal=true"
+    --ae "ANTHROPIC_API_KEY=sprint-local-proxy-token"
+    --ae "ANTHROPIC_BASE_URL=http://127.0.0.1:18080/api"
+    --ae "BASH_ENV=/opt/sprint-agent-shell-env.sh"
+    --ae "SPRINT_AGENT_KIND=claude-code"
+    --ae "SPRINT_RUNTIME_DIR=/run"
+    --ae "SPRINT_AGENT_LOG_DIR=/logs/agent"
+    --ae "SPRINT_OPENROUTER_LEDGER_REQUIRED=1"
+    --ae "SPRINT_OPENROUTER_UPSTREAM_URL=https://openrouter.ai/api/v1"
+    --ae "SPRINT_OPENROUTER_PROVIDER_ENDPOINT=$SPRINT_OPENROUTER_PROVIDER_ENDPOINT"
+    --ae "SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON=$SPRINT_OPENROUTER_REQUEST_CONTRACT_JSON"
+    --ae "SPRINT_OPENROUTER_ALLOWED_INFERENCE_PATH=messages"
+    "${SHARED_AGENT_ENV[@]}"
+  )
+  if [[ -n "${SPRINT_OPENROUTER_QUANTIZATION:-}" ]]; then
+    AGENT_HARBOR_ARGS+=(
+      --ae "SPRINT_OPENROUTER_QUANTIZATION=$SPRINT_OPENROUTER_QUANTIZATION"
+    )
   fi
 else
   AGENT_HARBOR_ARGS=(

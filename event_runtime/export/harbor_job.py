@@ -43,6 +43,7 @@ AGENT_FILES = (
     "trajectory.json",
     "deepseek-harness-events.jsonl",
     "deepseek-harness.txt",
+    "claude-code.txt",
     "codex.txt",
     "goal-bootstrap.json",
     "goal-lifecycle.json",

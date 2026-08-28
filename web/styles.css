@@ -10,6 +10,8 @@
   --deep: #7C54CD;
   --pro: #ff9f43;
   --sol: #2279DC;
+  --opus: #D97757;
+  --glm: #39B8B2;
   --valid: #f4f4f1;
   --fail: #777774;
   --warm: #d2d2cf;
@@ -226,6 +228,12 @@ main {
 }
 .experiment-row.sol {
   --model-accent: var(--sol);
+}
+.experiment-row.opus {
+  --model-accent: var(--opus);
+}
+.experiment-row.glm {
+  --model-accent: var(--glm);
 }
 .experiment-row.flash-baidu {
   --model-accent: var(--deep);
@@ -578,6 +586,12 @@ main {
 }
 .budget-group.sol {
   --model-accent: var(--sol);
+}
+.budget-group.opus {
+  --model-accent: var(--opus);
+}
+.budget-group.glm {
+  --model-accent: var(--glm);
 }
 .budget-row {
   transition: background .16s ease;

@@ -91,7 +91,7 @@ def load_run(run_id: str) -> tuple[Path, dict[str, Any]]:
     if state.get("run_id") != run_id:
         raise ValueError(f"{path} does not match requested run ID")
     kind = state.get("agent_kind")
-    if kind not in {"codex", "deepseek-harness"}:
+    if kind not in {"claude-code", "codex", "deepseek-harness"}:
         raise ValueError(f"{path} has unsupported agent_kind: {kind!r}")
     return state_dir, state
 
@@ -99,7 +99,7 @@ def load_run(run_id: str) -> tuple[Path, dict[str, Any]]:
 def agent_kind(run: dict[str, Any]) -> str:
     """Return the required agent kind from the current run schema."""
     kind = run.get("agent_kind")
-    if kind not in {"codex", "deepseek-harness"}:
+    if kind not in {"claude-code", "codex", "deepseek-harness"}:
         raise ValueError(f"run has unsupported agent_kind: {kind!r}")
     return str(kind)
 
@@ -796,6 +796,7 @@ def reconstruct_model_usage(state_dir: Path, run: dict[str, Any]) -> bool:
         chunks.glob(pattern)
         for pattern in (
             "cpu-attempt-*/codex/*/chunks/*.jsonl",
+            "cpu-attempt-*/claude-code/*/chunks/*.jsonl",
             "cpu-attempt-*/deepseek-harness/*/chunks/*.jsonl",
         )
     ):

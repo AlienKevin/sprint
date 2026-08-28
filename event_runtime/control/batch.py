@@ -64,10 +64,11 @@ FUNCTIONAL_CANARY_FIXTURE = PREFLIGHT_DIR / "training_canary" / "train_sprint.py
 BUDGET_CONFIG = MODULE_DIR / "budget.env"
 HARBOR_REVISION = "dafb1387151e1c32702963d44fe6c3cea66cf8cb"
 CODEX_VERSION = "0.149.1"
+CLAUDE_CODE_VERSION = "2.1.248"
 TRIALS_PER_MODEL = 3
 DEFAULT_FAMILIES = ("deepseek", "luna")
 # Production experiments use OpenRouter with the model author's official provider.
-SUPPORTED_FAMILIES = ("deepseek", "luna", "sol")
+SUPPORTED_FAMILIES = ("deepseek", "luna", "sol", "opus", "glm")
 OPENAI_FAMILY_SPECS: dict[str, dict[str, str]] = {
     "luna": {
         "model": "openai/gpt-5.6-luna",
@@ -101,6 +102,34 @@ DEEPSEEK_ROUTED_FAMILY_SPECS: dict[str, dict[str, str]] = {
         "wire_api": "chat_completions",
         "agent_kind": "deepseek-harness",
         "goal_mode": "deepseek_native_goal",
+    },
+}
+CLAUDE_CODE_ROUTED_FAMILY_SPECS: dict[str, dict[str, str]] = {
+    # Claude Code's native goal command keeps one headless session working
+    # until the trusted supervisor stops the trial at the shared dollar cap.
+    "opus": {
+        "model": "anthropic/claude-opus-5",
+        "resolved_model": "anthropic/claude-opus-5-20260723",
+        "provider": "Anthropic",
+        "provider_endpoint": "anthropic",
+        "quantization": "unknown",
+        "context_window": "1000000",
+        "wrapper": "anthropic_claude_code.sh",
+        "wire_api": "anthropic_messages",
+        "agent_kind": "claude-code",
+        "goal_mode": "claude_code_native_goal",
+    },
+    "glm": {
+        "model": "z-ai/glm-5.3-flash",
+        "resolved_model": "z-ai/glm-5.3-flash-20260826",
+        "provider": "Z.AI",
+        "provider_endpoint": "z-ai/fp8",
+        "quantization": "fp8",
+        "context_window": "1048576",
+        "wrapper": "z_ai_claude_code.sh",
+        "wire_api": "anthropic_messages",
+        "agent_kind": "claude-code",
+        "goal_mode": "claude_code_native_goal",
     },
 }
 DEFAULT_REASONING_EFFORT = "max"
@@ -449,6 +478,14 @@ def matrix(
             }
             for family, spec in DEEPSEEK_ROUTED_FAMILY_SPECS.items()
         },
+        **{
+            family: {
+                **spec,
+                "wrapper": spec["wrapper"],
+                "resolved_model_version": spec["resolved_model"],
+            }
+            for family, spec in CLAUDE_CODE_ROUTED_FAMILY_SPECS.items()
+        },
     }
     selected = tuple(dict.fromkeys(families))
     unknown = sorted(set(selected) - set(SUPPORTED_FAMILIES))
@@ -459,13 +496,18 @@ def matrix(
         raise ValueError(
             "reasoning effort must be max for " + ", ".join(fixed_max_families)
         )
+    if "glm" in selected and reasoning_effort != "max":
+        raise ValueError("reasoning effort must be max for glm")
     for family in selected:
         spec = specs[family]
+        effective_reasoning_effort = (
+            "medium" if family == "opus" else reasoning_effort
+        )
         model_owner = str(spec["model"]).split("/", 1)[0]
         provider_endpoint = str(spec.get("provider_endpoint") or "")
         if (
-            model_owner not in {"deepseek", "openai"}
-            or provider_endpoint != model_owner
+            model_owner not in {"anthropic", "deepseek", "openai", "z-ai"}
+            or provider_endpoint.split("/", 1)[0] != model_owner
         ):
             raise ValueError(
                 f"{family} must use its model author's official OpenRouter provider"
@@ -480,10 +522,15 @@ def matrix(
                     "family": family,
                     "model": spec["model"],
                     "resolved_model_version": spec["resolved_model_version"],
-                    "reasoning_effort": reasoning_effort,
+                    "reasoning_effort": effective_reasoning_effort,
                     "agent_kind": spec["agent_kind"],
                     "goal_mode": spec["goal_mode"],
                     "codex_version": CODEX_VERSION,
+                    "claude_code_version": (
+                        CLAUDE_CODE_VERSION
+                        if spec["agent_kind"] == "claude-code"
+                        else None
+                    ),
                     "wrapper": str(MODULE_DIR / "providers" / spec["wrapper"]),
                     "trial": trial,
                     "status": "planned",
@@ -519,6 +566,12 @@ def agent_adapter_contract_ready(planned: list[dict[str, Any]]) -> bool:
             "agent_kind": arm["agent_kind"],
             "model": arm["model"],
             "reasoning_effort": arm["reasoning_effort"],
+            "version": (
+                arm.get("claude_code_version")
+                if arm["agent_kind"] == "claude-code"
+                else None
+            ),
+            "goal": arm.get("goal_mode") == "claude_code_native_goal",
         }
         for arm in planned
     ]
@@ -528,19 +581,28 @@ import sys
 import tempfile
 from pathlib import Path
 
+from harbor.agents.installed.claude_code import ClaudeCode
 from harbor.agents.installed.codex import Codex
 from harbor.agents.installed.deepseek_harness import DeepSeekHarness
 
-adapters = {"codex": Codex, "deepseek-harness": DeepSeekHarness}
+adapters = {
+    "claude-code": ClaudeCode,
+    "codex": Codex,
+    "deepseek-harness": DeepSeekHarness,
+}
 rows = json.loads(sys.argv[1])
 with tempfile.TemporaryDirectory(prefix="sprint-adapter-contract-") as root:
     for index, row in enumerate(rows):
         adapter = adapters[row["agent_kind"]]
-        adapter(
+        kwargs = dict(
             logs_dir=Path(root) / str(index),
             model_name=row["model"],
             reasoning_effort=row["reasoning_effort"],
         )
+        if row["agent_kind"] == "claude-code":
+            kwargs["goal"] = row["goal"]
+            kwargs["version"] = row["version"]
+        adapter(**kwargs)
 """
     try:
         completed = subprocess.run(
@@ -1878,6 +1940,69 @@ def preflight(
             key = f"deepseek_{family.replace('-', '_')}"
             checks[f"{key}_visible"] = not check_providers
             checks[f"{key}_inference"] = not check_providers
+    selected_claude_code_families = tuple(
+        family for family in families if family in CLAUDE_CODE_ROUTED_FAMILY_SPECS
+    )
+    if (
+        selected_claude_code_families
+        and check_providers
+        and checks["secret_openrouter_api_key"]
+    ):
+        models = provider_models(
+            "https://openrouter.ai/api/v1/models", str(preflight_api_key)
+        )
+        for family in selected_claude_code_families:
+            spec = CLAUDE_CODE_ROUTED_FAMILY_SPECS[family]
+            key = f"claude_code_{family.replace('-', '_')}"
+            checks[f"{key}_visible"] = spec["model"] in models
+            try:
+                provider_probes[key] = provider_inference_probe(
+                    "https://openrouter.ai/api/v1/messages",
+                    str(preflight_api_key),
+                    {
+                        "model": spec["model"],
+                        "max_tokens": 16,
+                        "messages": [{"role": "user", "content": "Return OK."}],
+                        "output_config": {
+                            "effort": "medium" if family == "opus" else reasoning_effort
+                        },
+                        "provider": {
+                            "only": [spec["provider_endpoint"]],
+                            "order": [spec["provider_endpoint"]],
+                            "allow_fallbacks": False,
+                            "require_parameters": True,
+                        },
+                        "tools": [
+                            {
+                                "name": "sprint_preflight_noop",
+                                "description": "Preflight-only no-op tool.",
+                                "input_schema": {
+                                    "type": "object",
+                                    "properties": {},
+                                    "additionalProperties": False,
+                                },
+                            }
+                        ],
+                    },
+                    generation_audit_url="https://openrouter.ai/api/v1/generation",
+                )
+                probe = provider_probes[key]
+                checks[f"{key}_inference"] = (
+                    probe.get("provider") == spec["provider"]
+                    and probe.get("resolved_model") == spec["resolved_model"]
+                )
+                if not checks[f"{key}_inference"]:
+                    provider_errors[key] = (
+                        "sealed route response did not identify the requested model"
+                    )
+            except RuntimeError as exc:
+                checks[f"{key}_inference"] = False
+                provider_errors[key] = str(exc)
+    else:
+        for family in selected_claude_code_families:
+            key = f"claude_code_{family.replace('-', '_')}"
+            checks[f"{key}_visible"] = not check_providers
+            checks[f"{key}_inference"] = not check_providers
     checks["unique_runs"] = len({arm["run_id"] for arm in planned}) == len(planned)
     checks["fresh_run_ids"] = not any(
         (SCRIPT_DIR / arm["run_id"]).exists() for arm in planned
@@ -2345,6 +2470,7 @@ def launch(
         "created_at": started,
         "reasoning_effort": reasoning_effort,
         "codex_version": CODEX_VERSION,
+        "claude_code_version": CLAUDE_CODE_VERSION,
         "trials_per_model": trials_per_model,
         "trial_numbers": list(trial_numbers) if trial_numbers is not None else None,
         "families": list(families),
@@ -2405,6 +2531,7 @@ def launch(
             "CONFIRM_LAUNCH": "1",
             "REASONING_EFFORT": reasoning_effort,
             "CODEX_VERSION": CODEX_VERSION,
+            "CLAUDE_CODE_VERSION": CLAUDE_CODE_VERSION,
             "SPRINT_BATCH_ID": batch_id,
             "UV": str(UV),
         }
@@ -2419,6 +2546,7 @@ def launch(
             env["OPENROUTER_API_KEY"] = child_key
             env["RUN_ID"] = arm["run_id"]
             env["MODEL"] = arm["model"]
+            env["REASONING_EFFORT"] = arm["reasoning_effort"]
             if arm.get("openrouter_preset"):
                 env["OPENROUTER_PRESET"] = arm["openrouter_preset"]
             if arm.get("provider_endpoint"):

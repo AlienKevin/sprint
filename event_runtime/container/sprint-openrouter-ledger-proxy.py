@@ -18,7 +18,7 @@ import ssl
 import sys
 import threading
 import time
-from typing import Any
+from typing import Any, cast
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -149,14 +149,98 @@ def recover_openrouter_key_usage_usd(authorization: str | None) -> float | None:
 
 
 def usage_from_event(event: object) -> tuple[dict[str, Any] | None, dict[str, Any]]:
-    """Extract usage from either Responses or Chat Completions payloads."""
+    """Extract canonical usage from Responses, Chat, or Anthropic Messages."""
     if not isinstance(event, dict):
         return None, {}
-    response = event.get("response")
-    if not isinstance(response, dict):
-        response = event
-    usage = response.get("usage")
-    return (usage if isinstance(usage, dict) else None), response
+    payload = cast(dict[str, Any], event)
+    response_value = payload.get("response")
+    if not isinstance(response_value, dict):
+        message = payload.get("message")
+        response_value = message if isinstance(message, dict) else payload
+    response = cast(dict[str, Any], response_value)
+    usage_value = payload.get("usage")
+    if not isinstance(usage_value, dict):
+        usage_value = response.get("usage")
+    if not isinstance(usage_value, dict):
+        return None, response
+    usage = cast(dict[str, Any], usage_value)
+    return canonical_usage(usage), response
+
+
+def canonical_usage(usage: dict[str, Any]) -> dict[str, Any]:
+    """Translate Anthropic cache counters into the ledger's canonical shape."""
+    if not ({"cache_creation_input_tokens", "cache_read_input_tokens"} & set(usage)):
+        return copy.deepcopy(usage)
+    ordinary = int(usage.get("input_tokens") or 0)
+    cached = int(usage.get("cache_read_input_tokens") or 0)
+    cache_write = int(usage.get("cache_creation_input_tokens") or 0)
+    output = int(usage.get("output_tokens") or 0)
+    result = copy.deepcopy(usage)
+    result.update(
+        {
+            "input_tokens": ordinary + cached + cache_write,
+            "input_tokens_details": {
+                "cached_tokens": cached,
+                "cache_write_tokens": cache_write,
+            },
+            "output_tokens": output,
+            "output_tokens_details": {
+                "reasoning_tokens": int(usage.get("reasoning_tokens") or 0)
+            },
+            "total_tokens": ordinary + cached + cache_write + output,
+        }
+    )
+    return result
+
+
+def merge_stream_usage(
+    previous: dict[str, Any] | None, current: dict[str, Any]
+) -> dict[str, Any]:
+    """Merge cumulative token fields split across Anthropic SSE events."""
+    if previous is None:
+        return copy.deepcopy(current)
+    merged = copy.deepcopy(previous)
+    for field in ("input_tokens", "output_tokens", "total_tokens"):
+        values = [
+            value
+            for value in (previous.get(field), current.get(field))
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+        ]
+        if values:
+            merged[field] = max(values)
+    for details_field in ("input_tokens_details", "output_tokens_details"):
+        old_details = previous.get(details_field)
+        new_details = current.get(details_field)
+        details: dict[str, Any] = {}
+        if isinstance(old_details, dict):
+            details.update(old_details)
+        if isinstance(new_details, dict):
+            for name, value in new_details.items():
+                old = details.get(name)
+                if (
+                    isinstance(old, (int, float))
+                    and not isinstance(old, bool)
+                    and isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                ):
+                    details[name] = old if old >= value else value
+                else:
+                    details[name] = value
+        if details:
+            merged[details_field] = details
+    for name, value in current.items():
+        if name not in {
+            "input_tokens",
+            "output_tokens",
+            "total_tokens",
+            "input_tokens_details",
+            "output_tokens_details",
+        }:
+            merged[name] = value
+    merged["total_tokens"] = int(merged.get("input_tokens") or 0) + int(
+        merged.get("output_tokens") or 0
+    )
+    return merged
 
 
 def seal_goal_tool_schema(payload: dict[str, Any]) -> None:
@@ -473,10 +557,15 @@ def pin_provider_route(
     payload["provider"] = provider
     if request_contract:
         payload.update(request_contract)
-        if request_contract.get("stream") is True:
+        if (
+            request_contract.get("stream") is True
+            and "output_config" not in request_contract
+        ):
             # Chat Completions emits usage only on its final stream event when
             # include_usage is enabled.  The proxy owns this bit because a
             # missing usage event would make a paid request unaccountable.
+            # Anthropic Messages streams already carry usage in message_start
+            # and message_delta; stream_options is not part of that schema.
             stream_options = payload.get("stream_options")
             if not isinstance(stream_options, dict):
                 stream_options = {}
@@ -578,6 +667,8 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
             if path in {"/responses", "/api/v1/responses"}
             else "chat_completions"
             if path in {"/chat/completions", "/api/v1/chat/completions"}
+            else "messages"
+            if path in {"/messages", "/v1/messages", "/api/v1/messages"}
             else None
         )
         if self.ledger_server.allowed_inference_path is not None and (
@@ -602,7 +693,7 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
             name: value
             for name, value in self.headers.items()
             if name.lower()
-            not in HOP_BY_HOP | {"host", "content-length", "authorization"}
+            not in HOP_BY_HOP | {"host", "content-length", "authorization", "x-api-key"}
         }
         headers["Authorization"] = self.ledger_server.upstream_authorization or str(
             self.headers.get("Authorization") or ""
@@ -822,7 +913,10 @@ class LedgerProxyHandler(http.server.BaseHTTPRequestHandler):
                                 )
                             usage, response = usage_from_event(event)
                             if usage is not None:
-                                terminal_usage, terminal_response = usage, response
+                                terminal_usage = merge_stream_usage(
+                                    terminal_usage, usage
+                                )
+                                terminal_response.update(response)
                         rewritten = (
                             goal_stream.rewrite_line(line) if goal_stream else [line]
                         )
@@ -1053,6 +1147,7 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
                 "max_output_tokens",
                 "model",
                 "max_tokens",
+                "output_config",
                 "reasoning",
                 "reasoning_effort",
                 "service_tier",
@@ -1067,7 +1162,21 @@ class LedgerProxyServer(http.server.ThreadingHTTPServer):
                 )
             if not request_contract:
                 raise ValueError("request contract must not be empty")
-        if allowed_inference_path not in {None, "responses", "chat_completions"}:
+            output_config = request_contract.get("output_config")
+            if output_config is not None and output_config not in (
+                {"effort": "low"},
+                {"effort": "medium"},
+                {"effort": "high"},
+                {"effort": "xhigh"},
+                {"effort": "max"},
+            ):
+                raise ValueError("invalid request contract output_config")
+        if allowed_inference_path not in {
+            None,
+            "responses",
+            "chat_completions",
+            "messages",
+        }:
             raise ValueError("invalid allowed inference path")
         if upstream_api_key is not None and len(upstream_api_key) < 16:
             raise ValueError("upstream API key is missing or too short")
@@ -1760,7 +1869,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--quantization")
     parser.add_argument("--request-contract-json")
     parser.add_argument(
-        "--allowed-inference-path", choices=("responses", "chat_completions")
+        "--allowed-inference-path",
+        choices=("responses", "chat_completions", "messages"),
     )
     parser.add_argument("--upstream-api-key-stdin", action="store_true")
     return parser.parse_args()

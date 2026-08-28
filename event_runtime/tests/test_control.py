@@ -2191,6 +2191,66 @@ class DurableOpsTests(unittest.TestCase):
             },
         )
 
+    def test_claude_code_dry_runs_seal_goal_effort_and_official_routes(self) -> None:
+        cases = (
+            (
+                "anthropic/claude-opus-5",
+                "medium",
+                "anthropic",
+                [],
+                128_000,
+            ),
+            ("z-ai/glm-5.3-flash", "max", "z-ai/fp8", ["fp8"], 131_072),
+        )
+        for model, effort, provider, quantizations, max_tokens in cases:
+            with self.subTest(model=model):
+                run_id = f"dry-{uuid.uuid4().hex[:12]}"
+                env = os.environ.copy()
+                key = "fake-openrouter-key-that-must-never-print-123456789"
+                env["OPENROUTER_API_KEY"] = key
+                completed = subprocess.run(
+                    [
+                        "bash",
+                        str(ROOT / "event_runtime/control/launch.sh"),
+                        "--dry-run",
+                        "--run-id",
+                        run_id,
+                        "--agent-kind",
+                        "claude-code",
+                        "--model",
+                        model,
+                        "--reasoning-effort",
+                        effort,
+                    ],
+                    env=env,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=True,
+                )
+                self.assertNotIn(key, completed.stdout + completed.stderr)
+                config = json.loads(completed.stdout)
+                self.assertEqual(config["agent_kind"], "claude-code")
+                self.assertEqual(config["goal_mode"], "claude_code_native_goal")
+                self.assertEqual(config["claude_code_version"], "2.1.248")
+                self.assertEqual(config["reasoning_effort"], effort)
+                self.assertEqual(config["hosted_model_tools_policy"], "disabled")
+                self.assertEqual(
+                    config["openrouter_route"],
+                    {
+                        "only": [provider],
+                        "order": [provider],
+                        "allow_fallbacks": False,
+                        "require_parameters": True,
+                        "quantizations": quantizations,
+                    },
+                )
+                contract = config["openrouter_request_contract"]
+                self.assertEqual(contract["model"], model)
+                self.assertEqual(contract["output_config"], {"effort": effort})
+                self.assertEqual(contract["max_tokens"], max_tokens)
+                self.assertTrue(contract["stream"])
+
     def test_codex_group_escalation_trace_mirror_and_ack_order(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

@@ -369,6 +369,15 @@ def build_integrity_report(state_dir: Path, run: dict[str, Any]) -> dict[str, An
                     )
                 )
 
+    if agent_kind == "claude-code" and stop_reason == "agent_exit":
+        reasons.append(
+            _reason(
+                "claude_code_goal_exited_early",
+                "harbor-jobs/*/*/agent/claude-code.txt",
+                "Claude Code exited naturally while its native goal was expected to remain active",
+            )
+        )
+
     gpu_jobs = 0
     retried_jobs = 0
     for path in sorted((state_dir / "gpu-job-registry").glob("*.json")):
