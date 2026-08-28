@@ -422,7 +422,7 @@ def main() -> int:
         "python3 /opt/event-verifier/verify.py "
         f"--policy /warm{remote_root}/checkpoints/policy_final.pt "
         f"--logs /warm{remote_root}/agent-verifier "
-        "--tests /opt/event-verifier --runs 1 --distance 1 --max-seconds 2 "
+        "--tests /opt/event-verifier --runs 1 --distance 100 --max-seconds 2 "
         "--headless; "
         "echo AGENT_PUBLISHED_VERIFIER_COMPLETED"
     )
@@ -437,7 +437,7 @@ def main() -> int:
         "timeout --signal=TERM --kill-after=30 180 "
         f"python3 /tests/verify.py --policy /warm{remote_root}/checkpoints/policy_final.pt "
         f"--logs /warm{remote_root}/verifier --tests /tests --runs 1 "
-        "--distance 1 --max-seconds 2 --headless "
+        "--distance 100 --max-seconds 2 --headless "
         f"2>&1 | tee /warm{remote_root}/verifier/isaac-stdout.txt; "
         "kill $telemetry_pid 2>/dev/null || true; wait $telemetry_pid 2>/dev/null || true; "
         f"test -s /warm{remote_root}/verifier/sprint_results.json; "

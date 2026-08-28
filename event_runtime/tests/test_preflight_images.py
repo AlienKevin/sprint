@@ -152,6 +152,13 @@ def test_functional_canary_uses_current_training_cli_contract() -> None:
     assert "--seed=" not in canary.TRAINING_CANARY_CLI
 
 
+def test_functional_canary_uses_the_production_course_distance() -> None:
+    source = (PREFLIGHT / "canary.py").read_text()
+
+    assert source.count("--distance 100 --max-seconds 2") == 2
+    assert "--distance 1 --max-seconds 2" not in source
+
+
 def test_functional_canary_uses_pinned_repo_owned_training_fixture() -> None:
     canary = load_script("canary.py")
     source = (PREFLIGHT / "canary.py").read_text()
