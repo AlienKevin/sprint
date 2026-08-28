@@ -195,6 +195,32 @@ def run_goal_loop(
                 turns=turns,
                 signum=relay.signum,
             )
+        if stop_requested():
+            # The sealed API proxy writes the trusted stop marker before it
+            # rejects a request that would exceed the benchmark budget. Claude
+            # Code reports that intentional HTTP 402 as a non-zero turn exit.
+            # Keep the operator-owned runner alive for the supervisor signal
+            # instead of racing the stop path and misclassifying the run as an
+            # infrastructure failure.
+            lifecycle = {
+                "session_id": session_id,
+                "goal_owner": "operator",
+                "goal_status": "active",
+                "completed_turns": turns,
+                "runner_state": "waiting_for_stop",
+            }
+            if rc != 0:
+                lifecycle["turn_exit_code"] = rc
+            write_json(lifecycle_path, **lifecycle)
+            while stop_requested() and relay.signum is None:
+                time.sleep(0.25)
+            if relay.signum is not None:
+                return _write_interrupted(
+                    lifecycle_path,
+                    session_id=session_id,
+                    turns=turns,
+                    signum=relay.signum,
+                )
         if rc != 0:
             write_json(
                 lifecycle_path,
@@ -217,10 +243,8 @@ def run_goal_loop(
             goal_owner="operator",
             goal_status="active",
             completed_turns=turns,
-            runner_state="waiting_for_stop" if stop_requested() else "running",
+            runner_state="running",
         )
-        while stop_requested() and relay.signum is None:
-            time.sleep(0.25)
 
 
 def main() -> int:

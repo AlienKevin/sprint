@@ -90,6 +90,42 @@ def test_failed_turn_records_infrastructure_failure(tmp_path: Path) -> None:
     assert lifecycle["failure_code"] == "goal_turn_failed"
 
 
+def test_budget_rejection_waits_for_trusted_stop_signal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = load_runner()
+    runtime = tmp_path / "run"
+    runtime.mkdir()
+    (runtime / "sprint-stop").write_text("agent_cost_budget_exhausted\n")
+    monkeypatch.setenv("SPRINT_RUNTIME_DIR", str(runtime))
+    relay = runner.SignalRelay()
+    lifecycle_path = tmp_path / "lifecycle.json"
+
+    def deliver_stop_signal(_seconds: float) -> None:
+        lifecycle = json.loads(lifecycle_path.read_text())
+        assert lifecycle["runner_state"] == "waiting_for_stop"
+        assert lifecycle["turn_exit_code"] == 1
+        relay.signum = signal.SIGTERM
+
+    monkeypatch.setattr(runner.time, "sleep", deliver_stop_signal)
+    rc = runner.run_goal_loop(
+        claude_executable="/bin/claude",
+        claude_arguments=["--print", "/goal keep working"],
+        bootstrap_path=tmp_path / "bootstrap.json",
+        lifecycle_path=lifecycle_path,
+        continuation_prompt="continue",
+        relay=relay,
+        session_id="11111111-1111-4111-8111-111111111111",
+        turn_runner=lambda _command, _relay: 1,
+    )
+
+    assert rc == 128 + signal.SIGTERM
+    lifecycle = json.loads(lifecycle_path.read_text())
+    assert lifecycle["runner_state"] == "interrupted"
+    assert lifecycle["completed_turns"] == 1
+    assert "failure_code" not in lifecycle
+
+
 def test_goal_runner_rejects_resume_or_missing_print() -> None:
     runner = load_runner()
     with pytest.raises(runner.GoalRunnerError, match="fresh session"):
