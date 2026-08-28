@@ -784,6 +784,22 @@ def _local_provider_billed_cost(run_id: str) -> tuple[float, int, str | None]:
         cost = float(model_api["provider_billed_cost_usd"])
         pending = int(model_api.get("pending_request_count", 0) or 0)
         as_of = payload.get("as_of")
+        as_of_epoch_ms = payload.get("as_of_epoch_ms")
+        if (
+            not as_of
+            and isinstance(as_of_epoch_ms, (int, float))
+            and not isinstance(as_of_epoch_ms, bool)
+            and math.isfinite(float(as_of_epoch_ms))
+            and float(as_of_epoch_ms) >= 0
+        ):
+            as_of = (
+                dt.datetime.fromtimestamp(
+                    float(as_of_epoch_ms) / 1000.0,
+                    tz=dt.timezone.utc,
+                )
+                .isoformat(timespec="milliseconds")
+                .replace("+00:00", "Z")
+            )
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
         pass
     else:

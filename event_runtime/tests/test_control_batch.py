@@ -876,6 +876,35 @@ def test_local_provider_billed_cost_combines_newest_trusted_observations(
     )
 
 
+def test_local_provider_billed_cost_accepts_live_epoch_timestamp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = "eval-luna-1"
+    state_dir = tmp_path / run_id
+    (state_dir / "telemetry").mkdir(parents=True)
+    (state_dir / "telemetry" / "agent-cost.json").write_text(
+        json.dumps(
+            {
+                "as_of": None,
+                "as_of_epoch_ms": 1787443323456,
+                "components": {
+                    "model_api": {
+                        "provider_billed_cost_usd": 1.30,
+                        "pending_request_count": 1,
+                    }
+                },
+            }
+        )
+    )
+    monkeypatch.setattr(batch_eval, "SCRIPT_DIR", tmp_path)
+
+    assert batch_eval._local_provider_billed_cost(run_id) == (
+        1.30,
+        1,
+        "2026-08-23T00:02:03.456Z",
+    )
+
+
 def test_child_key_usage_audit_does_not_call_missing_ledger_a_bypass(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
