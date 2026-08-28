@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import concurrent.futures
 import json
 import os
 import signal
@@ -498,17 +499,20 @@ class DurableOpsTests(unittest.TestCase):
                 "schema_version": 2,
                 "run_id": "pulse-run",
                 "checked_at_epoch_s": 1000.0,
-                "total_usd": 1.0,
-            }
-            merged = {
-                "schema_version": 2,
-                "run_id": "pulse-run",
-                "checked_at_epoch_s": 900.0,
-                "as_of_epoch_ms": 900000,
-                "as_of": "1970-01-01T00:15:00Z",
                 "total_usd": 1.25,
+                "estimated_total_usd": 1.25,
+                "budget_usd": 10.0,
+                "stop_threshold_usd": 10.0,
                 "budget_remaining_usd": 8.75,
                 "status": "within_budget",
+                "components": {
+                    "model_api": {"cost_usd": 1.0},
+                    "cpu_agent": {"cost_usd": 0.25},
+                    "training_sandboxes": {
+                        "cost_usd": 0.0,
+                        "allocated_seconds": 0.0,
+                    },
+                },
             }
             cost_lock_held = False
 
@@ -539,10 +543,9 @@ class DurableOpsTests(unittest.TestCase):
                     sprintctl, "fetch_budget_watchdog", return_value=canonical
                 ) as fetch,
                 mock.patch.object(
-                    sprintctl, "build_unified_timeline", return_value={"events": []}
-                ),
-                mock.patch.object(
-                    sprintctl.agent_cost, "build_snapshot", return_value=merged
+                    sprintctl,
+                    "build_unified_timeline",
+                    side_effect=AssertionError("live pulse parsed a full timeline"),
                 ),
                 mock.patch.object(
                     sprintctl, "budget_safety_should_exit", return_value=False
@@ -566,9 +569,7 @@ class DurableOpsTests(unittest.TestCase):
             self.assertEqual(mirror_order, ["agent"])
             enforce.assert_called_once()
             mirrored = agent_mirror.call_args.args[1]
-            self.assertEqual(mirrored["checked_at_epoch_s"], 1010.0)
-            self.assertEqual(mirrored["as_of_epoch_ms"], 1010000)
-            self.assertEqual(mirrored["as_of"], "1970-01-01T00:16:50Z")
+            self.assertEqual(mirrored["checked_at_epoch_s"], 1000.0)
             self.assertEqual(payload["total_usd"], 1.25)
             self.assertEqual(payload["upstream_watchdog_age_seconds"], 10.0)
             persisted = json.loads((state / "telemetry/budget-pulse.json").read_text())
@@ -631,13 +632,20 @@ class DurableOpsTests(unittest.TestCase):
                 "schema_version": 2,
                 "run_id": "pulse-run",
                 "checked_at_epoch_s": 1000.0,
-            }
-            merged = {
-                "schema_version": 2,
-                "run_id": "pulse-run",
                 "total_usd": 10.05,
+                "estimated_total_usd": 10.05,
+                "budget_usd": 10.0,
+                "stop_threshold_usd": 10.0,
                 "budget_remaining_usd": -0.05,
                 "status": "stop_requested",
+                "components": {
+                    "model_api": {"cost_usd": 9.0},
+                    "cpu_agent": {"cost_usd": 1.05},
+                    "training_sandboxes": {
+                        "cost_usd": 0.0,
+                        "allocated_seconds": 0.0,
+                    },
+                },
             }
             with (
                 mock.patch.object(sprintctl, "load_run", return_value=(state, run)),
@@ -645,10 +653,9 @@ class DurableOpsTests(unittest.TestCase):
                     sprintctl, "fetch_budget_watchdog", return_value=canonical
                 ),
                 mock.patch.object(
-                    sprintctl, "build_unified_timeline", return_value={"events": []}
-                ),
-                mock.patch.object(
-                    sprintctl.agent_cost, "build_snapshot", return_value=merged
+                    sprintctl,
+                    "build_unified_timeline",
+                    side_effect=AssertionError("live pulse parsed a full timeline"),
                 ),
                 mock.patch.object(
                     sprintctl, "budget_safety_should_exit", return_value=True
@@ -779,6 +786,140 @@ class DurableOpsTests(unittest.TestCase):
                 json.loads((state / "telemetry/gpu-budget-mirror.json").read_text()),
                 gpu_status,
             )
+            self.assertFalse((state / "telemetry/agent-cost.json").exists())
+            self.assertEqual(
+                json.loads((state / "telemetry/agent-cost-report.json").read_text()),
+                payload,
+            )
+
+    def test_fifteen_budget_pulses_ignore_large_trace_archives(self) -> None:
+        from event_runtime.compute import worker as gpu_worker
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            states: dict[str, tuple[Path, dict]] = {}
+            for trial in range(15):
+                run_id = f"pulse-{trial}"
+                state = root / run_id
+                registry = state / "gpu-job-registry"
+                registry.mkdir(parents=True)
+                for job in range(60):
+                    (registry / f"job-{job}.json").write_text(
+                        json.dumps(
+                            {
+                                "job_id": f"job-{job}",
+                                "dispatched_at_epoch_s": 900.0 + job,
+                                "finished_at_epoch_s": 901.0 + job,
+                            }
+                        )
+                    )
+                states[run_id] = (
+                    state,
+                    {
+                        "run_id": run_id,
+                        "resource_contract": {
+                            "training_worker": {
+                                "physical_cpu_cores": 6,
+                                "memory_mb": 12288,
+                                "gpu_count": 1,
+                                "gpu_type": "A10G",
+                            }
+                        },
+                    },
+                )
+
+            def load(run_id: str):
+                return states[run_id]
+
+            def watchdog(_state: Path, run: dict) -> dict:
+                return {
+                    "schema_version": 2,
+                    "run_id": run["run_id"],
+                    "checked_at_epoch_s": 1000.0,
+                    "budget_usd": 10.0,
+                    "stop_threshold_usd": 10.0,
+                    "total_usd": 1.0,
+                    "estimated_total_usd": 1.0,
+                    "budget_remaining_usd": 9.0,
+                    "status": "within_budget",
+                    "components": {
+                        "model_api": {"cost_usd": 0.75},
+                        "cpu_agent": {"cost_usd": 0.25},
+                        "training_sandboxes": {
+                            "cost_usd": 0.0,
+                            "allocated_seconds": 0.0,
+                        },
+                    },
+                }
+
+            with (
+                mock.patch.object(sprintctl, "load_run", side_effect=load),
+                mock.patch.object(
+                    sprintctl, "fetch_budget_watchdog", side_effect=watchdog
+                ),
+                mock.patch.object(
+                    sprintctl,
+                    "build_unified_timeline",
+                    side_effect=AssertionError("live pulse parsed a full timeline"),
+                ) as timeline,
+                mock.patch.object(
+                    sprintctl, "budget_safety_should_exit", return_value=False
+                ),
+                mock.patch.object(
+                    gpu_worker,
+                    "mirror_agent_cost",
+                    return_value={"agent_cost_mirror": "updated"},
+                ),
+                mock.patch.object(sprintctl, "enforce_agent_cost_budget"),
+            ):
+                with concurrent.futures.ThreadPoolExecutor(max_workers=15) as pool:
+                    results = list(
+                        pool.map(
+                            lambda trial: sprintctl.budget_pulse_once(
+                                f"pulse-{trial}", now=1010.0
+                            ),
+                            range(15),
+                        )
+                    )
+
+            timeline.assert_not_called()
+            self.assertEqual(len(results), 15)
+            self.assertTrue(all(row["status"] == "within_budget" for row in results))
+            self.assertTrue(
+                all(
+                    json.loads(
+                        (state / "telemetry/agent-cost.json").read_text()
+                    )["training_allocated_seconds"]
+                    == 60.0
+                    for state, _run in states.values()
+                )
+            )
+
+    def test_host_gpu_registry_accounting_is_conservative_and_fail_closed(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            registry = state / "gpu-job-registry"
+            registry.mkdir(parents=True)
+            (registry / "finished.json").write_text(
+                json.dumps(
+                    {
+                        "dispatched_at_epoch_s": 900.0,
+                        "finished_at_epoch_s": 920.0,
+                    }
+                )
+            )
+            (registry / "active.json").write_text(
+                json.dumps({"dispatched_at_epoch_s": 950.0})
+            )
+            self.assertEqual(
+                sprintctl._host_training_allocated_seconds(state, 1000.0), 70.0
+            )
+
+            (registry / "malformed.json").write_text("not json")
+            with self.assertRaisesRegex(RuntimeError, "invalid host GPU registry"):
+                sprintctl._host_training_allocated_seconds(state, 1000.0)
 
     def test_terminal_artifact_cost_refresh_does_not_mirror_expired_sandbox(
         self,

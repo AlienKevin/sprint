@@ -1030,17 +1030,14 @@ def check_once(
         host_cpu = host_components["cpu_agent"]
         host_training = host_components["training_sandboxes"]
         api_usd = max(api_usd, float(host_api["cost_usd"]))
-        # The host timeline has exact process-exit and provider-backed GPU
-        # termination boundaries. Sandbox-local markers are deliberately only
-        # a fail-safe for the interval before the first mirror arrives; across
-        # stale snapshots they cannot distinguish an ended process from a
-        # still-billable sandbox. A fresh mirror is therefore authoritative for
-        # infrastructure while the local API ledger remains the lower-latency
-        # source for the request currently in flight.
-        cpu_usd = float(host_cpu["cost_usd"])
-        training_usd = float(host_training["cost_usd"])
-        cpu_seconds = float(host_cpu["allocated_seconds"])
-        gpu_seconds = float(host_training["allocated_seconds"])
+        # The mirror closes cross-sandbox lifecycle gaps, while the local
+        # counters advance independently between host pulses. Taking the
+        # monotonic maximum prevents the host mirror from becoming a circular
+        # clock that freezes CPU/GPU spend at its previous value.
+        cpu_usd = max(cpu_usd, float(host_cpu["cost_usd"]))
+        training_usd = max(training_usd, float(host_training["cost_usd"]))
+        cpu_seconds = max(cpu_seconds, float(host_cpu["allocated_seconds"]))
+        gpu_seconds = max(gpu_seconds, float(host_training["allocated_seconds"]))
         requests = max(requests, int(host_api.get("request_count") or 0))
         pending_requests = max(
             pending_requests, int(host_api.get("pending_request_count") or 0)
@@ -1116,8 +1113,8 @@ def check_once(
         "component_snapshot_sources": (
             {
                 "model_api": "max(in_sandbox_openrouter_ledger,host_cost_mirror)",
-                "cpu_agent": "host_cost_mirror",
-                "training_sandboxes": "host_cost_mirror",
+                "cpu_agent": "max(in_sandbox_lifecycle,host_cost_mirror)",
+                "training_sandboxes": "max(in_sandbox_lifecycle,host_cost_mirror)",
             }
             if host_mirror is not None
             else {

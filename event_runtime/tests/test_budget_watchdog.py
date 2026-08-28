@@ -235,7 +235,17 @@ def write_host_cost_mirror(
     api: float = 0.0,
     cpu: float = 0.02,
     training: float = 9.89,
+    cpu_seconds: float | None = None,
+    training_seconds: float | None = None,
 ) -> Path:
+    cpu_seconds = (
+        cpu / watchdog.CPU_USD_PER_SECOND if cpu_seconds is None else cpu_seconds
+    )
+    training_seconds = (
+        training / watchdog.TRAINING_USD_PER_SECOND
+        if training_seconds is None
+        else training_seconds
+    )
     path = runtime / "sprint-gpu-mirror/cost.json"
     path.parent.mkdir(parents=True)
     path.write_text(
@@ -256,11 +266,11 @@ def write_host_cost_mirror(
                     },
                     "cpu_agent": {
                         "cost_usd": cpu,
-                        "allocated_seconds": 100.0,
+                        "allocated_seconds": cpu_seconds,
                     },
                     "training_sandboxes": {
                         "cost_usd": training,
-                        "allocated_seconds": 15_000.0,
+                        "allocated_seconds": training_seconds,
                     },
                 },
             }
@@ -419,7 +429,7 @@ def test_live_watchdog_merges_fresh_host_training_cost_and_stops(
     assert (runtime / "sprint-stop").read_text() == "agent_cost_budget_exhausted\n"
 
 
-def test_fresh_host_mirror_is_authoritative_over_idle_gap_fallbacks(
+def test_fresh_host_mirror_cannot_freeze_local_infrastructure_counters(
     tmp_path: Path, monkeypatch
 ) -> None:
     durable = tmp_path / "durable"
@@ -457,15 +467,19 @@ def test_fresh_host_mirror_is_authoritative_over_idle_gap_fallbacks(
         now=10_000,
     )
 
-    assert payload["components"]["cpu_agent"]["cost_usd"] == pytest.approx(0.02)
-    assert payload["components"]["training_sandboxes"]["cost_usd"] == pytest.approx(
-        0.03
+    assert payload["components"]["cpu_agent"]["cost_usd"] == pytest.approx(
+        9_000 * watchdog.CPU_USD_PER_SECOND
     )
-    assert payload["cpu_allocated_seconds"] == 100
-    assert payload["training_allocated_seconds"] == 15_000
-    assert payload["component_snapshot_sources"]["cpu_agent"] == "host_cost_mirror"
+    assert payload["components"]["training_sandboxes"]["cost_usd"] == pytest.approx(
+        9_000 * watchdog.TRAINING_USD_PER_SECOND
+    )
+    assert payload["cpu_allocated_seconds"] == 9_000
+    assert payload["training_allocated_seconds"] == 9_000
+    assert payload["component_snapshot_sources"]["cpu_agent"] == (
+        "max(in_sandbox_lifecycle,host_cost_mirror)"
+    )
     assert payload["component_snapshot_sources"]["training_sandboxes"] == (
-        "host_cost_mirror"
+        "max(in_sandbox_lifecycle,host_cost_mirror)"
     )
 
 

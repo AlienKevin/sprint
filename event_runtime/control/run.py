@@ -1516,9 +1516,17 @@ def refresh_agent_cost_snapshot(
     live watchdog and must never overwrite either fresher heartbeat merely
     because it finished later.
     """
+    services_terminal = run_services_should_exit(state_dir, run)
     with file_lock(state_dir / "telemetry" / "agent-cost.lock"):
         cost_payload = agent_cost.build_snapshot(timeline, state_dir=state_dir)
-        cost_path = state_dir / "telemetry" / "agent-cost.json"
+        pulse_owns_live_snapshot = (
+            not services_terminal and budget_pulse_alive(state_dir)
+        )
+        cost_path = state_dir / "telemetry" / (
+            "agent-cost-report.json"
+            if pulse_owns_live_snapshot
+            else "agent-cost.json"
+        )
         atomic_write_json(cost_path, cost_payload, mode=0o600)
         enforce_agent_cost_budget(run_id, state_dir, run, cost_payload)
 
@@ -1527,7 +1535,7 @@ def refresh_agent_cost_snapshot(
     # unnecessary and unsafe: a previous attempt may legitimately have a
     # different snapshot identity. Keep the final host ledger, but never let
     # that stale live channel abort finalization.
-    if run_services_should_exit(state_dir, run):
+    if services_terminal:
         terminal = {
             "schema_version": 1,
             "updated_at": utc_now(),
@@ -1549,7 +1557,7 @@ def refresh_agent_cost_snapshot(
         )
         return cost_payload
 
-    if budget_pulse_alive(state_dir):
+    if pulse_owns_live_snapshot:
         delegated = {
             "schema_version": 1,
             "updated_at": utc_now(),
@@ -2680,6 +2688,80 @@ def _budget_watchdog_age(ref: float, checked_at: float) -> float:
     return age
 
 
+def _host_training_allocated_seconds(state_dir: Path, now: float) -> float:
+    """Sum host-authoritative GPU allocation intervals without parsing traces."""
+    total = 0.0
+    registry = state_dir / "gpu-job-registry"
+    for path in sorted(registry.glob("*.json")) if registry.is_dir() else ():
+        try:
+            job = json.loads(path.read_text())
+            if not isinstance(job, dict):
+                raise TypeError("record is not an object")
+            start = float(job.get("dispatched_at_epoch_s") or 0)
+            ends = [
+                float(job.get(key) or 0)
+                for key in ("finished_at_epoch_s", "terminated_at_epoch_s")
+                if job.get(key) is not None
+            ]
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                f"invalid host GPU registry record {path}: {exc}"
+            ) from exc
+        if start <= 0:
+            continue
+        valid_ends = [end for end in ends if end >= start]
+        end = min(valid_ends) if valid_ends else now
+        total += max(0.0, min(now, end) - start)
+    return total
+
+
+def _merge_host_gpu_cost(
+    canonical: dict[str, Any], state_dir: Path, run: dict[str, Any], now: float
+) -> dict[str, Any]:
+    """Overlay the compact host GPU registry onto a watchdog snapshot."""
+    payload = json.loads(json.dumps(canonical))
+    components = payload.get("components")
+    if not isinstance(components, dict):
+        raise RuntimeError("budget pulse watchdog components are missing")
+    training = components.get("training_sandboxes")
+    if not isinstance(training, dict):
+        raise RuntimeError("budget pulse watchdog training component is missing")
+    local_seconds = float(training.get("allocated_seconds") or 0)
+    seconds = max(local_seconds, _host_training_allocated_seconds(state_dir, now))
+    estimate = modal_cost.estimate_cost(
+        resource_contract=run.get("resource_contract") or {},
+        allocated_ms_by_role={"training_gpu": round(seconds * 1000)},
+    )["by_role"]["training_gpu"]
+    training.update(
+        {
+            "allocated_seconds": seconds,
+            "cost_usd": max(
+                float(training.get("cost_usd") or 0),
+                float(estimate["estimated_cost_usd"]),
+            ),
+            "cost_components_usd": estimate["cost_components_usd"],
+            "requested_resources": estimate["quantities"],
+        }
+    )
+    payload["training_allocated_seconds"] = seconds
+    sources = payload.setdefault("component_snapshot_sources", {})
+    sources["training_sandboxes"] = "max(in_sandbox_lifecycle,host_gpu_registry)"
+    totals = {
+        "model_api_usd": float(components["model_api"]["cost_usd"]),
+        "cpu_agent_usd": float(components["cpu_agent"]["cost_usd"]),
+        "training_sandboxes_usd": float(training["cost_usd"]),
+    }
+    total = sum(totals.values())
+    payload["component_totals_usd"] = totals
+    payload["total_usd"] = total
+    payload["estimated_total_usd"] = total
+    budget = float(payload["budget_usd"])
+    threshold = float(payload["stop_threshold_usd"])
+    payload["budget_remaining_usd"] = max(0.0, budget - total)
+    payload["status"] = "stop_requested" if total >= threshold else "within_budget"
+    return payload
+
+
 def _budget_pulse_once_unlocked(
     run_id: str, *, now: float | None = None
 ) -> dict[str, Any]:
@@ -2720,24 +2802,11 @@ def _budget_pulse_once_unlocked(
     pulse_source = "in_sandbox_watchdog"
     upstream_age = _budget_watchdog_age(ref, float(checked_at))
 
-    # This is local-only and fast: provider charges come from the freshly
-    # fetched watchdog, while host GPU lifecycle events are already persisted
-    # locally by the dispatcher.  No history archives or Volume uploads block
-    # this path.
-    timeline = build_unified_timeline(state_dir, run, upload=False)
-    payload = agent_cost.build_snapshot(timeline, state_dir=state_dir)
-    # ``build_snapshot`` normally inherits the unified timeline cutoff.  The
-    # artifact monitor can legitimately lag while it archives/restores large
-    # histories, so that cutoff is not a freshness signal for the independent
-    # budget pulse.  Stamp the merged document with this pulse's fresh trusted
-    # watchdog read; otherwise a GPU worker can receive new totals carrying an
-    # old timestamp and fail closed after 120 seconds despite healthy updates.
-    snapshot_epoch = max(ref, float(checked_at))
-    payload["checked_at_epoch_s"] = snapshot_epoch
-    payload["as_of_epoch_ms"] = round(snapshot_epoch * 1000)
-    payload["as_of"] = dt.datetime.fromtimestamp(
-        snapshot_epoch, tz=dt.timezone.utc
-    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # The live safety path is deliberately O(number of GPU jobs): copy the
+    # watchdog's compact API/CPU ledger and overlay host-owned GPU registry
+    # intervals. Full trace/timeline reconstruction remains an archival task
+    # and can no longer delay a budget heartbeat.
+    payload = _merge_host_gpu_cost(canonical, state_dir, run, ref)
     payload["budget_pulse"] = {
         "checked_at": utc_now(),
         "upstream_watchdog_age_seconds": round(upstream_age, 3),
