@@ -107,6 +107,10 @@ class TestClaudeCodeRunAuth:
 
         envs = _exec_envs(mock_env)
         assert any(e.get("OPENROUTER_API_KEY") == "sk-or-sealed-test" for e in envs)
+        run_command = mock_env.exec.call_args_list[-1].kwargs["command"]
+        assert ' | claude ' not in run_command
+        assert '--print "$harbor_claude_code_instruction_' in run_command
+        assert "do something" not in run_command
 
     @pytest.mark.asyncio
     async def test_openrouter_ledger_requires_sealed_key(

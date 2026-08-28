@@ -1544,11 +1544,10 @@ class ClaudeCode(BaseInstalledAgent):
                 'export PATH="$HOME/.local/bin:$PATH"; '
                 f'{instruction_shell_var}="${instruction_env_var}"; '
                 f"unset {instruction_env_var}; "
-                f'printf "%s" "${instruction_shell_var}" | '
                 f"claude --verbose --output-format=stream-json "
                 f"{extra_flags}"
                 f"{resume_flag}"
-                f"--print 2>&1 | tee "
+                f'--print "${instruction_shell_var}" 2>&1 | tee '
                 f"/logs/agent/claude-code.txt"
             ),
             env=run_env,
