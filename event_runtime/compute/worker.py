@@ -1514,7 +1514,12 @@ print("STALE_IGNORED" if stale else "UPDATED")
             terminal_exec_race = "cannot execute in container" in message and (
                 "state stopped" in message or "state terminated" in message
             )
-            if terminal_exec_race:
+            terminal_fetch_race = (
+                "fetchspec failed" in message
+                and "loading container" in message
+                and "file does not exist" in message
+            )
+            if terminal_exec_race or terminal_fetch_race:
                 finished.append(sandbox_id)
             else:
                 errors[sandbox_id] = f"{type(exc).__name__}: {exc}"

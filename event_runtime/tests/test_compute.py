@@ -1120,6 +1120,36 @@ class WorkerRuntimeBoundaryTests(unittest.TestCase):
         self.assertEqual(live_detail["finished_sandbox_ids"], [])
         self.assertIn("exit 137", live_detail["errors"]["sb-live"])
 
+    def test_budget_mirror_accepts_fetchspec_race_after_sandbox_finishes(self) -> None:
+        payload = {
+            "schema_version": 2,
+            "run_id": "run-1",
+            "checked_at_epoch_s": 1234.5,
+            "total_usd": 2.25,
+            "stop_threshold_usd": 10.0,
+            "status": "within_budget",
+        }
+
+        class Sandbox:
+            def exec(self, *_args: str, **_kwargs: object) -> None:
+                raise RuntimeError(
+                    "FetchSpec failed: loading container: file does not exist"
+                )
+
+        with mock.patch.object(
+            gpu_worker.modal.Sandbox, "from_id", return_value=Sandbox()
+        ):
+            detail = gpu_worker.mirror_gpu_budget(
+                {"run_id": "run-1"},
+                payload,
+                jobs=[{"sandbox_id": "sb-finished", "status": "running"}],
+            )
+
+        self.assertEqual(detail["gpu_budget_mirror"], "updated")
+        self.assertEqual(detail["updated_sandbox_ids"], [])
+        self.assertEqual(detail["finished_sandbox_ids"], ["sb-finished"])
+        self.assertEqual(detail["errors"], {})
+
     def test_gpu_budget_mirror_refuses_to_replace_newer_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             target = Path(raw) / "cost.json"
