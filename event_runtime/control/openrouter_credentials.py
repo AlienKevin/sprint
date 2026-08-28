@@ -25,6 +25,9 @@ import urllib.request
 
 API_ROOT = "https://openrouter.ai/api/v1"
 SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,80}$")
+SAFE_PROVIDER_TAG = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}(?:/[A-Za-z0-9][A-Za-z0-9._-]{0,80})?$"
+)
 READ_RETRY_ATTEMPTS = 4
 READ_RETRY_INITIAL_SECONDS = 0.5
 READ_RETRY_MAX_SECONDS = 10.0
@@ -401,7 +404,7 @@ def validate_specs(specs: list[TrialCredentialSpec]) -> None:
         if (
             "/" not in spec.model
             or "/" not in spec.resolved_model
-            or not SAFE_NAME.fullmatch(spec.provider)
+            or not SAFE_PROVIDER_TAG.fullmatch(spec.provider)
         ):
             raise ValueError(f"invalid OpenRouter route for {spec.run_id}")
         if not math.isfinite(spec.budget_usd) or spec.budget_usd <= 0:
