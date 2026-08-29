@@ -2060,15 +2060,16 @@ def recover_pending_submission_snapshots(
     """Finish explicit submissions from their immutable enqueue snapshot.
 
     ``event gpu --submit-output`` snapshots /app before enqueue. If that job is
-    still waiting behind another FIFO job when the budget closes, the exact
-    bytes that already existed at enqueue can be admitted without starting the
-    queued command. The same recovery applies when a budget/operator fence lands
-    after the command exits but before the worker commits its submission
-    manifest: the pinned enqueue archive still proves which bytes already
-    existed when the agent explicitly requested submission. Worker-authored
-    submission results always win when present. Missing files are a normal
-    rejected result; transport or digest ambiguity remains fail-closed and is
-    retried while the CPU supervisor waits for the submission-drain handshake.
+    still waiting behind another FIFO job when a budget, operator, or agent
+    cancellation fence lands, the exact bytes that already existed at enqueue
+    can be admitted without starting the queued command. The same recovery
+    applies when a fence lands after the command exits but before the worker
+    commits its submission manifest: the pinned enqueue archive still proves
+    which bytes already existed when the agent explicitly requested submission.
+    Worker-authored submission results always win when present. Missing files
+    are a normal rejected result; transport or digest ambiguity remains
+    fail-closed and is retried while the CPU supervisor waits for the
+    submission-drain handshake.
     """
     declared = [str(path) for path in job.get("submission_paths") or []]
     payload = dict(job)
@@ -2090,6 +2091,10 @@ def recover_pending_submission_snapshots(
         status == "terminated"
         and str(payload.get("termination_reason") or "")
         in {
+            "agent_cancelled",
+            "agent_cancelled_before_dispatch",
+            "agent_cancelled_during_spawn",
+            "agent_cancelled_forced",
             "agent_cost_budget_exhausted",
             "budget_telemetry_unavailable",
             "operator_stop",
@@ -2137,7 +2142,7 @@ def recover_pending_submission_snapshots(
                         "path": path,
                         "state": "rejected",
                         "reason": rejection,
-                        "source": "enqueue_snapshot_at_budget_stop",
+                        "source": "enqueue_snapshot_at_terminal_stop",
                     }
                 )
                 continue
@@ -2198,7 +2203,7 @@ def recover_pending_submission_snapshots(
                     "policy_sha256": digest,
                     "policy_size_bytes": len(content),
                     "observed_at": utc_now(),
-                    "source": "enqueue_snapshot_at_budget_stop",
+                    "source": "enqueue_snapshot_at_terminal_stop",
                     "archive_returncode": raw_returncode,
                     "archive_stdout": str(result.get("stdout") or "")[-2000:],
                     "archive_stderr": str(result.get("stderr") or "")[-2000:],
@@ -2221,7 +2226,7 @@ def recover_pending_submission_snapshots(
                 "submission_id": submission_id,
                 "policy_sha256": digest,
                 "policy_size_bytes": len(content),
-                "source": "enqueue_snapshot_at_budget_stop",
+                "source": "enqueue_snapshot_at_terminal_stop",
             }
             if state == "rejected":
                 result_payload["reason"] = str(

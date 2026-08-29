@@ -2268,6 +2268,76 @@ class SubmissionBridgeTests(unittest.TestCase):
                 )
             )
 
+    def test_agent_cancel_recovers_explicit_submission_snapshot(self) -> None:
+        cancellation_reasons = (
+            "agent_cancelled",
+            "agent_cancelled_before_dispatch",
+            "agent_cancelled_during_spawn",
+            "agent_cancelled_forced",
+        )
+        for reason in cancellation_reasons:
+            with self.subTest(reason=reason), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                run, job, content = self.enqueue_snapshot_job(root)
+                job.update(
+                    {
+                        "status": "terminated",
+                        "termination_reason": reason,
+                    }
+                )
+                if reason != "agent_cancelled_before_dispatch":
+                    job.update(
+                        {
+                            "attempt": 1,
+                            "lease_id": "lease-1",
+                            "sandbox_id": "sb-worker",
+                        }
+                    )
+                with (
+                    mock.patch.object(
+                        gpu_worker, "owned_terminal_attempt", return_value=None
+                    ),
+                    mock.patch.object(
+                        gpu_worker,
+                        "submit_worker_policy_to_cpu_agent",
+                        return_value={
+                            "returncode": 0,
+                            "stdout": "staged",
+                            "stderr": "",
+                        },
+                    ) as submit,
+                    mock.patch.object(
+                        gpu_worker,
+                        "persist_job",
+                        side_effect=lambda _run, payload: dict(payload),
+                    ),
+                ):
+                    recovered, detail = (
+                        gpu_worker.recover_pending_submission_snapshots(run, job)
+                    )
+
+                self.assertTrue(detail["eligible"])
+                self.assertEqual(detail["forwarded"], 1)
+                self.assertEqual(submit.call_args.args[2], content)
+                self.assertEqual(
+                    recovered["progress"]["submission_results"],
+                    [
+                        {
+                            "path": "/app/policy.pt",
+                            "state": "staged",
+                            "policy_sha256": hashlib.sha256(content).hexdigest(),
+                            "policy_size_bytes": len(content),
+                            "submission_id": mock.ANY,
+                            "source": "enqueue_snapshot_at_terminal_stop",
+                        }
+                    ],
+                )
+                self.assertTrue(
+                    gpu_worker.terminal_submission_bridge_complete(
+                        run, recovered, {"error": 0, "retry_wait": 0}
+                    )
+                )
+
     def test_budget_stop_recovers_dispatched_submission_when_worker_manifest_is_lost(
         self,
     ) -> None:
