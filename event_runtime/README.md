@@ -32,6 +32,12 @@ Run the shared tests with:
 uv run --project harbor pytest -q event_runtime/tests tests
 ```
 
+## Runtime incident notes
+
+- [Modal Volume v1 telemetry stall](MODAL_VOLUME_TELEMETRY_STALL.md): evidence,
+  integrity impact, and proposed remediation for synchronous durable-I/O stalls
+  observed in GPU telemetry and heartbeat publication.
+
 ## Website trajectory outlines
 
 Rollout tables of contents are authored offline by a Codex agent running as an
