@@ -1,0 +1,31 @@
+// Read-only local replay validation. See replay_performance_README.md.
+import fs from 'node:fs';
+const port=Number(process.env.CDP_PORT||9222), base=process.env.BENCH_BASE||'http://127.0.0.1:59454';
+const targets=await(await fetch(`http://127.0.0.1:${port}/json/list`)).json();const target=targets.find(t=>t.type==='page');
+const ws=new WebSocket(target.webSocketDebuggerUrl);await new Promise(r=>ws.addEventListener('open',r,{once:true}));
+let id=0;const pending=new Map(),events=[];ws.addEventListener('message',e=>{const d=JSON.parse(e.data);if(d.id){const p=pending.get(d.id);pending.delete(d.id);d.error?p.reject(d.error):p.resolve(d.result);}else events.push({...d,wall:Date.now()});});
+const send=(method,params={})=>new Promise((resolve,reject)=>{const n=++id;pending.set(n,{resolve,reject});ws.send(JSON.stringify({id:n,method,params}));});
+const ev=async expression=>{const r=await send('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true});if(r.exceptionDetails)throw Error(JSON.stringify(r.exceptionDetails));return r.result.value;};
+await send('Page.enable');await send('Runtime.enable');await send('Network.enable');await send('Performance.enable');
+await send('Emulation.setDeviceMetricsOverride',{width:1280,height:900,deviceScaleFactor:1,mobile:false});
+await send('Network.emulateNetworkConditions',process.env.BENCH_THROTTLE==='1'?{offline:false,latency:40,downloadThroughput:500000,uploadThroughput:500000,connectionType:'cellular4g'}:{offline:false,latency:0,downloadThroughput:-1,uploadThroughput:-1});
+const initScript=await send('Page.addScriptToEvaluateOnNewDocument',{source:`window.__BENCH={messages:[],errors:[],start:performance.timeOrigin};addEventListener('message',e=>{if(e.data?.type?.startsWith('g1:'))__BENCH.messages.push({at:performance.now(),...e.data})});addEventListener('error',e=>__BENCH.errors.push(e.message));`});
+const cases=[{name:'fallen',run:'s10-vexp-r123-20260828-luna-2',first:9,second:8},{name:'moving',run:'claude-goalfix2-20260828-1750-glm-2',first:9,second:6}];
+const stepArgs=process.argv.slice(2),stage=stepArgs[0]||'baseline',count=Number(stepArgs[1]||3),output='/tmp/replay-'+stage+'-metrics.json';
+const result={stage,base,viewport:{width:1280,height:900,dpr:1},network:process.env.BENCH_THROTTLE==='1'?'4Mbps/40ms':'unthrottled loopback',samples:[],started:new Date().toISOString()};
+const waitReady=async expected=>{for(let i=0;i<240;i++){const r=await ev(`(()=>{const f=document.querySelector('#trajectory-policy-replay-frame'), w=f?.contentWindow;return Boolean(w?.__G1_REPLAY__ && document.querySelectorAll('.policy-reference.is-selected').length && !document.querySelector('#trajectory-policy-replay')?.classList.contains('is-loading') && w.document.querySelectorAll('.lc').length===${expected})})()`);if(r)return;await new Promise(r=>setTimeout(r,100));}throw Error('ready timeout');};
+const collect=async(name,start,index,previous)=>{
+ const detail=await ev(`(()=>{const f=document.querySelector('#trajectory-policy-replay-frame'),w=f.contentWindow,a=w.__G1_REPLAY__,c=w.document.querySelector('canvas'),gl=c.getContext('webgl2')||c.getContext('webgl'),ext=gl?.getExtension('WEBGL_debug_renderer_info');return {messages:__BENCH.messages,errors:__BENCH.errors,frameErrors:w.__BENCH?.errors||[],iframeSame:window.__previousFrame===f,apiSame:window.__previousApi===a,canvasSame:window.__previousCanvas===c,url:location.href,frameUrl:w.location.href,playback:a.playback(),camera:a.camera(),inspect:a.inspect(0),diagnostics:a.diagnostics?.(),cache:w.__G1_COMPARISON_CACHE__?.stats?.(),lanes:[...w.document.querySelectorAll('.lc')].map(x=>x.textContent),renderer:ext?gl.getParameter(ext.UNMASKED_RENDERER_WEBGL):null,resources:[...performance.getEntriesByType('resource'),...w.performance.getEntriesByType('resource')].map(x=>x.toJSON()),heap:performance.memory?.usedJSHeapSize}})()`);
+ const net=events.slice(index),requests=net.filter(e=>e.method==='Network.requestWillBeSent').map(e=>({id:e.params.requestId,url:e.params.request.url,type:e.params.type}));
+ const finished=new Map(net.filter(e=>e.method==='Network.loadingFinished').map(e=>[e.params.requestId,e.params.encodedDataLength]));const responses=new Map(net.filter(e=>e.method==='Network.responseReceived').map(e=>[e.params.requestId,e.params.response]));
+ const records=requests.map(r=>({...r,encodedDataLength:finished.get(r.id)||0,cache:!!responses.get(r.id)?.fromDiskCache,status:responses.get(r.id)?.status,headers:responses.get(r.id)?.headers}));
+ const ready=detail.messages.filter(x=>x.type==='g1:policies-state').at(-1);const timeOrigin=await ev('performance.timeOrigin');
+ const row={name,elapsedMs:Date.now()-start,readyMs:ready?timeOrigin+ready.at-start:null,requests:records,wireBytes:records.reduce((s,x)=>s+x.encodedDataLength,0),...detail};result.samples.push(row);fs.writeFileSync(output,JSON.stringify(result,null,2));console.log(JSON.stringify({stage,name,elapsedMs:row.elapsedMs,readyMs:row.readyMs,wireBytes:row.wireBytes,requests:records.length,iframeSame:row.iframeSame,apiSame:row.apiSame,lanes:row.lanes,playback:row.playback}));
+ await ev(`window.__previousFrame=document.querySelector('#trajectory-policy-replay-frame');window.__previousApi=__previousFrame.contentWindow.__G1_REPLAY__;window.__previousCanvas=__previousFrame.contentDocument.querySelector('canvas');`);
+};
+for(const scenario of cases){for(let repeat=0;repeat<count;repeat++){
+ await send('Network.clearBrowserCache');await send('Page.navigate',{url:'about:blank'});await new Promise(r=>setTimeout(r,100));
+ let start=Date.now(),index=events.length;await send('Page.navigate',{url:base+`/trajectory?run=${scenario.run}&policies=${scenario.first}&focus=${scenario.first}`});await waitReady(1);await collect(`${scenario.name}/${repeat}/cold`,start,index);
+ for(const action of ['add','remove','readd']){await ev('__BENCH.messages=[]');start=Date.now();index=events.length;await ev(`document.querySelector('.policy-reference[data-policy-label^="Policy #${scenario.second},"]')?.click()`);await waitReady(action==='remove'?1:2);await collect(`${scenario.name}/${repeat}/${action}`,start,index);}
+}}
+result.finished=new Date().toISOString();fs.writeFileSync(output,JSON.stringify(result,null,2));await send('Page.removeScriptToEvaluateOnNewDocument',{identifier:initScript.identifier});console.log(output);ws.close();

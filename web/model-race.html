@@ -284,7 +284,7 @@ function policyPlaybackEnd(p){
   return Math.min(p.freezeT,lastMovingT+STALL_SETTLE_S);
 }
 
-POL.forEach(p=>{
+function preparePolicy(p){
   p.startY=p.frames[0][2];
   p.startX=p.frames[0][1];
   const crossT=finishCrossingT(p);
@@ -304,11 +304,13 @@ POL.forEach(p=>{
   // scoring stops; eventT remains untouched and continues to drive the HUD.
   p.freezeT=p.timedOut?captureEnd:(p.syntheticSettle?p.eventT+PASSIVE_SETTLE_S:p.poseEndT);
   p.playbackEndT=policyPlaybackEnd(p);
-});
+  return p;
+}
+POL.forEach(p=>{preparePolicy(p);});
 // POL is the complete selected set, not merely the camera's focused runner.
-// Selection/removal reloads this scene, so no removed runner keeps it playing.
-const T_CAPTURE_END=Math.max(...POL.map(p=>p.freezeT));
-const T_END=Math.max(...POL.map(p=>p.playbackEndT));
+// Updates recompute both bounds, so no removed runner keeps it playing.
+let T_CAPTURE_END=Math.max(...POL.map(p=>p.freezeT));
+let T_END=Math.max(...POL.map(p=>p.playbackEndT));
 
 // ---- three setup, z-up ----
 const stage=document.getElementById('stage');
@@ -479,8 +481,8 @@ jointMat.shadowSide=THREE.FrontSide;
 const footMat=new THREE.MeshPhysicalMaterial({color:0x2a2d33,metalness:0.2,roughness:0.68,
   clearcoat:0.25,clearcoatRoughness:0.45,envMapIntensity:0.85,side:THREE.DoubleSide,flatShading:false});
 footMat.shadowSide=THREE.FrontSide;
-function shellMat(ci){const c=new THREE.Color(COL[ci]);
-  const emphasized=IS_TRAJECTORY_COMPARISON&&POL[ci]?.emphasized;
+function shellMat(ci,policy=POL[ci]){const c=new THREE.Color(policy?.color||COL[ci]);
+  const emphasized=IS_TRAJECTORY_COMPARISON&&policy?.emphasized;
   if(!emphasized)c.lerp(new THREE.Color(0xffffff),0.16);
   const m=new THREE.MeshPhysicalMaterial({color:c,emissive:emphasized?c:0x000000,emissiveIntensity:emphasized?0.12:0,
     metalness:emphasized?0.04:0.32,roughness:emphasized?0.62:0.36,
@@ -496,16 +498,17 @@ function plaque(txt,hex){
   while(g.measureText(txt).width>456&&fontSize>48){fontSize-=2;g.font=`bold ${fontSize}px -apple-system,Segoe UI,sans-serif`;}
   g.textAlign='center'; g.textBaseline='middle';
   g.fillText(txt,256,132);
-  const t=new THREE.CanvasTexture(c); t.anisotropy=8; t.encoding=THREE.sRGBEncoding;t.userData={label:txt,font:g.font};return t;
+  const t=new THREE.CanvasTexture(c); t.anisotropy=8; t.encoding=THREE.sRGBEncoding;t.userData={label:txt,font:g.font,color:hex};return t;
 }
-const PLAQUES=POL.map((p,ci)=>{
-  const hex='#'+new THREE.Color(COL[ci]).getHexString();
+function createPlaque(p,ci){
+  const hex=p.color||'#'+new THREE.Color(COL[ci]).getHexString();
   const label=policyPlaqueLabel(p);
   const m=new THREE.Mesh(new THREE.PlaneGeometry(1.45,0.72),
     new THREE.MeshBasicMaterial({map:plaque(label.trim(),hex),transparent:true,depthWrite:false}));
   m.userData.resultLabel=label;
   m.position.set(p.failed?(Number.isFinite(p.presentation_result_distance_m)?p.presentation_result_distance_m:failureFrame(p)[1]-p.startX)+1.6:101.6,LANE[ci],0.012);m.visible=false;scene.add(m);return m;
-});
+}
+const PLAQUES=POL.map(createPlaque);
 
 // Two curved identity elements follow the torso link instead of facing the
 // camera: a standalone company mark above, and a model-name-only race bib below.
@@ -629,8 +632,8 @@ function chestPolicyNumber(policy,identity){
   const mesh=new THREE.Mesh(CHEST_POLICY_BIB_GEO,material);
   mesh.name='runner_chest_policy_number';mesh.renderOrder=4;return mesh;
 }
-const ROBOTS=POL.map((p,ci)=>{
-  const grp=new THREE.Group(); const shell=shellMat(ci); const nodes=[],meshes=[];
+function createRobot(p,ci){
+  const grp=new THREE.Group(); const shell=shellMat(ci,p); const nodes=[],meshes=[];
   grp.userData.policyIndex=ci;
   LINKS.forEach(n=>{
     const node=new THREE.Group(); node.name=n;
@@ -647,7 +650,27 @@ const ROBOTS=POL.map((p,ci)=>{
     }
     grp.add(node);nodes.push(node);meshes.push(mesh);});
   scene.add(grp); return {grp,nodes,meshes,material:shell};
-});
+}
+const ROBOTS=POL.map(createRobot);
+const SHARED_GEOMETRIES=new Set([...Object.values(GEO),CHEST_BIB_GEO,CHEST_COVER_GEO,
+  CHEST_LOGO_GEO,CHEST_OPENAI_LOGO_GEO,CHEST_POLICY_BIB_GEO]);
+let disposedActors=0;
+function disposeActorObject(object){
+  if(!object)return;
+  const geometries=new Set(),materials=new Set(),textures=new Set();
+  object.traverse(node=>{
+    if(node.geometry&&!SHARED_GEOMETRIES.has(node.geometry))geometries.add(node.geometry);
+    for(const material of (Array.isArray(node.material)?node.material:[node.material])){
+      if(!material||material===jointMat||material===footMat)continue;
+      materials.add(material);
+      for(const value of Object.values(material))if(value?.isTexture)textures.add(value);
+    }
+  });
+  scene.remove(object);
+  textures.forEach(texture=>texture.dispose());
+  materials.forEach(material=>material.dispose());
+  geometries.forEach(geometry=>geometry.dispose());
+}
 
 function failureFrame(p){
   const index=Math.min(p.frames.length-1,Math.max(0,Math.round(p.eventT*FPS)));
@@ -710,13 +733,14 @@ function selfCollisionMarker(p,ci){
   group.position.copy(point);group.visible=false;scene.add(group);
   return {kind:'self-collision',group,point};
 }
-const FAILURE_MARKERS=POL.map((p,ci)=>{
+function createFailureMarker(p,ci){
   if(!p.disqualified) return null;
   const reason=p.terminal?.reason;
   if(reason==='in_lane') return laneFailureMarker(p,ci);
   if(reason==='self_collision') return selfCollisionMarker(p,ci);
   return null;
-});
+}
+const FAILURE_MARKERS=POL.map(createFailureMarker);
 
 // ---- authoritative captured-state playback ----
 const qA=new THREE.Quaternion(),qB=new THREE.Quaternion();
@@ -834,7 +858,7 @@ function orderModelHudCards(){
     .forEach(({i})=>{if(cards[i])lanes.append(cards[i]);});
 }
 orderModelHudCards();
-const singlePolicy=POL.length===1;
+let singlePolicy=POL.length===1;
 if(singlePolicy&&!IS_TRAJECTORY_COMPARISON){const lanes=document.querySelector('.lanes');if(lanes)lanes.style.display='none';}
 function hud(t,xs,dones,focusedPolicy){
   const primary=POL[0];
@@ -965,6 +989,11 @@ function emphasizePolicy(index){
     policy.color=policy.emphasized?(policy.model_color||policy.identity?.color||'#6E97C4'):'#FFFFFF';
     COL[i]=Number.parseInt(policy.color.slice(1),16);
     const material=shellMat(i);ROBOTS[i].material.copy(material);material.dispose();
+    const result=PLAQUES[i];
+    if(result?.material.map?.userData.color!==policy.color){
+      const old=result.material.map;result.material.map=plaque(policyPlaqueLabel(policy),policy.color);
+      result.material.needsUpdate=true;old?.dispose();
+    }
     const card=cards[i];if(!card)return;
     card.classList.toggle('emphasized',policy.emphasized);
     card.style.setProperty('--emphasis',policy.color);
@@ -1263,19 +1292,96 @@ window.addEventListener('keydown',e=>{if(e.code==='Space'&&!e.target?.closest?.(
 document.querySelectorAll('.seg button').forEach(b=>b.addEventListener('click',()=>{
   document.querySelectorAll('.seg button').forEach(x=>x.setAttribute('aria-pressed','false'));
   b.setAttribute('aria-pressed','true');speed=parseFloat(b.dataset.s);}));
-cards.forEach((card,index)=>{
+function bindPolicyCard(card){
   if(!card)return;
-  card.addEventListener('click',()=>followPolicy(index));
-  if(!card.querySelector('.policy-follow'))card.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();followPolicy(index);}});
+  if(card.dataset.replayBound)return;
+  card.dataset.replayBound='1';
+  // Cards survive lane reordering, so resolve their current index on each event.
+  card.addEventListener('click',()=>followPolicy(cards.indexOf(card)));
+  if(!card.querySelector('.policy-follow'))card.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();followPolicy(cards.indexOf(card));}});
   card.querySelector('.policy-remove')?.addEventListener('click',event=>{
     event.preventDefault();event.stopPropagation();
-    window.dispatchEvent(new CustomEvent('g1:policy-remove',{detail:{captureId:POL[index].capture_id}}));
+    const policy=POL[cards.indexOf(card)];
+    if(policy)window.dispatchEvent(new CustomEvent('g1:policy-remove',{detail:{captureId:policy.capture_id}}));
   });
-});
+}
+cards.forEach(bindPolicyCard);
 document.getElementById('camera-zoom-in')?.addEventListener('click',()=>zoomCamera(1/1.22));
 document.getElementById('camera-zoom-out')?.addEventListener('click',()=>zoomCamera(1.22));
 cameraResetBtn?.addEventListener('click',resetCamera);
+let publishReplayLayout=()=>{},layoutObserver=null,sceneDisposed=false;
+function updatePolicies(nextPolicies,{emphasizedCaptureId=null}={}){
+  if(!IS_TRAJECTORY_COMPARISON||sceneDisposed)throw new Error('This replay does not support policy updates.');
+  if(!Array.isArray(nextPolicies)||!nextPolicies.length||nextPolicies.length>8)throw new Error('Select between 1 and 8 policies.');
+  const ids=nextPolicies.map(policy=>policy.capture_id);
+  if(ids.some(id=>!id)||new Set(ids).size!==ids.length)throw new Error('Policy identities must be unique.');
+  const previous=new Map(POL.map((policy,index)=>[policy.capture_id,{policy,robot:ROBOTS[index],plaque:PLAQUES[index],failure:FAILURE_MARKERS[index],lane:LANE[index]}]));
+  const prepared=nextPolicies.map(policy=>{
+    if(!policy.frames?.length||policy.frames[0].length!==1+NL*7)throw new Error('Policy pose layout is incompatible.');
+    const prior=previous.get(policy.capture_id);
+    return prior?.policy.frames===policy.frames?{...prior.policy,...policy}:preparePolicy({...policy});
+  });
+  const oldFocus=POL[userFollowPolicy]?.capture_id;
+  const nextFocus=Math.max(0,prepared.findIndex(policy=>policy.capture_id===(emphasizedCaptureId||oldFocus)));
+  const nextLanes=prepared.map((_,i)=>(i-(TRACK_LANES-1)/2)*TRACK_LANE_WIDTH);
+  // Set changes historically loaded a fresh, paused replay at zero. Retain
+  // that UX while reusing its renderer; focus-only changes call follow instead.
+  pause();cancelCameraSwitch();playT=0;Object.assign(VIEW,DEFAULT_VIEW);
+  POL.splice(0,POL.length,...prepared);
+  COL.splice(0,COL.length,...prepared.map(policy=>parseInt(policy.color.slice(1),16)));
+  LANE.splice(0,LANE.length,...nextLanes);
+  const robots=[],plaques=[],failures=[];
+  POL.forEach((policy,index)=>{
+    const prior=previous.get(policy.capture_id);
+    if(prior&&prior.policy.frames===policy.frames){
+      prior.robot.grp.userData.policyIndex=index;
+      prior.plaque.position.y=LANE[index];
+      if(prior.failure){
+        const shift=LANE[index]-prior.lane;
+        prior.failure.group.position.y+=shift;
+        if(prior.failure.point)prior.failure.point.y+=shift;
+      }
+      robots.push(prior.robot);plaques.push(prior.plaque);failures.push(prior.failure);
+      previous.delete(policy.capture_id);
+    }else{
+      robots.push(createRobot(policy,index));plaques.push(createPlaque(policy,index));failures.push(createFailureMarker(policy,index));
+    }
+  });
+  for(const old of previous.values()){
+    disposeActorObject(old.robot.grp);disposeActorObject(old.plaque);disposeActorObject(old.failure?.group);disposedActors++;
+  }
+  ROBOTS.splice(0,ROBOTS.length,...robots);PLAQUES.splice(0,PLAQUES.length,...plaques);FAILURE_MARKERS.splice(0,FAILURE_MARKERS.length,...failures);
+  cards.splice(0,cards.length,...POL.map((_,i)=>document.getElementById('lane'+i)));cards.forEach(bindPolicyCard);
+  singlePolicy=POL.length===1;
+  T_CAPTURE_END=Math.max(...POL.map(policy=>policy.freezeT));T_END=Math.max(...POL.map(policy=>policy.playbackEndT));
+  AUTO_FOLLOW_ORDER.splice(0,AUTO_FOLLOW_ORDER.length,...POL.map((_,i)=>i).sort((a,b)=>Number(POL[b].effective_speed_mps||0)-Number(POL[a].effective_speed_mps||0)||a-b));
+  userFollowPolicy=nextFocus;validationPolicy=null;comparisonAutoCamera=false;
+  emphasizePolicy(nextFocus);resetFollowDamping();updateCameraControls();
+  playT=Math.min(playT,T_END);lastNow=null;startWall=null;draw(playT);startWall=1;
+  setBtn();
+  publishReplayLayout();
+  return {time:playT,playing,end:T_END};
+}
+function disposeReplay(){
+  if(sceneDisposed)return;sceneDisposed=true;
+  pause();cancelCameraSwitch();layoutObserver?.disconnect();
+  const geometries=new Set(),materials=new Set(),textures=new Set();
+  scene.traverse(node=>{
+    if(node.geometry)geometries.add(node.geometry);
+    for(const material of (Array.isArray(node.material)?node.material:[node.material])){
+      if(!material)continue;materials.add(material);
+      for(const value of Object.values(material))if(value?.isTexture)textures.add(value);
+    }
+  });
+  if(scene.environment)textures.add(scene.environment);
+  textures.forEach(texture=>texture.dispose());materials.forEach(material=>material.dispose());geometries.forEach(geometry=>geometry.dispose());
+  renderer.dispose();renderer.forceContextLoss();
+}
 window.__G1_REPLAY__={
+  updatePolicies,dispose:disposeReplay,
+  diagnostics(){return {disposed:sceneDisposed,disposedActors,activeActors:ROBOTS.length,
+    actors:ROBOTS.map((robot,index)=>({captureId:POL[index].capture_id,uuid:robot.grp.uuid})),
+    geometryIds:LINKS.map(name=>GEO[name].uuid),gpu:{...renderer.info.memory}};},
   playback(){return {time:playT,playing,end:T_END,recordedEnd:T_CAPTURE_END,policyEnds:POL.map(p=>p.playbackEndT)};},
   finishHighlight:finishHighlightState,
   results(){return PLAQUES.map((pl,index)=>({policy:index,label:pl.userData.resultLabel,visible:pl.visible,position:pl.position.toArray(),font:pl.material.map.userData?.font}));},
@@ -1333,12 +1439,15 @@ if(!IS_SCORING_EXAMPLE&&window.parent!==window){
   const stageWrap=document.querySelector('.stagewrap');let lastLayout='';
   const publishLayout=()=>{
     const mobile=replayMobileLayout(),height=Math.ceil(stageWrap.getBoundingClientRect().height);
-    const key=`${mobile}:${height}`;if(key===lastLayout)return;lastLayout=key;
-    parent.postMessage({type:'g1:replay-layout',mobile,height,replayGeneration:new URLSearchParams(location.search).get('replayGeneration')||''},location.origin);
+    const replayGeneration=window.__G1_REPLAY_GENERATION__??new URLSearchParams(location.search).get('replayGeneration')??'';
+    const key=`${replayGeneration}:${mobile}:${height}`;if(key===lastLayout)return;lastLayout=key;
+    parent.postMessage({type:'g1:replay-layout',mobile,height,replayGeneration},location.origin);
   };
-  new ResizeObserver(publishLayout).observe(stageWrap);
+  publishReplayLayout=publishLayout;
+  layoutObserver=new ResizeObserver(publishLayout);layoutObserver.observe(stageWrap);
   window.addEventListener('resize',publishLayout);publishLayout();
 }
+window.addEventListener('pagehide',event=>{if(!event.persisted)disposeReplay();});
 setBtn();updateCameraControls();if(REPLAY_AUTOPLAY&&!DATA.meta?.start_paused&&!matchMedia('(prefers-reduced-motion: reduce)').matches) setTimeout(play,500);
 
 }

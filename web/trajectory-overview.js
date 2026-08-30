@@ -64,6 +64,8 @@
   let selectionStatusTimer = null;
   let replayHudObserver = null;
   let replayGeneration = 0;
+  let replayDocumentGeneration = 0;
+  let rendererSelectionKey = '';
   let overviewGeneration = 0;
   let urlRestoreGeneration = 0;
   let urlScrollTimer = null;
@@ -438,6 +440,7 @@
     return {
       type: 'g1:set-policies',
       replayGeneration: replayGeneration,
+      replayDocumentGeneration: replayDocumentGeneration,
       policies: state.selectedPolicies.map(rendererPolicy),
       emphasizedCaptureId: captureIdForPolicy(state.selectedPolicies.find(policy => policyHash(policy) === state.emphasizedPolicyHash)),
     };
@@ -451,10 +454,11 @@
   function comparisonReplaySrc() {
     const payload = comparisonPayload();
     const params = new URLSearchParams({
-      scene: '20260830-7',
+      scene: '20260830-8',
       policies: payload.policies.map(policy => policy.captureId).join(','),
       emphasis: payload.emphasizedCaptureId || '',
       replayGeneration: String(replayGeneration),
+      replayDocumentGeneration: String(replayDocumentGeneration),
     });
     return `${COMPARISON_REPLAY_PATH}?${params}`;
   }
@@ -853,13 +857,16 @@
     replayPanel.hidden = false;
     document.body.classList.add('policy-replay-active');
     const currentReplay = replayFrame.getAttribute('src') || '';
-    const startsNewLoad = !currentReplay.startsWith(COMPARISON_REPLAY_PATH)
-      || new URL(currentReplay, location.href).searchParams.get('policies') !== state.selectedPolicies.map(selected => captureIdForPolicy(selected)).join(',');
+    const needsNewFrame = !currentReplay.startsWith(COMPARISON_REPLAY_PATH);
+    const selectionKey = state.selectedPolicies.map(selected => captureIdForPolicy(selected)).join(',');
+    const startsNewLoad = needsNewFrame || rendererSelectionKey !== selectionKey;
     if (startsNewLoad) replayGeneration += 1;
+    if (needsNewFrame) replayDocumentGeneration = replayGeneration;
+    rendererSelectionKey = selectionKey;
     const generation = replayGeneration;
     const replaySrc = comparisonReplaySrc();
     if (startsNewLoad && replayLoading) replayLoading.textContent = 'Loading selected policies…';
-    if (startsNewLoad) {
+    if (needsNewFrame) {
       replayHudObserver?.disconnect();
       replayHudObserver = null;
       replayPanel.classList.add('is-loading');
@@ -886,6 +893,7 @@
     // Navigating a surviving iframe creates joint browser-history entries.
     // An initial navigation on a fresh frame does not steal Back/Forward from
     // the parent trial URL. Keep the same DOM identity and loading contract.
+    try { replayFrame.contentWindow?.__G1_TRIAL__?.dispose(); } catch {}
     const replacement = replayFrame.cloneNode(false);
     replayFrame.parentElement.style.removeProperty('height');
     replayFrame.parentElement.style.removeProperty('aspect-ratio');
@@ -948,6 +956,7 @@
 
   function hideReplay({clearFrame = true} = {}) {
     replayGeneration += 1;
+    rendererSelectionKey = '';
     replayHudObserver?.disconnect();
     replayHudObserver = null;
     replayPanel.hidden = true;
@@ -1286,7 +1295,7 @@
   window.addEventListener('message', event => {
     if (event.source !== replayFrame?.contentWindow || event.origin !== location.origin) return;
     const messageGeneration = String(event.data?.replayGeneration ?? '');
-    if (event.data?.type === 'g1:policies-ready' && messageGeneration === String(replayGeneration)) {
+    if (event.data?.type === 'g1:policies-ready' && String(event.data.replayDocumentGeneration ?? '') === String(replayDocumentGeneration)) {
       postRendererSelection();
       return;
     }

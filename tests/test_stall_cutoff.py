@@ -74,8 +74,9 @@ assert.equal(end([stalled]),3);
 assert.equal(end([stalled,make(t=>Math.min(t,4))]),5,'all selected runners must have stopped');
 assert.equal(end([make(()=>0),make(()=>0)]),1,'entirely stationary selections stop at one second');
 """)
-    assert "const T_END=Math.max(...POL.map(p=>p.playbackEndT));" in SCENE
-    assert "const T_CAPTURE_END=Math.max(...POL.map(p=>p.freezeT));" in SCENE
+    assert "let T_END=Math.max(...POL.map(p=>p.playbackEndT));" in SCENE
+    assert "let T_CAPTURE_END=Math.max(...POL.map(p=>p.freezeT));" in SCENE
+    assert "T_CAPTURE_END=Math.max(...POL.map(policy=>policy.freezeT));T_END=Math.max(...POL.map(policy=>policy.playbackEndT));" in SCENE
     assert "STALL_WINDOW_S" not in SCENE
     assert "playT>=T_END ? '&#9654; Replay'" in SCENE
     assert "if(playT>=T_END) playT=0; playing=true;" in SCENE

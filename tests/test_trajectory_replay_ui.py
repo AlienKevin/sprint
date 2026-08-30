@@ -227,9 +227,10 @@ def test_trial_shell_keeps_policy_list_at_top_and_shortens_visible_labels() -> N
     shell = (ROOT / "web/renderers/g1-100-metres/render_trial_comparison.py").read_text()
     # This shell-only rule comes after the shared template's narrow-screen rule.
     assert '.hud:has(.clock-status:not(:empty)) .lanes{top:12px}' in shell
-    assert '<span class="nm">#${{policy.policy_number}}</span>' in shell
-    assert 'aria-label="Follow ${{name}}"' in shell
-    assert 'aria-label="Remove ${{name}}"' in shell
+    runtime = (ROOT / "web/renderers/g1-100-metres/trial-comparison.js").read_text()
+    assert '<span class="nm">#${policy.policy_number}</span>' in runtime
+    assert 'aria-label="Follow ${name}"' in runtime
+    assert 'aria-label="Remove ${name}"' in runtime
 
 
 def test_mobile_comparison_results_use_flow_layout_and_report_actual_height() -> None:
@@ -241,7 +242,7 @@ def test_mobile_comparison_results_use_flow_layout_and_report_actual_height() ->
     assert 'html.replay-mobile .replay-controls{order:1;' in template
     assert "if(!IS_COMPARISON)return false" in scene
     assert "width=window.parent.innerWidth" in scene
-    assert "new ResizeObserver(publishLayout).observe(stageWrap)" in scene
+    assert "layoutObserver=new ResizeObserver(publishLayout);layoutObserver.observe(stageWrap)" in scene
     assert "if(key===lastLayout)return" in scene
     assert "const replayFrames=[$('.model-race-frame iframe'),$('#readout-replay')].filter(Boolean)" in app
     assert "event.source===candidate.contentWindow" in app
@@ -256,7 +257,7 @@ def test_mobile_comparison_results_use_flow_layout_and_report_actual_height() ->
 def test_replay_messages_require_current_generation() -> None:
     assert "const messageGeneration = String(event.data?.replayGeneration ?? '');" in OVERVIEW
     assert "messageGeneration !== String(replayGeneration)" in OVERVIEW
-    assert "messageGeneration === String(replayGeneration)" in OVERVIEW
+    assert "String(event.data.replayDocumentGeneration ?? '') === String(replayDocumentGeneration)" in OVERVIEW
 
 
 def test_trajectory_overview_javascript_parses() -> None:

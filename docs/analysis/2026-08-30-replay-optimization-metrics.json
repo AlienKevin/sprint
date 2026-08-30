@@ -1,0 +1,5334 @@
+{
+  "schema": 2,
+  "environment": "Chromium152 realWebGL ANGLE SwiftShader, shared VM",
+  "viewport": {
+    "width": 1280,
+    "height": 900,
+    "dpr": 1
+  },
+  "encoding": "Brotli quality5",
+  "stages": [
+    {
+      "stage": "baseline",
+      "network": "unthrottled loopback",
+      "started": "2026-08-30T20:17:27.304Z",
+      "finished": "2026-08-30T20:19:30.930Z",
+      "medians": {
+        "fallen/cold": {
+          "readyMs": 4538.5,
+          "wireBytes": 2560926,
+          "requests": 15
+        },
+        "fallen/add": {
+          "readyMs": 1600.3,
+          "wireBytes": 1948817,
+          "requests": 3
+        },
+        "fallen/remove": {
+          "readyMs": 1745.8,
+          "wireBytes": 1764634,
+          "requests": 2
+        },
+        "fallen/readd": {
+          "readyMs": 2051.4,
+          "wireBytes": 1764634,
+          "requests": 3
+        },
+        "moving/cold": {
+          "readyMs": 2335.6,
+          "wireBytes": 2465555,
+          "requests": 16
+        },
+        "moving/add": {
+          "readyMs": 1589.2,
+          "wireBytes": 2118472,
+          "requests": 3
+        },
+        "moving/remove": {
+          "readyMs": 1411.8,
+          "wireBytes": 1764634,
+          "requests": 2
+        },
+        "moving/readd": {
+          "readyMs": 1698.1,
+          "wireBytes": 1764634,
+          "requests": 3
+        }
+      },
+      "samples": [
+        {
+          "name": "fallen/0/cold",
+          "readyMs": 2988.8,
+          "wireBytes": 2560926,
+          "requests": 15,
+          "zeroWireRequests": 0,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/0/add",
+          "readyMs": 1600.3,
+          "wireBytes": 1948817,
+          "requests": 3,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/0/remove",
+          "readyMs": 1736.3,
+          "wireBytes": 1764634,
+          "requests": 2,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/0/readd",
+          "readyMs": 2270,
+          "wireBytes": 1764634,
+          "requests": 3,
+          "zeroWireRequests": 2,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/1/cold",
+          "readyMs": 5139.8,
+          "wireBytes": 2560926,
+          "requests": 15,
+          "zeroWireRequests": 0,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/1/add",
+          "readyMs": 2340.1,
+          "wireBytes": 1948817,
+          "requests": 3,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/1/remove",
+          "readyMs": 1745.8,
+          "wireBytes": 1764634,
+          "requests": 2,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/1/readd",
+          "readyMs": 1884,
+          "wireBytes": 1764634,
+          "requests": 3,
+          "zeroWireRequests": 2,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/2/cold",
+          "readyMs": 4538.5,
+          "wireBytes": 2560923,
+          "requests": 15,
+          "zeroWireRequests": 0,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/2/add",
+          "readyMs": 1409.2,
+          "wireBytes": 1948817,
+          "requests": 3,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/2/remove",
+          "readyMs": 1966.1,
+          "wireBytes": 1764634,
+          "requests": 2,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/2/readd",
+          "readyMs": 2051.4,
+          "wireBytes": 1764634,
+          "requests": 3,
+          "zeroWireRequests": 2,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/0/cold",
+          "readyMs": 2335.6,
+          "wireBytes": 2465555,
+          "requests": 16,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/0/add",
+          "readyMs": 1827.5,
+          "wireBytes": 2118472,
+          "requests": 3,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/0/remove",
+          "readyMs": 2152.7,
+          "wireBytes": 1764634,
+          "requests": 2,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/0/readd",
+          "readyMs": 1609.8,
+          "wireBytes": 1764634,
+          "requests": 3,
+          "zeroWireRequests": 2,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/1/cold",
+          "readyMs": 2924.6,
+          "wireBytes": 2465553,
+          "requests": 16,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/1/add",
+          "readyMs": 1589.2,
+          "wireBytes": 2118472,
+          "requests": 3,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/1/remove",
+          "readyMs": 1411.8,
+          "wireBytes": 1764634,
+          "requests": 2,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/1/readd",
+          "readyMs": 1698.1,
+          "wireBytes": 1764634,
+          "requests": 3,
+          "zeroWireRequests": 2,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/2/cold",
+          "readyMs": 1661.5,
+          "wireBytes": 2465573,
+          "requests": 16,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/2/add",
+          "readyMs": 1549.2,
+          "wireBytes": 2118472,
+          "requests": 3,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/2/remove",
+          "readyMs": 1405.4,
+          "wireBytes": 1764634,
+          "requests": 2,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/2/readd",
+          "readyMs": 1811.7,
+          "wireBytes": 1764634,
+          "requests": 3,
+          "zeroWireRequests": 2,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": []
+        }
+      ]
+    },
+    {
+      "stage": "baseline-4mbps",
+      "network": "4Mbps/40ms",
+      "started": "2026-08-30T20:19:41.418Z",
+      "finished": "2026-08-30T20:23:19.167Z",
+      "medians": {
+        "fallen/cold": {
+          "readyMs": 10424.7,
+          "wireBytes": 2560930,
+          "requests": 15
+        },
+        "fallen/add": {
+          "readyMs": 6774.5,
+          "wireBytes": 1948817,
+          "requests": 3
+        },
+        "fallen/remove": {
+          "readyMs": 5580.7,
+          "wireBytes": 1764634,
+          "requests": 2
+        },
+        "fallen/readd": {
+          "readyMs": 4941.9,
+          "wireBytes": 1764634,
+          "requests": 3
+        },
+        "moving/cold": {
+          "readyMs": 7157.4,
+          "wireBytes": 2465565,
+          "requests": 16
+        },
+        "moving/add": {
+          "readyMs": 5728.9,
+          "wireBytes": 2118472,
+          "requests": 3
+        },
+        "moving/remove": {
+          "readyMs": 4982,
+          "wireBytes": 1764634,
+          "requests": 2
+        },
+        "moving/readd": {
+          "readyMs": 4966.2,
+          "wireBytes": 1764634,
+          "requests": 3
+        }
+      },
+      "samples": [
+        {
+          "name": "fallen/0/cold",
+          "readyMs": 11396.6,
+          "wireBytes": 2560927,
+          "requests": 15,
+          "zeroWireRequests": 0,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/0/add",
+          "readyMs": 7139.9,
+          "wireBytes": 1948817,
+          "requests": 3,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/0/remove",
+          "readyMs": 5587.1,
+          "wireBytes": 1764634,
+          "requests": 2,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/0/readd",
+          "readyMs": 5158.8,
+          "wireBytes": 1764634,
+          "requests": 3,
+          "zeroWireRequests": 2,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/1/cold",
+          "readyMs": 10424.7,
+          "wireBytes": 2560930,
+          "requests": 15,
+          "zeroWireRequests": 0,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/1/add",
+          "readyMs": 6012.7,
+          "wireBytes": 1948817,
+          "requests": 3,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/1/remove",
+          "readyMs": 5580.7,
+          "wireBytes": 1764634,
+          "requests": 2,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/1/readd",
+          "readyMs": 4941.9,
+          "wireBytes": 1764634,
+          "requests": 3,
+          "zeroWireRequests": 2,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/2/cold",
+          "readyMs": 7759.8,
+          "wireBytes": 2560941,
+          "requests": 15,
+          "zeroWireRequests": 0,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/2/add",
+          "readyMs": 6774.5,
+          "wireBytes": 1948817,
+          "requests": 3,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/2/remove",
+          "readyMs": 5203.3,
+          "wireBytes": 1764634,
+          "requests": 2,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/2/readd",
+          "readyMs": 4770.3,
+          "wireBytes": 1764634,
+          "requests": 3,
+          "zeroWireRequests": 2,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/0/cold",
+          "readyMs": 6837.7,
+          "wireBytes": 2465565,
+          "requests": 16,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/0/add",
+          "readyMs": 5661,
+          "wireBytes": 2118472,
+          "requests": 3,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/0/remove",
+          "readyMs": 5093.9,
+          "wireBytes": 1764634,
+          "requests": 2,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/0/readd",
+          "readyMs": 4705.6,
+          "wireBytes": 1764634,
+          "requests": 3,
+          "zeroWireRequests": 2,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/1/cold",
+          "readyMs": 7157.4,
+          "wireBytes": 2465559,
+          "requests": 16,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/1/add",
+          "readyMs": 5760.1,
+          "wireBytes": 2118472,
+          "requests": 3,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/1/remove",
+          "readyMs": 4934.9,
+          "wireBytes": 1764634,
+          "requests": 2,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/1/readd",
+          "readyMs": 4966.2,
+          "wireBytes": 1764634,
+          "requests": 3,
+          "zeroWireRequests": 2,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/2/cold",
+          "readyMs": 7349.8,
+          "wireBytes": 2465567,
+          "requests": 16,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/2/add",
+          "readyMs": 5728.9,
+          "wireBytes": 2118472,
+          "requests": 3,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/2/remove",
+          "readyMs": 4982,
+          "wireBytes": 1764634,
+          "requests": 2,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/2/readd",
+          "readyMs": 5237.2,
+          "wireBytes": 1764634,
+          "requests": 3,
+          "zeroWireRequests": 2,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": []
+        }
+      ]
+    },
+    {
+      "stage": "priority1",
+      "network": "unthrottled loopback",
+      "started": "2026-08-30T20:27:17.553Z",
+      "finished": "2026-08-30T20:29:22.492Z",
+      "medians": {
+        "fallen/cold": {
+          "readyMs": 5384.4,
+          "wireBytes": 2560299,
+          "requests": 17
+        },
+        "fallen/add": {
+          "readyMs": 2123.4,
+          "wireBytes": 216179,
+          "requests": 5
+        },
+        "fallen/remove": {
+          "readyMs": 1620,
+          "wireBytes": 31996,
+          "requests": 4
+        },
+        "fallen/readd": {
+          "readyMs": 1648.7,
+          "wireBytes": 31996,
+          "requests": 5
+        },
+        "moving/cold": {
+          "readyMs": 2005.3,
+          "wireBytes": 2464934,
+          "requests": 18
+        },
+        "moving/add": {
+          "readyMs": 1511,
+          "wireBytes": 385834,
+          "requests": 5
+        },
+        "moving/remove": {
+          "readyMs": 1423.8,
+          "wireBytes": 31996,
+          "requests": 4
+        },
+        "moving/readd": {
+          "readyMs": 1498,
+          "wireBytes": 31996,
+          "requests": 5
+        }
+      },
+      "samples": [
+        {
+          "name": "fallen/0/cold",
+          "readyMs": 2385.2,
+          "wireBytes": 2560297,
+          "requests": 17,
+          "zeroWireRequests": 0,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/0/add",
+          "readyMs": 1637.1,
+          "wireBytes": 216179,
+          "requests": 5,
+          "zeroWireRequests": 3,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/0/remove",
+          "readyMs": 1620,
+          "wireBytes": 31996,
+          "requests": 4,
+          "zeroWireRequests": 3,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/0/readd",
+          "readyMs": 1505,
+          "wireBytes": 31996,
+          "requests": 5,
+          "zeroWireRequests": 4,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/1/cold",
+          "readyMs": 5466.6,
+          "wireBytes": 2560299,
+          "requests": 17,
+          "zeroWireRequests": 0,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/1/add",
+          "readyMs": 2123.4,
+          "wireBytes": 216179,
+          "requests": 5,
+          "zeroWireRequests": 3,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/1/remove",
+          "readyMs": 1552.5,
+          "wireBytes": 31996,
+          "requests": 4,
+          "zeroWireRequests": 3,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/1/readd",
+          "readyMs": 2050.4,
+          "wireBytes": 31996,
+          "requests": 5,
+          "zeroWireRequests": 4,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/2/cold",
+          "readyMs": 5384.4,
+          "wireBytes": 2560302,
+          "requests": 17,
+          "zeroWireRequests": 0,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/2/add",
+          "readyMs": 2439.8,
+          "wireBytes": 216179,
+          "requests": 5,
+          "zeroWireRequests": 3,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/2/remove",
+          "readyMs": 1634.6,
+          "wireBytes": 31996,
+          "requests": 4,
+          "zeroWireRequests": 3,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/2/readd",
+          "readyMs": 1648.7,
+          "wireBytes": 31996,
+          "requests": 5,
+          "zeroWireRequests": 4,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/0/cold",
+          "readyMs": 2333.6,
+          "wireBytes": 2464934,
+          "requests": 18,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/0/add",
+          "readyMs": 1924.5,
+          "wireBytes": 385834,
+          "requests": 5,
+          "zeroWireRequests": 3,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/0/remove",
+          "readyMs": 1423.8,
+          "wireBytes": 31996,
+          "requests": 4,
+          "zeroWireRequests": 3,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/0/readd",
+          "readyMs": 1498,
+          "wireBytes": 31996,
+          "requests": 5,
+          "zeroWireRequests": 4,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/1/cold",
+          "readyMs": 1719.1,
+          "wireBytes": 2464934,
+          "requests": 18,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/1/add",
+          "readyMs": 1442.1,
+          "wireBytes": 385834,
+          "requests": 5,
+          "zeroWireRequests": 3,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/1/remove",
+          "readyMs": 1457.9,
+          "wireBytes": 31996,
+          "requests": 4,
+          "zeroWireRequests": 3,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/1/readd",
+          "readyMs": 1609.7,
+          "wireBytes": 31996,
+          "requests": 5,
+          "zeroWireRequests": 4,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/2/cold",
+          "readyMs": 2005.3,
+          "wireBytes": 2464935,
+          "requests": 18,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/2/add",
+          "readyMs": 1511,
+          "wireBytes": 385834,
+          "requests": 5,
+          "zeroWireRequests": 3,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/2/remove",
+          "readyMs": 1189.8,
+          "wireBytes": 31996,
+          "requests": 4,
+          "zeroWireRequests": 3,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/2/readd",
+          "readyMs": 1431.5,
+          "wireBytes": 31996,
+          "requests": 5,
+          "zeroWireRequests": 4,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": []
+        }
+      ]
+    },
+    {
+      "stage": "priority1-4mbps",
+      "network": "4Mbps/40ms",
+      "started": "2026-08-30T20:29:35.890Z",
+      "finished": "2026-08-30T20:32:12.736Z",
+      "medians": {
+        "fallen/cold": {
+          "readyMs": 7570.7,
+          "wireBytes": 2560302,
+          "requests": 17
+        },
+        "fallen/add": {
+          "readyMs": 1820.9,
+          "wireBytes": 216179,
+          "requests": 5
+        },
+        "fallen/remove": {
+          "readyMs": 1658,
+          "wireBytes": 31996,
+          "requests": 4
+        },
+        "fallen/readd": {
+          "readyMs": 1754.8,
+          "wireBytes": 31996,
+          "requests": 5
+        },
+        "moving/cold": {
+          "readyMs": 6783.1,
+          "wireBytes": 2464940,
+          "requests": 18
+        },
+        "moving/add": {
+          "readyMs": 2327.4,
+          "wireBytes": 385834,
+          "requests": 5
+        },
+        "moving/remove": {
+          "readyMs": 1621.9,
+          "wireBytes": 31996,
+          "requests": 4
+        },
+        "moving/readd": {
+          "readyMs": 1741,
+          "wireBytes": 31996,
+          "requests": 5
+        }
+      },
+      "samples": [
+        {
+          "name": "fallen/0/cold",
+          "readyMs": 7325.8,
+          "wireBytes": 2560302,
+          "requests": 17,
+          "zeroWireRequests": 0,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/0/add",
+          "readyMs": 2526,
+          "wireBytes": 216179,
+          "requests": 5,
+          "zeroWireRequests": 3,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/0/remove",
+          "readyMs": 1552.4,
+          "wireBytes": 31996,
+          "requests": 4,
+          "zeroWireRequests": 3,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/0/readd",
+          "readyMs": 1754.8,
+          "wireBytes": 31996,
+          "requests": 5,
+          "zeroWireRequests": 4,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/1/cold",
+          "readyMs": 10018.5,
+          "wireBytes": 2560303,
+          "requests": 17,
+          "zeroWireRequests": 0,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/1/add",
+          "readyMs": 1820.9,
+          "wireBytes": 216179,
+          "requests": 5,
+          "zeroWireRequests": 3,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/1/remove",
+          "readyMs": 1658,
+          "wireBytes": 31996,
+          "requests": 4,
+          "zeroWireRequests": 3,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/1/readd",
+          "readyMs": 1614,
+          "wireBytes": 31996,
+          "requests": 5,
+          "zeroWireRequests": 4,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/2/cold",
+          "readyMs": 7570.7,
+          "wireBytes": 2560297,
+          "requests": 17,
+          "zeroWireRequests": 0,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/2/add",
+          "readyMs": 1748.6,
+          "wireBytes": 216179,
+          "requests": 5,
+          "zeroWireRequests": 3,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/2/remove",
+          "readyMs": 3828,
+          "wireBytes": 31996,
+          "requests": 4,
+          "zeroWireRequests": 3,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "fallen/2/readd",
+          "readyMs": 1956,
+          "wireBytes": 31996,
+          "requests": 5,
+          "zeroWireRequests": 4,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/0/cold",
+          "readyMs": 6973.2,
+          "wireBytes": 2464946,
+          "requests": 18,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/0/add",
+          "readyMs": 2336.2,
+          "wireBytes": 385834,
+          "requests": 5,
+          "zeroWireRequests": 3,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/0/remove",
+          "readyMs": 1394.8,
+          "wireBytes": 31996,
+          "requests": 4,
+          "zeroWireRequests": 3,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/0/readd",
+          "readyMs": 1865.1,
+          "wireBytes": 31996,
+          "requests": 5,
+          "zeroWireRequests": 4,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/1/cold",
+          "readyMs": 6777.8,
+          "wireBytes": 2464937,
+          "requests": 18,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/1/add",
+          "readyMs": 1905,
+          "wireBytes": 385834,
+          "requests": 5,
+          "zeroWireRequests": 3,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/1/remove",
+          "readyMs": 1621.9,
+          "wireBytes": 31996,
+          "requests": 4,
+          "zeroWireRequests": 3,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/1/readd",
+          "readyMs": 1542.1,
+          "wireBytes": 31996,
+          "requests": 5,
+          "zeroWireRequests": 4,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/2/cold",
+          "readyMs": 6783.1,
+          "wireBytes": 2464940,
+          "requests": 18,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/2/add",
+          "readyMs": 2327.4,
+          "wireBytes": 385834,
+          "requests": 5,
+          "zeroWireRequests": 3,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/2/remove",
+          "readyMs": 1644.3,
+          "wireBytes": 31996,
+          "requests": 4,
+          "zeroWireRequests": 3,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": []
+        },
+        {
+          "name": "moving/2/readd",
+          "readyMs": 1741,
+          "wireBytes": 31996,
+          "requests": 5,
+          "zeroWireRequests": 4,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": []
+        }
+      ]
+    },
+    {
+      "stage": "priority3",
+      "network": "unthrottled loopback",
+      "started": "2026-08-30T20:58:43.298Z",
+      "finished": "2026-08-30T20:59:38.807Z",
+      "medians": {
+        "fallen/cold": {
+          "readyMs": 5216.7,
+          "wireBytes": 2563750,
+          "requests": 17
+        },
+        "fallen/add": {
+          "readyMs": 178.6,
+          "wireBytes": 184183,
+          "requests": 1
+        },
+        "fallen/remove": {
+          "readyMs": 587.5,
+          "wireBytes": 0,
+          "requests": 0
+        },
+        "fallen/readd": {
+          "readyMs": 946.7,
+          "wireBytes": 0,
+          "requests": 0
+        },
+        "moving/cold": {
+          "readyMs": 1705.8,
+          "wireBytes": 2468389,
+          "requests": 18
+        },
+        "moving/add": {
+          "readyMs": 865.4,
+          "wireBytes": 353838,
+          "requests": 1
+        },
+        "moving/remove": {
+          "readyMs": 21.7,
+          "wireBytes": 0,
+          "requests": 0
+        },
+        "moving/readd": {
+          "readyMs": 706.2,
+          "wireBytes": 0,
+          "requests": 0
+        }
+      },
+      "samples": [
+        {
+          "name": "fallen/0/cold",
+          "readyMs": 6217.3,
+          "wireBytes": 2563748,
+          "requests": 17,
+          "zeroWireRequests": 0,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 1,
+            "bytes": 4829704,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 0,
+            "fetches": 1,
+            "packs": 1,
+            "activeEntries": 1,
+            "activeBytes": 4829704,
+            "sceneBuilds": 1,
+            "generation": "2",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 1,
+            "disposedActors": 0,
+            "gpu": {
+              "geometries": 37,
+              "textures": 5
+            }
+          }
+        },
+        {
+          "name": "fallen/0/add",
+          "readyMs": 164.8,
+          "wireBytes": 184183,
+          "requests": 1,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 9659408,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 1,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 2,
+            "activeBytes": 9659408,
+            "sceneBuilds": 1,
+            "generation": "3",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 2,
+            "disposedActors": 0,
+            "gpu": {
+              "geometries": 37,
+              "textures": 6
+            }
+          }
+        },
+        {
+          "name": "fallen/0/remove",
+          "readyMs": 678.5,
+          "wireBytes": 0,
+          "requests": 0,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 9659408,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 2,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 1,
+            "activeBytes": 4829704,
+            "sceneBuilds": 1,
+            "generation": "4",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 1,
+            "disposedActors": 1,
+            "gpu": {
+              "geometries": 37,
+              "textures": 5
+            }
+          }
+        },
+        {
+          "name": "fallen/0/readd",
+          "readyMs": 946.7,
+          "wireBytes": 0,
+          "requests": 0,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 9659408,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 4,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 2,
+            "activeBytes": 9659408,
+            "sceneBuilds": 1,
+            "generation": "5",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 2,
+            "disposedActors": 1,
+            "gpu": {
+              "geometries": 37,
+              "textures": 6
+            }
+          }
+        },
+        {
+          "name": "fallen/1/cold",
+          "readyMs": 3585.7,
+          "wireBytes": 2563750,
+          "requests": 17,
+          "zeroWireRequests": 0,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 1,
+            "bytes": 4829704,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 0,
+            "fetches": 1,
+            "packs": 1,
+            "activeEntries": 1,
+            "activeBytes": 4829704,
+            "sceneBuilds": 1,
+            "generation": "2",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 1,
+            "disposedActors": 0,
+            "gpu": {
+              "geometries": 37,
+              "textures": 5
+            }
+          }
+        },
+        {
+          "name": "fallen/1/add",
+          "readyMs": 1122.1,
+          "wireBytes": 184183,
+          "requests": 1,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 9659408,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 1,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 2,
+            "activeBytes": 9659408,
+            "sceneBuilds": 1,
+            "generation": "3",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 2,
+            "disposedActors": 0,
+            "gpu": {
+              "geometries": 37,
+              "textures": 6
+            }
+          }
+        },
+        {
+          "name": "fallen/1/remove",
+          "readyMs": 563,
+          "wireBytes": 0,
+          "requests": 0,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 9659408,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 2,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 1,
+            "activeBytes": 4829704,
+            "sceneBuilds": 1,
+            "generation": "4",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 1,
+            "disposedActors": 1,
+            "gpu": {
+              "geometries": 37,
+              "textures": 5
+            }
+          }
+        },
+        {
+          "name": "fallen/1/readd",
+          "readyMs": 96.9,
+          "wireBytes": 0,
+          "requests": 0,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 9659408,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 4,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 2,
+            "activeBytes": 9659408,
+            "sceneBuilds": 1,
+            "generation": "5",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 2,
+            "disposedActors": 1,
+            "gpu": {
+              "geometries": 37,
+              "textures": 6
+            }
+          }
+        },
+        {
+          "name": "fallen/2/cold",
+          "readyMs": 5216.7,
+          "wireBytes": 2563750,
+          "requests": 17,
+          "zeroWireRequests": 0,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 1,
+            "bytes": 4829704,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 0,
+            "fetches": 1,
+            "packs": 1,
+            "activeEntries": 1,
+            "activeBytes": 4829704,
+            "sceneBuilds": 1,
+            "generation": "2",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 1,
+            "disposedActors": 0,
+            "gpu": {
+              "geometries": 37,
+              "textures": 5
+            }
+          }
+        },
+        {
+          "name": "fallen/2/add",
+          "readyMs": 178.6,
+          "wireBytes": 184183,
+          "requests": 1,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 9659408,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 1,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 2,
+            "activeBytes": 9659408,
+            "sceneBuilds": 1,
+            "generation": "3",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 2,
+            "disposedActors": 0,
+            "gpu": {
+              "geometries": 37,
+              "textures": 6
+            }
+          }
+        },
+        {
+          "name": "fallen/2/remove",
+          "readyMs": 587.5,
+          "wireBytes": 0,
+          "requests": 0,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 9659408,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 2,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 1,
+            "activeBytes": 4829704,
+            "sceneBuilds": 1,
+            "generation": "4",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 1,
+            "disposedActors": 1,
+            "gpu": {
+              "geometries": 37,
+              "textures": 5
+            }
+          }
+        },
+        {
+          "name": "fallen/2/readd",
+          "readyMs": 1051.1,
+          "wireBytes": 0,
+          "requests": 0,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 9659408,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 4,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 2,
+            "activeBytes": 9659408,
+            "sceneBuilds": 1,
+            "generation": "5",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 2,
+            "disposedActors": 1,
+            "gpu": {
+              "geometries": 37,
+              "textures": 6
+            }
+          }
+        },
+        {
+          "name": "moving/0/cold",
+          "readyMs": 2542.8,
+          "wireBytes": 2468385,
+          "requests": 18,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 1,
+            "bytes": 806488,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 0,
+            "fetches": 1,
+            "packs": 1,
+            "activeEntries": 1,
+            "activeBytes": 806488,
+            "sceneBuilds": 1,
+            "generation": "2",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 1,
+            "disposedActors": 0,
+            "gpu": {
+              "geometries": 37,
+              "textures": 5
+            }
+          }
+        },
+        {
+          "name": "moving/0/add",
+          "readyMs": 920.5,
+          "wireBytes": 353838,
+          "requests": 1,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 1661216,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 1,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 2,
+            "activeBytes": 1661216,
+            "sceneBuilds": 1,
+            "generation": "3",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 2,
+            "disposedActors": 0,
+            "gpu": {
+              "geometries": 37,
+              "textures": 6
+            }
+          }
+        },
+        {
+          "name": "moving/0/remove",
+          "readyMs": 21.7,
+          "wireBytes": 0,
+          "requests": 0,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 1661216,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 2,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 1,
+            "activeBytes": 806488,
+            "sceneBuilds": 1,
+            "generation": "4",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 1,
+            "disposedActors": 1,
+            "gpu": {
+              "geometries": 37,
+              "textures": 5
+            }
+          }
+        },
+        {
+          "name": "moving/0/readd",
+          "readyMs": 29.1,
+          "wireBytes": 0,
+          "requests": 0,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 1661216,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 4,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 2,
+            "activeBytes": 1661216,
+            "sceneBuilds": 1,
+            "generation": "5",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 2,
+            "disposedActors": 1,
+            "gpu": {
+              "geometries": 37,
+              "textures": 6
+            }
+          }
+        },
+        {
+          "name": "moving/1/cold",
+          "readyMs": 1705.8,
+          "wireBytes": 2468389,
+          "requests": 18,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 1,
+            "bytes": 806488,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 0,
+            "fetches": 1,
+            "packs": 1,
+            "activeEntries": 1,
+            "activeBytes": 806488,
+            "sceneBuilds": 1,
+            "generation": "2",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 1,
+            "disposedActors": 0,
+            "gpu": {
+              "geometries": 37,
+              "textures": 5
+            }
+          }
+        },
+        {
+          "name": "moving/1/add",
+          "readyMs": 48.8,
+          "wireBytes": 353838,
+          "requests": 1,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 1661216,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 1,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 2,
+            "activeBytes": 1661216,
+            "sceneBuilds": 1,
+            "generation": "3",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 2,
+            "disposedActors": 0,
+            "gpu": {
+              "geometries": 37,
+              "textures": 6
+            }
+          }
+        },
+        {
+          "name": "moving/1/remove",
+          "readyMs": 23.8,
+          "wireBytes": 0,
+          "requests": 0,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 1661216,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 2,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 1,
+            "activeBytes": 806488,
+            "sceneBuilds": 1,
+            "generation": "4",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 1,
+            "disposedActors": 1,
+            "gpu": {
+              "geometries": 37,
+              "textures": 5
+            }
+          }
+        },
+        {
+          "name": "moving/1/readd",
+          "readyMs": 706.2,
+          "wireBytes": 0,
+          "requests": 0,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 1661216,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 4,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 2,
+            "activeBytes": 1661216,
+            "sceneBuilds": 1,
+            "generation": "5",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 2,
+            "disposedActors": 1,
+            "gpu": {
+              "geometries": 37,
+              "textures": 6
+            }
+          }
+        },
+        {
+          "name": "moving/2/cold",
+          "readyMs": 1690.7,
+          "wireBytes": 2468389,
+          "requests": 18,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 1,
+            "bytes": 806488,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 0,
+            "fetches": 1,
+            "packs": 1,
+            "activeEntries": 1,
+            "activeBytes": 806488,
+            "sceneBuilds": 1,
+            "generation": "2",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 1,
+            "disposedActors": 0,
+            "gpu": {
+              "geometries": 37,
+              "textures": 5
+            }
+          }
+        },
+        {
+          "name": "moving/2/add",
+          "readyMs": 865.4,
+          "wireBytes": 353838,
+          "requests": 1,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 1661216,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 1,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 2,
+            "activeBytes": 1661216,
+            "sceneBuilds": 1,
+            "generation": "3",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 2,
+            "disposedActors": 0,
+            "gpu": {
+              "geometries": 37,
+              "textures": 6
+            }
+          }
+        },
+        {
+          "name": "moving/2/remove",
+          "readyMs": 21.6,
+          "wireBytes": 0,
+          "requests": 0,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 1661216,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 2,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 1,
+            "activeBytes": 806488,
+            "sceneBuilds": 1,
+            "generation": "4",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 1,
+            "disposedActors": 1,
+            "gpu": {
+              "geometries": 37,
+              "textures": 5
+            }
+          }
+        },
+        {
+          "name": "moving/2/readd",
+          "readyMs": 992.9,
+          "wireBytes": 0,
+          "requests": 0,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 1661216,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 4,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 2,
+            "activeBytes": 1661216,
+            "sceneBuilds": 1,
+            "generation": "5",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 2,
+            "disposedActors": 1,
+            "gpu": {
+              "geometries": 37,
+              "textures": 6
+            }
+          }
+        }
+      ]
+    },
+    {
+      "stage": "priority3-4mbps",
+      "network": "4Mbps/40ms",
+      "started": "2026-08-30T20:59:47.982Z",
+      "finished": "2026-08-30T21:01:18.650Z",
+      "medians": {
+        "fallen/cold": {
+          "readyMs": 7801.3,
+          "wireBytes": 2563755,
+          "requests": 17
+        },
+        "fallen/add": {
+          "readyMs": 518,
+          "wireBytes": 184183,
+          "requests": 1
+        },
+        "fallen/remove": {
+          "readyMs": 500.8,
+          "wireBytes": 0,
+          "requests": 0
+        },
+        "fallen/readd": {
+          "readyMs": 49.9,
+          "wireBytes": 0,
+          "requests": 0
+        },
+        "moving/cold": {
+          "readyMs": 7258.2,
+          "wireBytes": 2468391,
+          "requests": 18
+        },
+        "moving/add": {
+          "readyMs": 814.9,
+          "wireBytes": 353838,
+          "requests": 1
+        },
+        "moving/remove": {
+          "readyMs": 586.5,
+          "wireBytes": 0,
+          "requests": 0
+        },
+        "moving/readd": {
+          "readyMs": 898.5,
+          "wireBytes": 0,
+          "requests": 0
+        }
+      },
+      "samples": [
+        {
+          "name": "fallen/0/cold",
+          "readyMs": 7801.3,
+          "wireBytes": 2563749,
+          "requests": 17,
+          "zeroWireRequests": 0,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 1,
+            "bytes": 4829704,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 0,
+            "fetches": 1,
+            "packs": 1,
+            "activeEntries": 1,
+            "activeBytes": 4829704,
+            "sceneBuilds": 1,
+            "generation": "2",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 1,
+            "disposedActors": 0,
+            "gpu": {
+              "geometries": 37,
+              "textures": 5
+            }
+          }
+        },
+        {
+          "name": "fallen/0/add",
+          "readyMs": 525.9,
+          "wireBytes": 184183,
+          "requests": 1,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 9659408,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 1,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 2,
+            "activeBytes": 9659408,
+            "sceneBuilds": 1,
+            "generation": "3",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 2,
+            "disposedActors": 0,
+            "gpu": {
+              "geometries": 37,
+              "textures": 6
+            }
+          }
+        },
+        {
+          "name": "fallen/0/remove",
+          "readyMs": 425.7,
+          "wireBytes": 0,
+          "requests": 0,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 9659408,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 2,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 1,
+            "activeBytes": 4829704,
+            "sceneBuilds": 1,
+            "generation": "4",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 1,
+            "disposedActors": 1,
+            "gpu": {
+              "geometries": 37,
+              "textures": 5
+            }
+          }
+        },
+        {
+          "name": "fallen/0/readd",
+          "readyMs": 802.4,
+          "wireBytes": 0,
+          "requests": 0,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 9659408,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 4,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 2,
+            "activeBytes": 9659408,
+            "sceneBuilds": 1,
+            "generation": "5",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 2,
+            "disposedActors": 1,
+            "gpu": {
+              "geometries": 37,
+              "textures": 6
+            }
+          }
+        },
+        {
+          "name": "fallen/1/cold",
+          "readyMs": 7761.5,
+          "wireBytes": 2563755,
+          "requests": 17,
+          "zeroWireRequests": 0,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 1,
+            "bytes": 4829704,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 0,
+            "fetches": 1,
+            "packs": 1,
+            "activeEntries": 1,
+            "activeBytes": 4829704,
+            "sceneBuilds": 1,
+            "generation": "2",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 1,
+            "disposedActors": 0,
+            "gpu": {
+              "geometries": 37,
+              "textures": 5
+            }
+          }
+        },
+        {
+          "name": "fallen/1/add",
+          "readyMs": 518,
+          "wireBytes": 184183,
+          "requests": 1,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 9659408,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 1,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 2,
+            "activeBytes": 9659408,
+            "sceneBuilds": 1,
+            "generation": "3",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 2,
+            "disposedActors": 0,
+            "gpu": {
+              "geometries": 37,
+              "textures": 6
+            }
+          }
+        },
+        {
+          "name": "fallen/1/remove",
+          "readyMs": 500.8,
+          "wireBytes": 0,
+          "requests": 0,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 9659408,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 2,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 1,
+            "activeBytes": 4829704,
+            "sceneBuilds": 1,
+            "generation": "4",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 1,
+            "disposedActors": 1,
+            "gpu": {
+              "geometries": 37,
+              "textures": 5
+            }
+          }
+        },
+        {
+          "name": "fallen/1/readd",
+          "readyMs": 46,
+          "wireBytes": 0,
+          "requests": 0,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 9659408,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 4,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 2,
+            "activeBytes": 9659408,
+            "sceneBuilds": 1,
+            "generation": "5",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 2,
+            "disposedActors": 1,
+            "gpu": {
+              "geometries": 37,
+              "textures": 6
+            }
+          }
+        },
+        {
+          "name": "fallen/2/cold",
+          "readyMs": 8141.5,
+          "wireBytes": 2563756,
+          "requests": 17,
+          "zeroWireRequests": 0,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 1,
+            "bytes": 4829704,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 0,
+            "fetches": 1,
+            "packs": 1,
+            "activeEntries": 1,
+            "activeBytes": 4829704,
+            "sceneBuilds": 1,
+            "generation": "2",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 1,
+            "disposedActors": 0,
+            "gpu": {
+              "geometries": 37,
+              "textures": 5
+            }
+          }
+        },
+        {
+          "name": "fallen/2/add",
+          "readyMs": 497.6,
+          "wireBytes": 184183,
+          "requests": 1,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 9659408,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 1,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 2,
+            "activeBytes": 9659408,
+            "sceneBuilds": 1,
+            "generation": "3",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 2,
+            "disposedActors": 0,
+            "gpu": {
+              "geometries": 37,
+              "textures": 6
+            }
+          }
+        },
+        {
+          "name": "fallen/2/remove",
+          "readyMs": 627,
+          "wireBytes": 0,
+          "requests": 0,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.06,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 9659408,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 2,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 1,
+            "activeBytes": 4829704,
+            "sceneBuilds": 1,
+            "generation": "4",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 1,
+            "disposedActors": 1,
+            "gpu": {
+              "geometries": 37,
+              "textures": 5
+            }
+          }
+        },
+        {
+          "name": "fallen/2/readd",
+          "readyMs": 49.9,
+          "wireBytes": 0,
+          "requests": 0,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 3.12,
+            "recordedEnd": 60,
+            "policyEnds": [
+              3.06,
+              3.12
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#80.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 9659408,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 4,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 2,
+            "activeBytes": 9659408,
+            "sceneBuilds": 1,
+            "generation": "5",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 2,
+            "disposedActors": 1,
+            "gpu": {
+              "geometries": 37,
+              "textures": 6
+            }
+          }
+        },
+        {
+          "name": "moving/0/cold",
+          "readyMs": 7923,
+          "wireBytes": 2468392,
+          "requests": 18,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 1,
+            "bytes": 806488,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 0,
+            "fetches": 1,
+            "packs": 1,
+            "activeEntries": 1,
+            "activeBytes": 806488,
+            "sceneBuilds": 1,
+            "generation": "2",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 1,
+            "disposedActors": 0,
+            "gpu": {
+              "geometries": 37,
+              "textures": 5
+            }
+          }
+        },
+        {
+          "name": "moving/0/add",
+          "readyMs": 825,
+          "wireBytes": 353838,
+          "requests": 1,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 1661216,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 1,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 2,
+            "activeBytes": 1661216,
+            "sceneBuilds": 1,
+            "generation": "3",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 2,
+            "disposedActors": 0,
+            "gpu": {
+              "geometries": 37,
+              "textures": 6
+            }
+          }
+        },
+        {
+          "name": "moving/0/remove",
+          "readyMs": 586.5,
+          "wireBytes": 0,
+          "requests": 0,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 1661216,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 2,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 1,
+            "activeBytes": 806488,
+            "sceneBuilds": 1,
+            "generation": "4",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 1,
+            "disposedActors": 1,
+            "gpu": {
+              "geometries": 37,
+              "textures": 5
+            }
+          }
+        },
+        {
+          "name": "moving/0/readd",
+          "readyMs": 92,
+          "wireBytes": 0,
+          "requests": 0,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 1661216,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 4,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 2,
+            "activeBytes": 1661216,
+            "sceneBuilds": 1,
+            "generation": "5",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 2,
+            "disposedActors": 1,
+            "gpu": {
+              "geometries": 37,
+              "textures": 6
+            }
+          }
+        },
+        {
+          "name": "moving/1/cold",
+          "readyMs": 6977.2,
+          "wireBytes": 2468391,
+          "requests": 18,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 1,
+            "bytes": 806488,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 0,
+            "fetches": 1,
+            "packs": 1,
+            "activeEntries": 1,
+            "activeBytes": 806488,
+            "sceneBuilds": 1,
+            "generation": "2",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 1,
+            "disposedActors": 0,
+            "gpu": {
+              "geometries": 37,
+              "textures": 5
+            }
+          }
+        },
+        {
+          "name": "moving/1/add",
+          "readyMs": 814.9,
+          "wireBytes": 353838,
+          "requests": 1,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 1661216,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 1,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 2,
+            "activeBytes": 1661216,
+            "sceneBuilds": 1,
+            "generation": "3",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 2,
+            "disposedActors": 0,
+            "gpu": {
+              "geometries": 37,
+              "textures": 6
+            }
+          }
+        },
+        {
+          "name": "moving/1/remove",
+          "readyMs": 640.2,
+          "wireBytes": 0,
+          "requests": 0,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 1661216,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 2,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 1,
+            "activeBytes": 806488,
+            "sceneBuilds": 1,
+            "generation": "4",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 1,
+            "disposedActors": 1,
+            "gpu": {
+              "geometries": 37,
+              "textures": 5
+            }
+          }
+        },
+        {
+          "name": "moving/1/readd",
+          "readyMs": 1153.5,
+          "wireBytes": 0,
+          "requests": 0,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 1661216,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 4,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 2,
+            "activeBytes": 1661216,
+            "sceneBuilds": 1,
+            "generation": "5",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 2,
+            "disposedActors": 1,
+            "gpu": {
+              "geometries": 37,
+              "textures": 6
+            }
+          }
+        },
+        {
+          "name": "moving/2/cold",
+          "readyMs": 7258.2,
+          "wireBytes": 2468382,
+          "requests": 18,
+          "zeroWireRequests": 1,
+          "iframeSame": false,
+          "apiSame": false,
+          "canvasSame": false,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 1,
+            "bytes": 806488,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 0,
+            "fetches": 1,
+            "packs": 1,
+            "activeEntries": 1,
+            "activeBytes": 806488,
+            "sceneBuilds": 1,
+            "generation": "2",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 1,
+            "disposedActors": 0,
+            "gpu": {
+              "geometries": 37,
+              "textures": 5
+            }
+          }
+        },
+        {
+          "name": "moving/2/add",
+          "readyMs": 806,
+          "wireBytes": 353838,
+          "requests": 1,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 1661216,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 1,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 2,
+            "activeBytes": 1661216,
+            "sceneBuilds": 1,
+            "generation": "3",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 2,
+            "disposedActors": 0,
+            "gpu": {
+              "geometries": 37,
+              "textures": 6
+            }
+          }
+        },
+        {
+          "name": "moving/2/remove",
+          "readyMs": 557.5,
+          "wireBytes": 0,
+          "requests": 0,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 9.898345323741006,
+            "recordedEnd": 9.898345323741006,
+            "policyEnds": [
+              9.898345323741006
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 1661216,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 2,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 1,
+            "activeBytes": 806488,
+            "sceneBuilds": 1,
+            "generation": "4",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 1,
+            "disposedActors": 1,
+            "gpu": {
+              "geometries": 37,
+              "textures": 5
+            }
+          }
+        },
+        {
+          "name": "moving/2/readd",
+          "readyMs": 898.5,
+          "wireBytes": 0,
+          "requests": 0,
+          "zeroWireRequests": 0,
+          "iframeSame": true,
+          "apiSame": true,
+          "canvasSame": true,
+          "playback": {
+            "time": 0,
+            "playing": false,
+            "end": 10.466825396825397,
+            "recordedEnd": 10.466825396825397,
+            "policyEnds": [
+              9.898345323741006,
+              10.466825396825397
+            ]
+          },
+          "lanes": [
+            "#90.00s0.0 m×",
+            "#60.00s0.0 m×"
+          ],
+          "errors": [],
+          "frameErrors": [],
+          "cache": {
+            "entries": 2,
+            "bytes": 1661216,
+            "limitBytes": 67108864,
+            "limitEntries": 12,
+            "inflight": 0,
+            "hits": 4,
+            "fetches": 2,
+            "packs": 2,
+            "activeEntries": 2,
+            "activeBytes": 1661216,
+            "sceneBuilds": 1,
+            "generation": "5",
+            "documentGeneration": "2",
+            "disposed": false
+          },
+          "renderer": {
+            "activeActors": 2,
+            "disposedActors": 1,
+            "gpu": {
+              "geometries": 37,
+              "textures": 6
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "persistentCorrectness": {
+    "checks": [
+      {
+        "name": "initial policy 9 paused at 1 second",
+        "pass": true
+      },
+      {
+        "name": "add preserves iframe/API/canvas and resets paused at zero",
+        "pass": true
+      },
+      {
+        "name": "unchanged actor and shared geometry are reused",
+        "pass": true
+      },
+      {
+        "name": "Back restores prior policy set without frame replacement",
+        "pass": true
+      },
+      {
+        "name": "Forward restores pair without frame replacement",
+        "pass": true
+      },
+      {
+        "name": "focus switch preserves paused time and performs no network requests",
+        "pass": true
+      },
+      {
+        "name": "changing a playing policy set stops and resets playback",
+        "pass": true
+      },
+      {
+        "name": "failed new capture is visible without losing the old renderer",
+        "pass": true
+      },
+      {
+        "name": "failed capture can be retried successfully",
+        "pass": true
+      },
+      {
+        "name": "stale rapid selection cannot overwrite the latest set",
+        "pass": true
+      },
+      {
+        "name": "eight selected policies keep identity/order and all-policy stall end",
+        "pass": true
+      },
+      {
+        "name": "all-policy playback end presents Replay",
+        "pass": true
+      },
+      {
+        "name": "Replay restarts playback",
+        "pass": true
+      },
+      {
+        "name": "20 warm remove/re-add cycles retain one renderer and use zero HTTP",
+        "pass": true
+      },
+      {
+        "name": "churn has bounded cache, one scene, and no retained GPU-resource growth",
+        "pass": true
+      },
+      {
+        "name": "no uncaught browser exceptions",
+        "pass": true
+      }
+    ],
+    "heapBeforeChurn": {
+      "usedSize": 39852088,
+      "totalSize": 41431040,
+      "embedderHeapUsedSize": 230261208,
+      "backingStorageSize": 12193945
+    },
+    "heapAfterChurn": {
+      "usedSize": 40014864,
+      "totalSize": 41168896,
+      "embedderHeapUsedSize": 230806968,
+      "backingStorageSize": 12193954
+    },
+    "churn": [
+      {
+        "cycle": 1,
+        "heap": {
+          "usedSize": 39856032,
+          "totalSize": 41168896,
+          "embedderHeapUsedSize": 230214912,
+          "backingStorageSize": 12193954
+        },
+        "sameFrame": true,
+        "sameApi": true,
+        "sameCanvas": true,
+        "gpu": {
+          "geometries": 37,
+          "textures": 6
+        },
+        "activeActors": 2,
+        "cache": {
+          "entries": 8,
+          "bytes": 15485648,
+          "limitBytes": 67108864,
+          "limitEntries": 12,
+          "inflight": 0,
+          "hits": 63,
+          "fetches": 10,
+          "packs": 8,
+          "activeEntries": 2,
+          "activeBytes": 9659408,
+          "sceneBuilds": 1,
+          "generation": "27",
+          "documentGeneration": "2",
+          "disposed": false
+        }
+      },
+      {
+        "cycle": 5,
+        "heap": {
+          "usedSize": 39936888,
+          "totalSize": 41431040,
+          "embedderHeapUsedSize": 230402376,
+          "backingStorageSize": 12193954
+        },
+        "sameFrame": true,
+        "sameApi": true,
+        "sameCanvas": true,
+        "gpu": {
+          "geometries": 37,
+          "textures": 6
+        },
+        "activeActors": 2,
+        "cache": {
+          "entries": 8,
+          "bytes": 15485648,
+          "limitBytes": 67108864,
+          "limitEntries": 12,
+          "inflight": 0,
+          "hits": 75,
+          "fetches": 10,
+          "packs": 8,
+          "activeEntries": 2,
+          "activeBytes": 9659408,
+          "sceneBuilds": 1,
+          "generation": "35",
+          "documentGeneration": "2",
+          "disposed": false
+        }
+      },
+      {
+        "cycle": 10,
+        "heap": {
+          "usedSize": 39946208,
+          "totalSize": 41431040,
+          "embedderHeapUsedSize": 230483216,
+          "backingStorageSize": 12193954
+        },
+        "sameFrame": true,
+        "sameApi": true,
+        "sameCanvas": true,
+        "gpu": {
+          "geometries": 37,
+          "textures": 6
+        },
+        "activeActors": 2,
+        "cache": {
+          "entries": 8,
+          "bytes": 15485648,
+          "limitBytes": 67108864,
+          "limitEntries": 12,
+          "inflight": 0,
+          "hits": 90,
+          "fetches": 10,
+          "packs": 8,
+          "activeEntries": 2,
+          "activeBytes": 9659408,
+          "sceneBuilds": 1,
+          "generation": "45",
+          "documentGeneration": "2",
+          "disposed": false
+        }
+      },
+      {
+        "cycle": 20,
+        "heap": {
+          "usedSize": 40014916,
+          "totalSize": 41431040,
+          "embedderHeapUsedSize": 230868160,
+          "backingStorageSize": 12193954
+        },
+        "sameFrame": true,
+        "sameApi": true,
+        "sameCanvas": true,
+        "gpu": {
+          "geometries": 37,
+          "textures": 6
+        },
+        "activeActors": 2,
+        "cache": {
+          "entries": 8,
+          "bytes": 15485648,
+          "limitBytes": 67108864,
+          "limitEntries": 12,
+          "inflight": 0,
+          "hits": 120,
+          "fetches": 10,
+          "packs": 8,
+          "activeEntries": 2,
+          "activeBytes": 9659408,
+          "sceneBuilds": 1,
+          "generation": "65",
+          "documentGeneration": "2",
+          "disposed": false
+        }
+      }
+    ]
+  },
+  "fixedSeekQuality": [
+    {
+      "stage": "baseline",
+      "samples": [
+        {
+          "name": "hero",
+          "time": 0,
+          "signatureEqualsBaseline": true
+        },
+        {
+          "name": "hero",
+          "time": 0.8,
+          "signatureEqualsBaseline": true
+        },
+        {
+          "name": "hero",
+          "time": 2,
+          "signatureEqualsBaseline": true
+        },
+        {
+          "name": "collision",
+          "time": 0,
+          "signatureEqualsBaseline": true
+        },
+        {
+          "name": "collision",
+          "time": 0.8,
+          "signatureEqualsBaseline": true
+        },
+        {
+          "name": "collision",
+          "time": 2,
+          "signatureEqualsBaseline": true
+        },
+        {
+          "name": "comparison",
+          "time": 0,
+          "signatureEqualsBaseline": true
+        },
+        {
+          "name": "comparison",
+          "time": 0.8,
+          "signatureEqualsBaseline": true
+        },
+        {
+          "name": "comparison",
+          "time": 2,
+          "signatureEqualsBaseline": true
+        }
+      ]
+    },
+    {
+      "stage": "priority1",
+      "samples": [
+        {
+          "name": "hero",
+          "time": 0,
+          "signatureEqualsBaseline": true
+        },
+        {
+          "name": "hero",
+          "time": 0.8,
+          "signatureEqualsBaseline": true
+        },
+        {
+          "name": "hero",
+          "time": 2,
+          "signatureEqualsBaseline": true
+        },
+        {
+          "name": "collision",
+          "time": 0,
+          "signatureEqualsBaseline": true
+        },
+        {
+          "name": "collision",
+          "time": 0.8,
+          "signatureEqualsBaseline": true
+        },
+        {
+          "name": "collision",
+          "time": 2,
+          "signatureEqualsBaseline": true
+        },
+        {
+          "name": "comparison",
+          "time": 0,
+          "signatureEqualsBaseline": true
+        },
+        {
+          "name": "comparison",
+          "time": 0.8,
+          "signatureEqualsBaseline": true
+        },
+        {
+          "name": "comparison",
+          "time": 2,
+          "signatureEqualsBaseline": true
+        }
+      ]
+    },
+    {
+      "stage": "priority3",
+      "samples": [
+        {
+          "name": "hero",
+          "time": 0,
+          "signatureEqualsBaseline": true
+        },
+        {
+          "name": "hero",
+          "time": 0.8,
+          "signatureEqualsBaseline": true
+        },
+        {
+          "name": "hero",
+          "time": 2,
+          "signatureEqualsBaseline": true
+        },
+        {
+          "name": "collision",
+          "time": 0,
+          "signatureEqualsBaseline": true
+        },
+        {
+          "name": "collision",
+          "time": 0.8,
+          "signatureEqualsBaseline": true
+        },
+        {
+          "name": "collision",
+          "time": 2,
+          "signatureEqualsBaseline": true
+        },
+        {
+          "name": "comparison",
+          "time": 0,
+          "signatureEqualsBaseline": true
+        },
+        {
+          "name": "comparison",
+          "time": 0.8,
+          "signatureEqualsBaseline": true
+        },
+        {
+          "name": "comparison",
+          "time": 2,
+          "signatureEqualsBaseline": true
+        }
+      ]
+    }
+  ]
+}

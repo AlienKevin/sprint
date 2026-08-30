@@ -212,7 +212,7 @@ def test_web_replay_smoothly_interpolates_adjacent_authoritative_samples() -> No
     assert "policy.policy_number??policy.lane_number" in scene
     assert "IS_TRAJECTORY_COMPARISON?null:chestLogo(identity)" in scene
     assert "IS_TRAJECTORY_COMPARISON?chestPolicyNumber(p,identity):chestBib(identity,hex)" in scene
-    assert "const emphasized=IS_TRAJECTORY_COMPARISON&&POL[ci]?.emphasized" in scene
+    assert "const emphasized=IS_TRAJECTORY_COMPARISON&&policy?.emphasized" in scene
     assert "emissive:emphasized?c:0x000000" in scene
     assert "metalness:emphasized?0.04:0.32" in scene
     assert "g.fillStyle='#fff';g.fillRect(0,0,c.width,c.height)" in scene
@@ -657,6 +657,10 @@ const POL=[{capture_id:'first',model_color:'#7C54CD'},{capture_id:'second',model
 const COL=[0xffffff,0x7c54cd],cards=[null,null];let DEFAULT_FOLLOW_POLICY=1;
 const ROBOTS=POL.map(()=>({material:{color:null,copy(m){this.color=m.color;}}}));
 const shellMat=i=>({color:COL[i],dispose(){}});
+let disposedTextures=0;
+const plaque=(label,color)=>({userData:{label,color},dispose(){disposedTextures++}});
+const policyPlaqueLabel=()=> 'TIMEOUT';
+const PLAQUES=POL.map(()=>({material:{map:plaque('TIMEOUT','#FFFFFF')}}));
 emphasizePolicy(0);
 assert.equal(DEFAULT_FOLLOW_POLICY,0);assert.equal(ROBOTS[0].material.color,0x7c54cd);assert.equal(ROBOTS[1].material.color,0xffffff);
 assert.deepEqual(POL.map(p=>p.emphasized),[true,false]);
@@ -664,6 +668,9 @@ assert.equal(events.at(-1).type,'g1:policy-focused');assert.equal(events.at(-1).
 emphasizePolicy(1);
 assert.equal(ROBOTS[0].material.color,0xffffff);assert.equal(ROBOTS[1].material.color,0x7c54cd);
 assert.deepEqual(POL.map(p=>p.capture_id),['first','second']);
+assert.equal(PLAQUES[0].material.map.userData.color,'#FFFFFF');
+assert.equal(PLAQUES[1].material.map.userData.color,'#7C54CD');
+assert.equal(disposedTextures,3,'replaced color textures are disposed');
 """
     result = subprocess.run(["node"], input=script, check=False, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
@@ -692,8 +699,8 @@ def test_trial_comparison_shell_contract_and_compact_eight_lanes() -> None:
     assert "model_color:item.color" in shell
     assert "history.replaceState(null,'',canonicalUrl(activeState))" in shell
     assert "activeState=null,rendererReady=false" in shell
-    assert "if(rendererReady)tell('g1:policies-state'" in shell
-    assert "requestAnimationFrame(()=>{rendererReady=true;tell('g1:policies-state'" in shell
+    assert "function acknowledge(state,generation,serial)" in shell
+    assert "serial!==requestSerial||generation!==REPLAY_GENERATION" in shell
     assert "failedCaptureIds" in shell
     assert "lanesEl.innerHTML=''" in shell
     assert "At most 8 policies can be compared." in shell
@@ -702,7 +709,8 @@ def test_trial_comparison_shell_contract_and_compact_eight_lanes() -> None:
     assert "lane_labels:Array(8).fill(null)" in shell
     assert "start_paused:true" in shell
     assert "Number(raw.schema_version)!==2" in shell
-    assert "location.replace(next)" in shell
+    assert "window.__G1_REPLAY__.updatePolicies(policies" in shell
+    assert "location.replace(next)" not in shell
     assert "sessionStorage.setItem(TRIAL_STORAGE" in shell
     assert "function colorHex(value)" in shell
     assert "colorHex(fallback.color)||colorHex(item.color)||'#6E97C4'" in shell
@@ -714,51 +722,36 @@ def test_trial_comparison_shell_contract_and_compact_eight_lanes() -> None:
     assert "let state;try{state=initialState();}" in shell
 
 
-def test_trial_comparison_latches_parent_load_generation() -> None:
-    renderer = load_trial_comparison_renderer()
-    shell = renderer.build_shell(registry={}, hq={})
+def test_trial_comparison_latches_document_nonce_but_accepts_new_selections() -> None:
+    shell = load_trial_comparison_renderer().build_shell(registry={}, hq={})
     bootstrap = shell.split("const TRIAL_STORAGE=", 1)[1].split("function terminal(", 1)[0]
-    script = "const assert=require('node:assert/strict');\n"
-    script += r"""
-const messages=[],listeners={},storage=[],replacements=[];
-const parent={postMessage(message){messages.push(message);}};
-const window={addEventListener(type,handler){listeners[type]=handler;}};
-const document={querySelector(){return {};},getElementById(){return {};}};
-const location={origin:'http://localhost:59453',href:'http://localhost:59453/replay/trial-comparison?policies=frontier-000000000001&emphasis=frontier-000000000001&replayGeneration=41',
-  get search(){return new URL(this.href).search;},replace(url){replacements.push(String(url));}};
-const sessionStorage={setItem(...args){storage.push(args);}};
-const history={replaceState(_state,_title,url){location.href=String(url);}};
+    script = r"""
+const assert=require('node:assert/strict'),messages=[],listeners={},calls=[];
+const parent={postMessage(message){messages.push(message)}};
+const window={addEventListener(type,handler){listeners[type]=handler}};
+const document={querySelector(){return {}},getElementById(){return {}}};
+const location={origin:'https://example.test',href:'https://example.test/replay?replayGeneration=41',get search(){return new URL(this.href).search}};
+const sessionStorage={setItem(){}},history={replaceState(){}};
 const TRIAL_BOOT={registry:{'frontier-000000000001':{policyNumber:1,color:'#7C54CD'}}};
+function setSelection(state,generation){calls.push(generation);REPLAY_GENERATION=generation;activeState=state;}
 """
     script += "const TRIAL_STORAGE=" + bootstrap
     script += r"""
-const selection={type:'g1:set-policies',replayGeneration:41,policies:[{captureId:'frontier-000000000001',policyNumber:1}],emphasizedCaptureId:'frontier-000000000001'};
+const selection={type:'g1:set-policies',replayGeneration:41,replayDocumentGeneration:41,policies:[{captureId:'frontier-000000000001',policyNumber:1}]};
 const send=(data,source=parent)=>listeners.message({origin:location.origin,source,data});
-send({...selection,replayGeneration:42});
-send({...selection,replayGeneration:undefined});
-send(selection,{});
-assert.equal(activeState,null);assert.equal(storage.length,0);assert.equal(messages.length,0);
-send(selection);
-assert.equal(activeState.policies.length,1);
-assert.equal(messages.length,0,'matching generation cannot reveal before renderer is ready');
-rendererReady=true;
-send(selection);
-assert.equal(messages.at(-1).type,'g1:policies-state');assert.equal(messages.at(-1).replayGeneration,'41');
-const sent=messages.length,writes=storage.length;
-send({...selection,replayGeneration:42});
-assert.equal(messages.length,sent,'old scene must not acknowledge newer load');assert.equal(storage.length,writes);
+send({...selection,replayDocumentGeneration:40});send({...selection,replayGeneration:undefined});send(selection,{});
+assert.equal(calls.length,0);
+send(selection);send({...selection,replayGeneration:42});
+assert.deepEqual(calls,['41','42']);
+send(selection);assert.equal(calls.length,2,'stale selection version rejected');
+location.href='https://example.test/replay?replayGeneration=99&replayDocumentGeneration=99';
+assert.equal(DOCUMENT_GENERATION,'41');
 for(const type of ['g1:policies-ready','g1:policies-state','g1:policies-error','g1:policy-focused','g1:policy-remove']){
-  tell(type,{replayGeneration:'forged'});assert.equal(messages.at(-1).replayGeneration,'41');
+  tell(type,{replayGeneration:'forged',replayDocumentGeneration:'forged'});
+  assert.equal(messages.at(-1).replayGeneration,'42');
+  assert.equal(messages.at(-1).replayDocumentGeneration,'41');
 }
-location.href=location.href.replace('replayGeneration=41','replayGeneration=42');
-assert.equal(canonicalUrl(activeState).searchParams.get('replayGeneration'),'41','token is latched, not reread from mutable URL');
-location.href=String(canonicalUrl(activeState));
-listeners['g1:policy-focused']({detail:{captureId:'frontier-000000000001'}});
-assert.equal(messages.at(-1).type,'g1:policy-focused');assert.equal(messages.at(-1).replayGeneration,'41');
-listeners['g1:policy-remove']({detail:{captureId:'frontier-000000000001'}});
-assert.equal(messages.at(-1).type,'g1:policy-remove');assert.equal(messages.at(-1).replayGeneration,'41');
-send({...selection,policies:[]});
-assert.equal(new URL(replacements.at(-1)).searchParams.get('replayGeneration'),'41');
+assert.equal(canonicalUrl(activeState).searchParams.get('replayDocumentGeneration'),'41');
 """
     result = subprocess.run(["node"], input=script, check=False, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr

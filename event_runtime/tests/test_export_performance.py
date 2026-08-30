@@ -689,7 +689,7 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert ".observation-cards { display: grid; grid-template-columns: 1fr;" in styles
     assert ".observation-cards { grid-template-columns: 1fr; gap: 18px; }" in styles
     assert "app.js?v=20260830-charts24" in page
-    assert '"version":"20260830-22"' in (ROOT / "web/version.json").read_text()
+    assert '"version":"20260830-23"' in (ROOT / "web/version.json").read_text()
     assert "AUC cutoff" not in app
     assert "auc-cap-line" not in app
     assert ".auc-cap-line" not in styles
@@ -801,7 +801,7 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert 'class="right-rail"' not in trajectory_page
     assert "trajectory.css?v=20260830-8" in trajectory_page
     assert "trajectory.js?v=20260830-2" in trajectory_page
-    assert "trajectory-overview.js?v=20260830-13" in trajectory_page
+    assert "trajectory-overview.js?v=20260830-14" in trajectory_page
     assert "Number(policy.effective_speed_mps)" in trajectory_overview
     assert "100 / finish" not in trajectory_overview
     assert "function policyFinished(policy)" in trajectory_overview

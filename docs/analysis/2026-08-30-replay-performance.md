@@ -2,7 +2,7 @@
 
 Date: 2026-08-30. Source and asset measurements were taken around 18:42–18:48 UTC from the current `/data/sprint` working tree.
 
-**Status: source audit and browser profiling complete. The performance recommendations below have not been implemented.**
+**Historical baseline audit. Priority 1 (shared assets) and priority 3 (persistent comparison rendering) were subsequently implemented; priority 2 (lower rendering quality) was not. See the [before/after verification report](2026-08-30-replay-optimization-results.md) for measurements and validation status. Descriptions of the current loading path below refer to this audit's original snapshot, not the optimized implementation.**
 
 Separate approved behavior change: after the baseline measurements, the three Observations replays were changed to start paused (`autoplay=0`). Browser checks confirmed all three remain at zero until Play is clicked. This prevents automatic playback, but does not eliminate initial downloads, first-frame initialization, or offscreen rendering after the user starts playback. Hero and Scoring autoplay remain unchanged. The loading measurements below are from before this opt-out; its functional verification is subsequent.
 
