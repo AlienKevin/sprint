@@ -924,52 +924,215 @@ def capture_and_render(
     atomic_write_json(state_path, state)
 
 
+def _queue_text(value: Any) -> str:
+    """Read recorded tool text without evaluating shell/JavaScript payloads."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return "\n".join(_queue_text(item) for item in value.values())
+    if isinstance(value, list):
+        return "\n".join(_queue_text(item) for item in value)
+    return ""
+
+
+def policy_queue_provenance(
+    state_path: Path, state: dict[str, Any], web: Path
+) -> dict[str, dict[str, Any]]:
+    """Join immutable submissions to their originating agent requests.
+
+    Job creation, artifact observation, and verifier admission are different
+    clocks. A bridge digest identifies a job even when old submission_results
+    omit the digest. Only explicit submission results/paths count: returning a
+    training checkpoint does not make the training launch a policy submission.
+    Exact response IDs bind the public turn; no nearest-timestamp inference is
+    used, including for outputs arriving after the final agent turn.
+    """
+    root = state_path.parent
+
+    def read(path: Path) -> dict[str, Any]:
+        try:
+            value = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    jobs = {
+        str(job.get("job_id") or path.stem): job
+        for path in sorted((root / "gpu-job-registry").glob("*.json"))
+        if (job := read(path))
+    }
+    trajectory = read(web / "data/trajectories" / f"{root.name}.json")
+    job_steps: dict[str, list[dict[str, Any]]] = {}
+    interval_steps: dict[str, list[dict[str, Any]]] = {}
+    direct_steps: dict[str, list[dict[str, Any]]] = {}
+    hash_steps: dict[str, list[dict[str, Any]]] = {}
+    steps = trajectory.get("steps", [])
+    for step_index, step in enumerate(steps):
+        if not isinstance(step, dict) or parse_iso(step.get("timestamp")) is None:
+            continue
+        arguments = _queue_text(
+            [call.get("arguments") for call in step.get("tool_calls", [])]
+        )
+        response = _queue_text(step.get("observation"))
+        if re.search(r"\bevent\s+gpu\s+(?:submit\b|--)", arguments):
+            response_jobs = set(re.findall(r"queued gpu job\s+([\w-]+)", response))
+            response_jobs.update(re.findall(r"gpu-jobs/status/([\w-]+)\.json", response))
+            # `head -1` can retain only the returned job ID. Restrict this to
+            # submission commands, not status/history queries echoing old IDs.
+            lines = response.replace("\\n", "\n")
+            response_jobs.update(
+                job_id for job_id in jobs
+                if re.search(rf"^\s*{re.escape(job_id)}\s*$", lines, re.MULTILINE)
+                and job_id not in arguments
+            )
+            for job_id in response_jobs:
+                job_steps.setdefault(job_id, []).append(step)
+            # Some older batched exec wrappers discarded every job response.
+            # An exact declared filename plus a unique request execution
+            # interval still links a registry creation to that request. This
+            # is not a nearest-time fallback: ambiguity leaves the job unmapped.
+            if "--submit-output" in arguments:
+                start = parse_iso(step["timestamp"])
+                next_start = parse_iso(steps[step_index + 1].get("timestamp")) if step_index + 1 < len(steps) else None
+                end = min(next_start, start + 30) if next_start is not None else start
+                for job_id, job in jobs.items():
+                    created = parse_iso(job.get("created_at"))
+                    paths = job.get("submission_paths") or []
+                    if created is None or not (start - 1 <= created < end) or not paths:
+                        continue
+                    if all(
+                        path in arguments
+                        or (
+                            re.search(r"--submit-output\s+/app/\$\{\w+\}", arguments)
+                            and Path(path).parent == Path("/app")
+                            and re.search(rf"(?<![\w.-]){re.escape(Path(path).name)}(?![\w.-])", arguments)
+                        )
+                        for path in paths
+                    ):
+                        matches = interval_steps.setdefault(job_id, [])
+                        if step not in matches:
+                            matches.append(step)
+        if re.search(r"\bevent\s+(?:archive|submit)\s+(?!-)", arguments):
+            for submission_id in set(
+                re.findall(r"staged locally\s+([\w-]+)", response)
+            ):
+                direct_steps.setdefault(submission_id, []).append(step)
+            # Some direct-submit versions return the immutable digest instead
+            # of a local request ID. A mere history/poll call is not eligible.
+            for digest in set(re.findall(r"\b[a-f0-9]{64}\b", response)):
+                hash_steps.setdefault(digest, []).append(step)
+
+    interval_bound_jobs = set()
+    for job_id, matches in interval_steps.items():
+        if job_id not in job_steps and len(matches) == 1:
+            job_steps[job_id] = matches
+            interval_bound_jobs.add(job_id)
+
+    candidates: dict[str, list[dict[str, Any]]] = {}
+    observations: dict[str, str] = {}
+
+    def add_job(digest: Any, job_id: str, basis: str) -> None:
+        if not isinstance(digest, str) or not digest:
+            return
+        job = jobs.get(job_id, {})
+        created_at = job.get("created_at")
+        if parse_iso(created_at) is None:
+            return
+        matches = job_steps.get(job_id, [])
+        # Repeated identical queue output in later polls cannot change the
+        # original request; select the earliest eligible submitting tool turn.
+        step = min(matches, key=lambda item: parse_iso(item["timestamp"])) if matches else {}
+        candidates.setdefault(digest, []).append(
+            {
+                "enqueued_at": created_at,
+                "enqueued_at_basis": "gpu_job_enqueued",
+                "queue_source_job_id": job_id,
+                "queue_source_step_id": step.get("step_id"),
+                "queue_source_public_step_id": step.get("public_step_id"),
+                "queue_source_basis": (
+                    "gpu_explicit_path_request_interval"
+                    if step and job_id in interval_bound_jobs
+                    else basis if step else "gpu_job_unmapped"
+                ),
+            }
+        )
+
+    for job_id, job in jobs.items():
+        progress = job.get("progress") or {}
+        if not isinstance(progress, dict):
+            continue
+        results = progress.get("submission_results") or []
+        submission_paths = set(job.get("submission_paths") or [])
+        for result in results if isinstance(results, list) else []:
+            if not isinstance(result, dict):
+                continue
+            if isinstance(result.get("path"), str):
+                submission_paths.add(result["path"])
+            add_job(result.get("policy_sha256"), job_id, "gpu_submission_result")
+        for artifact in progress.get("output_artifacts") or []:
+            if isinstance(artifact, dict) and artifact.get("source_path") in submission_paths:
+                add_job(artifact.get("sha256"), job_id, "gpu_submission_artifact")
+
+    for path in sorted((root / "submission-bridge").glob("*.json")):
+        record = read(path)
+        digest = record.get("policy_sha256")
+        if not isinstance(digest, str) or not digest:
+            continue
+        observed_at = record.get("observed_at") or record.get("forwarded_at")
+        if parse_iso(observed_at) is not None and (
+            digest not in observations
+            or parse_iso(observed_at) < parse_iso(observations[digest])
+        ):
+            observations[digest] = observed_at
+        job_id = record.get("gpu_job_id")
+        if isinstance(job_id, str):
+            add_job(digest, job_id, "submission_bridge_job")
+
+    provenance = {}
+    for digest, policy in state.get("policies", {}).items():
+        name = str(policy.get("name") or "").removesuffix(".pt")
+        for step in direct_steps.get(name, []) + hash_steps.get(digest, []):
+            candidates.setdefault(digest, []).append(
+                {
+                    "enqueued_at": step["timestamp"],
+                    "enqueued_at_basis": "agent_direct_submission",
+                    "queue_source_job_id": None,
+                    "queue_source_step_id": step.get("step_id"),
+                    "queue_source_public_step_id": step.get("public_step_id"),
+                    "queue_source_basis": "direct_submission_response",
+                }
+            )
+        options = candidates.get(digest, [])
+        resolved = min(
+            options,
+            key=lambda item: (
+                parse_iso(item["enqueued_at"]),
+                not bool(item["queue_source_step_id"]),
+                str(item["queue_source_job_id"] or ""),
+            ),
+        ) if options else {
+            # Preserve an observed clock for diagnostics/legacy consumers, but
+            # explicitly do not represent it as a proven agent queue request.
+            "enqueued_at": observations.get(digest),
+            "enqueued_at_basis": "gpu_output_observed" if digest in observations else None,
+            "queue_source_step_id": None,
+            "queue_source_public_step_id": None,
+            "queue_source_job_id": None,
+            "queue_source_basis": "unresolved",
+        }
+        provenance[digest] = {
+            **resolved,
+            "artifact_observed_at": observations.get(digest),
+        }
+    return provenance
+
+
 def write_web_policy_indexes(
     state_path: Path, state: dict[str, Any], web: Path
 ) -> None:
     """Publish a public-safe policy history for the comparison dashboard."""
     run_id = state_path.parent.name
-    enqueue_times: dict[str, str] = {}
-    enqueue_time_bases: dict[str, str] = {}
-    registry = state_path.parent / "gpu-job-registry"
-    for path in sorted(registry.glob("*.json")) if registry.is_dir() else []:
-        try:
-            job = json.loads(path.read_text())
-        except (OSError, json.JSONDecodeError):
-            continue
-        created_at = job.get("created_at")
-        if not isinstance(created_at, str) or not created_at:
-            continue
-        progress = job.get("progress")
-        results = (
-            progress.get("submission_results") if isinstance(progress, dict) else []
-        )
-        for result in results if isinstance(results, list) else []:
-            policy_hash = (
-                result.get("policy_sha256") if isinstance(result, dict) else None
-            )
-            if isinstance(policy_hash, str) and policy_hash:
-                enqueue_times.setdefault(policy_hash, created_at)
-                enqueue_time_bases.setdefault(policy_hash, "gpu_job_enqueued")
-    # Normal GPU outputs acquire their digest only after the worker finishes,
-    # so older registry rows cannot join them to the job's creation time.  The
-    # trusted submission bridge is the canonical record of when those immutable
-    # bytes first became visible to the host.  Use that observation time rather
-    # than the much later serial-verifier admission time.
-    bridge = state_path.parent / "submission-bridge"
-    for path in sorted(bridge.glob("*.json")) if bridge.is_dir() else []:
-        try:
-            record = json.loads(path.read_text())
-        except (OSError, json.JSONDecodeError):
-            continue
-        policy_hash = record.get("policy_sha256")
-        observed_at = record.get("observed_at") or record.get("forwarded_at")
-        if not isinstance(policy_hash, str) or not policy_hash:
-            continue
-        if not isinstance(observed_at, str) or not observed_at:
-            continue
-        enqueue_times.setdefault(policy_hash, observed_at)
-        enqueue_time_bases.setdefault(policy_hash, "gpu_output_observed")
+    queue_provenance = policy_queue_provenance(state_path, state, web)
     try:
         run = json.loads((state_path.parent / "run.json").read_text())
     except (OSError, json.JSONDecodeError):
@@ -983,8 +1146,7 @@ def write_web_policy_indexes(
             {
                 "submission_index": policy.get("index"),
                 "policy_sha256": policy_hash,
-                "enqueued_at": enqueue_times.get(policy_hash),
-                "enqueued_at_basis": enqueue_time_bases.get(policy_hash),
+                **queue_provenance[policy_hash],
                 "submitted_at": policy.get("submitted_at"),
                 "finished_at": policy.get("finished_at"),
                 "valid_run": bool(policy.get("valid_run")),

@@ -17,9 +17,23 @@ SCENE_SOURCE = RENDERER_ROOT / "scene.js"
 HQ_DEFAULT = RENDERER_ROOT / "g1_hq.json"
 COLS = ["#6E97C4", "#E0A43B", "#B6F24E", "#F2704E"]
 LANE_HALF_WIDTH_M = 0.61
-SCORED_TIMEOUT_S = 60.0
-# Display-only proxy when capture JSON has no self-penetration trace.
-TORSO_COLLAPSE_Z_M = 0.35
+
+MODEL_IDENTITIES = (
+    ("deepseek", {"brand": "deepseek", "company": "DeepSeek", "model": "DeepSeek-V4-Flash", "color": "#7C54CD", "logo": "/assets/model-logos/deepseek.svg"}),
+    ("glm-5.3", {"brand": "zai", "company": "Z.ai", "model": "GLM‑5.3‑Flash", "color": "#39B8B2", "logo": "/assets/model-logos/zai.svg"}),
+    ("gpt-5.6-sol", {"brand": "openai", "company": "OpenAI", "model": "GPT‑5.6 Sol", "color": "#2279DC", "logo": "/assets/model-logos/openai.svg"}),
+    ("gpt-5.6-luna", {"brand": "openai", "company": "OpenAI", "model": "GPT‑5.6 Luna", "color": "#66D693", "logo": "/assets/model-logos/openai.svg"}),
+    ("claude-opus-5", {"brand": "anthropic", "company": "Anthropic", "model": "Claude Opus 5", "color": "#D97757", "logo": "/assets/model-logos/anthropic.svg"}),
+)
+
+
+def model_identity(model: str | None) -> dict[str, str] | None:
+    """Return the compact identity printed on a runner's chest bib."""
+    key = str(model or "").lower()
+    for needle, identity in MODEL_IDENTITIES:
+        if needle in key:
+            return dict(identity)
+    return None
 
 PREFERRED = [
     "pelvis",
@@ -132,83 +146,59 @@ def _rest_offsets(
     }
 
 
-def compute_dq_event(
+def compute_terminal_event(
     frames: list,
     names: list[str],
     run: dict | None,
     *,
-    lane_half: float = LANE_HALF_WIDTH_M,
+    failure_modes: list[str] | None = None,
 ) -> tuple[float | None, str | None]:
-    """Website-only DQ instant for replay freeze (does not affect scoring).
+    """Return only the terminal classification recorded by the verifier.
 
-    Prefer the verifier's explicit first-disqualification time. Older captures
-    fall back to pelvis lateral position, torso collapse, or the scored timeout.
+    A pose replay is not collision telemetry. In particular, a low torso does
+    not prove self-collision and a pelvis position does not represent the
+    verifier's whole-body lane envelope. Never infer a failure mode from the
+    animation. Older captures without terminal provenance receive the neutral
+    ``did_not_finish`` classification.
     """
+    del names  # Kept in the signature for renderer API compatibility.
     run = run or {}
     if run.get("valid") is True:
         return None, None
-    if run.get("first_disqualification_time_s") is not None:
-        return (
-            float(run["first_disqualification_time_s"]),
-            str(run.get("first_disqualification_gate") or "disqualified"),
-        )
-    if run.get("dq_time") is not None:
-        return float(run["dq_time"]), str(run.get("dq_reason") or "disqualified")
 
-    if not frames:
-        return None, None
+    last_t = float(frames[-1][0]) if frames else None
+    explicit_time = run.get("first_disqualification_time_s")
+    explicit_reason = run.get("first_disqualification_gate")
+    if explicit_time is None:
+        explicit_time = run.get("dq_time")
+    if explicit_reason is None:
+        explicit_reason = run.get("dq_reason")
+    reason = explicit_reason or run.get("termination_reason")
+    if reason is None:
+        modes = [str(value) for value in (failure_modes or []) if value]
+        reason = modes[0] if len(modes) == 1 else None
 
-    ti = names.index("torso_link") if "torso_link" in names else 0
-    o_tor = 1 + ti * 7
-    sy = float(frames[0][2])
-    sx = float(frames[0][1])
-    t_lane = None
-    t_collapse = None
-    t_cross = None
-    last_t = float(frames[-1][0])
+    # Historical schema versions used the failed gate name ``finished`` where
+    # newer verifier payloads use the terminal reason ``timeout``. Preserve the
+    # fact (the policy did not finish) without claiming why it stopped.
+    if reason in {None, "finished"}:
+        reason = "did_not_finish"
 
-    for i, fr in enumerate(frames):
-        t = float(fr[0])
-        lat = abs(float(fr[2]) - sy)
-        dist = float(fr[o_tor]) - sx
-        z = float(fr[o_tor + 2])
-        if t_lane is None and lat > lane_half:
-            if i > 0:
-                prev = frames[i - 1]
-                lat0 = abs(float(prev[2]) - sy)
-                dt = t - float(prev[0])
-                if lat0 <= lane_half < lat and lat != lat0 and dt > 0:
-                    t_lane = float(prev[0]) + (lane_half - lat0) / (lat - lat0) * dt
-                else:
-                    t_lane = t
-            else:
-                t_lane = t
-        if t_collapse is None and z < TORSO_COLLAPSE_Z_M:
-            t_collapse = t
-        if t_cross is None and dist >= 100.0:
-            t_cross = t
-
-    cands: list[tuple[float, str]] = []
-    if t_lane is not None:
-        cands.append((t_lane, "in_lane"))
-    if t_collapse is not None:
-        cands.append((t_collapse, "self_collision"))
-    finish = run.get("finish")
-    if t_cross is None and finish is None:
-        cands.append((min(last_t, SCORED_TIMEOUT_S), "finished"))
-    if not cands:
-        t = (
-            t_cross
-            if t_cross is not None
-            else (float(finish) if finish is not None else last_t)
-        )
-        return t, str(run.get("dq_reason") or "disqualified")
-    cands.sort(key=lambda x: x[0])
-    return cands[0][0], cands[0][1]
+    terminal_time = explicit_time
+    if terminal_time is None:
+        terminal_time = run.get("stop_time_s")
+    if terminal_time is None:
+        terminal_time = run.get("duration_s")
+    if terminal_time is None:
+        terminal_time = last_t
+    return (
+        None if terminal_time is None else float(terminal_time),
+        str(reason),
+    )
 
 
 def capture_to_data(
-    cap: dict, hq_all: dict, meta_policy: str, pad: float = 0.6
+    cap: dict, hq_all: dict, meta_policy: str, pad: float = 1.5
 ) -> dict:
     names = cap["body_names"]
     links = [n for n in PREFERRED if n in hq_all and n in names]
@@ -217,7 +207,7 @@ def capture_to_data(
     rest = _rest_offsets(cap, names, links)
     runs = cap.get("runs") or []
     finishes = []
-    dq_events: list[tuple[float | None, str | None]] = []
+    terminal_events: list[tuple[float | None, str | None]] = []
     for i, fr in enumerate(cap["frames"]):
         run = runs[i] if i < len(runs) else {}
         fin = None
@@ -233,7 +223,14 @@ def capture_to_data(
             if fin is None and fr:
                 fin = float(fr[-1][0])
         finishes.append(fin if fin is not None else float(fr[-1][0] if fr else 0.0))
-        dq_events.append(compute_dq_event(fr, names, run))
+        terminal_events.append(
+            compute_terminal_event(
+                fr,
+                names,
+                run,
+                failure_modes=cap.get("failure_modes"),
+            )
+        )
 
     src_fps = float(cap.get("fps") or 25.0)
     out_fps = src_fps
@@ -258,9 +255,23 @@ def capture_to_data(
         fin = finishes[i]
         run = runs[i] if i < len(runs) else {}
         valid = bool(run["valid"]) if i < len(runs) and "valid" in run else None
-        dq_time, dq_reason = dq_events[i]
-        # Clip each seed at its own freeze horizon so DQ pages stay small.
-        clip_t = (dq_time if (valid is False and dq_time is not None) else fin) + pad
+        terminal_time, terminal_reason = terminal_events[i]
+        timed_out = valid is False and terminal_reason in {"timeout", "time_limit"}
+        # Clip each seed shortly after its verifier-authored terminal event.
+        # A timeout ends scoring at 60 s, but is not a physical failure. Retain
+        # every recorded pose after it so replay presentation can continue
+        # without changing the official result. Other failures keep the short
+        # terminal tail used for their passive visual settle.
+        clip_t = (
+            float(fr[-1][0])
+            if timed_out and fr
+            else (
+                terminal_time
+                if (valid is False and terminal_time is not None)
+                else fin
+            )
+            + pad
+        )
         kept = [pack(f) for f in fr if f[0] <= clip_t]
         sy = kept[0][2] if kept else 0.0
         ys = [abs(f[2] - sy) for f in kept]
@@ -284,9 +295,11 @@ def capture_to_data(
             "max_lateral_m": round(max_lateral, 3),
             "valid": valid,
         }
-        if valid is False and dq_time is not None:
-            pol["dq_time"] = round(float(dq_time), 3)
-            pol["dq_reason"] = dq_reason
+        if valid is False and terminal_time is not None:
+            pol["terminal_time"] = round(float(terminal_time), 3)
+            pol["terminal_reason"] = terminal_reason
+            pol["disqualified"] = terminal_reason in {"in_lane", "self_collision"}
+            pol["timed_out"] = timed_out
         policies.append(pol)
 
     return {
@@ -296,16 +309,21 @@ def capture_to_data(
         "rest": rest,
         "hq": {n: hq_all[n] for n in links},
         "policies": policies,
+        # Single-policy pages use the same compact three-lane course as the
+        # homepage race, with the runner centered in physical lane 2.
+        "lane_indices": [1 for _ in policies],
         "meta": {
             "policy": meta_policy,
+            "track_lanes": 3,
             "lane_half_width_m": LANE_HALF_WIDTH_M,
             "source": cap.get("policy"),
             "frame_space": "world_link",
             "position_unit": "m",
             "quaternion_order": "xyzw",
             "visual_origin": "link_frame",
-            "interpolation": "none_authoritative_sample_hold",
-            "dq_display": "freeze_at_first_gate_failure",
+            "interpolation": "adjacent_authoritative_position_lerp_quaternion_slerp",
+            "terminal_display": "verifier_classification_with_passive_visual_settle",
+            "timeout_visual_playback": "all_recorded_frames_after_scoring_terminal",
         },
     }
 
@@ -356,6 +374,7 @@ def assemble_html(
     story: str,
     sr_only: str,
     active: str,
+    show_policy_labels: bool = False,
 ) -> str:
     """Render one self-contained replay from the checked-in HTML/JS chrome."""
     scene = SCENE_SOURCE.read_text()
@@ -371,14 +390,24 @@ def assemble_html(
 
     labels: list[str] = []
     for index, policy in enumerate(data["policies"]):
-        color = COLS[index % len(COLS)]
-        if policy.get("valid") is False and policy.get("dq_time") is not None:
-            time_label = f"DQ {policy['dq_time']:.2f}"
+        color = policy.get("color") or COLS[index % len(COLS)]
+        if policy.get("timed_out"):
+            time_label = f"{policy['terminal_time']:.2f}"
+        elif policy.get("valid") is False and policy.get("terminal_time") is not None:
+            time_label = f"{policy['terminal_time']:.2f}"
         else:
             time_label = f"{policy['finish']:.2f}"
+        policy_name = str(policy.get("label") or f"Seed {index + 1}")
+        lane_number = int(policy.get("lane_number") or index + 1)
+        name = (
+            f'<span class="nm">Lane {lane_number} · {policy_name}</span>'
+            if show_policy_labels
+            else ""
+        )
         labels.append(
-            f'<div class="lc" id="lane{index}"><span class="sw" '
-            f'style="background:{color}"></span><span class="tm" style="color:{color}">'
+            f'<div class="lc" id="lane{index}" role="button" tabindex="0" '
+            f'aria-pressed="false" aria-label="Follow Lane {lane_number}, {policy_name}"><span class="sw" '
+            f'style="background:{color}"></span>{name}<span class="tm" style="color:{color}">'
             f'{time_label}s</span><span class="d">0.0 m</span></div>'
         )
     lanes_html = "\n".join(labels)
@@ -390,8 +419,8 @@ def assemble_html(
         flags=re.S,
     )
     head = head.replace(
-        'data-s="0.6" aria-pressed="true"',
-        'data-s="0.6" aria-pressed="false"',
+        'data-s="0.5" aria-pressed="true"',
+        'data-s="0.5" aria-pressed="false"',
     )
     head = head.replace(
         'data-s="1" aria-pressed="false"',
@@ -400,6 +429,12 @@ def assemble_html(
     head = head.replace(
         'data-s="0.1" aria-pressed="true"',
         'data-s="0.1" aria-pressed="false"',
+    )
+    head = head.replace(
+        '<button class="btn camera-reset" id="camera-reset" type="button">'
+        'Reset camera</button>',
+        '<button class="btn camera-reset" id="camera-reset" type="button">'
+        'Reset</button>',
     )
 
     substitutions = (
@@ -412,7 +447,7 @@ def assemble_html(
             r'<div class="cap">.*?</div>',
             f'<div class="cap"><span>{cap}</span>'
             "<span>Whole body must stay between the <b>±0.61 m</b> vertical lane "
-            "planes; freezes at first DQ</span><span><b>Drag</b> to orbit, <b>scroll</b> to zoom, "
+            "planes; distance freezes at the first stop</span><span><b>Drag</b> to orbit, <b>scroll</b> to zoom, "
             "<b>space</b> to pause</span></div>",
         ),
         (
@@ -423,6 +458,12 @@ def assemble_html(
     for pattern, replacement in substitutions:
         head = re.sub(pattern, replacement, head, count=1, flags=re.S)
     head = inject_policy_nav(head, active)
+    # Presentation only: keep capture fields and scoring precision unchanged.
+    head = re.sub(
+        r"(?<![\w.])(-?\d+(?:\.\d+)?)(\s*m/s\b)",
+        lambda match: f"{float(match[1]):.2f}{match[2]}",
+        head,
+    )
     payload = json.dumps(data, separators=(",", ":"))
     return head + marker + payload + ";\n" + scene + "\n</script>"
 
@@ -441,7 +482,7 @@ def main() -> None:
     parser.add_argument("--story", required=True)
     parser.add_argument("--sr-only", default="")
     parser.add_argument("--active", required=True)
-    parser.add_argument("--pad", type=float, default=0.6)
+    parser.add_argument("--pad", type=float, default=1.5)
     args = parser.parse_args()
 
     capture = json.loads(args.capture.read_text())
@@ -470,7 +511,8 @@ def main() -> None:
     args.out.write_text(html)
     finishes = [policy["finish"] for policy in data["policies"]]
     disqualifications = [
-        (policy.get("dq_time"), policy.get("dq_reason")) for policy in data["policies"]
+        (policy.get("terminal_time"), policy.get("terminal_reason"))
+        for policy in data["policies"]
     ]
     lateral = [policy["max_lateral_m"] for policy in data["policies"]]
     print(

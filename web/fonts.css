@@ -1,0 +1,67 @@
+@font-face {
+  font-family: 'Barlow Condensed';
+  src: url('/assets/fonts/BarlowCondensed-ExtraBoldItalic.woff2') format('woff2');
+  font-style: italic;
+  font-weight: 800;
+  font-display: swap;
+}
+
+:root {
+  --display: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+  --display-slant: -7deg;
+  --text-link-color: #9d9d99;
+}
+
+/* Prose and editorial links share a style; navigation controls keep their own. */
+:is(.text-link, .dq-card-head a, .observations-copy a, .scoring-copy a, .setup-copy a, .cost-insights a, .dq-caption a, .lede a, .help a, .step-markdown a) {
+  color: var(--text-link-color);
+  font: 700 12px/1.5 var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+:is(.text-link, .dq-card-head a, .observations-copy a, .scoring-copy a, .setup-copy a, .cost-insights a, .dq-caption a, .lede a, .help a, .step-markdown a):is(:hover, :focus-visible) {
+  color: var(--text, #f4f4f1);
+  text-decoration-thickness: 2px;
+}
+
+:is(.text-link, .dq-card-head a, .observations-copy a, .scoring-copy a, .setup-copy a, .cost-insights a, .dq-caption a, .lede a, .help a, .step-markdown a):focus-visible {
+  outline: 2px solid var(--text, #f4f4f1);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
+.display-title {
+  font-family: var(--display);
+  font-style: italic;
+  font-weight: 800;
+  font-synthesis: none;
+  letter-spacing: -.015em;
+  padding-inline-end: .12em;
+}
+
+.brand { white-space: nowrap; }
+
+/* Editorial titles only: shared racing-stripe treatment, never data labels. */
+:is(.display-title, .brand em, .section-head h2, .readout-head h2, .dq-card h3, .observations-copy h3, .setup-copy h3, .rail-heading h2, .rollout-outline h2, .trajectory-policy-replay > header strong) {
+  position: relative;
+  isolation: isolate;
+  display: inline-block;
+  width: max-content;
+  max-width: none;
+  padding: .015em .2em .055em .1em;
+  color: var(--bg, #050505);
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+
+:is(.display-title, .brand em, .section-head h2, .readout-head h2, .dq-card h3, .observations-copy h3, .setup-copy h3, .rail-heading h2, .rollout-outline h2, .trajectory-policy-replay > header strong)::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  background: var(--text, #f4f4f1);
+  transform: skewX(var(--display-slant));
+  pointer-events: none;
+}

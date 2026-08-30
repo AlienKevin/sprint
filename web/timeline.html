@@ -4,13 +4,16 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Agents' 100m · Race control</title>
+  <link rel="preload" href="/assets/fonts/BarlowCondensed-ExtraBoldItalic.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/fonts.css?v=20260830-6">
   <style>
     :root{color-scheme:dark;--bg:#07090d;--panel:#0e131b;--line:#263142;--muted:#91a0b5;--text:#edf3fb;--deepseek:#7C54CD;--pro:#ff9f43;--luna:#66D693;--sol:#2279DC;--model-accent:var(--deepseek);--cpu:#4fc3f7;--training-gpu:#9ccc65;--training-mem:#ffb74d;--verifier-gpu:#b388ff;--verifier-mem:#f06292;--sm:#00e5ff;--occupancy:#ffee58;--tensor:#e040fb;--fp32:#69f0ae;--fp16:#ff9100;--dram:#448aff;--tool:#80cbc4;--trace:#78909c;--danger:#ff5d5d;--ok:#43d17b}
     *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 82% 0%,color-mix(in srgb,var(--model-accent) 14%,transparent),transparent 34%),var(--bg);color:var(--text);font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}main{max-width:1500px;margin:auto;padding:28px}h1{font:700 25px/1.2 system-ui,sans-serif;margin:0 0 8px}.lede{color:var(--muted);max-width:980px;margin:0 0 22px}.controls{display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:var(--panel);border:1px solid color-mix(in srgb,var(--model-accent) 42%,var(--line));padding:12px;border-radius:9px}select,button{background:#151c27;color:var(--text);border:1px solid #344258;border-radius:6px;padding:7px 10px;font:inherit}select:focus,button:hover{border-color:var(--model-accent);outline:none}button{cursor:pointer}.checks{display:flex;gap:12px;flex-wrap:wrap;color:var(--muted)}label{white-space:nowrap}.status{margin-left:auto;color:var(--muted)}.policy-economics{margin-top:14px;padding:18px;border:1px solid var(--line);border-top:2px solid var(--model-accent);border-radius:9px;background:var(--panel)}.policy-economics-head,.policy-replay-head{display:flex;justify-content:space-between;gap:20px;align-items:end}.policy-economics h2,.policy-replay h2{margin:0;font:700 19px/1.2 system-ui,sans-serif}.policy-economics p,.policy-replay p{margin:4px 0 0;color:var(--muted);font-size:12px}.policy-cost-chart{display:block;width:100%;height:auto;min-height:330px;margin-top:12px;overflow:visible}.policy-cost-chart text{fill:var(--muted);font:11px ui-monospace,monospace}.policy-cost-chart .grid{stroke:var(--line);stroke-width:1}.policy-cost-chart .best-line{fill:none;stroke:var(--model-accent);stroke-width:2.2}.policy-cost-chart .policy-dot{fill:var(--model-accent);stroke:var(--text);stroke-width:1.5;cursor:pointer}.policy-cost-chart .policy-dot:hover,.policy-cost-chart .policy-dot:focus{stroke-width:3;outline:none}.policy-chart-status{color:var(--muted);font-size:11px}.policy-replay{margin-top:12px;padding:18px;border:1px solid color-mix(in srgb,var(--model-accent) 50%,var(--line));border-radius:9px;background:#090c11}.policy-replay[hidden]{display:none}.policy-replay-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;margin:14px 0;background:var(--line);border:1px solid var(--line);border-radius:7px;overflow:hidden}.policy-replay-stats div{padding:10px;background:var(--panel)}.policy-replay-stats span,.policy-replay-stats b{display:block}.policy-replay-stats span{color:var(--muted);font-size:9px;text-transform:uppercase}.policy-replay-stats b{margin-top:3px;font-size:12px}.policy-replay-frame{width:100%;height:620px;border:1px solid var(--line);border-radius:7px;background:#05070b}.stage{position:relative;margin-top:14px;border:1px solid var(--line);border-top:2px solid var(--model-accent);border-radius:9px;background:var(--panel);overflow:hidden}canvas{display:block;width:100%;height:850px;cursor:crosshair}.tooltip{display:none;position:absolute;z-index:2;max-width:430px;pointer-events:none;background:#05070bef;border:1px solid #41516a;border-radius:7px;padding:9px 11px;white-space:pre-wrap;box-shadow:0 8px 28px #000b}.legend{display:flex;gap:18px;flex-wrap:wrap;padding:12px;color:var(--muted);border-top:1px solid var(--line)}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px}.help{color:var(--muted);margin-top:10px}.warning{color:#ffca6b}.ready{color:var(--ok)}.not-ready{color:var(--danger)}html.embedded main{padding:12px;max-width:none}html.embedded h1,html.embedded .lede,html.embedded .help{display:none}html.embedded .controls{border-radius:0}html.embedded .stage{border-radius:0}html.embedded canvas{height:720px}@media(max-width:700px){.policy-economics-head,.policy-replay-head{display:block}.policy-chart-status{margin-top:5px}.policy-replay-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.policy-replay-frame{height:420px}}
+    h1.display-title,.policy-economics h2.display-title,.policy-replay h2.display-title {font-family:var(--display);font-style:italic;font-weight:800;font-synthesis:none;letter-spacing:-.015em;padding-inline-end:.12em}
   </style>
 </head>
 <body><main>
-  <h1>Agents' 100m · Race control</h1>
+  <h1 class="display-title">Agents' 100m · Race control</h1>
   <p class="lede">Every competitor shares the same UTC clock. Agent training and sealed verification are attributed and rendered separately. <a id="trajectory-link" href="/trajectory">Open the agent trajectory →</a></p>
   <div class="controls">
     <select id="run"><option>Loading runs…</option></select>
@@ -30,11 +33,11 @@
     <span class="status" id="status"></span>
   </div>
   <section class="policy-economics" aria-labelledby="policy-cost-title">
-    <div class="policy-economics-head"><div><h2 id="policy-cost-title">Performance vs cost</h2><p>Only sealed policies submitted by this trial are shown. Select a dot to inspect its rendered replay.</p></div><span class="policy-chart-status" id="policy-chart-status"></span></div>
+    <div class="policy-economics-head"><div><h2 id="policy-cost-title" class="display-title">Performance vs cost</h2><p>Only sealed policies submitted by this trial are shown. Select a dot to inspect its rendered replay.</p></div><span class="policy-chart-status" id="policy-chart-status"></span></div>
     <svg id="policy-cost-chart" class="policy-cost-chart" role="img" aria-label="Effective speed versus agent cost for this trial"></svg>
   </section>
   <section class="policy-replay" id="policy-replay" hidden aria-live="polite">
-    <div class="policy-replay-head"><div><h2 id="policy-replay-title">Selected policy</h2><p id="policy-replay-subtitle"></p></div><button id="policy-replay-close" type="button">Close replay</button></div>
+    <div class="policy-replay-head"><div><h2 id="policy-replay-title" class="display-title">Selected policy</h2><p id="policy-replay-subtitle"></p></div><button id="policy-replay-close" type="button">Close replay</button></div>
     <div class="policy-replay-stats" id="policy-replay-stats"></div>
     <iframe class="policy-replay-frame" id="policy-replay-frame" title="Selected policy replay" loading="lazy"></iframe>
   </section>
@@ -57,4 +60,4 @@
     </div>
   </div>
   <p class="help">Scroll to zoom, drag to pan, and hover for exact UTC timestamps. Trace markers expose event type and tool name only; raw prompts, arguments, and outputs remain private.</p>
-</main><script src="/timeline.js?v=20260825-2"></script></body></html>
+</main><script src="/timeline.js?v=20260830-3"></script></body></html>

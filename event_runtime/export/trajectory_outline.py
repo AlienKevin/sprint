@@ -26,7 +26,7 @@ from typing import Any
 
 
 SCHEMA_VERSION = "trajectory-outline/v1"
-PROMPT_VERSION = "rollout-outline/v2"
+PROMPT_VERSION = "rollout-outline/v3"
 SOURCE_ACCESS_VERSION = "direct-public-trajectory/v1"
 DEFAULT_MODEL = "gpt-5.6-sol"
 DEFAULT_REASONING_EFFORT = "high"
@@ -105,10 +105,17 @@ def prompt(trajectory_path: Path, *, repository: Path) -> str:
         display_path = resolved_path
     return f"""Use your read-only shell and file-inspection tools to browse the exact
 sanitized public trajectory at `{display_path}` and author a semantic table of
-contents for a technical reader. This is the same JSON file served to the
+contents for a general agent-benchmark reader. This is the same JSON file served to the
 website. Analyze it directly in whatever way is most useful; do not ask for or
 rely on a preprocessed summary. Return only the JSON shape required by the
 output schema.
+
+Assume the reader has only seen this introduction: “Agents' 100m. Can agents
+train a humanoid to run? We give each agent an A10G GPU and a $10 total budget
+to train their humanoid runner.” They understand AI agents and benchmarks, but
+may know little about robotics, reinforcement learning, Isaac Lab, or the
+verifier implementation. Write to help that reader follow the agent's evolving
+plan, experiments, setbacks, and outcome without needing outside context.
 
 The trace's `public_step_id` is the step number visible to readers and its
 `step_id` is the stable boundary anchor. In a DeepSeek trace every record is a
@@ -123,18 +130,27 @@ frequency. Cover the entire ordered rollout with 2–20 contiguous chapters
 and never collapse the entire trace into one chapter. Every boundary must use
 an exact eligible `step_id` from the public trace.
 
-Titles must be concise, concrete action/outcome phrases. Each chapter summary
-must be one information-dense sentence of at most 150 characters explaining
-what the agent actually tried and what happened. Name concrete methods and results
-when the trace supports them—for example PPO, behavior cloning, reward shaping,
-phase-conditioned hopping, a verifier failure, measured distance, or a lane
-violation. Expand or explain specialist shorthand instead of emitting vague
-labels such as "phase", "wait", "monitoring", "testing candidates", or
+Titles must be concise, plain-language action/outcome phrases. Each chapter
+summary must be one clear sentence of at most 150 characters explaining what
+the agent tried, why it mattered, and what happened. Prefer observable behavior
+such as "trained a running controller", "changed the reward to discourage
+falls", or "the robot crossed a lane boundary" over implementation jargon.
+When a specialist term is essential, explain it on first use in ordinary
+language; for example, "PPO, a reinforcement-learning method". Do not use bare
+shorthand such as ABI, RSL-RL, KL, phase, rollout, reward shaping, warm start,
+checkpoint, or verifier unless the same title or sentence makes its meaning
+clear. Avoid raw tensor dimensions, internal filenames, class names, code-level
+details, and long lists of measurements unless one is essential to explain the
+decision or outcome. Never write as if the reader already knows the task rules.
+
+Do not emit vague labels such as "monitoring", "testing candidates", or
 "working on the policy". Do not invent facts, infer hidden success, or copy
 credentials. Use start_step_id/end_step_id to partition every viewer step
 exactly once, in order, with no gaps or overlaps. Use stable descriptive slugs
-for chapter IDs. The synopsis should state the overall strategy, major pivots,
-and final outcome in no more than two sentences and 360 characters."""
+for chapter IDs. The synopsis should tell a coherent plain-language story of
+the overall approach, major changes in direction, and final result in no more
+than two sentences and 360 characters. It should emphasize what a reader can
+learn from the run, not internal mechanics."""
 
 
 @contextlib.contextmanager

@@ -1,0 +1,45 @@
+{
+  "schema_version": "token-pricing/v1",
+  "basis": "undiscounted_list_price",
+  "unit": "USD per 1M tokens",
+  "as_of": "2026-08-28",
+  "verified_at": "2026-08-30",
+  "provenance": "Benchmark run OpenRouter pricing snapshots, verified against the exact model/provider endpoints. All five trials per model have the same list rates. Discounts are excluded; these are not realized cost-per-token estimates.",
+  "models": {
+    "deepseek": {
+      "model": "deepseek/deepseek-v4-flash-vision-exp",
+      "provider": "DeepSeek",
+      "provider_tag": "deepseek",
+      "cached_input": 0.014,
+      "input": 0.44,
+      "output": 1.32,
+      "source_url": "https://openrouter.ai/deepseek/deepseek-v4-flash-vision-exp",
+      "provider_api_url": "https://openrouter.ai/api/v1/models/deepseek/deepseek-v4-flash-vision-exp/endpoints",
+      "note": "DeepSeek peak rates; off-peak discounts excluded."
+    },
+    "luna": {
+      "model": "openai/gpt-5.6-luna",
+      "provider": "OpenAI",
+      "provider_tag": "openai",
+      "cached_input": 0.02,
+      "input": 0.2,
+      "output": 1.2,
+      "source_url": "https://openrouter.ai/openai/gpt-5.6-luna-20260709",
+      "provider_api_url": "https://openrouter.ai/api/v1/models/openai/gpt-5.6-luna/endpoints",
+      "long_context": {"threshold_input_tokens": 272000, "cached_input": 0.04, "input": 0.4, "output": 1.8},
+      "note": "Base rates. Above 272,000 input tokens: $0.04 cached input / $1.80 output per 1M tokens."
+    },
+    "glm": {
+      "model": "z-ai/glm-5.3-flash",
+      "provider": "Z.ai",
+      "provider_tag": "z-ai/fp8",
+      "cached_input": 0.03,
+      "input": 0.15,
+      "output": 0.5,
+      "source_url": "https://openrouter.ai/z-ai/glm-5.3-flash",
+      "provider_api_url": "https://openrouter.ai/api/v1/models/z-ai/glm-5.3-flash/endpoints",
+      "note": "Z.ai list rates before the 50% promotion.",
+      "discount_removal": "Effective endpoint price divided by (1 - 0.5)."
+    }
+  }
+}

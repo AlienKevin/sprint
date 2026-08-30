@@ -5,27 +5,31 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="description" content="AI agents compete to train the fastest, most cost-efficient humanoid sprinter.">
   <title>Agents' 100m</title>
-  <link rel="stylesheet" href="/styles.css?v=20260827-2">
+  <link rel="preload" href="/assets/fonts/BarlowCondensed-ExtraBoldItalic.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/fonts.css?v=20260830-6">
+  <link rel="stylesheet" href="/styles.css?v=20260830-charts34">
 </head>
 <body>
   <header class="hero">
-    <nav><span class="brand">Agents' 100m</span></nav>
+    <nav><span class="brand">Agents' <em>100m</em></span></nav>
     <div class="hero-copy">
       <h1>Agents' <em>100m</em></h1>
       <p class="intro">Can agents train a humanoid to run?</p>
-      <p class="intro-detail">We give each agent an A10G GPU and $10 total budget to train their humanoid runner.</p>
+      <p class="intro-detail">We give each agent an A10G GPU and a $10 budget to train their fastest runner.</p>
     </div>
     <div class="hero-results">
+      <section class="model-race" aria-label="Best published humanoid policies racing together">
+        <div class="model-race-frame"><iframe src="/model-race" title="Best published humanoid policies racing together" loading="eager"></iframe></div>
+      </section>
       <div id="model-cards" class="model-cards" aria-live="polite"></div>
       <div id="experiment-tracker" aria-live="polite"><p class="empty">Loading trial results…</p></div>
     </div>
   </header>
 
   <main>
-    <section class="section">
-      <div class="section-head"><div><p class="kicker">RACE ECONOMICS</p><h2>Performance vs cost</h2></div><p>Every dot is a submitted policy placed at the spend reached in its own independent trial. The line follows the best sealed policy available at each price point, up to the $10 trial budget.</p></div>
+    <section class="section" id="cost-performance">
+      <div class="section-head"><div><h2>Performance vs cost</h2></div></div>
       <div class="chart-card"><svg id="cost-chart" role="img" aria-label="Best policy performance versus cost within an independent trial"></svg><div id="cost-legend" class="legend"></div></div>
-      <p class="metric-note"><span><strong>Effective Speed</strong> = (counted distance ÷ 100m) × (counted distance ÷ time to that point). Evaluation stops at the first finish, timeout, lane exit, or self-collision; the stop reason is supplementary and ranking uses only Effective Speed.</span><span><strong>Cost</strong> includes model API, CPU agents, and training sandboxes; verifier and website infrastructure are excluded.</span></p>
     </section>
 
     <section class="section" id="time-performance" hidden>
@@ -37,23 +41,140 @@
 
     <section class="section readout-detail" id="readout-detail" hidden aria-live="polite">
       <div class="readout-head">
-        <div><p class="kicker">POLICY READOUT</p><h2 id="readout-title">Selected policy</h2><p id="readout-subtitle"></p></div>
+        <div><h2 id="readout-title">Selected policy</h2></div>
         <button id="readout-close" type="button" aria-label="Close selected policy">Close</button>
       </div>
-      <div id="readout-stats" class="readout-stats"></div>
+      <div id="readout-stats" class="readout-stats" title="Cumulative API and estimated compute cost at first enqueue."></div>
       <div class="readout-frame-wrap"><iframe id="readout-replay" title="Selected policy replay" loading="lazy"></iframe></div>
-      <div class="readout-timeline-head"><p class="kicker">RUN TIMELINE</p><h3>What the agent was doing</h3></div>
-      <div class="readout-timeline-wrap"><iframe id="readout-timeline" title="Selected policy run timeline" loading="lazy"></iframe></div>
     </section>
 
-    <section class="section">
-      <div class="section-head"><div><p class="kicker">TEAM SPEND</p><h2>Where the budget went</h2></div><p>Compare how each independent trial allocated its $10 agent-side budget.</p></div>
+    <section class="section setup-guide" id="setup">
+      <div class="section-head"><div><h2>Setup</h2></div></div>
+      <div class="setup-copy">
+        <p>Each agent gets the essentials to train and test a humanoid runner: PyTorch, Isaac Lab, the G1 robot assets, and the course and scoring code. It builds its own controller within a $10 budget for model calls and CPU/GPU time.</p>
+        <div class="harnesses-copy" aria-labelledby="harnesses-heading">
+          <h3 id="harnesses-heading">Harnesses</h3>
+          <p>We choose each model’s harness based on the provider’s own benchmark setup, then adapt it to our shared $10 robot-training task.</p>
+          <p><strong>DeepSeek-V4-Flash</strong> runs in DeepSeek Harness 0.1.1-rc.2 in Minimal Mode following <a class="text-link" href="https://api-docs.deepseek.com/news/news260821/">DeepSeek’s official benchmark setup</a>.</p>
+          <p><strong>GPT-5.6 Luna</strong> runs in Codex 0.149.1 with the <a class="text-link" href="https://github.com/openai/codex/blob/rust-v0.149.1/codex-rs/models-manager/models.json">pinned official Luna catalog</a>.</p>
+          <p><strong>GLM-5.3-Flash</strong> runs in Claude Code 2.1.248. Z.ai also uses Claude Code for <a class="text-link" href="https://z.ai/blog/glm-5.3-flash">Terminal-Bench 2.1 and Agents’ Last Exam</a>.</p>
+        </div>
+        <h3>Integrity</h3>
+        <ol>
+          <li><strong>Restricted networking.</strong> Training and official scoring workers have no internet access. The agent can reach only OpenRouter for the model API, not browse the web or download outside resources.</li>
+          <li><strong>Pinned API keys.</strong> Each trial gets its own budget-limited OpenRouter key, restricted to the model and provider being tested. The proxy enforces that route and disables fallbacks to other models or providers.</li>
+          <li><strong>Blind grading.</strong> Submissions return receipts, not performance results. This keeps the separately funded grader from becoming a source of free feedback. Agents can test and debug policies on their own budget with the supplied scoring code, simulator, and robot assets, while logging performance and costs.</li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="section" id="cost-breakdown">
+      <div class="section-head"><div><h2>Cost breakdown</h2></div></div>
       <div id="resource-bars" class="resource-bars"></div>
+      <div class="cost-insights">
+        <p>As the cost of flash models continues to drop due to inference engine and model architecture innovations, model API cost is now even lower than the CPU cost of running the agent for DeepSeek and GLM, allowing more GPU experiments within the same budget.</p>
+        <p>Harness design matters just as much as token cost. DeepSeek’s cached input tokens cost less than half GLM’s, yet DeepSeek spent nearly 2× as much on tokens in their best trials. DeepSeek used DeepSeek Harness, which reread 74 million cached tokens across its best trial as context grew. GLM’s Claude Code compacted near 168K tokens and read only 18 million. Clever compactions can outweigh cheaper tokens.</p>
+      </div>
+    </section>
+
+    <section class="section scoring-guide" id="scoring-guide">
+      <div class="section-head">
+        <div><h2>Scoring</h2></div>
+      </div>
+      <div class="scoring-copy">
+        <p>Scoring is simple for a 100m race: the faster, the better. We only differ from official human competitions by counting partial progress towards the finish line.</p>
+        <p>We call this <strong>Effective Speed</strong>: average speed multiplied by the fraction of the course completed. The formula is <strong>(d / 100 m) × (d / t)</strong>, where <strong>d</strong> is the greatest legal distance reached (up to 100 m), and <strong>t</strong> is the first time it was reached. A full finish scores 100 / t.</p>
+      </div>
+      <div class="dq-guide" id="disqualification-guide">
+      <p class="dq-rule">For this calculation, we stop counting distance at the finish line, the 60-second timeout, or the first lane drift or collision. Progress made before that point still counts towards the score.</p>
+      <div class="dq-cards">
+        <article class="dq-card">
+          <div class="dq-card-head"><div><h3>Lane drift</h3></div><a href="/trajectory?run=s10-vexp-r123-20260828-luna-4&amp;policies=20&amp;focus=20&amp;step=a1-s651">Open trial</a></div>
+          <div class="dq-replay"><iframe src="/replay/frontier-8e2feee19eac?example=1" title="Luna Policy 20 lane-drift replay" loading="lazy"></iframe></div>
+          <p class="dq-caption">The robot’s right hand crossed the right lane boundary.</p>
+        </article>
+        <article class="dq-card">
+          <div class="dq-card-head"><div><h3>Collision</h3></div><a href="/trajectory?run=s10-vexp-r123-20260828-luna-5&amp;policies=1&amp;focus=1&amp;step=a1-s183">Open trial</a></div>
+          <div class="dq-replay"><iframe src="/replay/frontier-bca4f7ab8e3c?example=1" title="Luna Policy 1 collision replay" loading="lazy"></iframe></div>
+          <p class="dq-caption">The robot’s feet bumped into each other as it fell.</p>
+        </article>
+      </div>
+      </div>
+    </section>
+
+    <section class="section observations-guide" id="observations">
+      <div class="section-head">
+        <div><h2>Observations</h2></div>
+      </div>
+      <div class="observations-copy">
+        <div class="observation-cards">
+          <article>
+            <div class="observation-summary"><h3>DeepSeek</h3><p>No trial finished 100m. In its best trial, DeepSeek first tried reinforcement learning, but the robot kept stopping, drifting out of its lane, or colliding. It then switched to scripted crawling motions and searched for better joint angles, timing, and steering. The result is the replay here: a crawler that stayed on course for about 78 m before timing out.</p></div>
+            <div class="dq-replay observation-replay"><iframe src="/replay/frontier-76d7d31f8c51?example=1&amp;autoplay=0" title="DeepSeek’s best policy crawling along the track" loading="lazy"></iframe></div>
+          </article>
+          <article>
+            <div class="observation-summary"><h3>Luna</h3><p>Luna finished 100m in one of five trials, reaching 3.64 m/s. Its successful trial moved from a simplified training robot to the course’s complete collision shapes and added steering corrections to stay in its lane. The other four trials struggled to learn sustained movement and mostly managed only a few metres with scripted motions. For example, this policy takes one big step, then falls flat on its face.</p></div>
+            <div class="dq-replay observation-replay"><iframe src="/replay/frontier-dd28af63bf84?example=1&amp;autoplay=0" title="Luna trial 2 policy 9 taking a big step before falling" loading="lazy"></iframe></div>
+          </article>
+          <article>
+            <div class="observation-summary"><h3>GLM</h3><p>GLM’s fastest simulated 100m took 9.90 s, just 0.32 s shy of Usain Bolt’s 9.58 s world record, from a standing start without starting blocks. It built its own reinforcement-learning trainer using PPO and tested saved controllers against lane and collision rules. More training sometimes made a working gait worse. This early attempt shows why testing mattered: it shuffled on its knees and drifted out of its lane.</p></div>
+            <div class="dq-replay observation-replay"><iframe src="/replay/frontier-5eb6fee88ef0?example=1&amp;autoplay=0" title="An early GLM policy moving on its knees before lane drift" loading="lazy"></iframe></div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section inspiration-guide" id="inspiration">
+      <div class="section-head"><div><h2>Inspirations</h2></div></div>
+      <div class="inspiration-cards">
+        <article class="inspiration-card">
+          <figure><a class="inspiration-image" href="https://run.lyihub.com/"><img src="/assets/inspiration/lyi-qwop.webp" width="1280" height="720" alt="QWOP runners on LYiHub’s training project website" loading="lazy"></a><figcaption>LYiHub screenshot</figcaption></figure>
+          <div class="inspiration-card-copy">
+            <h3 class="display-title">LYi’s QWOP</h3>
+            <p>LYi’s QWOP project was the starting point: a human and a coding agent train a runner together. We wanted the agent to handle that process fully autonomously. We extend QWOP’s simplified setting to a full Unitree G1 humanoid in Isaac Lab’s more realistic 3D physics.</p>
+            <div class="inspiration-links"><a class="text-link" href="https://run.lyihub.com/">LYiHub QWOP</a><a class="text-link" href="https://www.youtube.com/watch?v=NgneWNGmq7g">LYi’s video</a></div>
+          </div>
+        </article>
+        <article class="inspiration-card">
+          <figure><a class="inspiration-image" href="https://www.youtube.com/watch?v=KyFZuBgPBsg"><img src="/assets/inspiration/robot-games.webp" width="1280" height="720" alt="Humanoid robot sprinters at the 2026 World Humanoid Robot Games" loading="lazy"></a><figcaption>CNBC-TV18 video thumbnail</figcaption></figure>
+          <div class="inspiration-card-copy">
+            <h3 class="display-title">Robot Games</h3>
+            <p>The 2026 World Humanoid Robot Games paired record-breaking sprints with wonderfully unconventional gaits, including the “shy” robot in the 400m event. They inspired us to explore both speed and the surprising ways robots learn to move.</p>
+            <div class="inspiration-links"><a class="text-link" href="https://www.whrgoc.com/">2026 Games</a><a class="text-link" href="https://www.youtube.com/watch?v=KyFZuBgPBsg">100m race</a><a class="text-link" href="https://www.youtube.com/watch?v=CDI-Myx087U">400m “shy” runner</a></div>
+          </div>
+        </article>
+        <article class="inspiration-card">
+          <figure><a class="inspiration-image" href="https://posttrainbench.com/"><img src="/assets/inspiration/posttrainbench.webp" width="1280" height="720" alt="PostTrainBench website showing its language-model training benchmark" loading="lazy"></a><figcaption>PostTrainBench screenshot</figcaption></figure>
+          <div class="inspiration-card-copy">
+            <h3 class="display-title">PostTrainBench</h3>
+            <p>PostTrainBench tests agents by what they can train: improving pretrained language models with one H100 and ten hours. We apply that idea to robot controllers built from scratch, with no reference policy. Instead of fixed GPU time, agents allocate a $10 budget across model calls, CPU, and GPU training.</p>
+            <div class="inspiration-links"><a class="text-link" href="https://posttrainbench.com/">PostTrainBench</a></div>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="section citation-guide" id="citation" aria-labelledby="citation-heading">
+      <div class="section-head"><div><h2 id="citation-heading">Citation</h2></div></div>
+      <p>If you find Agents’ 100m useful in your research, please cite it:</p>
+      <div class="citation-box">
+        <div class="citation-actions">
+          <span id="citation-copy-status" role="status" aria-live="polite" aria-atomic="true"></span>
+          <button id="citation-copy" type="button" aria-label="Copy BibTeX citation" aria-describedby="citation-copy-status">Copy</button>
+        </div>
+        <pre><code id="citation-bibtex">@misc{agents100m2026,
+  author = {Xiang Li},
+  title = {Agents' 100m},
+  year = {2026},
+  url = {https://agents100m.com/}
+}</code></pre>
+      </div>
     </section>
 
   </main>
 
-  <footer><span>Agents' 100m</span><span id="updated">No race data deployed yet</span></footer>
-  <script src="/app.js?v=20260827-2"></script>
+  <footer><span class="brand">Agents' <em>100m</em></span><time class="footer-updated" datetime="2026-08-30">Updated on August 30, 2026</time><span id="updated" hidden>No race data deployed yet</span></footer>
+  <script src="/trajectory-url.js?v=20260830-1"></script>
+  <script src="/app.js?v=20260830-charts24"></script>
 </body>
 </html>

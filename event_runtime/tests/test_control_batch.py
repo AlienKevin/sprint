@@ -4254,7 +4254,7 @@ def test_recovered_log_alert_is_archived() -> None:
 
 def test_website_javascript_recognizes_every_launchable_model_family() -> None:
     source = (ROOT / "web/app.js").read_text()
-    assert "DeepSeek V4 Flash Vision Exp" in source
+    assert "DeepSeek-V4-Flash" in source
     assert "DeepSeek V4 Flash 0731 · Baidu" in source
     assert "GPT‑5.6 Luna" in source
     assert "GPT‑5.6 Sol" in source

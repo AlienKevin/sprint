@@ -310,7 +310,10 @@ def policy_replay_points(models: Iterable[dict[str, Any]]) -> list[dict[str, Any
     selected: dict[tuple[str, str], dict[str, Any]] = {}
     for model in models:
         for point in model.get("points", []):
-            selected[(point["source_run_id"], point["policy_sha256"])] = point
+            selected[(point["source_run_id"], point["policy_sha256"])] = {
+                **point,
+                "_model": model.get("model"),
+            }
     return sorted(
         selected.values(),
         key=lambda point: (point["source_run_id"], point["submission_index"]),
@@ -335,38 +338,61 @@ def publish_policy_replays(
     hq = load_json(renderer_root / "g1_hq.json")["meshes"]
     replay_dir = WEB / "replay"
     replay_dir.mkdir(parents=True, exist_ok=True)
+    capture_dir = WEB / "captures"
+    capture_dir.mkdir(parents=True, exist_ok=True)
     for stale in replay_dir.glob("readout-*.html"):
+        stale.unlink()
+    for stale in capture_dir.glob("readout-*.json"):
         stale.unlink()
 
     url_by_hash: dict[str, str] = {}
     for point in policy_replay_points(models):
         policy_hash = str(point["policy_sha256"])
         archived = replay_dir / f"frontier-{policy_hash[:12]}.html"
-        if archived.is_file():
-            url_by_hash[policy_hash] = f"/replay/{archived.name}"
-            continue
         resolved = resolve_pose_capture(
             run_id=str(point["source_run_id"]),
             policy_hash=policy_hash,
             trusted=trusted,
         )
         if resolved is None:
+            if archived.is_file():
+                # A sealed replay can outlive the local raw run artifacts.
+                # Reuse it only when the authoritative capture is unavailable.
+                url_by_hash[policy_hash] = f"/replay/{archived.name}"
+                continue
             raise RuntimeError(f"policy replay unavailable for {policy_hash}")
         capture_path, _ = resolved
         capture = load_json(capture_path)
+        public_capture = capture_dir / f"frontier-{policy_hash[:12]}.json"
+        if (
+            not public_capture.is_file()
+            or public_capture.read_bytes() != capture_path.read_bytes()
+        ):
+            public_capture.write_bytes(capture_path.read_bytes())
         data = renderer.capture_to_data(
             capture,
             hq,
             f"trial {point['source_trial']} / policy {point['submission_index']}",
         )
+        identity = renderer.model_identity(point.get("_model"))
+        if identity:
+            data["policies"][0].update(
+                identity=identity,
+                label=identity["model"],
+                color=identity["color"],
+            )
+            data["colors"] = [int(identity["color"].removeprefix("#"), 16)]
         html = renderer.assemble_html(
             data,
             title="The Race to AGI4ALL · Policy replay",
             eyebrow="POLICY REPLAY",
             headline=f"Trial {point['source_trial']} · policy {point['submission_index']}",
             lede="Policy readout.",
-            cap=f"Effective Speed {float(point['continuous_score_mps']):.3f} m/s",
-            story="Replay freezes at the first disqualification or finish.",
+            cap=f"Effective Speed {float(point['continuous_score_mps']):.2f} m/s",
+            story=(
+                "Distance freezes at the first stop; "
+                "a short passive visual settle may follow."
+            ),
             sr_only="Unitree G1 policy replay on the sprint course.",
             active=policy_hash[:12],
         )
@@ -377,7 +403,7 @@ def publish_policy_replays(
             "</style>"
         )
         html = html.replace('<div class="wrap">', embed_css + '<div class="wrap">', 1)
-        filename = f"readout-{policy_hash[:12]}.html"
+        filename = archived.name
         (replay_dir / filename).write_text(html)
         url_by_hash[policy_hash] = f"/replay/{filename}"
 
@@ -418,10 +444,147 @@ def cumulative_cost_at_epoch(ledger: dict[str, Any], epoch_ms: int) -> float:
     return agent_cost.cumulative_cost_at_epoch(ledger, epoch_ms)
 
 
+def settled_cost_reconciliation(
+    timeline: dict[str, Any], ledger: dict[str, Any]
+) -> dict[str, float | str]:
+    """Reconcile the deterministic cost curve to the authoritative settlement.
+
+    Request-time tariff integration gives us the shape of the historical Modal
+    spend curve, while the terminal provider reconciliation gives us its exact
+    endpoint.  API usage is already event-addressable and is therefore left
+    unscaled; only the Modal portion is normalized to the settled agent-side
+    total.  Active runs without a settlement keep the deterministic curve.
+    """
+
+    summary = timeline.get("comparison_summary") or {}
+    end_epoch_ms = int((timeline.get("clock") or {})["end_epoch_ms"])
+    raw = agent_cost.cumulative_cost_components_at_epoch(ledger, end_epoch_ms)
+    raw_modal = float(raw["cpu_agent_usd"] + raw["training_sandboxes_usd"])
+    final_total = finite_number(summary.get("final_agent_total_cost_usd"))
+    final_api = finite_number(summary.get("final_api_cost_usd"))
+    if final_total is None or final_api is None or raw_modal <= 0.0:
+        return {
+            "basis": "deterministic_tariff_curve",
+            "final_total_usd": float(raw["total_usd"]),
+            "final_api_usd": float(raw["model_api_usd"]),
+            "modal_scale": 1.0,
+            "raw_final_total_usd": float(raw["total_usd"]),
+        }
+    settled_modal = max(0.0, final_total - final_api)
+    return {
+        "basis": "provider_settled_modal_endpoint",
+        "final_total_usd": final_total,
+        "final_api_usd": final_api,
+        "modal_scale": settled_modal / raw_modal,
+        "raw_final_total_usd": float(raw["total_usd"]),
+    }
+
+
+def settled_cost_components_at_epoch(
+    ledger: dict[str, Any], epoch_ms: int, reconciliation: dict[str, float | str]
+) -> dict[str, float]:
+    raw = agent_cost.cumulative_cost_components_at_epoch(ledger, epoch_ms)
+    api = float(raw["model_api_usd"])
+    modal = float(raw["cpu_agent_usd"] + raw["training_sandboxes_usd"])
+    modal *= float(reconciliation["modal_scale"])
+    return {
+        "model_api_usd": api,
+        "agent_modal_usd": modal,
+        "total_usd": api + modal,
+    }
+
+
 def run_is_terminal(run_id: str) -> bool:
     """Return whether the durable run controller has acknowledged shutdown."""
 
     return (RUNS / run_id / "STOP_ACK.json").is_file()
+
+
+def policy_queue_cost_fields(
+    policy: dict[str, Any],
+    ledger: dict[str, Any],
+    reconciliation: dict[str, float | str],
+) -> dict[str, Any]:
+    """Cost at the proven first agent queue, separate from result-time curves.
+
+    API events and allocated intervals stop at the queue cutoff. The historical
+    compute curve is calibrated to its settled endpoint, so this is an estimate
+    of compute cost then, not an exact per-policy bill or a live agent snapshot.
+    Unplaced policies must not inherit their later acceptance/result/final cost.
+    """
+    fields = {
+        "queued_at": None,
+        "queue_epoch_ms": None,
+        "queue_source_step_id": policy.get("queue_source_step_id"),
+        "queue_source_public_step_id": policy.get("queue_source_public_step_id"),
+        "queue_source_job_id": policy.get("queue_source_job_id"),
+        "queue_source_basis": policy.get("queue_source_basis"),
+        "cost_at_queue_usd": None,
+        "cost_at_queue_api_usd": None,
+        "cost_at_queue_compute_usd": None,
+        "cost_at_queue_basis": None,
+    }
+    if not policy.get("queue_source_step_id"):
+        return fields
+    queued_at = policy.get("enqueued_at")
+    if not isinstance(queued_at, str):
+        return fields
+    try:
+        epoch_ms = int(datetime.fromisoformat(queued_at.replace("Z", "+00:00")).timestamp() * 1000)
+    except (ValueError, OverflowError):
+        return fields
+    cost = settled_cost_components_at_epoch(ledger, epoch_ms, reconciliation)
+    fields.update({
+        "queued_at": queued_at,
+        "queue_epoch_ms": epoch_ms,
+        "cost_at_queue_usd": round(cost["total_usd"], 6),
+        "cost_at_queue_api_usd": round(cost["model_api_usd"], 6),
+        "cost_at_queue_compute_usd": round(cost["agent_modal_usd"], 6),
+        "cost_at_queue_basis": (
+            "provider_settled_modal_endpoint_estimate"
+            if reconciliation["basis"] == "provider_settled_modal_endpoint"
+            else "deterministic_tariff_curve"
+        ),
+    })
+    return fields
+
+
+def position_point_at_queue(
+    point: dict[str, Any], origin_epoch_ms: float | None
+) -> dict[str, Any]:
+    """Position eventual verified quality at its proven originating request.
+
+    Preserve result-time accounting as provenance. An unresolved queue retains
+    its scored readout, but null coordinates exclude it from charts and AUCs.
+    Queue attribution does not claim that the artifact or score existed then.
+    """
+    queue_epoch_ms = finite_number(point.get("queue_epoch_ms"))
+    queue_cost = finite_number(point.get("cost_at_queue_usd"))
+    resolved = (
+        bool(point.get("queue_source_step_id"))
+        and queue_epoch_ms is not None
+        and queue_cost is not None
+    )
+    hours = (
+        (queue_epoch_ms - origin_epoch_ms) / 3_600_000.0
+        if resolved and origin_epoch_ms is not None
+        else None
+    )
+    return {
+        **point,
+        "result_epoch_ms": point.get("epoch_ms"),
+        "result_hours_since_agent_launch": point.get("hours_since_agent_launch"),
+        "cost_at_result_usd": point.get("cumulative_agent_cost_usd"),
+        "cost_at_result_api_usd": point.get("cumulative_api_cost_usd"),
+        "cost_at_result_compute_usd": point.get("cumulative_modal_cost_usd_reconciled"),
+        "epoch_ms": int(queue_epoch_ms) if resolved else None,
+        "hours_since_agent_launch": None if hours is None else round(hours, 6),
+        "cumulative_agent_cost_usd": queue_cost if resolved else None,
+        "cumulative_api_cost_usd": point.get("cost_at_queue_api_usd") if resolved else None,
+        "cumulative_modal_cost_usd_reconciled": (
+            point.get("cost_at_queue_compute_usd") if resolved else None
+        ),
+    }
 
 
 def aggregate_models(
@@ -509,6 +672,10 @@ def aggregate_models(
                         for point in points
                     ),
                     "missing_pose_capture_count": missing,
+                    "unplaced_queue_count": sum(
+                        len(run["summary"].get("unplaced_queue_indices", []))
+                        for run in runs
+                    ),
                     "best_continuous_score_mps": (
                         None if best is None else best["continuous_score_mps"]
                     ),
@@ -603,7 +770,14 @@ def build(
     )
 
     time_caps: list[float] = []
-    prepared: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]] = []
+    prepared: list[
+        tuple[
+            dict[str, Any],
+            dict[str, Any],
+            dict[str, Any],
+            dict[str, float | str],
+        ]
+    ] = []
     cost_ledgers: dict[str, dict[str, Any]] = {}
     complete = all(run_is_terminal(str(meta["run_id"])) for meta in selected)
     for meta in selected:
@@ -625,7 +799,9 @@ def build(
             raise RuntimeError(f"{meta['run_id']} lacks a cost/time summary")
         time_caps.append(wall_ms / 3_600_000.0)
         cost_ledgers[meta["run_id"]] = ledger
-        prepared.append((meta, timeline, ledger))
+        prepared.append(
+            (meta, timeline, ledger, settled_cost_reconciliation(timeline, ledger))
+        )
 
     per_trial_cost_cap = (
         configured_per_trial_cost_cap_usd() if cost_cap is None else cost_cap
@@ -635,7 +811,7 @@ def build(
     common_cost_cap = per_trial_cost_cap
     common_time_cap = min(time_caps)
     output_runs: list[dict[str, Any]] = []
-    for meta, timeline, cost_ledger in prepared:
+    for meta, timeline, cost_ledger, cost_reconciliation in prepared:
         run_id = meta["run_id"]
         policy_meta = policy_by_run.get(run_id)
         public = (
@@ -669,7 +845,6 @@ def build(
             capture, capture_provenance = resolved_capture
             reconstruction = score_capture(capture)
             result_cost = artifact.get("cost_at_result") or {}
-            api_cost = float(result_cost.get("api_calculated_usd") or 0.0)
             epoch_ms = finite_number(result_cost.get("epoch_ms"))
             origin_ms = finite_number(
                 (timeline.get("clock") or {}).get("origin_epoch_ms")
@@ -679,40 +854,42 @@ def build(
                 if epoch_ms is None or origin_ms is None
                 else (epoch_ms - origin_ms) / 3_600_000.0
             )
+            settled_cost = (
+                None
+                if epoch_ms is None
+                else settled_cost_components_at_epoch(
+                    cost_ledger, int(epoch_ms), cost_reconciliation
+                )
+            )
             point = {
                 "submission_index": index,
                 "policy_sha256": policy["policy_sha256"],
+                **policy_queue_cost_fields(policy, cost_ledger, cost_reconciliation),
                 "finished_at": policy.get("finished_at"),
                 "hours_since_agent_launch": None if hours is None else round(hours, 6),
                 "epoch_ms": None if epoch_ms is None else int(epoch_ms),
                 "cumulative_agent_cost_usd": (
                     None
-                    if epoch_ms is None
-                    else round(cumulative_cost_at_epoch(cost_ledger, int(epoch_ms)), 6)
+                    if settled_cost is None
+                    else round(settled_cost["total_usd"], 6)
                 ),
-                "cumulative_api_cost_usd": round(api_cost, 6),
+                "cumulative_api_cost_usd": (
+                    None
+                    if settled_cost is None
+                    else round(settled_cost["model_api_usd"], 6)
+                ),
                 "cumulative_modal_cost_usd_reconciled": (
                     None
-                    if epoch_ms is None
-                    else round(
-                        cumulative_cost_at_epoch(cost_ledger, int(epoch_ms)) - api_cost,
-                        6,
-                    )
+                    if settled_cost is None
+                    else round(settled_cost["agent_modal_usd"], 6)
                 ),
                 "failed_gates": policy.get("failed_gates") or [],
                 "pose_capture_provenance": capture_provenance,
                 **reconstruction,
             }
-            points.append(point)
-        if missing:
-            raise RuntimeError(
-                f"{run_id} lacks trusted pose trajectories for submissions "
-                f"{missing}; continuous score publication is fail-closed"
-            )
+            points.append(position_point_at_queue(point, origin_ms))
         best = max(points, key=lambda row: row["continuous_score_mps"], default=None)
-        current_cost = cumulative_cost_at_epoch(
-            cost_ledger, int((timeline.get("clock") or {})["end_epoch_ms"])
-        )
+        current_cost = float(cost_reconciliation["final_total_usd"])
         output_runs.append(
             {
                 "run_id": run_id,
@@ -723,6 +900,11 @@ def build(
                 "summary": {
                     "readout_count": len(points),
                     "missing_readout_indices": missing,
+                    "unplaced_queue_indices": [
+                        point["submission_index"]
+                        for point in points
+                        if point["epoch_ms"] is None
+                    ],
                     "best_continuous_score_mps": (
                         None if best is None else best["continuous_score_mps"]
                     ),
@@ -736,6 +918,10 @@ def build(
                         points, "hours_since_agent_launch", common_time_cap
                     ),
                     "final_agent_cost_usd": current_cost,
+                    "cost_reconciliation_basis": cost_reconciliation["basis"],
+                    "raw_tariff_final_agent_cost_usd": cost_reconciliation[
+                        "raw_final_total_usd"
+                    ],
                     "wall_duration_hours": (
                         float(
                             (timeline.get("comparison_summary") or {}).get(
@@ -760,7 +946,7 @@ def build(
         trusted=trusted_captures,
     )
     payload = {
-        "schema_version": 3,
+        "schema_version": 4,
         "generated_at": utc_now(),
         "batch_prefix": batch_prefix,
         "snapshot_status": "completed" if complete else "active_provisional",
@@ -772,20 +958,24 @@ def build(
             "higher_is_better": True,
             "distance_semantics": "maximum forward distance before the first finish, timeout, lane exit, or self-collision",
             "provenance": "official Effective Speed independently reconstructed from the trusted 50 Hz verifier pose capture",
-            "coverage_policy": "fail closed unless every published policy has an exact trusted pose trajectory; website rendering is not a scoring dependency",
+            "coverage_policy": "publish a score only for policies with an exact trusted pose trajectory; policies without one remain visible as missing readouts and are excluded from scoring",
         },
         "cost": {
             "includes": ["model API", "CPU agent", "training sandbox"],
             "excludes": ["verifier sandbox", "website", "observability infrastructure"],
-            "modal_method": "allocation intervals integrated to each readout timestamp using the pinned published requested-resource tariff; provider billing is retained separately for audit",
+            "coordinate_basis": "first_agent_queue",
+            "modal_method": "allocation intervals are integrated only through the proven first agent queue timestamp using the pinned requested-resource tariff, then the historical Modal curve is normalized to the authoritative terminal provider settlement; API request costs through that cutoff remain unscaled",
             "common_auc_cap_usd": model_cost_cap,
             "per_trial_cost_cap_usd": per_trial_cost_cap,
             "trial_counts_by_model": family_counts,
-            "aggregation": "place every submitted policy at the cumulative cost of its own independent trial; take the best policy quality available at each per-trial price point",
+            "aggregation": "place every policy's eventual verified score at the cumulative cost of its own independent trial when the agent first queued it; take the best queue-attributed quality at each per-trial price point",
+            "interpretation": "queue attribution is not artifact completion, verifier admission, or score availability; work performed after the first request is not included in that point's cost",
+            "unresolved_queue_policy": "retain scored run readouts with null coordinates; exclude them from plotted model points and AUCs rather than substituting result or final cost",
         },
         "time": {
+            "coordinate_basis": "first_agent_queue",
             "common_auc_cap_hours": common_time_cap,
-            "aggregation": "align the model's trials by elapsed agent time; take the best policy quality produced by any trial",
+            "aggregation": "attribute eventual verified policy quality to its proven first agent queue timestamp; retain the model-family agent-launch origin for the time axis",
         },
         "models": output_models,
         "runs": output_runs,
@@ -821,8 +1011,19 @@ def main() -> int:
         type=Path,
         default=WEB / "data/performance/current.json",
     )
+    parser.add_argument(
+        "--run-id",
+        action="append",
+        dest="run_ids",
+        help="explicit run ID to include; repeat for a curated multi-prefix cohort",
+    )
     args = parser.parse_args()
-    payload = build(args.batch_prefix, args.output, args.cost_cap)
+    payload = build(
+        args.batch_prefix,
+        args.output,
+        args.cost_cap,
+        run_ids=args.run_ids,
+    )
     for run in payload["runs"]:
         summary = run["summary"]
         best = summary["best_continuous_score_mps"]

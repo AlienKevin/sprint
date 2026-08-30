@@ -72,7 +72,7 @@ def test_build_artifact_anchors_every_chapter_to_trace() -> None:
 
     assert result["schema_version"] == "trajectory-outline/v1"
     assert result["trajectory"]["source_fingerprint"] == "f" * 64
-    assert result["generator"]["prompt_version"] == "rollout-outline/v2"
+    assert result["generator"]["prompt_version"] == "rollout-outline/v3"
     assert result["generator"]["source_access"] == "direct-public-trajectory/v1"
     assert result["chapters"][0]["start"] == {
         "step_id": "a1-s1",
@@ -114,6 +114,9 @@ def test_prompt_points_codex_at_exact_public_trace(tmp_path: Path) -> None:
     assert "web/data/trajectories/run-a.json" in result
     assert "do not ask for or\nrely on a preprocessed summary" in result
     assert "`public_step_id`" in result
+    assert "general agent-benchmark reader" in result
+    assert "may know little about robotics" in result
+    assert "plain-language" in result
 
 
 def test_generate_reuses_valid_matching_artifact(
