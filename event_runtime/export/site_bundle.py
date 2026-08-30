@@ -7,6 +7,7 @@ import argparse
 import errno
 import json
 import os
+import re
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -237,6 +238,42 @@ def _resolve_asset(source: Path, relative: Path) -> tuple[Path, Path]:
     raise RuntimeError(f"current website data references a missing asset: /{relative}")
 
 
+def _copy_comparison_shell(source: Path, destination: Path, run_ids: tuple[str, ...]) -> None:
+    """Include the frontend-only replay route without leaking historical runs.
+
+    It is referenced by JavaScript rather than result JSON, so ordinary dynamic
+    asset discovery misses it. Its registry is also the capture dependency list.
+    Shared content-addressed engine/mesh files live in the static assets tree.
+    """
+    relative = Path("replay/trial-comparison.html")
+    path = source / relative
+    if not path.is_file():
+        return
+    html = path.read_text()
+    match = re.search(r"const TRIAL_BOOT=\{\s*registry:", html)
+    if match is None:
+        raise RuntimeError("comparison replay shell has no registry")
+    registry, end = json.JSONDecoder().raw_decode(html, match.end())
+    if not isinstance(registry, dict) or any(not isinstance(row, dict) for row in registry.values()):
+        raise RuntimeError("comparison replay registry must contain objects")
+    selected = set(run_ids)
+    filtered = {key: row for key, row in registry.items() if row.get("runId") in selected}
+    for key, row in filtered.items():
+        url = str(row.get("url") or "")
+        if not re.fullmatch(r"frontier-[a-f0-9]{12}", key) or url != f"/captures/{key}.json":
+            raise RuntimeError(f"comparison registry has an invalid capture URL: {url}")
+        capture = _safe_relative(url)
+        item, resolved = _resolve_asset(source, capture)
+        _link_or_copy(item, destination / resolved, root=source)
+    html = html[:match.end()] + json.dumps(filtered, separators=(",", ":")).replace("</", "<\\/") + html[end:]
+    output = destination / relative
+    output.parent.mkdir(parents=True, exist_ok=True)
+    # Do not mutate a source hardlink: the filtered registry is bundle-specific.
+    if output.exists():
+        raise FileExistsError(output)
+    output.write_text(html)
+
+
 def _copy_current_dynamic_tree(
     source: Path,
     destination: Path,
@@ -367,7 +404,10 @@ def _copy_current_dynamic_tree(
                 f"website asset aliases resolve to different sources: /{resolved_relative}"
             )
     for resolved_relative, item in sorted(resolved_assets.items()):
+        if resolved_relative == Path("replay/trial-comparison.html"):
+            continue  # Its cohort-specific registry is written below, not linked.
         _link_or_copy(item, destination / resolved_relative, root=source)
+    _copy_comparison_shell(source, destination, run_ids)
     return run_ids
 
 

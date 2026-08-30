@@ -10,7 +10,7 @@ import math
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from render import assemble_html, capture_to_data, model_identity
+from render import assemble_html, capture_to_data, model_identity, shared_asset_html
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -349,6 +349,7 @@ def main() -> int:
     parser.add_argument("--captures", type=Path, default=ROOT / "web/captures")
     parser.add_argument("--hq", type=Path, default=HQ_DEFAULT)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--shared-assets", type=Path, help="Website shared asset directory; omit for standalone HTML")
     args = parser.parse_args()
     data = build_comparison(args.performance, args.captures, args.hq)
     html = assemble_html(
@@ -374,6 +375,8 @@ def main() -> int:
         "@media(max-width:720px){.lanes{right:8px}.lc{min-width:250px}.lc .nm{max-width:100px}}"
     )
     html = html.replace("</style>", comparison_css + SLOW_MOTION_CSS + "</style>", 1)
+    if args.shared_assets is not None:
+        html = shared_asset_html(html, args.shared_assets)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(html)
     print(

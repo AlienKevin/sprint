@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
+import os
 import re
 import statistics
+import tempfile
 from pathlib import Path
 
 RENDERER_ROOT = Path(__file__).resolve().parent
@@ -17,6 +20,131 @@ SCENE_SOURCE = RENDERER_ROOT / "scene.js"
 HQ_DEFAULT = RENDERER_ROOT / "g1_hq.json"
 COLS = ["#6E97C4", "#E0A43B", "#B6F24E", "#F2704E"]
 LANE_HALF_WIDTH_M = 0.61
+
+# The default renderer remains a portable, self-contained HTML export. Website
+# publication can explicitly share these immutable, content-addressed assets.
+SHARED_ASSET_PREFIX = "/assets/replay/"
+SHARED_ASSET_ERROR = """<script>
+window.g1ReplayAssetFailed=function(name){
+  window.__G1_REPLAY_ASSET_ERROR__=true;
+  const message='Unable to load replay '+name+'. Please reload to retry.';
+  const note=document.getElementById('failure-note');
+  if(note){note.hidden=false;note.dataset.kind='incomplete';note.textContent=message;}
+  const play=document.getElementById('replay');if(play)play.disabled=true;
+  if(parent!==window)parent.postMessage({type:'g1:policies-error',message,failedCaptureIds:[],
+    replayGeneration:new URLSearchParams(location.search).get('replayGeneration')||''},location.origin);
+};
+</script>"""
+
+
+def _shared_asset(directory: Path, name: str, content: str) -> str:
+    payload = content.encode("utf-8")
+    filename = f"{name}-{hashlib.sha256(payload).hexdigest()}.js"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / filename
+    if path.exists():
+        if path.read_bytes() != payload:
+            raise ValueError(f"content-addressed replay asset differs: {path}")
+    else:
+        # A publisher may snapshot this directory concurrently. Never expose a
+        # partial immutable URL; the site's bundler excludes atomic .*.tmp files.
+        with tempfile.NamedTemporaryFile(dir=directory, prefix=".", suffix=".tmp", delete=False) as stream:
+            staging = Path(stream.name)
+            try:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+                os.chmod(staging, 0o644)
+                os.replace(staging, path)
+            finally:
+                staging.unlink(missing_ok=True)
+    return SHARED_ASSET_PREFIX + filename
+
+
+def shared_asset_html(html: str, directory: Path) -> str:
+    """Publish shared meshes/Three.js without reserializing authoritative data.
+
+    Replacing only the HQ value preserves every other byte of DATA, including
+    the hero's extended capture. ``restore_shared_html`` reverses this exactly
+    for auditing and for downloading a standalone/offline HTML artifact.
+    """
+    if 'data-replay-asset="three"' in html:
+        # Idempotent migration still fails closed if an asset is missing.
+        restore_shared_html(html, directory)
+        return html
+    scripts = list(re.finditer(r"<script>([\s\S]*?)</script>", html))
+    three = next((match for match in scripts if "Three.js Authors" in match[1][:200]), None)
+    if three is None:
+        raise ValueError("self-contained replay is missing Three.js")
+    is_trial = "const TRIAL_BOOT={" in html
+    marker = "const TRIAL_BOOT={" if is_trial else "<script>const DATA="
+    offset = html.index(marker) + len(marker)
+    match = re.search(r"\bhq:" if is_trial else r'"hq"\s*:', html[offset:])
+    if match is None:
+        raise ValueError("replay is missing its HQ mesh payload")
+    start = offset + match.end()
+    while html[start].isspace():
+        start += 1
+    _, end = json.JSONDecoder().raw_decode(html, start)
+    mesh_json = html[start:end]
+    mesh_url = _shared_asset(directory, "g1-hq", "window.__G1_REPLAY_HQ__=" + mesh_json + ";\n")
+    three_url = _shared_asset(directory, "three", three[1])
+    shared_tags = SHARED_ASSET_ERROR + "\n" + "\n".join(
+        f'<script data-replay-asset="{kind}" src="{url}" '
+        f'onerror="g1ReplayAssetFailed(\'{label}\')"></script>'
+        for kind, url, label in (("three", three_url, "engine"), ("hq", mesh_url, "meshes"))
+    )
+    # HQ is assigned synchronously before any scene code runs. Scripts use the
+    # browser cache across independent iframes; no global parent state required.
+    html = html[:start] + ("window.__G1_REPLAY_HQ__" if is_trial else "null") + html[end:]
+    html = html[:three.start()] + shared_tags + html[three.end():]
+    if is_trial:
+        html = html.replace("async function boot(){", "async function boot(){\n  if(window.__G1_REPLAY_ASSET_ERROR__)return;", 1)
+    else:
+        payload_start = html.index("<script>const DATA=") + len("<script>const DATA=")
+        _, payload_end = json.JSONDecoder().raw_decode(html, payload_start)
+        prefix = ";\nDATA.hq=window.__G1_REPLAY_HQ__;\nif(!window.__G1_REPLAY_ASSET_ERROR__){"
+        if html[payload_end:payload_end + 2] != ";\n":
+            raise ValueError("unexpected replay DATA terminator")
+        html = html[:payload_end] + prefix + html[payload_end + 1:]
+        closing = html.rindex("</script>")
+        html = html[:closing] + "}\n" + html[closing:]
+    return html
+
+
+def restore_shared_html(html: str, directory: Path) -> str:
+    """Restore the byte-identical self-contained export from published assets."""
+    if 'data-replay-asset="three"' not in html:
+        return html
+    contents = {}
+    pattern = r'<script data-replay-asset="(three|hq)" src="(/assets/replay/[^"/]+)" onerror="[^"]*"></script>'
+    tags = list(re.finditer(pattern, html))
+    if len(tags) != 2:
+        raise ValueError("invalid shared replay assets")
+    for tag in tags:
+        path = directory / Path(tag[2]).name
+        payload = path.read_bytes()
+        if not path.stem.endswith(hashlib.sha256(payload).hexdigest()):
+            raise ValueError(f"shared replay asset digest mismatch: {path}")
+        contents[tag[1]] = payload.decode("utf-8")
+    mesh = contents["hq"].removeprefix("window.__G1_REPLAY_HQ__=").removesuffix(";\n")
+    if "const TRIAL_BOOT={" in html:
+        html = html.replace("hq:window.__G1_REPLAY_HQ__", "hq:" + mesh, 1)
+        html = html.replace("async function boot(){\n  if(window.__G1_REPLAY_ASSET_ERROR__)return;", "async function boot(){", 1)
+    else:
+        offset = html.index("<script>const DATA=") + len("<script>const DATA=")
+        match = re.search(r'"hq"\s*:null', html[offset:])
+        if match is None:
+            raise ValueError("shared replay is missing its HQ placeholder")
+        pos = offset + match.end() - 4
+        html = html[:pos] + mesh + html[pos + 4:]
+        html = html.replace(";\nDATA.hq=window.__G1_REPLAY_HQ__;\nif(!window.__G1_REPLAY_ASSET_ERROR__){", ";", 1)
+        closing = html.rindex("}\n</script>")
+        html = html[:closing] + html[closing + 2:]
+    # Locate anew because the HQ insertion changes subsequent offsets.
+    tags = list(re.finditer(pattern, html))
+    html = html[:tags[0].start()] + "<script>" + contents["three"] + "</script>" + html[tags[1].end():]
+    return html.replace(SHARED_ASSET_ERROR + "\n", "", 1)
 
 MODEL_IDENTITIES = (
     ("deepseek", {"brand": "deepseek", "company": "DeepSeek", "model": "DeepSeek-V4-Flash", "color": "#7C54CD", "logo": "/assets/model-logos/deepseek.svg"}),
@@ -375,6 +503,7 @@ def assemble_html(
     sr_only: str,
     active: str,
     show_policy_labels: bool = False,
+    shared_assets_dir: Path | None = None,
 ) -> str:
     """Render one self-contained replay from the checked-in HTML/JS chrome."""
     scene = SCENE_SOURCE.read_text()
@@ -465,7 +594,8 @@ def assemble_html(
         head,
     )
     payload = json.dumps(data, separators=(",", ":"))
-    return head + marker + payload + ";\n" + scene + "\n</script>"
+    html = head + marker + payload + ";\n" + scene + "\n</script>"
+    return shared_asset_html(html, shared_assets_dir) if shared_assets_dir is not None else html
 
 
 def main() -> None:
@@ -483,6 +613,7 @@ def main() -> None:
     parser.add_argument("--sr-only", default="")
     parser.add_argument("--active", required=True)
     parser.add_argument("--pad", type=float, default=1.5)
+    parser.add_argument("--shared-assets", type=Path, help="Website mode: write shared content-addressed assets here; omit for standalone HTML")
     args = parser.parse_args()
 
     capture = json.loads(args.capture.read_text())
@@ -506,6 +637,7 @@ def main() -> None:
         story=args.story,
         sr_only=sr_only,
         active=args.active,
+        shared_assets_dir=args.shared_assets,
     )
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(html)

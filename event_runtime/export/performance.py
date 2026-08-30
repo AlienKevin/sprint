@@ -395,6 +395,7 @@ def publish_policy_replays(
             ),
             sr_only="Unitree G1 policy replay on the sprint course.",
             active=policy_hash[:12],
+            shared_assets_dir=WEB / "assets/replay",
         )
         embed_css = (
             "<style>html,body{margin:0;background:#070908}.wrap{max-width:none;"

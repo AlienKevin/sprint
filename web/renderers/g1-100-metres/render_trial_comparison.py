@@ -8,7 +8,7 @@ import json
 import re
 from pathlib import Path
 
-from render import G1_PARENT, PREFERRED, model_identity
+from render import G1_PARENT, PREFERRED, model_identity, shared_asset_html
 from render_comparison import add_mobile_closeup
 
 
@@ -75,7 +75,7 @@ def _safe_json(value: object) -> str:
     return json.dumps(value, separators=(",", ":")).replace("</", "<\\/")
 
 
-def build_shell(*, registry: dict, hq: dict) -> str:
+def build_shell(*, registry: dict, hq: dict, shared_assets_dir: Path | None = None) -> str:
     marker = "<script>const DATA="
     head = TEMPLATE.read_text().split(marker, 1)[0]
     head = head.replace(
@@ -219,7 +219,8 @@ html,body{margin:0;background:#070908}.wrap{max-width:none;padding:0}.wrap>.eyeb
 .lc .policy-remove:hover{background:rgba(255,255,255,.2)}.lc button:focus-visible{outline:2px solid #fff;outline-offset:3px}
 </style>
 """
-    return head.replace('<div class="wrap">', shell_css + '<div class="wrap">', 1) + bootstrap
+    html = head.replace('<div class="wrap">', shell_css + '<div class="wrap">', 1) + bootstrap
+    return shared_asset_html(html, shared_assets_dir) if shared_assets_dir is not None else html
 
 
 def main() -> int:
@@ -227,10 +228,11 @@ def main() -> int:
     parser.add_argument("--policy-index", type=Path, default=POLICY_INDEX_DEFAULT)
     parser.add_argument("--hq", type=Path, default=HQ_DEFAULT)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--shared-assets", type=Path, help="Website shared asset directory; omit for inline assets")
     args = parser.parse_args()
     registry = load_registry(args.policy_index)
     hq = json.loads(args.hq.read_text())["meshes"]
-    html = build_shell(registry=registry, hq=hq)
+    html = build_shell(registry=registry, hq=hq, shared_assets_dir=args.shared_assets)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(html)
     print(json.dumps({"output": str(args.out), "usableCaptures": len(registry)}, indent=2))
