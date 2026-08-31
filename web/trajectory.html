@@ -6,87 +6,95 @@
   <meta name="description" content="Inspect agent reasoning, messages, tools, observations, timing, and token usage for every Agents' 100m trial.">
   <title>Agents' 100m · Agent trajectory</title>
   <link rel="preload" href="/assets/fonts/BarlowCondensed-ExtraBoldItalic.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="/fonts.css?v=20260830-6">
-  <link rel="stylesheet" href="/trajectory.css?v=20260830-8">
+  <link rel="stylesheet" href="/fonts.css?v=20260831-1">
+  <link rel="stylesheet" href="/trajectory.css?v=20260831-1">
+  <link rel="stylesheet" href="/trajectory-diff.css?v=20260831-1">
+  <link rel="stylesheet" href="/i18n.css?v=20260831-1">
 </head>
 <body>
   <header class="viewer-nav">
     <a class="brand" href="/">Agents' <em>100m</em></a>
-    <span>Agent trajectory</span>
+    <span id="viewer-trial-title" class="viewer-trial-title"><span id="viewer-trial-model">Agent trajectory</span> <span id="viewer-trial-number"></span></span>
+    <div class="trajectory-language-switcher" data-language-switcher></div>
   </header>
 
   <main class="viewer-layout">
     <aside class="viewer-rail left-rail">
       <span id="pulse-dock-sentinel" class="pulse-dock-sentinel" aria-hidden="true"></span>
-      <section class="utilization-overview" aria-label="Run resource utilization">
+      <section class="utilization-overview" aria-label="Run resource utilization" data-i18n-attr="aria-label:trajectory.Run resource utilization">
         <header class="utilization-head">
           <div class="run-identity">
             <span class="model-dot"></span>
             <div><strong id="run-model">—</strong></div>
           </div>
           <dl class="pulse-stats" aria-live="polite">
-            <div><dt>Elapsed</dt><dd id="summary-duration">—</dd></div>
-            <div><dt>Steps</dt><dd id="summary-steps">—</dd></div>
-            <div><dt>Cost</dt><dd id="summary-cost">—</dd></div>
+            <div><dt data-i18n="trajectory.Elapsed">Elapsed</dt><dd id="summary-duration">—</dd></div>
+            <div><dt data-i18n="trajectory.Steps">Steps</dt><dd id="summary-steps">—</dd></div>
+            <div><dt data-i18n="trajectory.Cost">Cost</dt><dd id="summary-cost">—</dd></div>
           </dl>
           <p id="utilization-status" class="sr-only" aria-live="polite">Loading utilization…</p>
         </header>
-        <label class="run-picker" hidden><span>Trial</span><select id="run"><option>Loading trajectories…</option></select></label>
+        <label class="run-picker" hidden><span data-i18n="trajectory.Trial">Trial</span><select id="run"><option>Loading trajectories…</option></select></label>
         <div id="utilization-stage" class="utilization-stage">
-          <canvas id="utilization-chart" height="126" tabindex="0" role="img" aria-label="Training GPU, tool calls, agent CPU, and submitted policy performance over the run. Hover to preview, click the timeline to select an agent step, or click a policy marker to replay it."></canvas>
+          <canvas id="utilization-chart" height="126" tabindex="0" role="img" aria-label="Training GPU, tool calls, agent CPU, and submitted policy performance over the run. Hover to preview, click the timeline to select an agent step, or click a policy marker to replay it." data-i18n-attr="aria-label:trajectory.Training GPU, tool calls, agent CPU, and submitted policy performance over the run. Hover to preview, click the timeline to select an agent step, or click a policy marker to replay it."></canvas>
           <div id="utilization-tip" class="utilization-tip" hidden></div>
         </div>
       </section>
       <section id="rollout-outline" class="rollout-outline" aria-labelledby="rollout-outline-title" hidden>
         <header class="rollout-outline-head">
           <div>
-            <h2 id="rollout-outline-title">Trial Outline</h2>
+            <h2 id="rollout-outline-title" data-i18n="trajectory.Trial Outline">Trial Outline</h2>
           </div>
           <span id="chapter-count" class="chapter-count"></span>
         </header>
         <p class="policy-selection-status outline-policy-selection-status" role="status" aria-live="polite"></p>
         <p id="rollout-synopsis" class="rollout-synopsis"></p>
-        <nav id="chapter-nav" class="chapter-nav" aria-label="Trial outline chapters"></nav>
+        <nav id="chapter-nav" class="chapter-nav" aria-label="Trial outline chapters" data-i18n-attr="aria-label:trajectory.Trial outline chapters"></nav>
       </section>
     </aside>
 
-    <section class="trace-column" aria-label="Agent trace">
+    <section class="trace-column" aria-label="Agent trace" data-i18n-attr="aria-label:trajectory.Agent trace">
       <div id="mobile-trace-toolbar" class="mobile-trace-toolbar">
         <button id="mobile-outline-toggle" class="mobile-outline-toggle" type="button" aria-controls="rollout-outline" aria-expanded="false" aria-haspopup="dialog">
           <span aria-hidden="true">☰</span>
-          <span>Trial Outline</span>
+          <span data-i18n="trajectory.Trial Outline">Trial Outline</span>
         </button>
         <div id="mobile-replay-actions" class="mobile-replay-actions" hidden>
-          <span id="mobile-replay-label" class="mobile-replay-label"></span>
-          <button id="mobile-replay-close" type="button" aria-label="Close policy replay">×</button>
+          <button id="mobile-replay-label" class="mobile-replay-label" type="button" aria-controls="trajectory-policy-replay" aria-expanded="false" disabled></button>
+          <button id="mobile-replay-close" type="button" aria-label="Close policy replay" data-i18n-attr="aria-label:trajectory.Close policy replay">×</button>
         </div>
         <p id="policy-selection-status" class="policy-selection-status" role="status" aria-live="polite"></p>
       </div>
       <section id="trajectory-policy-replay" class="trajectory-policy-replay" aria-labelledby="trajectory-policy-replay-title" hidden>
         <header>
           <div>
-            <strong id="trajectory-policy-replay-title">Selected policy</strong>
+            <strong id="trajectory-policy-replay-title" data-i18n="trajectory.Selected policy">Selected policy</strong>
           </div>
-          <button id="trajectory-policy-replay-close" type="button" aria-label="Close policy replay">Close</button>
+          <button id="trajectory-policy-replay-close" type="button" aria-label="Close policy replay" data-i18n-attr="aria-label:trajectory.Close policy replay" data-i18n="trajectory.Close">Close</button>
         </header>
         <div id="trajectory-policy-replay-shell" class="trajectory-policy-replay-shell">
           <div id="trajectory-policy-replay-loading" class="trajectory-policy-replay-loading" role="status">Loading selected policies…</div>
-          <iframe id="trajectory-policy-replay-frame" title="Selected policy replay" loading="eager"></iframe>
+          <iframe id="trajectory-policy-replay-frame" title="Selected policy replay" data-i18n-attr="title:trajectory.Selected policy replay" loading="eager"></iframe>
         </div>
       </section>
       <section id="unmapped-policies" class="unmapped-policies" aria-labelledby="unmapped-policies-title" hidden>
-        <h2 id="unmapped-policies-title">Policies without a matched queue turn</h2>
-        <p>The recorded trace does not identify where the agent first queued these policies. Available replays can still be opened here.</p>
+        <h2 id="unmapped-policies-title" data-i18n="trajectory.Policies without a matched queue turn">Policies without a matched queue turn</h2>
+        <p data-i18n="trajectory.The recorded trace does not identify where the agent first queued these policies. Available replays can still be opened here.">The recorded trace does not identify where the agent first queued these policies. Available replays can still be opened here.</p>
         <div id="unmapped-policy-list" class="unmapped-policy-list"></div>
       </section>
       <div id="steps" class="steps" aria-live="polite"></div>
     </section>
-    <button id="mobile-outline-backdrop" class="mobile-outline-backdrop" type="button" aria-label="Close Trial Outline" hidden></button>
+    <button id="mobile-outline-backdrop" class="mobile-outline-backdrop" type="button" aria-label="Close Trial Outline" data-i18n-attr="aria-label:trajectory.Close Trial Outline" hidden></button>
 
   </main>
 
+  <script src="/i18n.js?v=20260831-1"></script>
+  <script src="/locales/trajectory.js?v=20260831-2"></script>
+  <script src="/locales/toc.js?v=20260831-1"></script>
   <script src="/trajectory-url.js?v=20260830-1"></script>
-  <script src="/trajectory.js?v=20260830-2"></script>
-  <script src="/trajectory-overview.js?v=20260830-14"></script>
+  <script src="/vendor/jsdiff-9.0.0.min.js"></script>
+  <script src="/trajectory-diff.js?v=20260831-1"></script>
+  <script src="/trajectory.js?v=20260831-1"></script>
+  <script src="/trajectory-overview.js?v=20260830-17"></script>
 </body>
 </html>

@@ -14,7 +14,8 @@ def test_every_published_chart_point_links_to_its_selected_policy_and_queue_turn
     script = "const assert=require('node:assert/strict');\n"
     script += f"const api=require({json.dumps(str(ROOT / 'web/trajectory-url.js'))});\n"
     script += f"const performance=require({json.dumps(str(ROOT / 'web/data/performance/current.json'))});\n"
-    script += "const window={TrajectoryURL:api};\n" + app.splitlines()[1] + "\n"
+    script += "const window={TrajectoryURL:api}; let activeReadout=null;\n"
+    script += "\n".join(line for line in app.splitlines() if line.strip().startswith(("const trajectoryHref=", "const t="))) + "\n"
     script += """
 const nodes=new Map();
 const $=selector=>{

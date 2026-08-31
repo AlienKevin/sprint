@@ -18,7 +18,7 @@ def test_autoplay_opt_out_never_schedules_play_but_manual_play_and_replay_work()
 const timers=[],frames=[],matchMedia=()=>({matches:reduced});
 const setTimeout=(fn,ms)=>timers.push({fn,ms}),requestAnimationFrame=fn=>{frames.push(fn);return frames.length;},cancelAnimationFrame=()=>{};
 let playT=0,playing=false,lastNow=null,startWall=null,raf=null,T_END=8;
-const loop=()=>{},setBtn=()=>{},updateCameraControls=()=>{};
+const loop=()=>{},setBtn=()=>{},updateCameraControls=()=>{},localizeReplayScene=()=>{};
 """ + initializer + """
 return {timers,play,state:()=>({playT,playing}),end:()=>{playT=T_END;playing=false;}};}
 for(let visit=0;visit<2;visit++){

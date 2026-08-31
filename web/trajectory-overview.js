@@ -1,4 +1,6 @@
 (() => {
+  function ui(source,params={}){return window.SiteI18n?.t(`trajectory.${source}`,params,source)??source.replace(/\{(\w+)\}/g,(match,key)=>params[key]??match)}
+  function setUI(node,source,params={}){if(!node)return;node.dataset.trajectoryOverviewI18n=source;node.dataset.trajectoryOverviewParams=JSON.stringify(params);node.textContent=ui(source,params)}
   const canvas = document.querySelector('#utilization-chart');
   if (!canvas) return;
 
@@ -203,15 +205,15 @@
   }
 
   function policyTerminalLabel(policy) {
-    if (policyFinished(policy)) return 'FINISHED';
+    if (policyFinished(policy)) return ui('FINISHED');
     const reason = String(policy?.termination_reason || '').toLowerCase().replaceAll('-', '_');
-    if (reason === 'self_collision' || reason === 'collision') return 'COLLISION';
-    if (['in_lane', 'lane', 'lane_exit', 'lane_drift'].includes(reason)) return 'LANE DRIFT';
-    if (reason === 'timeout') return 'TIMEOUT';
+    if (reason === 'self_collision' || reason === 'collision') return ui('COLLISION');
+    if (['in_lane', 'lane', 'lane_exit', 'lane_drift'].includes(reason)) return ui('LANE DRIFT');
+    if (reason === 'timeout') return ui('TIMEOUT');
     const failedGates = Array.isArray(policy?.failed_gates) ? policy.failed_gates : [];
-    if (failedGates.includes('self_collision')) return 'COLLISION';
-    if (failedGates.includes('in_lane')) return 'LANE DRIFT';
-    return 'STOPPED';
+    if (failedGates.includes('self_collision')) return ui('COLLISION');
+    if (failedGates.includes('in_lane')) return ui('LANE DRIFT');
+    return ui('STOPPED');
   }
 
   function policyNumber(policy) {
@@ -304,15 +306,15 @@
     };
   }
 
-  function announceSelection(message) {
+  function announceSelection(message,params={}) {
     if (!policySelectionStatuses.length) return;
     clearTimeout(selectionStatusTimer);
     policySelectionStatuses.forEach(statusNode => {
-      statusNode.textContent = message;
+      setUI(statusNode,message,params);
     });
     if (message) selectionStatusTimer = window.setTimeout(() => {
       policySelectionStatuses.forEach(statusNode => {
-        statusNode.textContent = '';
+        setUI(statusNode,'');
       });
     }, 5000);
   }
@@ -325,7 +327,7 @@
       const emphasized = policyHash(policy) === state.emphasizedPolicyHash;
       chip.className = `policy-selection-chip${emphasized ? ' is-emphasized' : ''}`;
       chip.style.setProperty('--policy-color', accentColor());
-      chip.title = `Policy #${policyNumber(policy)}, lane ${index + 1}${emphasized ? ', emphasized' : ''}`;
+      chip.title = ui('Policy #{number}, lane {lane}',{number:policyNumber(policy),lane:index+1})+(emphasized?ui(', emphasized'):'');
       const symbol = document.createElement('span');
       symbol.className = `policy-selection-chip-symbol policy-reference-${policyKind(policy)}`;
       symbol.setAttribute('aria-hidden', 'true');
@@ -335,8 +337,8 @@
       const remove = document.createElement('button');
       remove.type = 'button';
       remove.textContent = '×';
-      remove.setAttribute('aria-label', `Remove Policy #${policyNumber(policy)} from lane ${index + 1}`);
-      remove.title = `Remove Policy #${policyNumber(policy)} from lane ${index + 1}`;
+      remove.setAttribute('aria-label', ui('Remove Policy #{number} from lane {lane}',{number:policyNumber(policy),lane:index+1}));
+      remove.title = ui('Remove Policy #{number} from lane {lane}',{number:policyNumber(policy),lane:index+1});
       remove.addEventListener('click', event => {
         event.preventDefault();
         event.stopPropagation();
@@ -357,8 +359,8 @@
       marker.classList.toggle('is-selected', selected);
       marker.classList.toggle('is-emphasized', emphasized);
       marker.setAttribute('aria-pressed', String(selected));
-      marker.setAttribute('aria-label', `${marker.dataset.policyLabel}${selected ? `, selected in lane ${index + 1}` : ', not selected'}`);
-      marker.title = `${marker.dataset.policyTitle} · ${selected ? 'Click to remove from comparison' : 'Click to add to comparison'}`;
+      marker.setAttribute('aria-label', `${marker.dataset.policyLabel}${selected ? ui(', selected in lane {lane}',{lane:index+1}) : ui(', not selected')}`);
+      marker.title = `${marker.dataset.policyTitle} · ${selected ? ui('Click to remove from comparison') : ui('Click to add to comparison')}`;
     }
   }
 
@@ -366,7 +368,12 @@
     const hasSelection = state.selectedPolicies.length > 0;
     document.body.classList.toggle('policy-selection-active', hasSelection);
     if (mobileReplayActions) mobileReplayActions.hidden = !hasSelection;
-    if (mobileReplayLabel) mobileReplayLabel.textContent = `${state.selectedPolicies.length} selected`;
+    if (mobileReplayLabel) {
+      setUI(mobileReplayLabel,'{count} selected',{count:state.selectedPolicies.length});
+      mobileReplayLabel.disabled = !hasSelection;
+      mobileReplayLabel.setAttribute('aria-expanded', String(!replayPanel.hidden));
+      mobileReplayLabel.setAttribute('aria-label', ui('Show replay for {count} selected policies',{count:state.selectedPolicies.length}));
+    }
     if (mobileReplayClose) mobileReplayClose.hidden = replayPanel.hidden;
     syncPolicyMarkers();
     draw();
@@ -377,6 +384,8 @@
     state.restoringUrl = false;
     state.pendingRestore = null;
     state.restoreLockUntil = 0;
+    state.mobileNavigation = null;
+    state.closedReplayStepId = null;
     clearTimeout(urlScrollTimer);
   }
 
@@ -409,6 +418,8 @@
   function restoreUrlState() {
     if (!state.ready) return;
     const restoreGeneration = ++urlRestoreGeneration;
+    state.mobileNavigation = null;
+    state.closedReplayStepId = null;
     clearTimeout(urlScrollTimer);
     const request = window.TrajectoryURL.parse(location.href);
     if (request.runId && request.runId !== state.runId) return;
@@ -454,7 +465,7 @@
   function comparisonReplaySrc() {
     const payload = comparisonPayload();
     const params = new URLSearchParams({
-      scene: '20260830-8',
+      scene: '20260830-11',
       policies: payload.policies.map(policy => policy.captureId).join(','),
       emphasis: payload.emphasizedCaptureId || '',
       replayGeneration: String(replayGeneration),
@@ -465,14 +476,19 @@
 
   function navigateToPolicy(policy, declaredChapterId = null) {
     const step = policyQueueStep(policy);
+    const intent = urlRestoreGeneration, runId = state.runId;
     const outline = document.querySelector('#chapter-nav');
     const outlineScroll = outline?.scrollTop || 0;
     window.dispatchEvent(new CustomEvent('trajectory:policy-selected', {detail: {chapterId: chapterIdForStep(step)}}));
     window.dispatchEvent(new CustomEvent('trajectory:outline-lock', {detail: {duration: 2500, scrollTop: outlineScroll}}));
     requestAnimationFrame(() => {
-      if (step) jumpToStep(step, true, true, true);
+      if (intent !== urlRestoreGeneration || runId !== state.runId) return;
+      if (step) {
+        jumpToStep(step, true, true, true);
+        anchorMobileNavigation(step);
+      }
       else {
-        announceSelection(`Policy #${policyNumber(policy)} has no matched queue turn. Its replay is still available.`);
+        announceSelection('Policy #{number} has no matched queue turn. Its replay is still available.',{number:policyNumber(policy)});
         commitUrl();
       }
       restoreOutlineScroll(outline, outlineScroll);
@@ -506,11 +522,11 @@
     const selectedIndex = selectedPolicyIndex(policy);
     if (selectedIndex >= 0) return removePolicySelection(policy);
     if (!policy?.replay_ready || !policy.replay_url) {
-      announceSelection(`Replay unavailable for Policy #${policyNumber(policy)}.`);
+      announceSelection('Replay unavailable for Policy #{number}.',{number:policyNumber(policy)});
       return false;
     }
     if (state.selectedPolicies.length >= MAX_SELECTED_POLICIES) {
-      announceSelection(`You can compare up to ${MAX_SELECTED_POLICIES} policies. Remove one before adding Policy #${policyNumber(policy)}.`);
+      announceSelection('You can compare up to {limit} policies. Remove one before adding Policy #{number}.',{limit:MAX_SELECTED_POLICIES,number:policyNumber(policy)});
       return false;
     }
     beginUrlInteraction();
@@ -525,25 +541,25 @@
   function policyMarker(policy, context, declaredChapterId = null) {
     const kind = policyKind(policy);
     const numberValue = policyNumber(policy);
-    const statusText = `${kind === 'best' ? 'best policy, ' : ''}${policyTerminalLabel(policy)}`;
+    const statusText = `${kind === 'best' ? ui('best policy, ') : ''}${policyTerminalLabel(policy)}`;
     const marker = document.createElement('button');
     marker.type = 'button';
     marker.className = `policy-reference policy-reference-${kind}`;
     marker.dataset.policyHash = policy.policy_sha256 || '';
-    marker.dataset.policyLabel = `Policy #${numberValue}, ${statusText}, ${context}`;
+    marker.dataset.policyLabel = `${ui('Policy #{number}',{number:numberValue})}, ${statusText}, ${context}`;
     const queueStep = policyQueueStep(policy);
     if (queueStep) {
       marker.dataset.queueStepId = queueStep.step_id;
       marker.dataset.queuePublicStep = queueStep.public_step_id ?? queueStep.attempt_step_id;
     }
-    marker.dataset.policyTitle = `Policy #${numberValue} · ${kind === 'best' ? 'Best · ' : ''}${policyTerminalLabel(policy)}`;
+    marker.dataset.policyTitle = `${ui('Policy #{number}',{number:numberValue})} · ${kind === 'best' ? ui('Best · ') : ''}${policyTerminalLabel(policy)}`;
     marker.setAttribute('aria-pressed', 'false');
-    marker.setAttribute('aria-label', `${marker.dataset.policyLabel}, not selected`);
-    marker.title = `${marker.dataset.policyTitle} · Click to add to comparison`;
+    marker.setAttribute('aria-label', `${marker.dataset.policyLabel}${ui(', not selected')}`);
+    marker.title = `${marker.dataset.policyTitle} · ${ui('Click to add to comparison')}`;
     if (!policy.replay_ready || !policy.replay_url) {
       marker.disabled = true;
-      marker.setAttribute('aria-label', `${marker.dataset.policyLabel}, replay unavailable`);
-      marker.title = `${marker.dataset.policyTitle} · Replay unavailable`;
+      marker.setAttribute('aria-label', `${marker.dataset.policyLabel}${ui(', replay unavailable')}`);
+      marker.title = `${marker.dataset.policyTitle} · ${ui('Replay unavailable')}`;
     }
     const symbol = document.createElement('span');
     symbol.className = 'policy-reference-symbol';
@@ -570,7 +586,7 @@
         const step = policyQueueStep(policy);
         const target = renderedStepNode(step);
         if (!target) {
-          unmappedPolicyList?.append(policyMarker(policy, 'queue turn not matched in this trace'));
+          unmappedPolicyList?.append(policyMarker(policy, ui('queue turn not matched in this trace')));
           if (unmappedPolicies) unmappedPolicies.hidden = false;
         }
         return target ? {policy, step, target} : null;
@@ -586,10 +602,10 @@
     for (const [target, entries] of stepGroups) {
       const list = document.createElement('div');
       list.className = 'step-policy-list';
-      list.setAttribute('aria-label', 'Policies queued at this turn');
+      list.setAttribute('aria-label', ui('Policies queued at this turn'));
       for (const {policy, step} of entries) {
         const number = step.public_step_id ?? step.attempt_step_id;
-        list.append(policyMarker(policy, `queued at turn ${number}`, chapterIdForStep(step)));
+        list.append(policyMarker(policy, ui('queued at turn {number}',{number}), chapterIdForStep(step)));
       }
       target.querySelector(':scope > summary > .step-meta')?.append(list);
     }
@@ -604,14 +620,14 @@
         })
         .map(({policy}) => policy);
       if (!policies.length || !list) continue;
-      list.setAttribute('aria-label', 'Policies queued during this chapter');
+      list.setAttribute('aria-label', ui('Policies queued during this chapter'));
       const label = document.createElement('span');
       label.className = 'chapter-policy-label';
-      label.textContent = 'Queued';
+      setUI(label,'Queued');
       list.append(label);
       for (const policy of policies) {
         const step = policyQueueStep(policy);
-        list.append(policyMarker(policy, `queued at turn ${step.public_step_id ?? step.attempt_step_id}`, item.dataset.chapterId || null));
+        list.append(policyMarker(policy, ui('queued at turn {number}',{number:step.public_step_id ?? step.attempt_step_id}), item.dataset.chapterId || null));
       }
     }
     syncPolicyMarkers();
@@ -651,9 +667,9 @@
 
   function drawPolicyLegend(x1, color) {
     const labels = [
-      {label: 'Finished', kind: 'finished'},
-      {label: 'Did not finish', kind: 'failed'},
-      {label: 'Best', kind: 'best'},
+      {label: ui('Finished'), kind: 'finished'},
+      {label: ui('Did not finish'), kind: 'failed'},
+      {label: ui('Best'), kind: 'best'},
     ];
     ctx.font = '7px ui-monospace, monospace';
     const widths = labels.map(item => 9 + ctx.measureText(item.label).width);
@@ -756,7 +772,7 @@
     const drawResourceLane = (lane, y) => {
       ctx.fillStyle = colors.muted;
       ctx.font = '8px ui-monospace, monospace';
-      ctx.fillText(lane.label, 10, y + laneHeight - 5);
+      ctx.fillText(ui(lane.label), 10, y + laneHeight - 5);
       ctx.strokeStyle = colors.line;
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -771,7 +787,7 @@
     const eventY = laneTop + laneHeight;
     ctx.fillStyle = colors.muted;
     ctx.font = '8px ui-monospace, monospace';
-    ctx.fillText('TOOL CALLS', 10, eventY + laneHeight - 5);
+    ctx.fillText(ui('TOOL CALLS'), 10, eventY + laneHeight - 5);
     ctx.strokeStyle = colors.line;
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -796,7 +812,7 @@
     const policyY = cpuY + laneHeight;
     ctx.fillStyle = colors.muted;
     ctx.font = '8px ui-monospace, monospace';
-    ctx.fillText('SUBMISSIONS', 10, policyY + laneHeight - 5);
+    ctx.fillText(ui('SUBMISSIONS'), 10, policyY + laneHeight - 5);
     ctx.strokeStyle = colors.line;
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -853,7 +869,7 @@
   function replayPolicy(policy, {scrollToReplay = true} = {}) {
     if (!state.selectedPolicies.length || !policy?.replay_ready || !policy.replay_url) return false;
     const count = state.selectedPolicies.length;
-    replayTitle.textContent = count === 1 ? `Policy #${policyNumber(policy)}` : `${count} policies selected`;
+    setUI(replayTitle,count===1?'Policy #{number}':'{count} policies selected',{count,number:policyNumber(policy)});
     replayPanel.hidden = false;
     document.body.classList.add('policy-replay-active');
     const currentReplay = replayFrame.getAttribute('src') || '';
@@ -865,7 +881,7 @@
     rendererSelectionKey = selectionKey;
     const generation = replayGeneration;
     const replaySrc = comparisonReplaySrc();
-    if (startsNewLoad && replayLoading) replayLoading.textContent = 'Loading selected policies…';
+    if (startsNewLoad && replayLoading) setUI(replayLoading,'Loading selected policies…');
     if (needsNewFrame) {
       replayHudObserver?.disconnect();
       replayHudObserver = null;
@@ -955,6 +971,8 @@
   }
 
   function hideReplay({clearFrame = true} = {}) {
+    state.mobileNavigation = null;
+    state.closedReplayStepId = null;
     replayGeneration += 1;
     rendererSelectionKey = '';
     replayHudObserver?.disconnect();
@@ -968,9 +986,29 @@
   }
 
   function closeReplay() {
+    const step = state.trajectory?.steps?.find(item => item.step_id === state.focusedStepId);
     beginUrlInteraction();
     hideReplay({clearFrame: true});
+    if (narrowViewport.matches && step) {
+      jumpToStep(step, true, true, true, null);
+      state.closedReplayStepId = step.step_id;
+    }
     commitUrl();
+  }
+
+  function reopenSelectedReplay() {
+    if (!replayPanel.hidden || !state.selectedPolicies.length) return;
+    const readingStepId = state.closedReplayStepId || state.focusedStepId;
+    beginUrlInteraction();
+    const policy = state.selectedPolicies.find(item => policyHash(item) === state.emphasizedPolicyHash)
+      || state.selectedPolicies.at(-1);
+    if (!replayPolicy(policy, {scrollToReplay: false})) return;
+    // Reopening is not a new policy choice: retain the turn the user was reading.
+    const step = state.trajectory?.steps?.find(item => item.step_id === readingStepId) || policyQueueStep(policy);
+    if (step) {
+      jumpToStep(step, true, true, true);
+      anchorMobileNavigation(step);
+    } else commitUrl();
   }
 
   function nearestValue(points, epoch) {
@@ -994,8 +1032,8 @@
       state.hoverEpoch = null;
       const isBest = policyBest(policy);
       const result = policyTerminalLabel(policy);
-      const action = selectedPolicyIndex(policy) >= 0 ? 'Click to remove from comparison' : 'Click to add to comparison';
-      tip.textContent = `Policy #${policyNumber(policy)} · ${isBest ? 'Best · ' : ''}${fmtSpeed(policyScore(policy))} m/s · ${result}${policy.replay_ready ? ` · ${action}` : ' · Replay unavailable'}`;
+      const action = selectedPolicyIndex(policy) >= 0 ? ui('Click to remove from comparison') : ui('Click to add to comparison');
+      tip.textContent = `${ui('Policy #{number}',{number:policyNumber(policy)})} · ${isBest ? ui('Best · ') : ''}${fmtSpeed(policyScore(policy))} m/s · ${result}${policy.replay_ready ? ` · ${action}` : ` · ${ui('Replay unavailable')}`}`;
       tip.hidden = false;
       tip.style.left = `${clamp(event.clientX - rect.left + 12, 8, rect.width - tip.offsetWidth - 8)}px`;
       canvas.style.cursor = policy.replay_ready ? 'pointer' : 'default';
@@ -1005,7 +1043,7 @@
     canvas.style.cursor = 'crosshair';
     state.hoverEpoch = epochFor(event.clientX - rect.left);
     const values = compactLanes.map(lane => [lane.label, nearestValue(state.series[lane.key], state.hoverEpoch)]);
-    tip.textContent = `${fmtDuration(state.hoverEpoch - state.timeline.clock.origin_epoch_ms)} · ${values.map(([label, value]) => `${label} ${value == null ? 'idle' : `${Math.round(value)}%`}`).join(' · ')}`;
+    tip.textContent = `${fmtDuration(state.hoverEpoch - state.timeline.clock.origin_epoch_ms)} · ${values.map(([label, value]) => `${ui(label)} ${value == null ? ui('idle') : `${Math.round(value)}%`}`).join(' · ')}`;
     tip.hidden = false;
     tip.style.left = `${clamp(event.clientX - rect.left + 12, 8, rect.width - tip.offsetWidth - 8)}px`;
     draw();
@@ -1062,18 +1100,19 @@
   function scrollTraceTarget(target, block) {
     const root = traceScrollRoot();
     if (!root) {
-      target.scrollIntoView({behavior: 'auto', block});
       if (narrowViewport.matches) {
-        const toolbarBottom = document.querySelector('#mobile-trace-toolbar')?.getBoundingClientRect().bottom || 0;
-        const replayBottom = replayPanel.hidden ? 0 : replayPanel.getBoundingClientRect().bottom;
-        const visibleTop = Math.max(toolbarBottom, replayBottom) + 10;
-        const visibleBottom = window.innerHeight - 12;
-        const targetRect = target.getBoundingClientRect();
-        if (visibleBottom > visibleTop && (targetRect.top < visibleTop || targetRect.bottom > visibleBottom)) {
-          const targetCenter = targetRect.top + targetRect.height / 2;
-          window.scrollBy({top: targetCenter - (visibleTop + visibleBottom) / 2, behavior: 'auto'});
-        }
-      }
+        // Compute the final sticky composition, not its pre-scroll position.
+        // Centering a tall turn can hide its heading behind the replay.
+        const toolbar = document.querySelector('#mobile-trace-toolbar');
+        const toolbarHeight = toolbar?.getBoundingClientRect().height || 0;
+        const navHeight = nav?.getBoundingClientRect().height || 0;
+        const toolbarTop = toolbar ? Number.parseFloat(getComputedStyle(toolbar).top) || navHeight : navHeight;
+        const toolbarBottom = toolbarTop + toolbarHeight;
+        const replayTop = Number.parseFloat(getComputedStyle(replayPanel).top) || toolbarBottom;
+        const replayBottom = replayPanel.hidden ? 0 : replayTop + replayPanel.getBoundingClientRect().height;
+        const visibleTop = Math.max(navHeight, toolbarBottom, replayBottom) + 16;
+        window.scrollTo({top: Math.max(0, window.scrollY + target.getBoundingClientRect().top - visibleTop), behavior: 'instant'});
+      } else target.scrollIntoView({behavior: 'auto', block});
       return;
     }
     const rootRect = root.getBoundingClientRect();
@@ -1083,6 +1122,46 @@
       ? targetTop - (root.clientHeight - targetRect.height) / 2
       : targetTop;
     root.scrollTo({top: clamp(desired, 0, root.scrollHeight - root.clientHeight), behavior: 'auto'});
+  }
+
+  function anchorMobileNavigation(step) {
+    if (!narrowViewport.matches || replayPanel.hidden || !step) return;
+    state.mobileNavigation = {step, runId: state.runId, intent: urlRestoreGeneration,
+      generation: replayGeneration, settled: !replayPanel.classList.contains('is-loading'), frame: null};
+    realignMobileNavigation();
+  }
+
+  function realignMobileNavigation(settled = false) {
+    const navigation = state.mobileNavigation;
+    if (!navigation || navigation.frame != null) {
+      if (navigation && settled) navigation.settled = true;
+      return;
+    }
+    navigation.settled ||= settled;
+    const current = () => state.mobileNavigation === navigation && narrowViewport.matches && !replayPanel.hidden
+      && navigation.runId === state.runId && navigation.intent === urlRestoreGeneration
+      && navigation.generation === replayGeneration && navigation.step.step_id === state.focusedStepId;
+    navigation.frame = requestAnimationFrame(() => {
+      navigation.frame = null;
+      if (!current()) return;
+      const align = () => {
+        const target = renderedStepNode(navigation.step);
+        if (target) scrollTraceTarget(target, 'start');
+      };
+      align();
+      if (navigation.settled) requestAnimationFrame(() => {
+        if (!current()) return;
+        align();
+        state.mobileNavigation = null;
+        state.restoreLockUntil = performance.now() + 700;
+      });
+    });
+  }
+
+  function cancelMobileNavigation(event) {
+    state.mobileNavigation = null;
+    state.restoreLockUntil = 0;
+    if (event?.type !== 'pointerdown' || !event.target?.closest?.('button,a,input,select,textarea')) state.closedReplayStepId = null;
   }
 
   function jumpToEpoch(epoch, forceScroll = false, exactStep = false, shouldScroll = true) {
@@ -1106,7 +1185,7 @@
     target.classList.add('timeline-selected');
     const number = step.public_step_id ?? step.attempt_step_id;
     const origin = state.timeline?.clock?.origin_epoch_ms ?? Date.parse(state.trajectory?.steps?.[0]?.timestamp || '');
-    status.textContent = `Step #${number} · ${fmtDuration(stepEpoch - origin)}`;
+    setUI(status,'Step #{number} · {time}',{number,time:fmtDuration(stepEpoch-origin)});
     if (shouldScroll) {
       const previousBehavior = document.documentElement.style.scrollBehavior;
       state.scrollSyncLocked = true;
@@ -1125,6 +1204,9 @@
   function syncFromScroll() {
     state.scrollFrame = null;
     if (state.scrollSyncLocked || state.restoringUrl || performance.now() < state.restoreLockUntil || !state.timeline || !state.trajectory) return;
+    if (replayPanel.hidden && state.closedReplayStepId) return;
+    if (state.mobileNavigation && state.mobileNavigation.intent === urlRestoreGeneration
+      && state.mobileNavigation.runId === state.runId && state.mobileNavigation.generation === replayGeneration) return;
     const root = traceScrollRoot();
     const anchor = root ? root.getBoundingClientRect().top + 20 : traceAnchor();
     let current = state.trajectory.steps?.[0];
@@ -1143,7 +1225,7 @@
     state.cursorEpoch = epoch;
     state.focusedStepId = current.step_id;
     const number = current.public_step_id ?? current.attempt_step_id;
-    status.textContent = `Step #${number} · ${fmtDuration(epoch - state.timeline.clock.origin_epoch_ms)}`;
+    setUI(status,'Step #{number} · {time}',{number,time:fmtDuration(epoch-state.timeline.clock.origin_epoch_ms)});
     draw();
     if (state.ready) {
       clearTimeout(urlScrollTimer);
@@ -1173,7 +1255,7 @@
     replaceReplayFrame();
     document.body.classList.remove('policy-replay-active', 'policy-selection-active');
     syncSelectionUI();
-    status.textContent = 'Loading utilization…';
+    setUI(status,'Loading utilization…');
     draw();
     const runId = state.runId;
     try {
@@ -1186,12 +1268,12 @@
       const [result, policyResult] = await Promise.all([timelinePromise, policyPromise]);
       if (state.runId !== runId || generation !== overviewGeneration) return;
       if (result.error) {
-        status.textContent = 'Utilization unavailable';
-        canvas.setAttribute('aria-label', `Utilization unavailable: ${result.error.message}`);
+        setUI(status,'Utilization unavailable');
+        canvas.setAttribute('aria-label', ui('Utilization unavailable: {message}',{message:result.error.message}));
       } else {
         state.timeline = result.data;
         state.series = buildSeries(state.timeline);
-        status.textContent = 'Scroll the trace or select the chart';
+        setUI(status,'Scroll the trace or select the chart');
       }
       state.cursorEpoch = Date.parse(trajectory.steps?.[0]?.timestamp || '') || state.timeline?.clock?.origin_epoch_ms;
       resize();
@@ -1203,8 +1285,8 @@
       restoreUrlState();
       draw();
     } catch (error) {
-      status.textContent = 'Utilization unavailable';
-      canvas.setAttribute('aria-label', `Utilization unavailable: ${error.message}`);
+      setUI(status,'Utilization unavailable');
+      canvas.setAttribute('aria-label', ui('Utilization unavailable: {message}',{message:error.message}));
     }
   }
 
@@ -1248,6 +1330,11 @@
     if (state.scrollFrame == null) state.scrollFrame = requestAnimationFrame(syncFromScroll);
   };
   window.addEventListener('scroll', scheduleScrollSync, {passive: true});
+  window.addEventListener('pointerdown', cancelMobileNavigation, {passive: true});
+  window.addEventListener('wheel', cancelMobileNavigation, {passive: true});
+  window.addEventListener('keydown', event => {
+    if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', 'Tab', ' '].includes(event.key)) cancelMobileNavigation();
+  });
   stepsTarget?.addEventListener('scroll', scheduleScrollSync, {passive: true});
   canvas.addEventListener('pointermove', moveTip);
   canvas.addEventListener('pointerleave', () => {
@@ -1305,6 +1392,7 @@
       if(window.innerWidth>720||mobile!==true){shell.style.removeProperty('height');shell.style.removeProperty('aspect-ratio');return;}
       if(!Number.isFinite(height)||height<64||height>2000)return;
       shell.style.height=`${Math.ceil(height)}px`;shell.style.aspectRatio='auto';
+      realignMobileNavigation();
       return;
     }
     if (event.data?.type === 'g1:policy-focused') {
@@ -1328,19 +1416,33 @@
       if (!replayPanel.hidden && actual.length === expected.length && actual.every((id, index) => id === expected[index])) {
         watchReplaySize();
         replayPanel.classList.remove('is-loading');
+        realignMobileNavigation(true);
         if (state.restoringUrl) finishUrlRestore();
       }
     }
     if (event.data?.type === 'g1:policies-error') {
-      const message = event.data.message || 'The selected replay policies could not be loaded.';
+      const message = event.data.message || ui('The selected replay policies could not be loaded.');
       if (!replayPanel.hidden) {
-        if (replayLoading) replayLoading.textContent = message;
+        if (replayLoading) setUI(replayLoading,message);
       }
       announceSelection(message);
+      realignMobileNavigation(true);
     }
   });
   replayClose?.addEventListener('click', closeReplay);
+  setUI(status,'Loading utilization…');
+  setUI(replayLoading,'Loading selected policies…');
+  window.addEventListener('site:languagechange', () => {
+    for (const node of document.querySelectorAll('[data-trajectory-overview-i18n]')) {
+      setUI(node,node.dataset.trajectoryOverviewI18n,JSON.parse(node.dataset.trajectoryOverviewParams||'{}'));
+    }
+    if (state.ready) renderPolicyReferences();
+    syncSelectionUI();
+    tip.hidden = true;
+    if (state.timeline) draw();
+  });
   mobileReplayClose?.addEventListener('click', closeReplay);
+  mobileReplayLabel?.addEventListener('click', reopenSelectedReplay);
   function setDocked(docked) {
     const next = narrowViewport.matches && docked;
     if (next === state.docked) return;

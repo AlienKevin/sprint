@@ -78,7 +78,11 @@ assert.equal(end([make(()=>0),make(()=>0)]),1,'entirely stationary selections st
     assert "let T_CAPTURE_END=Math.max(...POL.map(p=>p.freezeT));" in SCENE
     assert "T_CAPTURE_END=Math.max(...POL.map(policy=>policy.freezeT));T_END=Math.max(...POL.map(policy=>policy.playbackEndT));" in SCENE
     assert "STALL_WINDOW_S" not in SCENE
-    assert "playT>=T_END ? '&#9654; Replay'" in SCENE
+    set_button = next(line for line in SCENE.splitlines() if line.startswith("function setBtn(){"))
+    script = "const assert=require('node:assert/strict'),btn={textContent:''};let playing=false,playT=0,T_END=3;\n" + set_button + "\n"
+    script += "setBtn();assert.equal(btn.textContent,'▶ Play');playing=true;setBtn();assert.equal(btn.textContent,'❙❙ Pause');playing=false;playT=T_END;setBtn();assert.equal(btn.textContent,'▶ Replay');"
+    result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
     assert "if(playT>=T_END) playT=0; playing=true;" in SCENE
     assert "playT=T_END; draw(playT); playing=false; raf=null; setBtn(); return;" in SCENE
 

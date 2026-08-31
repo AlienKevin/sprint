@@ -28,6 +28,7 @@ def test_citation_is_last_section_with_verified_metadata_and_accessible_copy() -
     assert 'url = {https://agents100m.com/}' in citation
     assert 'type="button" aria-label="Copy BibTeX citation"' in citation
     assert 'role="status" aria-live="polite" aria-atomic="true"' in citation
+    assert citation.index('</code></pre>') < citation.index('class="citation-actions"') < citation.index('id="citation-copy"') < citation.index('id="citation-copy-status"')
     assert "  initCitation();" in APP
 
 
@@ -38,6 +39,9 @@ def test_citation_wraps_long_lines_without_mobile_horizontal_overflow() -> None:
         assert rule in pre
     assert '.citation-box code { font: inherit; }' in css
     assert '#citation-copy:focus-visible' in css
+    actions = re.search(r'\.citation-actions\s*\{([^}]+)\}', css).group(1)
+    assert 'padding: 0 16px 16px' in actions
+    assert 'justify-content: flex-end' not in actions
 
 
 @pytest.mark.parametrize("clipboard", ["success", "reject", "unavailable"])
@@ -45,6 +49,7 @@ def test_citation_copy_reports_only_actual_success(clipboard: str) -> None:
     function = APP[APP.index('  function initCitation(){'):APP.index('  initCitation();')]
     script = "const assert=require('node:assert/strict');\n"
     script += f"const source={json.dumps(BIBTEX)},mode={json.dumps(clipboard)};\n"
+    script += "const window={};\n" + next(line for line in APP.splitlines() if line.strip().startswith("const t=")) + "\n"
     script += """
 let listener,complete,copied;
 const button={disabled:false,textContent:'Copy',addEventListener(type,fn){assert.equal(type,'click');listener=fn}};

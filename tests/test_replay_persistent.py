@@ -17,6 +17,7 @@ def test_runtime_reuses_renderer_cache_and_rejects_stale_requests():
     stub = r"""
 const assert=require('node:assert/strict'),window=globalThis,listeners={},messages=[],rafs=[],requests=[];
 window.addEventListener=(type,fn)=>(listeners[type]??=[]).push(fn);
+window.removeEventListener=(type,fn)=>{listeners[type]=(listeners[type]||[]).filter(listener=>listener!==fn)};
 const emit=(type,event)=>{for(const fn of listeners[type]||[])fn(event)};
 const location={origin:'https://example.test',href:'https://example.test/replay/trial-comparison?policies=frontier-000000000001&replayGeneration=41&replayDocumentGeneration=41',get search(){return new URL(this.href).search}};
 const parent={postMessage(message){messages.push(message)}},history={replaceState(_a,_b,url){location.href=String(url)}};
@@ -107,4 +108,4 @@ def test_persistent_parent_tracks_document_and_selection_separately():
     assert "new URL(currentReplay" not in body
     assert "replayDocumentGeneration: replayDocumentGeneration" in source
     assert "__G1_TRIAL__?.dispose()" in source
-    assert "scene: '20260830-8'" in source
+    assert "scene: '20260830-11'" in source

@@ -31,7 +31,10 @@ const original=JSON.stringify(rows),options=[];
 const runSelect={options,replaceChildren(){options.length=0},append(o){options.push(o)},get value(){return (options.find(o=>o.selected)||options[0])?.value}};
 const document={createElement(){return {dataset:{}}}},el=()=>({dataset:{}}),stepsTarget={replaceChildren(){throw new Error('unexpected error UI')}},status={};
 const location={search:requested?'?run='+requested:''},state={};let index,performance,loaded;
-const fetch=async()=>({ok:true,json:async()=>({runs:rows})});
+const fetched=[];
+const fetch=async(url)=>{fetched.push(url);return {ok:true,json:async()=>url==='/data/batches/current.json'?{arms:rows.map((run,index)=>({run_id:run.run_id,trial:index+1}))}:{runs:rows}}};
+let labelLoads=0;
+const loadTrialDisplayNumbers=()=>{labelLoads++;return new Promise(()=>{});};
 const setAccent=()=>{},modelLabel=value=>value,loadRun=async(path)=>{loaded=path};
 """ + helpers + '\n' + init + """
 (async()=>{
@@ -40,6 +43,8 @@ const setAccent=()=>{},modelLabel=value=>value,loadRun=async(path)=>{loaded=path
   assert.equal(loaded,`/${requested||'glm-new'}.json`);
   assert.equal(runSelect.value,loaded);
   assert.equal(JSON.stringify(rows),original);
+  assert.equal(labelLoads,page==='trajectory'?1:0,'trial labels load without blocking the trace or changing selector order');
+  if(page==='trajectory'){assert.equal(state.batch.arms.length,rows.length);assert.ok(fetched.includes('/data/batches/current.json'));}
 })().catch(error=>{console.error(error);process.exitCode=1});
 """
     result = subprocess.run(['node', '-e', script], capture_output=True, text=True)

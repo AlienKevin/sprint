@@ -680,7 +680,8 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "class:'submission-target'" in app
     assert "el.getScreenCTM()" in app
     assert "nearest.distance<=22**2" in app
-    assert "styles.css?v=20260830-charts34" in page
+    assert "styles.css?v=20260830-charts39" in page
+    assert '<p class="chart-interaction-hint">Click on any dot to replay that policy.</p>' in page
     assert '<section class="section observations-guide" id="observations">' in page
     assert "We reviewed all 15 trials—five per model." not in page
     assert "No trial finished 100m." in page
@@ -688,8 +689,8 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "one of five trials" in page
     assert ".observation-cards { display: grid; grid-template-columns: 1fr;" in styles
     assert ".observation-cards { grid-template-columns: 1fr; gap: 18px; }" in styles
-    assert "app.js?v=20260830-charts24" in page
-    assert '"version":"20260830-23"' in (ROOT / "web/version.json").read_text()
+    assert "app.js?v=20260830-charts26" in page
+    assert '"version":"20260831-2"' in (ROOT / "web/version.json").read_text()
     assert "AUC cutoff" not in app
     assert "auc-cap-line" not in app
     assert ".auc-cap-line" not in styles
@@ -705,8 +706,8 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert 'class="experiment-table"' in app
     assert 'scope="rowgroup"' in app
     assert (
-        '<table class="experiment-table" id="experiment-results-table"><thead><tr><th scope="col">Model</th>'
-        '<th scope="col">Effective Speed</th><th scope="col">Elapsed</th>' in app
+        '<table class="experiment-table" id="experiment-results-table"><thead><tr><th scope="col">${t(\'Model\')}</th>'
+        '<th scope="col">${t(\'Effective Speed\')}</th><th scope="col">${t(\'Elapsed\')}</th>' in app
     )
     assert (
         '<table class="experiment-table" id="experiment-results-table"><thead><tr><th scope="col">Model</th>'
@@ -766,8 +767,8 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert '<th scope="col">CPU agent</th>' not in app
     assert '<th scope="col">Training</th>' not in app
     assert (
-        '<th scope="col">Model API</th><th scope="col">GPU</th>'
-        '<th scope="col">CPU</th>' in app
+        '<th scope="col">${t(\'Model API\')}</th><th scope="col">${t(\'GPU\')}</th>'
+        '<th scope="col">${t(\'CPU\')}</th>' in app
     )
     assert "${costCell(parts.api)}${costCell(parts.training)}${costCell(parts.cpu)}" in app
     assert "let showAllBudgetTrials = false" in app
@@ -799,16 +800,16 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "meta.append(el('b','',`#" in trajectory_app
     assert "fmtClock(step.timestamp)" not in trajectory_app
     assert 'class="right-rail"' not in trajectory_page
-    assert "trajectory.css?v=20260830-8" in trajectory_page
-    assert "trajectory.js?v=20260830-2" in trajectory_page
-    assert "trajectory-overview.js?v=20260830-14" in trajectory_page
+    assert "trajectory.css?v=20260831-1" in trajectory_page
+    assert "trajectory.js?v=20260831-1" in trajectory_page
+    assert "trajectory-overview.js?v=20260830-17" in trajectory_page
     assert "Number(policy.effective_speed_mps)" in trajectory_overview
     assert "100 / finish" not in trajectory_overview
     assert "function policyFinished(policy)" in trajectory_overview
     assert "drawDiamond(policy.x, policy.y, policyFinished(policy), color)" in trajectory_overview
     assert "gpu_output_observed" in (ROOT / "event_runtime/export/frontier.py").read_text()
     assert 'id="rollout-outline"' in trajectory_page
-    assert '<h2 id="rollout-outline-title">Trial Outline</h2>' in trajectory_page
+    assert '<h2 id="rollout-outline-title" data-i18n="trajectory.Trial Outline">Trial Outline</h2>' in trajectory_page
     assert 'aria-label="Trial outline chapters"' in trajectory_page
     assert ">Rollout outline</h2>" not in trajectory_page
     assert trajectory_page.index(
@@ -828,7 +829,7 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "gap: 12px" in trajectory_styles
     assert "flex: 0 0 auto" in trajectory_styles
     assert "function authoredChapters" in trajectory_app
-    assert "Started at ${started} · Lasted for ${" in trajectory_app
+    assert "ui('Started at {started} · Lasted for {duration}'," in trajectory_app
     assert (
         "function chapterTarget(chapter){return document.getElementById(chapter.id)}"
         in trajectory_app
@@ -907,7 +908,8 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "state.selectedPolicies.at(-1)" in trajectory_overview
     assert "marker.setAttribute('aria-pressed', 'false')" in trajectory_overview
     assert "marker.setAttribute('aria-pressed', String(selected))" in trajectory_overview
-    assert "You can compare up to ${MAX_SELECTED_POLICIES} policies" in trajectory_overview
+    assert "You can compare up to {limit} policies." in trajectory_overview
+    assert "{limit:MAX_SELECTED_POLICIES,number:policyNumber(policy)}" in trajectory_overview
     assert "type: 'g1:set-policies'" in trajectory_overview
     assert "COMPARISON_REPLAY_PATH = '/replay/trial-comparison'" in trajectory_overview
     assert "event.data?.type === 'g1:policies-ready'" in trajectory_overview
@@ -942,7 +944,7 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "{key: 'training', label: 'GPU'" in trajectory_overview
     assert "TRAIN GPU" not in trajectory_overview
     assert "const laneTop = state.docked ? 15 : 18" in trajectory_overview
-    assert "ctx.fillText('SUBMISSIONS'" in trajectory_overview
+    assert "ctx.fillText(ui('SUBMISSIONS')" in trajectory_overview
     assert "drawPolicies(policyY, laneHeight, accent)" in trajectory_overview
     assert 'id="trajectory-policy-replay"' in trajectory_page
     assert "tip.style.top" not in trajectory_overview
@@ -993,7 +995,8 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "Open rendered policy" in timeline_app
     assert "setModelAccent" in timeline_app
     assert "<title>Agents' 100m</title>" in page
-    assert "<h1>Agents' <em>100m</em></h1>" in page
+    assert '<nav class="home-nav"><h1 class="brand">Agents\' <em>100m</em></h1><div data-language-switcher></div></nav>' in page
+    assert "<h1>Agents' <em>100m</em></h1>" not in page
     assert '<span class="brand">Agents\' <em>100m</em></span>' in page
     assert "color: var(--bg)" in styles
     assert "background: var(--text)" in styles
@@ -1006,15 +1009,15 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert 'id="time-performance" hidden' in page
     assert 'id="readout-detail"' in page
     assert 'id="readout-replay"' in page
-    assert '<span>Cost so far</span><b>${queueCost}</b>' in app
-    readout_source = app.split("function showReadout(point,model){", 1)[1].split("function trialNumber(", 1)[0]
+    assert '<span>${t(\'Cost so far\')}</span><b>${queueCost}</b>' in app
+    readout_source = app.split("function showReadout(point,model,refreshTextOnly=false){", 1)[1].split("function trialNumber(", 1)[0]
     assert "Stop reason" not in readout_source
     assert "Cost so far" in readout_source
     assert "cost_at_queue_usd" in readout_source
     assert "Trial cost" not in readout_source
     assert "Elapsed race time" not in readout_source
-    assert "<span>Effective Speed</span>" in readout_source
-    assert "<span>Legal distance</span>" in readout_source
+    assert "<span>${t('Effective Speed')}</span>" in readout_source
+    assert "<span>${t('Legal distance')}</span>" in readout_source
     assert 'id="readout-timeline"' not in page
     assert "RUN TIMELINE" not in page
     assert "What the agent was doing" not in page
@@ -1022,7 +1025,7 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert ".readout-timeline" not in styles
     assert 'id="policy-grid"' not in page
     assert 'id="run-links"' not in page
-    assert "<strong>Effective Speed</strong>" in app
+    assert "<strong>${t('Effective Speed')}</strong>" in app
     assert "highest Effective Speed" in app
     assert "winners[key].bestScore" in app
     assert "rankedExperimentTrials(groups[key])[0]" in app
@@ -1032,11 +1035,11 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert "const xmax=finite(aucCap)?aucCap" in app
     assert "Math.min(xmax,value)" in app
     assert "eligible=rows" in app
-    assert "cost at queue ${queueCost}" in app
+    assert "cost at queue {cost}" in app
     assert "Effective speed (m/s)" in app
     assert "showReadout" in app
     assert "active_provisional" in app
-    assert "'cumulative_agent_cost_usd','Cost at queue ($)'" in app
+    assert "'cumulative_agent_cost_usd',t('Cost ($)')" in app
     assert "best of ${trials}" not in app
     assert "hours_since_agent_launch" in app
     assert "hours_since_agent launch" not in app
@@ -1111,7 +1114,7 @@ def test_homepage_chart_labels_match_table_text_and_remain_responsive() -> None:
     assert 'id="readout-stats"' in page
     assert 'id="readout-replay"' in page
     assert "Compare how each independent trial allocated its $10 agent-side budget." not in page
-    assert "'cumulative_agent_cost_usd','Cost at queue ($)'" in app
+    assert "'cumulative_agent_cost_usd',t('Cost ($)')" in app
     assert "cost within each independent trial (API + CPU + training; verifier excluded)" not in app
     assert "--data-label-size: 12px" in styles
     assert "font-size: var(--data-label-size)" in styles
@@ -1133,7 +1136,7 @@ def test_homepage_chart_labels_match_table_text_and_remain_responsive() -> None:
     chart_source = app.split("function continuousChart(", 1)[1].split(
         "function renderPerformanceScores(", 1
     )[0]
-    assert "yTitle.textContent='Effective speed (m/s)'" in chart_source
+    assert "yTitle.textContent=t('Effective speed (m/s)')" in chart_source
     assert "higher is better" not in chart_source
     assert "requestAnimationFrame(renderCharts)" in app
 
@@ -1151,17 +1154,17 @@ def test_mobile_trial_results_match_three_column_cost_breakdown_cards() -> None:
         "@media (max-width: 560px)", 1
     )[0]
     assert ".experiment-row,\n  .budget-row {\n    grid-template-columns: repeat(3, minmax(0, 1fr));" in mobile_styles
-    assert '.experiment-row td[data-label="Total cost"] { display: none; }' in mobile_styles
+    assert '.experiment-row td.experiment-total-cost { display: none; }' in mobile_styles
     assert ".experiment-model,\n  .budget-model {\n    display: flex;\n    grid-column: 1 / -1;" in mobile_styles
     assert ".experiment-row td,\n  .budget-row td {" in mobile_styles
     assert ".experiment-row td::before,\n  .budget-row td::before" in mobile_styles
-    assert ".experiment-row td:not(:last-child),\n  .budget-row td:not(:last-child)" in mobile_styles
+    assert ".experiment-row td:not(:last-child),\n  .budget-row .budget-api,\n  .budget-row .budget-training" in mobile_styles
     assert 'content: attr(data-trial-label)' not in mobile_styles
     assert '.experiment-row:not(:first-child) td::before,' in mobile_styles
     assert '.budget-row:not(:first-child) td::before' in mobile_styles
     app = (ROOT / "web/app.js").read_text()
     assert 'scope="rowgroup" rowspan="${visibleRows.length}"' in app
-    assert "const costLabels={api:'Model API',training:'GPU',cpu:'CPU'}" in app
+    assert "const costLabels={api:t('Model API'),training:t('GPU'),cpu:t('CPU')}" in app
     assert 'data-label="${esc(costLabels[part.key])}"' in app
     assert 'title="${esc(part.label)}: ${part.value.toFixed(2)} USD · ${esc(part.basis)}"' in app
 
@@ -1169,9 +1172,9 @@ def test_mobile_trial_results_match_three_column_cost_breakdown_cards() -> None:
 def test_best_trial_label_is_outside_stable_table_headers() -> None:
     app = (ROOT / "web/app.js").read_text()
     styles = (ROOT / "web/styles.css").read_text()
-    assert "`Best of ${trialCounts[0]===5?'Five':trialCounts[0]}`" in app
+    assert "trialCounts[0]===5?t('Best of Five'):t('Best of {count}',{count:trialCounts[0]})" in app
     assert '<div class="experiment-table-actions"><span class="experiment-best-label" aria-hidden="${showAllTrials}">' in app
-    assert '<td data-label="Effective Speed">' in app
+    assert '<td data-label="${t(\'Effective Speed\')}">' in app
     assert "(best of ${grouped[key].length})&#10;" not in app
     header = app.split('<table class="experiment-table"', 1)[1].split("</thead>", 1)[0]
     assert "bestTrialLabel" not in header
@@ -1195,7 +1198,7 @@ def test_performance_divider_bleeds_without_widening_content() -> None:
 def test_homepage_updated_footer_displays_date_without_time() -> None:
     app = (ROOT / "web/app.js").read_text()
     render_source = app.split("function render(){", 1)[1].split("let chartResizeFrame", 1)[0]
-    assert "Updated ${new Date(updated).toLocaleDateString()}" in render_source
+    assert "t('Updated {date}',{date:new Date(updated).toLocaleDateString(window.SiteI18n?.language||'en')})" in render_source
     assert "new Date(updated).toLocaleString()" not in render_source
 
 
@@ -1330,6 +1333,7 @@ def test_trajectory_exec_parser_distinguishes_wrapper_status() -> None:
     )
     script = "\n".join(
         [
+            "const label=(source,params)=>source.replace(/\\{(\\w+)\\}/g,(_,key)=>params[key]);",
             helper,
             "console.log(JSON.stringify([",
             "  normalizeExecOutput('Script completed\\nWall time 0.2 seconds\\nOutput:\\n'),",

@@ -12,7 +12,12 @@ APP = (ROOT / "web/app.js").read_text()
 
 
 def run_js(script: str) -> None:
-    result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    # Exercise the real English fallback with no i18n catalog installed. These
+    # numerical/stop-code fixtures do not need to construct the whole page.
+    helpers = "const window={};\n"
+    helpers += next(line for line in APP.splitlines() if line.strip().startswith("const t=")) + "\n"
+    helpers += "const ui=t;\n"
+    result = subprocess.run(["node", "-e", helpers + script], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
 
 
@@ -71,7 +76,8 @@ assert.equal(JSON.stringify(state.performance),original);
 
 def test_speed_axes_and_tooltips_use_display_formatter() -> None:
     assert "label.textContent=fmtScore(value)" in APP
-    assert "effective speed ${fmtScore(row.continuous_score_mps)} m/s" in APP
+    assert "effective speed {speed} m/s" in APP
+    assert "speed:fmtScore(row.continuous_score_mps)" in APP
     assert "${fmtSpeed(policyScore(policy))} m/s" in (ROOT / "web/trajectory-overview.js").read_text()
     assert "const performanceModels=orderedModels(state.performance?.models||[]);const legend=" in APP
 

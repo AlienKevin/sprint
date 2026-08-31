@@ -21,8 +21,8 @@ def test_observations_are_three_short_model_summaries_without_example_links() ->
     assert "<a " not in section
     paragraphs = re.findall(r'<p>(.*?)</p>', section)
     assert len(paragraphs) == 3
-    for paragraph in paragraphs:
-        assert len(re.split(r'(?<=[.!?])\s+(?=[A-Z])', paragraph)) == 4
+    for paragraph, sentences in zip(paragraphs, [4, 4, 3]):
+        assert len(re.split(r'(?<=[.!?])\s+(?=[A-Z])', paragraph)) == sentences
         assert 55 <= len(paragraph.split()) <= 75
     assert "No trial finished 100m" in section
     assert "GLM’s fastest simulated 100m took 9.90 s" in section
@@ -32,9 +32,10 @@ def test_observations_are_three_short_model_summaries_without_example_links() ->
     assert "short forward launches" not in section
     assert paragraphs[1].endswith("For example, this policy takes one big step, then falls flat on its face.")
     for phrase in ["In its best trial", "reinforcement learning", "scripted crawling",
-                   "using PPO", "lane and collision rules", "working gait worse",
+                   "using PPO", "lane and collision rules",
                    "complete collision shapes", "steering corrections"]:
         assert phrase in section
+    assert "More training sometimes made a working gait worse." not in section
 
 
 def test_observations_use_three_requested_lazy_replays() -> None:

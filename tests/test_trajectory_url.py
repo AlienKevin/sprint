@@ -51,6 +51,7 @@ const state={};let runLoadGeneration=0;
 const pending=new Map(),published=[];
 const fetch=path=>new Promise(resolve=>pending.set(path,resolve));
 const stepsTarget={replaceChildren(){}};const el=()=>({});
+const label=source=>source,ui=source=>source;
 const window={dispatchEvent(event){if(event.type==='trajectory:loaded')published.push(event.detail.data.run.run_id)}};
 const CustomEvent=class{constructor(type,{detail}){this.type=type;this.detail=detail}};
 const renderSummary=()=>{};const sha256=async()=>'';

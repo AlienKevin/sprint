@@ -1,0 +1,30 @@
+/* Unified diffs use one responsive code column, never a narrow split view. */
+.trajectory-diff { min-width: 0; max-width: 100%; border-top: 1px solid var(--line-soft); background: #090d12; color: var(--text); }
+.diff-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 13px 3px; font: 700 var(--terminal-label-size)/1.5 var(--mono); }
+.diff-stats { display: flex; gap: 10px; white-space: nowrap; }
+.diff-added-count { color: #83d6a0; }
+.diff-removed-count { color: #f3a7a7; }
+.diff-note, .diff-message { margin: 0; padding: 4px 13px 10px; color: var(--muted); font: var(--terminal-label-size)/1.5 var(--mono); }
+.diff-message { padding-top: 12px; }
+.diff-lines { min-width: 0; padding-block: 5px; font: var(--terminal-font-size)/1.6 var(--mono); }
+.diff-line { display: grid; grid-template-columns: 3.2ch 3.2ch 2ch minmax(0,1fr); align-items: start; min-height: 1.6em; padding-inline: 5px 10px; }
+.diff-line-number, .diff-sign { color: #82909d; text-align: right; user-select: none; font: inherit; padding-right: .5ch; }
+.diff-sign { text-align: center; font-weight: 700; }
+.diff-code { display: block; min-width: 0; padding: 0; color: inherit; background: none; border: 0; border-radius: 0; white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 4; font: inherit; }
+.diff-remove { background: #662f353b; }
+.diff-add { background: #235e393b; }
+.diff-remove .diff-sign { color: #f3a7a7; }
+.diff-add .diff-sign { color: #83d6a0; }
+.diff-inline-change { border-radius: 2px; }
+.diff-remove .diff-inline-change { background: #a3464b88; color: #fff0f0; }
+.diff-add .diff-inline-change { background: #37895388; color: #effff2; }
+.diff-line-ending { display: inline-block; margin-left: 1ch; padding-inline: .45ch; border: 1px solid #71809255; border-radius: 3px; color: var(--muted); font-size: .8em; user-select: none; }
+.diff-context-gap { padding: 3px 10px; background: #182335; }
+.diff-context-toggle { display: block; width: 100%; padding: 6px; border: 0; background: transparent; color: #aac8e9; text-align: left; font: var(--terminal-label-size)/1.5 var(--mono); cursor: pointer; }
+.diff-context-toggle:hover { color: #e5f1ff; }
+.diff-context-toggle:focus-visible { outline: 2px solid #aac8e9; outline-offset: -2px; }
+@media (max-width: 600px) {
+  .diff-line { grid-template-columns: 2.8ch 2.8ch 1.6ch minmax(0,1fr); padding-inline: 2px 7px; }
+  .diff-heading { padding-inline: 10px; }
+  .diff-note, .diff-message { padding-inline: 10px; }
+}

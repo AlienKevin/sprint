@@ -27,7 +27,9 @@ def test_static_model_sections_follow_deepseek_luna_glm() -> None:
 def test_homepage_groups_and_legends_ignore_input_order_and_model_scores() -> None:
     app = (ROOT / 'web/app.js').read_text()
     functions = app[app.index('  const MODEL ='):app.index('  let chartResizeFrame')]
-    script = "const assert=require('node:assert/strict');\n" + app.splitlines()[1] + "\n"
+    script = "const assert=require('node:assert/strict');\n"
+    script += "\n".join(line for line in app.splitlines()
+                        if line.strip().startswith(("const t=", "const trajectoryHref="))) + "\n"
     script += """
 const window={},document={querySelectorAll(){return []}};
 let showAllTrials=false,showAllBudgetTrials=false;

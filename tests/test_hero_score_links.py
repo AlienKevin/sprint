@@ -17,7 +17,10 @@ def test_whole_hero_score_links_to_matching_best_trial(use_url_builder: bool) ->
     script = "const assert=require('node:assert/strict');\n"
     script += f"const api=require({json.dumps(str(ROOT / 'web/trajectory-url.js'))});\n"
     script += f"const window={{TrajectoryURL:{'api' if use_url_builder else 'null'}}};\n"
-    script += APP.splitlines()[1] + "\n"
+    # Select helpers by declaration, not source line position: localization adds
+    # an independent helper before the URL builder.
+    script += "\n".join(line for line in APP.splitlines()
+                        if line.strip().startswith(("const t=", "const trajectoryHref="))) + "\n"
     script += """
 let showAllTrials=false,showAllBudgetTrials=false;
 const nodes=new Map();

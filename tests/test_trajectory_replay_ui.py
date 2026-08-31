@@ -14,7 +14,8 @@ OVERVIEW = (ROOT / "web/trajectory-overview.js").read_text()
 def test_viewer_navigation_has_no_redundant_slash() -> None:
     nav = HTML.split('<header class="viewer-nav">', 1)[1].split('</header>', 1)[0]
     assert '<a class="brand" href="/">Agents\' <em>100m</em></a>' in nav
-    assert '<span>Agent trajectory</span>' in nav
+    assert 'id="viewer-trial-model">Agent trajectory</span>' in nav
+    assert 'id="viewer-trial-number"' in nav
     assert 'nav-slash' not in nav
 
 
@@ -26,6 +27,7 @@ def overview_function(name: str) -> str:
 
 
 def run_node(script: str) -> None:
+    script = "const ui=(source,params={})=>source.replace(/\\{(\\w+)\\}/g,(match,key)=>params[key]??match);const setUI=(node,source,params)=>{node.textContent=ui(source,params)};\n" + script
     result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
 
@@ -229,8 +231,10 @@ def test_trial_shell_keeps_policy_list_at_top_and_shortens_visible_labels() -> N
     assert '.hud:has(.clock-status:not(:empty)) .lanes{top:12px}' in shell
     runtime = (ROOT / "web/renderers/g1-100-metres/trial-comparison.js").read_text()
     assert '<span class="nm">#${policy.policy_number}</span>' in runtime
-    assert 'aria-label="Follow ${name}"' in runtime
-    assert 'aria-label="Remove ${name}"' in runtime
+    assert "replayMessage('follow',{name},'Follow {name}')" in runtime
+    assert 'aria-label="${follow}"' in runtime
+    assert "replayMessage('remove',{name},'Remove {name}')" in runtime
+    assert 'aria-label="${remove}"' in runtime
 
 
 def test_mobile_comparison_results_use_flow_layout_and_report_actual_height() -> None:
@@ -270,7 +274,7 @@ def test_trajectory_overview_javascript_parses() -> None:
 
 
 def test_url_restore_waits_for_ready_scene_and_does_not_add_iframe_history_entries() -> None:
-    assert HTML.index('/trajectory-url.js') < HTML.index('/trajectory.js')
+    assert HTML.index('src="/trajectory-url.js') < HTML.index('src="/trajectory.js')
     assert "if (!state.ready) return;" in overview_function("restoreUrlState")
     assert "jumpToStep(pending.step, true, true, true, null)" in overview_function("finishUrlRestore")
     assert "if (state.restoringUrl) finishUrlRestore()" in OVERVIEW
@@ -406,6 +410,8 @@ const meta=element(),chapterList=element(),unmappedPolicyList=element(),unmapped
 const grouped={dataset:{publicStep:'589'},querySelector(){return meta}};
 const chapter={dataset:{startStep:'580',endStep:'610',chapterId:'queue-chapter'},querySelector(){return chapterList}};
 const outline={scrollTop:100};
+let urlRestoreGeneration=1;
+const anchorMobileNavigation=()=>{};
 const document={
   querySelectorAll(selector){return selector==='.chapter-item'?[chapter]:selector==='.chapter-policy-list'?[chapterList]:[]},
   querySelector(selector){return selector==='#chapter-nav'?outline:selector.includes('raw-queue')?grouped:null},

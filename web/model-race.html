@@ -1,4 +1,244 @@
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- replay-i18n:start -->
+<script id="replay-i18n-core" data-source-sha256="c06dda83331657c5dd22f6f80e8fdb86113dac6b4deba5f8b71c186ff67c9b7b">/* Explicit UI localization only. Model messages, source code and recordings are never translated. */
+(() => {
+  'use strict';
+  const storageKey = 'agents100m.language';
+  const catalogs = {en: Object.create(null), 'zh-CN': Object.create(null)};
+  const normalize = value => value === 'zh-CN' || value === 'zh' ? 'zh-CN' : 'en';
+  const known = value => ['en', 'zh', 'zh-CN'].includes(value);
+  let language = 'en';
+  try {
+    const query = new URL(location.href).searchParams.get('lang');
+    const parentLanguage = window.parent !== window ? window.parent.SiteI18n?.language : null;
+    language = normalize(parentLanguage || (known(query) ? query : localStorage.getItem(storageKey)));
+  } catch { /* Storage or cross-origin parents may be unavailable. English remains usable. */ }
+  document.documentElement.lang = language;
+  function register(locale, values) {
+    if (!known(locale) || !values || typeof values !== 'object') return;
+    Object.assign(catalogs[normalize(locale)], values);
+  }
+  function t(key, params = {}, fallback) {
+    const value = catalogs[language][key] ?? catalogs.en[key] ?? fallback ?? key;
+    return String(value).replace(/\{([\w.]+)\}/g, (match, name) => Object.hasOwn(params, name) ? String(params[name]) : match);
+  }
+  function apply(root = document) {
+    const nodes = [...(root.matches?.('[data-i18n],[data-i18n-html],[data-i18n-attr]') ? [root] : []), ...root.querySelectorAll('[data-i18n],[data-i18n-html],[data-i18n-attr]')];
+    for (const node of nodes) {
+      if (node.dataset.i18n) node.textContent = t(node.dataset.i18n);
+      // Only hand-authored catalog markup may use data-i18n-html. Never bind trace content.
+      if (node.dataset.i18nHtml) node.innerHTML = t(node.dataset.i18nHtml);
+      for (const pair of (node.dataset.i18nAttr || '').split(';')) {
+        const split = pair.indexOf(':');
+        if (split > 0) node.setAttribute(pair.slice(0, split).trim(), t(pair.slice(split + 1).trim()));
+      }
+    }
+    for (const host of document.querySelectorAll('[data-language-switcher]')) mountSwitcher(host);
+  }
+  function send(target) { try { target.postMessage({type: 'site:language', language}, location.origin); } catch {} }
+  function propagate(exclude) {
+    for (const frame of document.querySelectorAll('iframe')) if (frame.contentWindow !== exclude) send(frame.contentWindow);
+    if (window.parent !== window && window.parent !== exclude) send(window.parent);
+  }
+  function setLanguage(value, options = {}) {
+    if (!known(value)) return;
+    const next = normalize(value), changed = next !== language;
+    language = next;
+    document.documentElement.lang = language;
+    // Only a deliberate choice writes shared storage. Rewriting received values
+    // can resurrect older queued choices during a quick EN → 中 → EN sequence.
+    if (options.persist !== false) try { localStorage.setItem(storageKey, language); } catch {}
+    // A deliberate toggle takes precedence over a language in a shared URL on the next reload.
+    try { const url = new URL(location.href); if (url.searchParams.has('lang')) { url.searchParams.set('lang', language); history.replaceState(history.state, '', url); } } catch {}
+    if (changed) {
+      apply();
+      window.dispatchEvent(new CustomEvent('site:languagechange', {detail: {language}}));
+    }
+    if (options.broadcast !== false && (changed || options.broadcast)) propagate(options.exclude);
+  }
+  function mountSwitcher(host) {
+    if (!host) return;
+    host.classList.add('language-switcher');
+    host.setAttribute('role', 'group');
+    host.setAttribute('aria-label', t('ui.language'));
+    if (!host.dataset.languageMounted) {
+      host.dataset.languageMounted = 'true';
+      for (const [locale, label, name] of [['en', 'EN', 'English'], ['zh-CN', '中', '简体中文']]) {
+        const button = document.createElement('button');
+        button.type = 'button'; button.textContent = label; button.lang = locale;
+        button.dataset.language = locale; button.setAttribute('aria-label', name);
+        button.addEventListener('click', () => setLanguage(locale));
+        host.append(button);
+      }
+    }
+    for (const button of host.querySelectorAll('[data-language]')) button.setAttribute('aria-pressed', String(button.dataset.language === language));
+  }
+  register('en', {'ui.language': 'Language'});
+  register('zh-CN', {'ui.language': '语言'});
+  window.SiteI18n = {t, register, apply, setLanguage, mountSwitcher, get language() { return language; }};
+  window.addEventListener('storage', event => { if (event.key === storageKey && known(event.newValue)) setLanguage(event.newValue, {persist:false, broadcast:false}); });
+  window.addEventListener('message', event => {
+    if (event.origin !== location.origin) return;
+    const trusted = event.source === window.parent || [...document.querySelectorAll('iframe')].some(frame => frame.contentWindow === event.source);
+    if (!trusted) return;
+    if (event.data?.type === 'site:language:request') send(event.source);
+    // Relay through nested frames even when storage already synchronized this
+    // window, but never reflect the message back to its sender.
+    else if (event.data?.type === 'site:language' && known(event.data.language)) setLanguage(event.data.language, {persist:false, broadcast:true, exclude:event.source});
+  });
+  document.addEventListener('load', event => { if (event.target?.tagName === 'IFRAME') send(event.target.contentWindow); }, true);
+  // Readiness is not a user choice: a loading child must never overwrite a
+  // newer parent choice with the language it captured before assets loaded.
+  const ready = () => { apply(); propagate(window.parent); if (window.parent !== window) try { window.parent.postMessage({type:'site:language:request'}, location.origin); } catch {} };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', ready, {once:true}); else ready();
+})();
+</script>
+<script id="replay-i18n-catalog" data-source-sha256="d0162ee1a24516c354bd5c6bdcb3a741073b0415a1b546b2ef36130a9cace02d">/* Hand-authored interface strings only; recordings and model identities stay unchanged. */
+(() => {
+  const strings = {
+    play: ['Play', '播放'], pause: ['Pause', '暂停'], replay: ['Replay', '重播'],
+    reset: ['Reset', '重置'], finished: ['FINISHED', '已完赛'], timeout: ['TIMEOUT', '超时'],
+    drift: ['LANE DRIFT', '越出跑道'], collision: ['COLLISION', '自身碰撞'], fell: ['FELL', '跌倒'], dnf: ['DNF', '未完赛'],
+    camera: ['Camera controls', '视角控制'], zoomIn: ['Zoom in', '放大'], zoomOut: ['Zoom out', '缩小'],
+    speed: ['Playback speed', '播放速度'], selected: ['Selected policies', '已选策略'],
+    policy: ['Policy #{number}', '策略 #{number}'], lane: ['Lane {number}', '第 {number} 跑道'],
+    follow: ['Follow {name}', '跟随{name}'], remove: ['Remove {name}', '移除{name}'],
+    title: ["Agents' 100m · Policy replay", "Agents' 100m · 策略回放"],
+    empty: ['Select up to 8 policies from one trial to compare.', '选择同一试验中的最多 8 个策略进行对比。'],
+    loadingOne: ['Loading {count} policy…', '正在加载 {count} 个策略…'],
+    loadingMany: ['Loading {count} policies…', '正在加载 {count} 个策略…'],
+    unavailable: ['Unable to load {ids}. Remove the unavailable policy or retry.', '无法加载 {ids}。请移除不可用的策略或重试。'],
+    assetError: ['Unable to load replay {asset}. Please reload to retry.', '无法加载回放{asset}。请刷新重试。'],
+    engine: ['engine', '引擎'], meshes: ['meshes', '模型资源'], assets: ['assets', '资源'],
+    maxPolicies: ['At most 8 policies can be compared.', '最多可对比 8 个策略。'],
+    incompatible: ['Selected policies have incompatible pose layouts.', '所选策略的姿态数据格式不兼容。'],
+    cancelled: ['Replay load cancelled.', '已取消加载回放。'],
+    runner: ['Runner', '选手'],
+    unknownOne: ['Unknown policy capture: {ids}.', '未知策略记录：{ids}。'],
+    unknownMany: ['Unknown policy captures: {ids}.', '未知策略记录：{ids}。'],
+    bestTitle: ["Agents' 100m · Best-policy race", "Agents' 100m · 最佳策略竞赛"],
+    bestEyebrow: ['BEST-POLICY RACE', '最佳策略竞赛'],
+    bestHeadline: ['The fastest published policy from each model', '各模型已发布的最快策略'],
+    bestLede: ['Three policies start together on the same 100-metre clock.', '三个策略在同一百米赛道上同时起跑。'],
+    bestCaption: ['Best replayable policy per model from the current published cohort.', '当前公开试验中，各模型可回放的最佳策略。'],
+    bestStory: ['The replay uses the verifier-authored pose capture for every runner.', '每位选手的回放均使用验证器记录的姿态数据。'],
+    bestAccessible: ['Best published policies racing together in lanes one through three.', '已发布的最佳策略在第一至第三跑道上同场竞赛。'],
+    policyEyebrow: ['POLICY REPLAY', '策略回放'],
+    policyAccessible: ['Unitree G1 policy replay on the sprint course.', '宇树 G1 在短跑赛道上的策略回放。'],
+    legacyTitle: ['The Race to AGI4ALL · Policy replay', 'The Race to AGI4ALL · 策略回放'],
+    unfinished: ['Did not finish', '未完赛'],
+    shortPolicy: ['Policy {number}', '策略 {number}'],
+    corridorAccessible: ['{result}: Unitree G1 policy replay on a ±0.61 m corridor.', '{result}：宇树 G1 在 ±0.61 m 跑道内的策略回放。'],
+    attempt100: ['G1 100 metres attempt #{number} - {result}', 'G1 百米尝试 #{number} - {result}'],
+    attemptSprint: ['G1 Sprint attempt #{number} - {result}', 'G1 短跑尝试 #{number} - {result}'],
+    readout: ['Policy readout.', '策略回放。'],
+    recordReadout: ['Record-setting policy readout.', '创纪录策略回放。'],
+    trialPolicy: ['Trial {trial} · policy {policy}', '试验 {trial} · 策略 {policy}'],
+    effectiveSpeed: ['Effective Speed {value} m/s', '有效速度 {value} m/s'],
+    back: ['← All runs and policies', '← 所有试验与策略'],
+    comparison: ['Policy comparison', '策略对比'],
+    laneRule: ['Whole body must stay between the ±0.61 m vertical lane planes; scoring stops at the verifier event', '全身必须保持在 ±0.61 m 的跑道垂直边界内；计分在验证器判定事件发生时停止'],
+    laneRuleLegacy: ['Whole body must stay between the ±0.61 m vertical lane planes; distance freezes at the first stop', '全身必须保持在 ±0.61 m 的跑道垂直边界内；距离在首次停止时定格'],
+    gestureHelp: ['Drag to orbit, scroll to zoom, space to pause', '拖动旋转视角，滚轮缩放，空格暂停'],
+    settle: ['Distance freezes at the first stop; a short passive visual settle may follow.', '距离在首次停止时定格；画面随后可能短暂继续显示自然落定的动作。']
+  };
+  const byEnglish = new Map();
+  for (const [key, [en, zh]] of Object.entries(strings)) {
+    byEnglish.set(en, key);
+    window.SiteI18n?.register('en', {['replay.' + key]: en});
+    window.SiteI18n?.register('zh-CN', {['replay.' + key]: zh});
+  }
+  function t(key, params = {}) {
+    const fallback = strings[key]?.[0] || key;
+    return window.SiteI18n?.t('replay.' + key, params, fallback) || fallback.replace(/\{(\w+)\}/g, (_, name) => params[name] ?? '{' + name + '}');
+  }
+  function text(english) { return byEnglish.has(english) ? t(byEnglish.get(english)) : english; }
+  function staticText(source) {
+    if(byEnglish.has(source))return text(source);
+    let match;
+    if((match=source.match(/^Lane (\d+)(.*)$/)))return t('lane',{number:match[1]})+match[2];
+    if((match=source.match(/^Trial (\d+) · policy (\d+)$/)))return t('trialPolicy',{trial:match[1],policy:match[2]});
+    if((match=source.match(/^Policy (\d+)$/)))return t('shortPolicy',{number:match[1]});
+    if((match=source.match(/^Effective Speed ([\d.]+) m\/s$/)))return t('effectiveSpeed',{value:match[1]});
+    if((match=source.match(/^(.*): Unitree G1 policy replay on a ±0\.61 m corridor\.$/)))return t('corridorAccessible',{result:staticText(match[1])??match[1]});
+    if((match=source.match(/^G1 (100 metres|Sprint) attempt #(\d+) - (.*)$/)))return t(match[1]==='Sprint'?'attemptSprint':'attempt100',{number:match[2],result:staticText(match[3])??match[3]});
+  }
+  function refreshStatic() {
+    // Only renderer-authored presentation nodes; never recordings/model text.
+    for (const node of document.querySelectorAll('.sr-only,.eyebrow,h1,.lede,.cap>span,.story>p,.polsel>a,.lc .nm')) {
+      const source=node.dataset.replaySource??node.textContent;
+      const translated=staticText(source);
+      if(translated!==undefined){node.dataset.replaySource=source;if(node.textContent!==translated)node.textContent=translated;}
+    }
+    for(const card of document.querySelectorAll('.lanes .lc')){
+      const source=card.dataset.replayInitialAria??card.getAttribute('aria-label')??'',match=source.match(/^Follow Lane (\d+)(.*)$/);
+      if(match){card.dataset.replayInitialAria=source;card.setAttribute('aria-label',t('follow',{name:t('lane',{number:match[1]})+match[2]}));}
+    }
+    document.querySelector('.polsel')?.setAttribute('aria-label',t('comparison'));
+    const title=document.documentElement?.dataset.replayTitle??document.title;
+    document.title=staticText(title)??title;
+  }
+  function refresh() {
+    if(document.documentElement&&!document.documentElement.dataset.replayTitle)document.documentElement.dataset.replayTitle=document.title;
+    refreshStatic();
+    const attrs = [['.camera-ctl', 'camera'], ['#camera-zoom-in', 'zoomIn'], ['#camera-zoom-out', 'zoomOut'], ['.seg', 'speed']];
+    for (const [selector, key] of attrs) document.querySelector(selector)?.setAttribute('aria-label', t(key));
+    document.querySelector('#camera-reset')?.replaceChildren(document.createTextNode(t('reset')));
+    document.querySelector('.lanes')?.setAttribute('aria-label', t('selected'));
+    const button = document.getElementById('replay');
+    if (button && !window.__G1_REPLAY__) button.textContent = '▶ ' + t('play');
+    if (document.title === strings.title[0] || document.title === strings.title[1]) document.title = t('title');
+    if (window.__G1_REPLAY_ASSET_ERROR__) {
+      const note=document.getElementById('failure-note');
+      if(note)note.textContent=t('assetError',{asset:t(window.__G1_REPLAY_ASSET_NAME__||'assets')});
+    }
+  }
+  window.ReplayI18n = {t, text, refresh};
+  window.addEventListener('site:languagechange', refresh);
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', refresh, {once: true});
+    // External Three/HQ scripts block DOMContentLoaded. Translate the already
+    // parsed controls before those large assets finish, then stop observing.
+    if(typeof MutationObserver!=='undefined'){
+      const observer=new MutationObserver(()=>{
+        if(document.getElementById('replay')){observer.disconnect();refresh();}
+      });
+      observer.observe(document.documentElement,{childList:true,subtree:true});
+    }
+    if(document.getElementById('replay'))refresh();
+  } else refresh();
+})();
+</script>
+<!-- replay-i18n:end -->
+<script id="replay-initial-layout">
+// Apply responsive chrome before the blocking renderer assets are requested.
+(()=>{
+  const root=document.documentElement,embedded=parent!==window;
+  const query=new URLSearchParams(location.search);
+  root.classList.toggle('replay-embedded',embedded);
+  root.classList.toggle('replay-example',query.get('example')==='1');
+  const update=()=>{
+    let width=innerWidth;try{if(embedded)width=parent.innerWidth;}catch{}
+    root.classList.toggle('replay-mobile',width<=720);
+  };
+  update();addEventListener('resize',update);
+  const observer=new MutationObserver(()=>{
+    const stage=document.querySelector('.stagewrap'),controls=document.querySelector('.replay-controls');
+    if(!stage||!controls?.querySelector('.ctl'))return;
+    observer.disconnect();
+    if(!embedded||root.classList.contains('replay-example'))return;
+    const publish=()=>{
+      if(window.__G1_REPLAY__){layout.disconnect();return;}
+      parent.postMessage({type:'g1:replay-layout',mobile:root.classList.contains('replay-mobile'),
+        height:Math.ceil(stage.getBoundingClientRect().height),
+        replayGeneration:query.get('replayGeneration')||''},location.origin);
+    };
+    const layout=new ResizeObserver(publish);layout.observe(stage);publish();
+  });
+  observer.observe(root,{childList:true,subtree:true});
+})();
+</script>
 <!-- Shared replay player shell; injected with one event-specific capture. -->
 <title>Agents' 100m · Best-policy race</title>
 <h2 class="sr-only">Best published policies racing together in lanes one through three.</h2>
@@ -44,7 +284,7 @@
   html.replay-mobile .ctl,html.replay-mobile .camera-ctl{position:static;display:flex;flex:none;gap:6px}
   html.replay-mobile .btn{min-height:30px;padding:6px 9px;font-size:11px;white-space:nowrap}
   html.replay-mobile .seg button{min-height:28px;padding:6px 8px;font-size:11px}
-  html.replay-mobile .camera-ctl{margin-left:auto}
+  html.replay-mobile .camera-ctl{display:none}
   html.replay-mobile .camera-ctl .btn{min-width:30px;padding:6px 8px}
   html.replay-mobile .camera-mode,html.replay-mobile .camera-reset{display:none}
   html.replay-mobile .lanes{position:static;order:2;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,205px),1fr));gap:4px;padding:0 8px 8px;max-height:288px;overflow:auto;background:#0e1520}
@@ -123,9 +363,10 @@
       <div class="failure-note" id="failure-note" role="status" aria-live="polite" hidden></div>
       <div class="lanes">
 <div class="lc" id="lane0" role="button" tabindex="0" aria-pressed="false" aria-label="Follow Lane 1, DeepSeek-V4-Flash"><span class="sw" style="background:#7C54CD"></span><span class="nm">Lane 1 · DeepSeek-V4-Flash</span><span class="tm" style="color:#7C54CD">60.00s</span><span class="d">0.0 m</span></div>
-<div class="lc" id="lane1" role="button" tabindex="0" aria-pressed="false" aria-label="Follow Lane 2, GLM‑5.3‑Flash"><span class="sw" style="background:#39B8B2"></span><span class="nm">Lane 2 · GLM‑5.3‑Flash</span><span class="tm" style="color:#39B8B2">9.90s</span><span class="d">0.0 m</span></div>
 <div class="lc" id="lane2" role="button" tabindex="0" aria-pressed="false" aria-label="Follow Lane 3, GPT‑5.6 Luna"><span class="sw" style="background:#5EDC9A"></span><span class="nm">Lane 3 · GPT‑5.6 Luna</span><span class="tm" style="color:#5EDC9A">27.48s</span><span class="d">0.0 m</span></div>
+<div class="lc" id="lane1" role="button" tabindex="0" aria-pressed="false" aria-label="Follow Lane 2, GLM‑5.3‑Flash"><span class="sw" style="background:#39B8B2"></span><span class="nm">Lane 2 · GLM‑5.3‑Flash</span><span class="tm" style="color:#39B8B2">9.90s</span><span class="d">0.0 m</span></div>
 </div>
+      <div class="replay-controls">
       <div class="ctl">
         <button class="btn primary" id="replay">&#9654; Replay</button>
         <div class="seg" role="group" aria-label="Speed">
@@ -140,6 +381,7 @@
         <button class="btn camera-reset" id="camera-reset" type="button">Reset</button>
         <span class="camera-mode" id="camera-mode" aria-live="polite"></span>
       </div>
+      </div>
     </div>
   </div>
   <div class="cap"><span>Best replayable policy per model from the current published cohort.</span><span>Whole body must stay between the <b>±0.61 m</b> vertical lane planes; distance freezes at the first stop</span><span><b>Drag</b> to orbit, <b>scroll</b> to zoom, <b>space</b> to pause</span></div>
@@ -148,7 +390,8 @@
 <script>
 window.g1ReplayAssetFailed=function(name){
   window.__G1_REPLAY_ASSET_ERROR__=true;
-  const message='Unable to load replay '+name+'. Please reload to retry.';
+  window.__G1_REPLAY_ASSET_NAME__=name;
+  const message=window.ReplayI18n?.t('assetError',{asset:window.ReplayI18n.t(name)})||'Unable to load replay '+name+'. Please reload to retry.';
   const note=document.getElementById('failure-note');
   if(note){note.hidden=false;note.dataset.kind='incomplete';note.textContent=message;}
   const play=document.getElementById('replay');if(play)play.disabled=true;
@@ -180,7 +423,7 @@ document.documentElement.classList.toggle('trajectory-comparison',IS_TRAJECTORY_
 document.documentElement.classList.toggle('replay-embedded',window.parent!==window);
 // Every player has a controls row in real flow on phones; display:contents
 // preserves the existing desktop placement without adding another box.
-{
+if(!document.querySelector('.replay-controls')){
   const controls=document.createElement('div');controls.className='replay-controls';
   const playback=document.querySelector('.ctl'),cameraControls=document.querySelector('.camera-ctl');
   playback.before(controls);controls.append(playback);if(cameraControls)controls.append(cameraControls);
@@ -489,6 +732,7 @@ function shellMat(ci,policy=POL[ci]){const c=new THREE.Color(policy?.color||COL[
     clearcoat:emphasized?0.08:0.6,clearcoatRoughness:0.22,envMapIntensity:emphasized?0.25:1.05,reflectivity:0.5,side:THREE.DoubleSide,flatShading:false});
   m.shadowSide=THREE.FrontSide; return m;}
 function plaque(txt,hex){
+  txt=globalThis.ReplayI18n?.text(txt)||txt;
   const c=document.createElement('canvas'); c.width=512;c.height=256; const g=c.getContext('2d');
   g.fillStyle='rgba(8,12,18,0.82)'; g.beginPath();
   if(g.roundRect) g.roundRect(8,44,496,168,22); else g.rect(8,44,496,168);
@@ -870,7 +1114,7 @@ function hud(t,xs,dones,focusedPolicy){
   if(clockStatusEl){
     const index=singlePolicy?0:focusedPolicy;
     const status=terminalStatus(index==null?null:POL[index],index!=null&&dones[index]);
-    clockStatusEl.textContent=status.text;
+    clockStatusEl.textContent=globalThis.ReplayI18n?.text(status.text)||status.text;
     clockStatusEl.dataset.kind=status.kind;
   }
   POL.forEach((p,i)=>{const el=cards[i]; if(!el)return; const d=Math.min(xs[i],100);
@@ -886,7 +1130,7 @@ function hud(t,xs,dones,focusedPolicy){
     }else if(dones[i]){
       status='FINISHED';
     }else status=d.toFixed(1)+' m';
-    el.querySelector('.d').textContent=status;
+    el.querySelector('.d').textContent=globalThis.ReplayI18n?.text(status)||status;
     el.classList.toggle('fin',dones[i] && !p.failed);
     el.classList.toggle('dq',dones[i] && p.failed);});}
 
@@ -1012,7 +1256,7 @@ function updateCameraControls(){
     const followControl=card.querySelector('.policy-follow');
     if(followControl){followControl.setAttribute('aria-pressed',String(followed));if(followed)followControl.setAttribute('aria-current','true');else followControl.removeAttribute('aria-current');}
   });
-  if(cameraResetBtn)cameraResetBtn.textContent='Reset';
+  if(cameraResetBtn)cameraResetBtn.textContent=globalThis.ReplayI18n?.text('Reset')||'Reset';
   if(cameraModeEl){cameraModeEl.textContent='';cameraModeEl.hidden=true;}
 }
 function followPolicy(index){
@@ -1035,10 +1279,22 @@ function zoomCamera(factor){
   beginManualCamera();VIEW.dist=Math.min(48,Math.max(1.6,VIEW.dist*factor));
   if(!playing)draw(playT);return VIEW.dist;
 }
+let disposeCameraPointers=()=>{};
 (function(){
   const el=renderer.domElement; el.style.touchAction='none'; el.style.cursor='grab';
   const raycaster=new THREE.Raycaster(),pointer=new THREE.Vector2();
-  let drag=false,moved=false,px=0,py=0,startX=0,startY=0;
+  const pointers=new Map();
+  let orbitOrigin=null,orbitStarted=false,pinchDistance=null,pickAllowed=false,controlsDisposed=false;
+  function distanceBetweenPointers(){
+    const [a,b]=pointers.values();
+    return a&&b?Math.hypot(b.x-a.x,b.y-a.y):null;
+  }
+  function rebasePointers(){
+    // Rebase on every contact change: a third finger or a lifted finger must
+    // never jump the camera or turn the end of a pinch into a robot click.
+    orbitStarted=false;orbitOrigin=pointers.size===1?{...pointers.values().next().value}:null;
+    pinchDistance=pointers.size>=2?distanceBetweenPointers():null;
+  }
   function pickedPolicy(e){
     const rect=el.getBoundingClientRect();
     pointer.set(((e.clientX-rect.left)/rect.width)*2-1,-((e.clientY-rect.top)/rect.height)*2+1);
@@ -1048,15 +1304,45 @@ function zoomCamera(factor){
     while(object&&!Number.isInteger(object.userData?.policyIndex))object=object.parent;
     return Number.isInteger(object?.userData?.policyIndex)?object.userData.policyIndex:null;
   }
-  el.addEventListener('pointerdown',e=>{drag=true;moved=false;px=startX=e.clientX;py=startY=e.clientY;el.setPointerCapture(e.pointerId);el.style.cursor='grabbing';});
-  el.addEventListener('pointermove',e=>{if(!drag)return;
-    if(Math.hypot(e.clientX-startX,e.clientY-startY)>5)moved=true;
-    if(!moved)return;
-    beginManualCamera();
-    VIEW.az-=(e.clientX-px)*0.005; VIEW.el=Math.min(1.45,Math.max(0.06,VIEW.el+(e.clientY-py)*0.004));
-    px=e.clientX;py=e.clientY; if(!playing)draw(playT);});
-  const end=e=>{if(drag&&!moved&&IS_COMPARISON){const policy=pickedPolicy(e);if(policy!==null)followPolicy(policy);}drag=false;el.style.cursor='grab';};
-  el.addEventListener('pointerup',end); el.addEventListener('pointercancel',end);
+  el.addEventListener('pointerdown',e=>{
+    if(controlsDisposed||pointers.has(e.pointerId))return;
+    if(!pointers.size)pickAllowed=true;
+    pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
+    if(pointers.size>1)pickAllowed=false;
+    rebasePointers();
+    try{el.setPointerCapture(e.pointerId);}catch{}
+    el.style.cursor='grabbing';
+  });
+  el.addEventListener('pointermove',e=>{
+    if(!pointers.has(e.pointerId))return;
+    pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
+    if(pointers.size>=2){
+      const distance=distanceBetweenPointers();
+      // Ignore coincident contacts until there is a stable distance baseline.
+      if(pinchDistance>=2&&distance>=2&&distance!==pinchDistance)zoomCamera(pinchDistance/distance);
+      pinchDistance=distance;return;
+    }
+    if(Math.hypot(e.clientX-orbitOrigin.x,e.clientY-orbitOrigin.y)>5){orbitStarted=true;pickAllowed=false;}
+    if(!orbitStarted)return;
+    orbitCamera(-(e.clientX-orbitOrigin.x)*0.005,(e.clientY-orbitOrigin.y)*0.004);
+    orbitOrigin={x:e.clientX,y:e.clientY};
+  });
+  function endPointer(e,cancelled=false){
+    if(!pointers.has(e.pointerId))return;
+    const pick=!cancelled&&pickAllowed&&pointers.size===1&&IS_COMPARISON;
+    pointers.delete(e.pointerId);
+    if(cancelled)pickAllowed=false;
+    rebasePointers();el.style.cursor=pointers.size?'grabbing':'grab';
+    // Delete first: releasing capture can synchronously emit lostpointercapture.
+    try{if(el.hasPointerCapture(e.pointerId))el.releasePointerCapture(e.pointerId);}catch{}
+    if(pick){const policy=pickedPolicy(e);if(policy!==null)followPolicy(policy);}
+  }
+  const clearPointers=()=>{for(const pointerId of [...pointers.keys()])endPointer({pointerId},true);};
+  el.addEventListener('pointerup',e=>endPointer(e));
+  el.addEventListener('pointercancel',e=>endPointer(e,true));
+  el.addEventListener('lostpointercapture',e=>endPointer(e,true));
+  window.addEventListener('blur',clearPointers);
+  disposeCameraPointers=()=>{controlsDisposed=true;clearPointers();window.removeEventListener('blur',clearPointers);};
   el.addEventListener('wheel',e=>{e.preventDefault();zoomCamera(Math.exp(e.deltaY*.001));},{passive:false});
 })();
 function draw(t){
@@ -1278,7 +1564,7 @@ function comparisonAutomaticView(t,policy){
 }
 
 const btn=document.getElementById('replay');
-function setBtn(){btn.innerHTML = playing ? '&#10073;&#10073; Pause' : (playT>=T_END ? '&#9654; Replay' : '&#9654; Play');}
+function setBtn(){const label=playing?'Pause':(playT>=T_END?'Replay':'Play');btn.textContent=(playing?'❙❙ ':'▶ ')+(globalThis.ReplayI18n?.text(label)||label);}
 function loop(now){
   if(lastNow===null)lastNow=now;
   playT = advanceFinishHighlight(playT,(now-lastNow)/1000,speed); lastNow=now; startWall=1;
@@ -1359,12 +1645,14 @@ function updatePolicies(nextPolicies,{emphasizedCaptureId=null}={}){
   emphasizePolicy(nextFocus);resetFollowDamping();updateCameraControls();
   playT=Math.min(playT,T_END);lastNow=null;startWall=null;draw(playT);startWall=1;
   setBtn();
+  localizeReplayScene();
   publishReplayLayout();
   return {time:playT,playing,end:T_END};
 }
 function disposeReplay(){
   if(sceneDisposed)return;sceneDisposed=true;
-  pause();cancelCameraSwitch();layoutObserver?.disconnect();
+  pause();cancelCameraSwitch();disposeCameraPointers();layoutObserver?.disconnect();
+  window.removeEventListener('site:languagechange',localizeReplayScene);
   const geometries=new Set(),materials=new Set(),textures=new Set();
   scene.traverse(node=>{
     if(node.geometry)geometries.add(node.geometry);
@@ -1378,12 +1666,12 @@ function disposeReplay(){
   renderer.dispose();renderer.forceContextLoss();
 }
 window.__G1_REPLAY__={
+  finishHighlight:finishHighlightState,
   updatePolicies,dispose:disposeReplay,
   diagnostics(){return {disposed:sceneDisposed,disposedActors,activeActors:ROBOTS.length,
     actors:ROBOTS.map((robot,index)=>({captureId:POL[index].capture_id,uuid:robot.grp.uuid})),
     geometryIds:LINKS.map(name=>GEO[name].uuid),gpu:{...renderer.info.memory}};},
   playback(){return {time:playT,playing,end:T_END,recordedEnd:T_CAPTURE_END,policyEnds:POL.map(p=>p.playbackEndT)};},
-  finishHighlight:finishHighlightState,
   results(){return PLAQUES.map((pl,index)=>({policy:index,label:pl.userData.resultLabel,visible:pl.visible,position:pl.position.toArray(),font:pl.material.map.userData?.font}));},
   seek(t){
     pause(); playT=Math.min(T_END,Math.max(0,Number(t)||0));
@@ -1433,6 +1721,32 @@ window.__G1_REPLAY__={
     return {time:playT,fps:FPS,meta:DATA.meta,color:'#'+rb.material.color.getHexString(),links:out};
   }
 };
+// Presentation-only refresh: no seek, pause, actor rebuild, camera reset or data mutation.
+function localizeReplayScene(){
+  if(sceneDisposed)return;
+  globalThis.ReplayI18n?.refresh();
+  POL.forEach((policy,index)=>{
+    const card=cards[index],number=policy.policy_number??policy.lane_number??index+1;
+    const t=globalThis.ReplayI18n?.t;
+    const name=IS_TRAJECTORY_COMPARISON?(t?.('policy',{number})||`Policy #${number}`):
+      `${t?.('lane',{number})||`Lane ${number}`} · ${policy.label||policy.identity?.model||''}`;
+    if(card){
+      card.setAttribute('aria-label',IS_TRAJECTORY_COMPARISON?name:(t?.('follow',{name})||`Follow ${name}`));
+      if(!IS_TRAJECTORY_COMPARISON&&card.querySelector('.nm'))card.querySelector('.nm').textContent=name;
+      card.querySelector('.policy-follow')?.setAttribute('aria-label',t?.('follow',{name})||`Follow ${name}`);
+      const remove=card.querySelector('.policy-remove');
+      if(remove){const label=t?.('remove',{name})||`Remove ${name}`;remove.setAttribute('aria-label',label);remove.title=label;}
+    }
+    const result=PLAQUES[index],label=policyPlaqueLabel(policy),translated=globalThis.ReplayI18n?.text(label)||label;
+    if(result?.material.map&&result.material.map.userData.label!==translated){
+      const old=result.material.map;
+      result.material.map=plaque(label,old.userData.color);result.material.needsUpdate=true;old.dispose();
+    }
+    if(result)result.userData.resultLabel=translated;
+  });
+  setBtn();draw(playT);publishReplayLayout();
+}
+window.addEventListener('site:languagechange',localizeReplayScene);
 window.addEventListener('resize',()=>{resize();if(!playing)draw(playT);});
 resize(); draw(0);
 if(!IS_SCORING_EXAMPLE&&window.parent!==window){
@@ -1448,7 +1762,7 @@ if(!IS_SCORING_EXAMPLE&&window.parent!==window){
   window.addEventListener('resize',publishLayout);publishLayout();
 }
 window.addEventListener('pagehide',event=>{if(!event.persisted)disposeReplay();});
-setBtn();updateCameraControls();if(REPLAY_AUTOPLAY&&!DATA.meta?.start_paused&&!matchMedia('(prefers-reduced-motion: reduce)').matches) setTimeout(play,500);
+setBtn();updateCameraControls();localizeReplayScene();if(REPLAY_AUTOPLAY&&!DATA.meta?.start_paused&&!matchMedia('(prefers-reduced-motion: reduce)').matches) setTimeout(play,500);
 
 }
 </script>

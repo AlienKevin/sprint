@@ -5,10 +5,16 @@ const DOCUMENT_GENERATION=new URLSearchParams(location.search).get('replayDocume
 let REPLAY_GENERATION=new URLSearchParams(location.search).get('replayGeneration')||'0';
 let activeState=null,rendererReady=false,requestSerial=0,pendingKey=null,disposed=false,sceneBuilds=0,sceneLayout=null,applyingSelection=false;
 const lanesEl=document.querySelector('.lanes'),noteEl=document.getElementById('failure-note');
+let noteTranslation=null;
+function replayMessage(key,params={},fallback=key){return window.ReplayI18n?.t(key,params)||fallback.replace(/\{(\w+)\}/g,(match,name)=>params[name]??match);}
+function showLocalized(key,params={},fallback=key,kind='incomplete'){const message=replayMessage(key,params,fallback);show(message,kind);noteTranslation={key,params,fallback,kind};return message;}
+function localizedError(key,params,fallback){return Object.assign(new Error(replayMessage(key,params,fallback)),{i18nKey:key,i18nParams:params,i18nFallback:fallback});}
+function showError(error){if(error.i18nKey)showLocalized(error.i18nKey,error.i18nParams,error.i18nFallback);else show(error.message);}
+function refreshComparisonLanguage(){if(!disposed&&noteTranslation&&!noteEl.hidden){const {key,params,fallback,kind}=noteTranslation;showLocalized(key,params,fallback,kind);}}
 lanesEl.innerHTML='';
 function tell(type,detail={},generation=REPLAY_GENERATION){parent.postMessage({type,...detail,replayGeneration:generation,replayDocumentGeneration:DOCUMENT_GENERATION},location.origin);}
 function remember(state){try{sessionStorage.setItem(TRIAL_STORAGE,JSON.stringify(state));}catch{}}
-function show(message,kind='incomplete'){if(!noteEl)return;noteEl.hidden=false;noteEl.dataset.kind=kind;noteEl.textContent=message;}
+function show(message,kind='incomplete'){noteTranslation=null;if(!noteEl)return;noteEl.hidden=false;noteEl.dataset.kind=kind;noteEl.textContent=message;}
 function captureId(value){const id=String(value||'');return /^frontier-[a-f0-9]{12}$/.test(id)?id:null;}
 function colorHex(value){
   const raw=String(value||'').trim();
@@ -34,7 +40,7 @@ function normalize(raw){
     const color=colorHex(fallback.color)||colorHex(item.color)||'#6E97C4';
     policies.push({...fallback,...item,captureId:id,url,policyNumber,label:String(item.label||fallback.label||`Policy #${policyNumber}`),color});
   }
-  if(policies.length>8)throw new Error('At most 8 policies can be compared.');
+  if(policies.length>8)throw localizedError('maxPolicies',{},'At most 8 policies can be compared.');
   const emphasizedCaptureId=captureId(raw?.emphasizedCaptureId);
   return {policies,emphasizedCaptureId:policies.some(x=>x.captureId===emphasizedCaptureId)?emphasizedCaptureId:(policies.at(-1)?.captureId||null)};
 }
@@ -43,7 +49,7 @@ function initialState(){
   const ids=queryIds();let stored=null;try{stored=JSON.parse(sessionStorage.getItem(TRIAL_STORAGE)||'null');}catch{}
   const storedById=new Map((stored?.policies||[]).map(x=>[x.captureId,x]));
   const missing=ids.filter(id=>!storedById.has(id)&&!TRIAL_BOOT.registry[id]);
-  if(missing.length){const error=new Error(`Unknown policy capture${missing.length===1?'':'s'}: ${missing.join(', ')}.`);error.failedCaptureIds=missing;throw error;}
+  if(missing.length){const error=localizedError(missing.length===1?'unknownOne':'unknownMany',{ids:missing.join(', ')},`Unknown policy capture${missing.length===1?'':'s'}: {ids}.`);error.failedCaptureIds=missing;throw error;}
   const policies=ids.map(id=>storedById.get(id)||TRIAL_BOOT.registry[id]);
   const emphasis=new URLSearchParams(location.search).get('emphasis');
   return normalize({policies,emphasizedCaptureId:emphasis||stored?.emphasizedCaptureId});
@@ -69,7 +75,7 @@ window.addEventListener('message',event=>{
   const generation=String(event.data.replayGeneration??'');
   if(!/^\d+$/.test(generation)||Number(generation)<Number(REPLAY_GENERATION))return;
   try{setSelection(normalize(event.data),generation);
-  }catch(error){show(error.message);tell('g1:policies-error',{message:error.message,failedCaptureIds:[]});}
+  }catch(error){showError(error);tell('g1:policies-error',{message:error.message,failedCaptureIds:[]});}
 });
 function terminal(raw,frames,run){
   if(run?.valid===true)return {time:null,reason:null};
@@ -94,7 +100,7 @@ function packCapture(raw,item,links,names){
   if(run.valid===true){delete policy.terminal_time;delete policy.terminal_reason;}
   return policy;
 }
-function laneMarkup(policy,index){const color=policy.color,name=`Policy #${policy.policy_number}`;return `<div class="lc${policy.emphasized?' emphasized':''}" data-capture-id="${policy.capture_id}" style="--emphasis:${color}" id="lane${index}" role="group" aria-label="${name}"><button type="button" class="policy-follow" aria-pressed="false" aria-label="Follow ${name}"><span class="sw" style="background:${color}"></span><span class="nm">#${policy.policy_number}</span><span class="tm" style="color:${color}">0.00s</span><span class="d">0.0 m</span></button><button type="button" class="policy-remove" aria-label="Remove ${name}" title="Remove ${name}">×</button></div>`;}
+function laneMarkup(policy,index){const color=policy.color,name=replayMessage('policy',{number:policy.policy_number},'Policy #{number}'),escape=value=>String(value).replace(/[&"<>]/g,char=>({'&':'&amp;','"':'&quot;','<':'&lt;','>':'&gt;'}[char])),follow=escape(replayMessage('follow',{name},'Follow {name}')),remove=escape(replayMessage('remove',{name},'Remove {name}'));return `<div class="lc${policy.emphasized?' emphasized':''}" data-capture-id="${policy.capture_id}" style="--emphasis:${color}" id="lane${index}" role="group" aria-label="${escape(name)}"><button type="button" class="policy-follow" aria-pressed="false" aria-label="${follow}"><span class="sw" style="background:${color}"></span><span class="nm">#${policy.policy_number}</span><span class="tm" style="color:${color}">0.00s</span><span class="d">0.0 m</span></button><button type="button" class="policy-remove" aria-label="${remove}" title="${remove}">×</button></div>`;}
 function renderLaneCards(policies){
   const previous=new Map([...lanesEl.children].map(card=>[card.dataset.captureId,card]));
   policies.forEach((policy,index)=>{
@@ -169,7 +175,7 @@ async function setSelection(state,generation){
     // standalone shells retain a paused, hidden scene and can safely start anew.
     window.__G1_REPLAY__?.seek(0);document.getElementById('stage').hidden=true;
     lanesEl.innerHTML='';activeEntries.clear();activeState=state;
-    show('Select up to 8 policies from one trial to compare.');acknowledge(state,generation,serial);return;
+    showLocalized('empty',{},'Select up to 8 policies from one trial to compare.');acknowledge(state,generation,serial);return;
   }
   if(rendererReady&&JSON.stringify(activeState?.policies)===JSON.stringify(state.policies)){
     activeState=state;document.getElementById('stage').hidden=false;noteEl.hidden=true;
@@ -177,14 +183,14 @@ async function setSelection(state,generation){
     if(index>=0&&window.__G1_REPLAY__.camera().follow!==index)window.__G1_REPLAY__.follow(index);
     acknowledge(state,generation,serial);return;
   }
-  show(`Loading ${state.policies.length} polic${state.policies.length===1?'y':'ies'}…`);
+  showLocalized(state.policies.length===1?'loadingOne':'loadingMany',{count:state.policies.length},`Loading {count} polic${state.policies.length===1?'y':'ies'}…`);
   const settled=await Promise.allSettled(state.policies.map(loadCapture));
   if(disposed||serial!==requestSerial||generation!==REPLAY_GENERATION)return;
   const failed=settled.map((result,index)=>result.status==='rejected'?state.policies[index].captureId:null).filter(Boolean);
-  if(failed.length){const message=`Unable to load ${failed.join(', ')}. Remove the unavailable policy or retry.`;pendingKey=null;show(message);tell('g1:policies-error',{message,failedCaptureIds:failed},generation);return;}
+  if(failed.length){pendingKey=null;const message=showLocalized('unavailable',{ids:failed.join(', ')},'Unable to load {ids}. Remove the unavailable policy or retry.');tell('g1:policies-error',{message,failedCaptureIds:failed},generation);return;}
   const entries=settled.map(result=>result.value),{links,fps,layout}=entries[0];
   try{
-    if(entries.some(entry=>entry.layout!==layout)||(sceneLayout&&sceneLayout!==layout))throw new Error('Selected policies have incompatible pose layouts.');
+    if(entries.some(entry=>entry.layout!==layout)||(sceneLayout&&sceneLayout!==layout))throw localizedError('incompatible',{},'Selected policies have incompatible pose layouts.');
     const emphasis=state.emphasizedCaptureId,items=state.policies.map(item=>({...item,identity:item.identity||TRIAL_BOOT.registry[item.captureId]?.identity||null,runId:item.runId||TRIAL_BOOT.registry[item.captureId]?.runId||null,emphasized:item.captureId===emphasis,renderColor:item.captureId===emphasis?item.color:'#FFFFFF'}));
     const policies=entries.map((entry,index)=>({...entry.policy,label:items[index].label,identity:items[index].identity,source_run_id:items[index].runId,policy_number:items[index].policyNumber,lane_number:items[index].policyNumber,color:items[index].renderColor,model_color:items[index].color,emphasized:items[index].emphasized}));
     renderLaneCards(policies);document.getElementById('stage').hidden=false;noteEl.hidden=true;applyingSelection=true;
@@ -196,18 +202,20 @@ async function setSelection(state,generation){
     applyingSelection=false;activeState=state;
     activeEntries=new Map(entries.map((entry,index)=>[captureKey(state.policies[index]),entry]));
     acknowledge(state,generation,serial);
-  }catch(error){applyingSelection=false;pendingKey=null;show(error.message);tell('g1:policies-error',{message:error.message,failedCaptureIds:state.policies.map(x=>x.captureId)},generation);}
+  }catch(error){applyingSelection=false;pendingKey=null;showError(error);tell('g1:policies-error',{message:error.message,failedCaptureIds:state.policies.map(x=>x.captureId)},generation);}
 }
 function disposeComparison(){
   if(disposed)return;disposed=true;requestSerial++;cancelUnusedLoads(new Set());
   decodedCache.clear();activeEntries.clear();cacheBytes=0;window.__G1_REPLAY__?.dispose();
+  window.removeEventListener('site:languagechange',refreshComparisonLanguage);
 }
 window.__G1_COMPARISON_CACHE__={stats(){return {entries:decodedCache.size,bytes:cacheBytes,limitBytes:CACHE_LIMIT_BYTES,limitEntries:CACHE_LIMIT_ENTRIES,inflight:pendingCaptures.size,hits:cacheHits,fetches:fetchCount,packs:packCount,activeEntries:activeEntries.size,activeBytes:[...activeEntries.values()].reduce((total,entry)=>total+entry.bytes,0),sceneBuilds,generation:REPLAY_GENERATION,documentGeneration:DOCUMENT_GENERATION,disposed};}};
 window.__G1_TRIAL__={dispose:disposeComparison};
 window.addEventListener('pagehide',event=>{if(!event.persisted)disposeComparison();});
 async function boot(){
   tell('g1:policies-ready',{maxPolicies:8,path:'/replay/trial-comparison.html'});
-  let state;try{state=initialState();}catch(error){show(error.message);tell('g1:policies-error',{message:error.message,failedCaptureIds:error.failedCaptureIds||[]});return;}
+  let state;try{state=initialState();}catch(error){showError(error);tell('g1:policies-error',{message:error.message,failedCaptureIds:error.failedCaptureIds||[]});return;}
   await setSelection(state,REPLAY_GENERATION);
 }
+window.addEventListener('site:languagechange',refreshComparisonLanguage);
 boot();

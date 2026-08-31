@@ -27,7 +27,8 @@ SHARED_ASSET_PREFIX = "/assets/replay/"
 SHARED_ASSET_ERROR = """<script>
 window.g1ReplayAssetFailed=function(name){
   window.__G1_REPLAY_ASSET_ERROR__=true;
-  const message='Unable to load replay '+name+'. Please reload to retry.';
+  window.__G1_REPLAY_ASSET_NAME__=name;
+  const message=window.ReplayI18n?.t('assetError',{asset:window.ReplayI18n.t(name)})||'Unable to load replay '+name+'. Please reload to retry.';
   const note=document.getElementById('failure-note');
   if(note){note.hidden=false;note.dataset.kind='incomplete';note.textContent=message;}
   const play=document.getElementById('replay');if(play)play.disabled=true;
@@ -35,6 +36,26 @@ window.g1ReplayAssetFailed=function(name){
     replayGeneration:new URLSearchParams(location.search).get('replayGeneration')||''},location.origin);
 };
 </script>"""
+
+
+def replay_i18n_html(html: str) -> str:
+    """Embed the tiny UI runtime before any renderer assets, also offline."""
+    start, end = "<!-- replay-i18n:start -->", "<!-- replay-i18n:end -->"
+    html = re.sub(re.escape(start) + r"[\s\S]*?" + re.escape(end) + r"\n?", "", html, count=1)
+    scripts = []
+    for name, source in (("core", "i18n.js"), ("catalog", "locales/replay.js")):
+        code = (REPOSITORY_ROOT / "web" / source).read_text()
+        digest = hashlib.sha256(code.encode()).hexdigest()
+        safe = re.sub(r"</script", r"<\\/script", code, flags=re.I)
+        scripts.append(f'<script id="replay-i18n-{name}" data-source-sha256="{digest}">{safe}</script>')
+    bootstrap = start + "\n" + "\n".join(scripts) + "\n" + end + "\n"
+    # Historical standalone players use an implicit HTML head. Keep charset
+    # and viewport metadata first while running before layout/renderer scripts.
+    anchor = re.search(r'<meta\b[^>]*name="viewport"[^>]*>\n?', html)
+    if anchor is None:
+        anchor = re.search(r'<meta\b[^>]*>\n?|<head>\n?', html)
+    offset = anchor.end() if anchor else 0
+    return html[:offset] + bootstrap + html[offset:]
 
 
 def _shared_asset(directory: Path, name: str, content: str) -> str:
@@ -144,7 +165,9 @@ def restore_shared_html(html: str, directory: Path) -> str:
     # Locate anew because the HQ insertion changes subsequent offsets.
     tags = list(re.finditer(pattern, html))
     html = html[:tags[0].start()] + "<script>" + contents["three"] + "</script>" + html[tags[1].end():]
-    return html.replace(SHARED_ASSET_ERROR + "\n", "", 1)
+    # Accept the previous publication handler too, so historical shared pages
+    # remain exactly restorable while its UI wording becomes localizable.
+    return re.sub(r'<script>\nwindow\.g1ReplayAssetFailed=function\(name\)\{[\s\S]*?\n\};\n</script>\n', "", html, count=1)
 
 MODEL_IDENTITIES = (
     ("deepseek", {"brand": "deepseek", "company": "DeepSeek", "model": "DeepSeek-V4-Flash", "color": "#7C54CD", "logo": "/assets/model-logos/deepseek.svg"}),
@@ -539,10 +562,17 @@ def assemble_html(
             f'style="background:{color}"></span>{name}<span class="tm" style="color:{color}">'
             f'{time_label}s</span><span class="d">0.0 m</span></div>'
         )
-    lanes_html = "\n".join(labels)
+    display_order = list(range(len(labels)))
+    if data.get("meta", {}).get("comparison") and not data.get("meta", {}).get("trajectory_comparison"):
+        def display_rank(index: int) -> int:
+            policy = data["policies"][index]
+            model = str((policy.get("identity") or {}).get("model") or policy.get("label") or "").lower()
+            return next((rank for rank, name in enumerate(("deepseek", "luna", "glm")) if name in model), 3)
+        display_order.sort(key=display_rank)
+    lanes_html = "\n".join(labels[index] for index in display_order)
     head = re.sub(
-        r'<div class="lanes">.*?</div>\s*<div class="ctl">',
-        f'<div class="lanes">\n{lanes_html}\n</div>\n      <div class="ctl">',
+        r'<div class="lanes">.*?</div>\s*<div class="replay-controls">\s*<div class="ctl">',
+        f'<div class="lanes">\n{lanes_html}\n</div>\n      <div class="replay-controls">\n      <div class="ctl">',
         head,
         count=1,
         flags=re.S,
@@ -594,7 +624,7 @@ def assemble_html(
         head,
     )
     payload = json.dumps(data, separators=(",", ":"))
-    html = head + marker + payload + ";\n" + scene + "\n</script>"
+    html = replay_i18n_html(head + marker + payload + ";\n" + scene + "\n</script>")
     return shared_asset_html(html, shared_assets_dir) if shared_assets_dir is not None else html
 
 

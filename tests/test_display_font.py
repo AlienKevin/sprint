@@ -36,6 +36,36 @@ def test_homepage_headings_use_display_type_without_changing_metric_fonts() -> N
     assert "var(--display)" not in metric
 
 
+def test_effective_speed_heading_and_model_names_share_label_size() -> None:
+    css = (ROOT / "web/styles.css").read_text()
+    for selector in [".hero-score-head", ".hero-score-row", ".experiment-model"]:
+        rule = re.search(re.escape(selector) + r"\s*\{([^}]+)\}", css).group(1)
+        assert "var(--data-label-size)" in rule
+
+
+def test_homepage_tables_share_model_label_size_but_keep_footnotes() -> None:
+    css = (ROOT / "web/styles.css").read_text()
+    assert "--data-label-size: 12px" in css
+    for selector in [
+        ".hero-score-head", ".hero-score-row", ".hero-score-row > b",
+        ".experiment-table-toggle", ".experiment-best-label",
+        ".experiment-model", ".experiment-table td",
+        ".budget-table thead th", ".budget-model", ".budget-table td",
+        ".budget-heat small", ".budget-row td::before",
+    ]:
+        # Layout and typography may live in separate rules for one selector.
+        rules = re.findall(re.escape(selector) + r"\s*\{([^}]+)\}", css)
+        assert any("var(--data-label-size)" in rule for rule in rules), selector
+    assert ".experiment-table thead th,\n.experiment-best-label {" in css
+    assert ".experiment-row td::before,\n  .budget-row td::before {" in css
+    for selector, font in [
+        (".experiment-model-note", "font: 9px/1.5 var(--mono)"),
+        (".budget-price-sources", "font: 10px/1.5 var(--mono)"),
+    ]:
+        rule = re.search(re.escape(selector) + r"\s*\{([^}]+)\}", css).group(1)
+        assert font in rule
+
+
 def test_trajectory_brand_and_outline_use_display_type_not_transcripts() -> None:
     css = (ROOT / "web/trajectory.css").read_text()
     for selector in [".brand", ".rollout-outline h2", ".trajectory-policy-replay > header strong"]:
@@ -68,6 +98,29 @@ def test_footer_uses_the_same_brand_style_and_hides_the_update_stamp() -> None:
     assert "color: var(--text)" in brand
     assert "italic 800" in brand
     assert "footer [hidden] { display: none; }" in css
+
+
+def test_editorial_links_inherit_prose_typography_and_keep_underlines() -> None:
+    css = (ROOT / "web/fonts.css").read_text()
+    rule = css.split(":is(.text-link,", 1)[1].split("{", 1)[1].split("}", 1)[0]
+    assert "font: inherit;" in rule
+    assert "text-decoration: underline;" in rule
+    assert "12px" not in rule
+
+
+def test_header_and_footer_match_section_heading_size_without_duplicate_hero_title() -> None:
+    html = (ROOT / "web/index.html").read_text()
+    css = (ROOT / "web/styles.css").read_text()
+    assert '<nav class="home-nav"><h1 class="brand">Agents\' <em>100m</em></h1><div data-language-switcher></div></nav>' in html
+    assert html.count("<h1") == 1
+    hero_copy = html.split('<div class="hero-copy">', 1)[1].split("</div>", 1)[0]
+    assert "<h1" not in hero_copy
+    assert "--section-title-size: clamp(30px, 4vw, 58px)" in css
+    brand = re.search(r"\.brand\s*\{([^}]+)\}", css).group(1)
+    heading = re.search(r"\.section-head h2\s*\{([^}]+)\}", css).group(1)
+    assert "var(--section-title-size)" in brand
+    assert "font-size: var(--section-title-size)" in heading
+    assert ".home-nav .brand { margin: 0; }" in css
 
 
 def test_title_highlights_are_content_sized_and_exclude_data_and_transcripts() -> None:
@@ -126,7 +179,7 @@ def test_demo_card_titles_cannot_wrap_inside_their_highlights() -> None:
     assert "max-width: none" in title
     assert "white-space: nowrap" in title
     head = re.search(r"\.dq-card-head\s*\{([^}]+)\}", css).group(1)
-    assert "flex-wrap: wrap" in head
+    assert "flex-wrap: nowrap" in head
 
 
 def test_short_trajectory_titles_keep_their_intrinsic_single_line_width() -> None:

@@ -15,7 +15,7 @@
 /* Prose and editorial links share a style; navigation controls keep their own. */
 :is(.text-link, .dq-card-head a, .observations-copy a, .scoring-copy a, .setup-copy a, .cost-insights a, .dq-caption a, .lede a, .help a, .step-markdown a) {
   color: var(--text-link-color);
-  font: 700 12px/1.5 var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font: inherit;
   text-decoration: underline;
   text-decoration-thickness: 1px;
   text-underline-offset: 2px;

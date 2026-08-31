@@ -137,6 +137,34 @@ def test_bundle_contains_only_current_batch_results(tmp_path: Path) -> None:
     ).exists()
 
 
+def test_bundle_preserves_localization_assets_and_original_traces(tmp_path: Path) -> None:
+    web, bundle = build_fixture(tmp_path)
+    assets = {
+        "i18n.js": "window.SiteI18n = {};\n",
+        "i18n.css": 'html[lang="zh-CN"] { font-family: sans-serif; }\n',
+        "locales/home.js": 'const homepage = "智能体能训练人形机器人跑步吗？";\n',
+        "locales/trajectory.js": 'const labels = "试验大纲";\n',
+        "locales/replay.js": 'const status = "越出跑道";\n',
+        "locales/toc.js": 'const chapter = "构建强化学习训练器";\n',
+        "trajectory-diff.js": "window.TrajectoryDiff = {};\n",
+        "trajectory-diff.css": ".diff-code { white-space: pre-wrap; }\n",
+        "vendor/jsdiff-9.0.0.min.js": "window.Diff = {};\n",
+        "vendor/jsdiff-9.0.0.LICENSE": "BSD-3-Clause\n",
+    }
+    for name, content in assets.items():
+        path = web / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    trace_path = Path("data/trajectories/batch-current-luna-1.json")
+    original = (web / trace_path).read_bytes()
+
+    build_site_bundle(web, bundle, require_current=True)
+
+    for name, content in assets.items():
+        assert (bundle / name).read_text() == content
+    assert (bundle / trace_path).read_bytes() == original
+
+
 def test_bundle_includes_frontend_comparison_shell_and_only_current_captures(tmp_path: Path) -> None:
     web, bundle = build_fixture(tmp_path)
     registry = {

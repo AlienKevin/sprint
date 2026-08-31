@@ -6,14 +6,16 @@
   <meta name="description" content="AI agents compete to train the fastest, most cost-efficient humanoid sprinter.">
   <title>Agents' 100m</title>
   <link rel="preload" href="/assets/fonts/BarlowCondensed-ExtraBoldItalic.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="/fonts.css?v=20260830-6">
-  <link rel="stylesheet" href="/styles.css?v=20260830-charts34">
+  <link rel="stylesheet" href="/fonts.css?v=20260831-1">
+  <link rel="stylesheet" href="/styles.css?v=20260830-charts39">
+  <link rel="stylesheet" href="/i18n.css?v=20260831-1">
+  <script src="/i18n.js?v=20260831-1"></script>
+  <script src="/locales/home.js?v=20260831-3"></script>
 </head>
 <body>
+  <nav class="home-nav"><h1 class="brand">Agents' <em>100m</em></h1><div data-language-switcher></div></nav>
   <header class="hero">
-    <nav><span class="brand">Agents' <em>100m</em></span></nav>
     <div class="hero-copy">
-      <h1>Agents' <em>100m</em></h1>
       <p class="intro">Can agents train a humanoid to run?</p>
       <p class="intro-detail">We give each agent an A10G GPU and a $10 budget to train their fastest runner.</p>
     </div>
@@ -28,7 +30,7 @@
 
   <main>
     <section class="section" id="cost-performance">
-      <div class="section-head"><div><h2>Performance vs cost</h2></div></div>
+      <div class="section-head"><div><h2>Performance vs cost</h2><p class="chart-interaction-hint">Click on any dot to replay that policy.</p></div></div>
       <div class="chart-card"><svg id="cost-chart" role="img" aria-label="Best policy performance versus cost within an independent trial"></svg><div id="cost-legend" class="legend"></div></div>
     </section>
 
@@ -117,7 +119,7 @@
             <div class="dq-replay observation-replay"><iframe src="/replay/frontier-dd28af63bf84?example=1&amp;autoplay=0" title="Luna trial 2 policy 9 taking a big step before falling" loading="lazy"></iframe></div>
           </article>
           <article>
-            <div class="observation-summary"><h3>GLM</h3><p>GLM’s fastest simulated 100m took 9.90 s, just 0.32 s shy of Usain Bolt’s 9.58 s world record, from a standing start without starting blocks. It built its own reinforcement-learning trainer using PPO and tested saved controllers against lane and collision rules. More training sometimes made a working gait worse. This early attempt shows why testing mattered: it shuffled on its knees and drifted out of its lane.</p></div>
+            <div class="observation-summary"><h3>GLM</h3><p>GLM’s fastest simulated 100m took 9.90 s, just 0.32 s shy of Usain Bolt’s 9.58 s world record, from a standing start without starting blocks. It built its own reinforcement-learning trainer using PPO and tested saved controllers against lane and collision rules. This early attempt shows why testing mattered: it shuffled on its knees and drifted out of its lane.</p></div>
             <div class="dq-replay observation-replay"><iframe src="/replay/frontier-5eb6fee88ef0?example=1&amp;autoplay=0" title="An early GLM policy moving on its knees before lane drift" loading="lazy"></iframe></div>
           </article>
         </div>
@@ -128,23 +130,23 @@
       <div class="section-head"><div><h2>Inspirations</h2></div></div>
       <div class="inspiration-cards">
         <article class="inspiration-card">
-          <figure><a class="inspiration-image" href="https://run.lyihub.com/"><img src="/assets/inspiration/lyi-qwop.webp" width="1280" height="720" alt="QWOP runners on LYiHub’s training project website" loading="lazy"></a><figcaption>LYiHub screenshot</figcaption></figure>
+          <figure><a class="inspiration-image" href="https://run.lyihub.com/"><img src="/assets/inspiration/lyi-qwop.webp" width="1280" height="720" alt="QWOP runners on LYiHub’s training project website" loading="lazy"></a></figure>
           <div class="inspiration-card-copy">
-            <h3 class="display-title">LYi’s QWOP</h3>
-            <p>LYi’s QWOP project was the starting point: a human and a coding agent train a runner together. We wanted the agent to handle that process fully autonomously. We extend QWOP’s simplified setting to a full Unitree G1 humanoid in Isaac Lab’s more realistic 3D physics.</p>
+            <h3 class="display-title">QWOP Game</h3>
+            <p>QWOP is a quirky little game where you control a runner using just four keys. LYi used reinforcement learning to train the world’s fastest policy for it. Inspired by that result, we task agents with training runners fully autonomously in a more realistic setting: a full Unitree G1 humanoid in Isaac Lab’s 3D physics.</p>
             <div class="inspiration-links"><a class="text-link" href="https://run.lyihub.com/">LYiHub QWOP</a><a class="text-link" href="https://www.youtube.com/watch?v=NgneWNGmq7g">LYi’s video</a></div>
           </div>
         </article>
         <article class="inspiration-card">
-          <figure><a class="inspiration-image" href="https://www.youtube.com/watch?v=KyFZuBgPBsg"><img src="/assets/inspiration/robot-games.webp" width="1280" height="720" alt="Humanoid robot sprinters at the 2026 World Humanoid Robot Games" loading="lazy"></a><figcaption>CNBC-TV18 video thumbnail</figcaption></figure>
+          <figure><a class="inspiration-image" href="https://www.youtube.com/watch?v=KyFZuBgPBsg"><img src="/assets/inspiration/robot-games.webp" width="1280" height="720" alt="Humanoid robot sprinters at the 2026 World Humanoid Robot Games" loading="lazy"></a></figure>
           <div class="inspiration-card-copy">
-            <h3 class="display-title">Robot Games</h3>
+            <h3 class="display-title">Robot Races</h3>
             <p>The 2026 World Humanoid Robot Games paired record-breaking sprints with wonderfully unconventional gaits, including the “shy” robot in the 400m event. They inspired us to explore both speed and the surprising ways robots learn to move.</p>
             <div class="inspiration-links"><a class="text-link" href="https://www.whrgoc.com/">2026 Games</a><a class="text-link" href="https://www.youtube.com/watch?v=KyFZuBgPBsg">100m race</a><a class="text-link" href="https://www.youtube.com/watch?v=CDI-Myx087U">400m “shy” runner</a></div>
           </div>
         </article>
         <article class="inspiration-card">
-          <figure><a class="inspiration-image" href="https://posttrainbench.com/"><img src="/assets/inspiration/posttrainbench.webp" width="1280" height="720" alt="PostTrainBench website showing its language-model training benchmark" loading="lazy"></a><figcaption>PostTrainBench screenshot</figcaption></figure>
+          <figure><a class="inspiration-image" href="https://posttrainbench.com/"><img src="/assets/inspiration/posttrainbench.webp" width="1280" height="720" alt="PostTrainBench website showing its language-model training benchmark" loading="lazy"></a></figure>
           <div class="inspiration-card-copy">
             <h3 class="display-title">PostTrainBench</h3>
             <p>PostTrainBench tests agents by what they can train: improving pretrained language models with one H100 and ten hours. We apply that idea to robot controllers built from scratch, with no reference policy. Instead of fixed GPU time, agents allocate a $10 budget across model calls, CPU, and GPU training.</p>
@@ -158,23 +160,23 @@
       <div class="section-head"><div><h2 id="citation-heading">Citation</h2></div></div>
       <p>If you find Agents’ 100m useful in your research, please cite it:</p>
       <div class="citation-box">
-        <div class="citation-actions">
-          <span id="citation-copy-status" role="status" aria-live="polite" aria-atomic="true"></span>
-          <button id="citation-copy" type="button" aria-label="Copy BibTeX citation" aria-describedby="citation-copy-status">Copy</button>
-        </div>
         <pre><code id="citation-bibtex">@misc{agents100m2026,
   author = {Xiang Li},
   title = {Agents' 100m},
   year = {2026},
   url = {https://agents100m.com/}
 }</code></pre>
+        <div class="citation-actions">
+          <button id="citation-copy" type="button" aria-label="Copy BibTeX citation" aria-describedby="citation-copy-status">Copy</button>
+          <span id="citation-copy-status" role="status" aria-live="polite" aria-atomic="true"></span>
+        </div>
       </div>
     </section>
 
   </main>
 
-  <footer><span class="brand">Agents' <em>100m</em></span><time class="footer-updated" datetime="2026-08-30">Updated on August 30, 2026</time><span id="updated" hidden>No race data deployed yet</span></footer>
+  <footer><span class="brand">Agents' <em>100m</em></span><span id="updated" hidden>No race data deployed yet</span></footer>
   <script src="/trajectory-url.js?v=20260830-1"></script>
-  <script src="/app.js?v=20260830-charts24"></script>
+  <script src="/app.js?v=20260830-charts26"></script>
 </body>
 </html>

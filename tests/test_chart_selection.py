@@ -29,7 +29,7 @@ const window={matchMedia:()=>({matches:false})};
 const nodes=new Map();
 const $=selector=>{if(!nodes.has(selector))nodes.set(selector,new Node());return nodes.get(selector)};
 const trajectoryHref=run=>`/trajectory?run=${run}`;
-""" + functions + r"""
+""" + next(line for line in APP.splitlines() if line.strip().startswith("const t=")) + "\n" + functions + r"""
 const point=(index,cost)=>({source_run_id:'glm-2',source_trial:2,submission_index:index,
   policy_sha256:`policy-${index}`,cumulative_agent_cost_usd:cost,continuous_score_mps:10,
   replay_url:'/replay/example',max_legal_distance_m:100,time_to_max_legal_distance_s:10,

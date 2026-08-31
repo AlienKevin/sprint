@@ -17,7 +17,7 @@ def test_inspiration_follows_observations_and_precedes_footer() -> None:
     assert page.index('id="observations"') < page.index('id="inspiration"') < page.index('<footer>')
     section = inspiration()
     assert '<h2>Inspirations</h2>' in section
-    assert re.findall(r'<h3 class="display-title">(.*?)</h3>', section) == ["LYi’s QWOP", "Robot Games", "PostTrainBench"]
+    assert re.findall(r'<h3 class="display-title">(.*?)</h3>', section) == ["QWOP Game", "Robot Races", "PostTrainBench"]
     assert "Frontierbench" not in page
     assert "design-credit" not in page
 
@@ -32,9 +32,8 @@ def test_inspiration_images_are_local_linked_and_credited() -> None:
         assert 'loading="lazy"' in attributes
         assert re.search(r'alt="[^"]+"', attributes)
         assert (ROOT / "web/assets/inspiration" / filename).is_file()
-    assert "LYiHub screenshot" in section
-    assert "CNBC-TV18 video thumbnail" in section
-    assert "PostTrainBench screenshot" in section
+    assert "<figcaption" not in section
+    assert section.count('alt="') == 3
 
 
 def test_inspiration_sources_and_distinctions_are_explicit() -> None:

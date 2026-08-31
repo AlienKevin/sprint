@@ -12,7 +12,7 @@ def rule(selector: str) -> str:
     return re.search(r"(?:^|\n)\s*" + re.escape(selector) + r"\{([^}]+)\}", TEMPLATE).group(1)
 
 
-def test_mobile_playback_and_camera_controls_share_one_flow_row() -> None:
+def test_mobile_playback_controls_keep_one_flow_row_without_zoom_buttons() -> None:
     controls = rule("html.replay-mobile .replay-controls")
     assert "order:1" in controls
     assert "display:flex" in controls
@@ -21,7 +21,7 @@ def test_mobile_playback_and_camera_controls_share_one_flow_row() -> None:
     groups = rule("html.replay-mobile .ctl,html.replay-mobile .camera-ctl")
     assert "position:static" in groups
     assert "flex:none" in groups
-    assert "margin-left:auto" in rule("html.replay-mobile .camera-ctl")
+    assert rule("html.replay-mobile .camera-ctl") == "display:none"
     assert "order:0" in rule("html.replay-mobile #stage")
     assert "order:2" in rule("html.replay-mobile .lanes")
 

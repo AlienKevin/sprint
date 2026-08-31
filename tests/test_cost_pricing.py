@@ -33,6 +33,7 @@ def test_price_columns_are_shared_per_model_in_best_and_all_trial_views() -> Non
     functions = APP[APP.index("  const MODEL ="):APP.index("  let chartResizeFrame")]
     script = "const assert=require('node:assert/strict');\n"
     script += f"const pricing=require({json.dumps(str(PRICING_PATH))});\n"
+    script += "const window={};\n" + next(line for line in APP.splitlines() if line.strip().startswith("const t=")) + "\n"
     script += """
 let showAllTrials=false,showAllBudgetTrials=false;
 const document={querySelectorAll:()=>[]};
@@ -77,14 +78,14 @@ assert.equal(fmtTokenPrice(0),'$0.00');assert.equal(fmtTokenPrice(null),'—');
     assert result.returncode == 0, result.stderr
 
 
-def test_mobile_prices_use_a_separate_two_column_block() -> None:
+def test_mobile_prices_are_hidden_while_desktop_keeps_rate_cells() -> None:
     css = (ROOT / "web/styles.css").read_text()
     mobile = css.split("@media (max-width: 720px)", 1)[1]
     assert ".budget-row .budget-price { display: none; }" in mobile
-    assert ".budget-price-mobile { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));" in mobile
-    assert ".budget-price-label { min-height: 40px;" in mobile
-    assert "font: 500 8px/1.25 var(--mono)" in mobile
+    assert ".budget-price-mobile { display: none; }" in mobile
+    assert ".budget-price-mobile { display: grid;" not in mobile
     assert ".budget-price-mobile { display: none; }" in css.split("@media", 1)[0]
+    assert ".budget-row .budget-price { display: none; }" not in css.split("@media", 1)[0]
 
 
 def test_cost_explanation_names_the_harnesses_behind_the_cached_tokens() -> None:

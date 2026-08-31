@@ -7,12 +7,12 @@ import re
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_editorial_links_share_muted_bold_monospace_underlines() -> None:
+def test_editorial_links_inherit_surrounding_font_with_muted_underlines() -> None:
     css = (ROOT / "web/fonts.css").read_text()
     rule = re.search(r":is\(\.text-link,[^{}]+\)\s*\{([^}]+)\}", css).group(1)
     assert "color: var(--text-link-color)" in rule
     assert "--text-link-color: #9d9d99" in css
-    assert "font: 700 12px/1.5 var(--mono," in rule
+    assert "font: inherit;" in rule
     assert "text-decoration: underline" in rule
     assert "text-underline-offset: 2px" in rule
     for selector in [".observations-copy a", ".dq-card-head a", ".step-markdown a", ".lede a", ".help a"]:

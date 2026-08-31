@@ -8,7 +8,7 @@ import json
 import re
 from pathlib import Path
 
-from render import G1_PARENT, PREFERRED, model_identity, shared_asset_html
+from render import G1_PARENT, PREFERRED, model_identity, replay_i18n_html, shared_asset_html
 from render_comparison import add_mobile_closeup
 
 
@@ -106,7 +106,7 @@ html,body{margin:0;background:#070908}.wrap{max-width:none;padding:0}.wrap>.eyeb
 .lc .policy-remove:hover{background:rgba(255,255,255,.2)}.lc button:focus-visible{outline:2px solid #fff;outline-offset:3px}
 </style>
 """
-    html = head.replace('<div class="wrap">', shell_css + '<div class="wrap">', 1) + bootstrap
+    html = replay_i18n_html(head.replace('<div class="wrap">', shell_css + '<div class="wrap">', 1) + bootstrap)
     return shared_asset_html(html, shared_assets_dir) if shared_assets_dir is not None else html
 
 

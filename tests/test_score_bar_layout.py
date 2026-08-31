@@ -56,8 +56,8 @@ def test_mobile_column_headers_keep_the_same_font_and_band_when_toggled() -> Non
     header = re.search(
         r"\.experiment-row td::before,\s*\.budget-row td::before\s*\{([^}]+)\}", mobile
     ).group(1)
-    assert "font: 500 8px/1.25 var(--mono)" in header
-    assert "min-height: 40px" in header
+    assert "font: 500 var(--data-label-size)/1.25 var(--mono)" in header
+    assert "min-height: 50px" in header
     assert "box-sizing: border-box" in header
     assert "border-bottom: 1px solid var(--line)" in header
     assert 'data-expanded="true"' not in mobile

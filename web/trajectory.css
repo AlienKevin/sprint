@@ -20,6 +20,8 @@
   --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   --terminal-font-size: .78rem;
   --terminal-label-size: .68rem;
+  --viewer-nav-height: 58px;
+  --mobile-toolbar-height: 46px;
 }
 
 * { box-sizing: border-box; }
@@ -27,6 +29,7 @@
 html { scroll-behavior: smooth; }
 body {
   margin: 0;
+  padding-top: var(--viewer-nav-height);
   background: radial-gradient(circle at 80% -10%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 34rem), var(--bg);
   color: var(--text);
   font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
@@ -35,11 +38,11 @@ a { color: inherit; text-decoration: none; }
 button, input, select { color: var(--text); font: inherit; }
 
 .viewer-nav {
-  position: sticky;
-  top: 0;
-  z-index: 40;
+  position: fixed;
+  inset: 0 0 auto;
+  z-index: 120;
   display: flex;
-  min-height: 58px;
+  min-height: var(--viewer-nav-height);
   align-items: center;
   gap: 12px;
   padding: 0 28px;
@@ -52,6 +55,11 @@ button, input, select { color: var(--text); font: inherit; }
 }
 .brand { color: var(--text); font: italic 800 18px/1.15 var(--display); font-synthesis: none; letter-spacing: .015em; padding-inline-end: .12em; }
 .nav-slash { color: var(--line); }
+.viewer-nav > .brand { flex: 0 0 auto; }
+.viewer-trial-title { display: flex; flex: 1 1 auto; min-width: 0; align-items: baseline; gap: .35em; }
+.trajectory-language-switcher { flex: 0 0 auto; margin-left: auto; }
+#viewer-trial-model { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#viewer-trial-number { flex: 0 0 auto; white-space: nowrap; }
 
 .viewer-layout {
   display: grid;
@@ -215,6 +223,9 @@ input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
 .trajectory-policy-replay.is-loading .trajectory-policy-replay-loading { display: grid; }
 .trajectory-policy-replay.is-loading .trajectory-policy-replay-shell > iframe { opacity: 0; pointer-events: none; }
 @media (min-width: 851px) {
+  /* Desktop panels scroll internally: fit the page below the fixed header so
+     outer scrolling cannot push their sticky grid row under the navigation. */
+  .viewer-layout { padding-bottom: 20px; }
   .trace-column {
     position: sticky;
     top: 82px;
@@ -327,7 +338,9 @@ input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
 .chapter-policy-list:empty { display: none; }
 .chapter-policy-label { margin-right: 2px; color: var(--muted); font-size: 7px; letter-spacing: .08em; text-transform: uppercase; }
 .chapter-item.active .chapter-policy-label { color: color-mix(in srgb, var(--accent) 72%, var(--text)); }
-.steps { position: relative; min-width: 0; max-width: 100%; min-height: 240px; padding: 12px 0 20px; }
+/* Disclosure growth must not move the viewport to an anchor farther down the
+   trace. Readers scroll into expanded content themselves, on mobile and desktop. */
+.steps { position: relative; min-width: 0; max-width: 100%; min-height: 240px; padding: 12px 0 20px; overflow-anchor: none; }
 .steps::before { content: ""; position: absolute; top: 0; bottom: 0; left: 78px; width: 1px; background: var(--line); }
 .chapter-divider { position: relative; display: grid; grid-template-columns: 96px minmax(0, 1fr); align-items: baseline; gap: 15px; margin: 13px 0 10px; scroll-margin-top: 70px; }
 .chapter-divider::after { content: ""; position: absolute; top: 50%; right: 0; left: 111px; z-index: 0; height: 1px; background: color-mix(in srgb, var(--accent) 38%, var(--line)); }
@@ -414,6 +427,20 @@ pre { max-height: 70vh; overflow: auto; margin: 0; padding: 13px; border: 1px so
 .terminal-command pre, .terminal-output pre { font: var(--terminal-font-size)/1.6 var(--mono); }
 .terminal-output pre { max-height: 280px; border: 0; background: transparent; color: #b9c0c4; }
 .terminal-output.output-expanded pre { max-height: none; overflow: visible; }
+.tool-input { min-width: 0; }
+.tool-input-path { padding: 10px 13px; border-bottom: 1px solid var(--line-soft); color: var(--text); font: 650 var(--terminal-font-size)/1.5 var(--mono); overflow-wrap: anywhere; }
+.tool-input-heading { display: flex; gap: 8px; align-items: baseline; padding: 7px 13px; color: var(--muted); font: 800 var(--terminal-label-size)/1.4 var(--mono); }
+.tool-input-empty { font-weight: 400; }
+.tool-input-source > pre { max-height: 46vh; min-width: 0; border: 0; background: transparent; font: var(--terminal-font-size)/1.6 var(--mono); }
+.tool-input-before { border-left: 3px solid #aa6161; background: #aa61610b; }
+.tool-input-after { border-left: 3px solid #659d7a; background: #659d7a0b; }
+.tool-input-edit + .tool-input-edit { border-top: 1px solid var(--line); }
+.tool-input-fields { display: grid; gap: 6px; margin: 0; padding: 10px 13px; font: var(--terminal-label-size)/1.5 var(--mono); }
+.tool-input-fields > div { display: grid; grid-template-columns: minmax(80px, .35fr) minmax(0, 1fr); gap: 10px; }
+.tool-input-fields dt { color: var(--muted); font: inherit; text-transform: none; letter-spacing: normal; }
+.tool-input-fields dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
+.tool-input-description { margin: 0; padding: 10px 13px; color: var(--muted); font: var(--terminal-font-size)/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.tool-input-tasks { padding-left: 30px; }
 .exec-window { border-top: 1px solid var(--line); background: #050607; }
 .exec-operations { display: grid; gap: 8px; padding: 10px; }
 .exec-operation { overflow: hidden; border: 1px solid var(--line-soft); border-radius: 6px; background: #070809; }
@@ -459,10 +486,10 @@ pre { max-height: 70vh; overflow: auto; margin: 0; padding: 13px; border: 1px so
   .trace-column { grid-row: auto; }
   .mobile-trace-toolbar {
     position: sticky;
-    top: 0;
+    top: var(--viewer-nav-height);
     z-index: 80;
     display: flex;
-    min-height: 46px;
+    min-height: var(--mobile-toolbar-height);
     align-items: center;
     gap: 7px;
     margin: 0 -1px;
@@ -478,17 +505,17 @@ pre { max-height: 70vh; overflow: auto; margin: 0; padding: 13px; border: 1px so
   .mobile-outline-toggle { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; }
   .mobile-active-chapter { min-width: 0; overflow: hidden; flex: 1 1 auto; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
   .mobile-replay-actions { display: flex; min-width: 0; flex: 1 1 auto; align-items: center; justify-content: flex-end; gap: 5px; }
-  .mobile-replay-label { min-width: 0; overflow: hidden; color: var(--accent); font-size: 8px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
+  .mobile-replay-label { min-width: 0; overflow: hidden; color: var(--accent); font-size: 9px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
   .mobile-replay-actions #mobile-replay-close { width: 32px; flex: 0 0 32px; padding: 0; font-size: 16px; }
   body.policy-replay-active .mobile-active-chapter { display: none; }
-  .trajectory-policy-replay { position: sticky; top: 46px; z-index: 70; margin-top: 8px; scroll-margin-top: 54px; box-shadow: 0 16px 32px #000b; }
+  .trajectory-policy-replay { position: sticky; top: calc(var(--viewer-nav-height) + var(--mobile-toolbar-height)); z-index: 70; margin-top: 8px; scroll-margin-top: calc(var(--viewer-nav-height) + var(--mobile-toolbar-height) + 8px); box-shadow: 0 16px 32px #000b; }
   .trajectory-policy-replay > header > button { display: none; }
   .trajectory-policy-replay > header { grid-template-columns: minmax(0, 1fr); }
   .replay-policy-selection { grid-column: 1 / -1; grid-row: 2; }
-  .chapter-divider, .step { scroll-margin-top: 62px; }
+  .chapter-divider, .step { scroll-margin-top: calc(var(--viewer-nav-height) + var(--mobile-toolbar-height) + 16px); }
   .rollout-outline {
     position: fixed;
-    inset: 0 auto 0 0;
+    inset: var(--viewer-nav-height) auto 0 0;
     z-index: 100;
     width: min(88vw, 380px);
     min-height: 0;
@@ -503,7 +530,7 @@ pre { max-height: 70vh; overflow: auto; margin: 0; padding: 13px; border: 1px so
   body.outline-drawer-open { position: fixed; width: 100%; overflow: hidden; }
   body.outline-drawer-open .rollout-outline { visibility: visible; transform: translateX(0); }
   .chapter-nav { max-height: none; }
-  .mobile-outline-backdrop { position: fixed; inset: 0; z-index: 90; display: block; width: 100%; border: 0; background: #0009; }
+  .mobile-outline-backdrop { position: fixed; inset: var(--viewer-nav-height) 0 0; z-index: 90; display: block; width: 100%; border: 0; background: #0009; }
   body.pulse-docked .viewer-nav { transform: none; opacity: 1; pointer-events: auto; }
 }
 @media (max-width: 600px) {

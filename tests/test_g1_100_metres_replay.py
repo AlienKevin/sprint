@@ -230,7 +230,7 @@ def test_web_replay_smoothly_interpolates_adjacent_authoritative_samples() -> No
     assert "grp.userData.policyIndex=ci" in scene
     assert "const raycaster=new THREE.Raycaster()" in scene
     assert "raycaster.intersectObjects(ROBOTS.map(robot=>robot.grp),true)" in scene
-    assert "Math.hypot(e.clientX-startX,e.clientY-startY)>5" in scene
+    assert "Math.hypot(e.clientX-orbitOrigin.x,e.clientY-orbitOrigin.y)>5" in scene
     assert "const focusedPolicy=validationPolicy??userFollowPolicy??(IS_TRAJECTORY_COMPARISON?null:currentAutoFollowPolicy)" in scene
     assert "const FOLLOW_VIEW={az:-0.25,el:0.13,dist:2.541,targetZ:0.63,targetXOffset:0}" in scene
     assert "const DEFAULT_VIEW=IS_COMPARISON&&!IS_TRAJECTORY_COMPARISON" in scene
@@ -273,7 +273,7 @@ def test_web_replay_smoothly_interpolates_adjacent_authoritative_samples() -> No
     assert "zoom(factor){return zoomCamera(factor);}" in scene
     assert "position:camera.position.toArray(),target:camT.toArray()" in scene
     assert "resetCamera," in scene
-    assert "cameraResetBtn.textContent='Reset'" in scene
+    assert "cameraResetBtn.textContent=globalThis.ReplayI18n?.text('Reset')||'Reset'" in scene
     assert "Reset camera" not in scene
     assert "'Reset</button>'" in renderer
     assert '"lane_indices": [1 for _ in policies]' in renderer
@@ -695,7 +695,8 @@ def test_trial_comparison_shell_contract_and_compact_eight_lanes() -> None:
     assert "g1:policies-error" in shell
     assert "g1:policy-focused" in shell
     assert "g1:policy-remove" in shell
-    assert 'class="policy-remove" aria-label="Remove ${name}"' in shell
+    assert "replayMessage('remove',{name},'Remove {name}')" in shell
+    assert 'class="policy-remove" aria-label="${remove}"' in shell
     assert "model_color:item.color" in shell
     assert "history.replaceState(null,'',canonicalUrl(activeState))" in shell
     assert "activeState=null,rendererReady=false" in shell

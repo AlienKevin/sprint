@@ -19,7 +19,8 @@ def test_homepage_shells_share_a_centered_maximum_width() -> None:
 
 def test_shared_gutters_stop_growing_with_the_column() -> None:
     assert "--page-gutter: clamp(24px, 5vw, 64px)" in CSS
-    assert "padding: 14px var(--page-gutter) 38px" in CSS
+    assert "padding: 14px var(--page-gutter)" in CSS
+    assert "padding: 0 var(--page-gutter) 38px" in CSS
     assert "padding: 0 var(--page-gutter)" in CSS
     assert "padding: 30px var(--page-gutter)" in CSS
     assert "max-width: 1680px" not in CSS
@@ -32,13 +33,20 @@ def test_retired_budget_caption_has_no_orphan_styles() -> None:
     assert ".budget-caption" not in CSS
 
 
-def test_footer_shows_fixed_editorial_date_on_the_right() -> None:
+def test_footer_has_no_editorial_date_or_orphan_date_styles() -> None:
     page = (Path(__file__).resolve().parents[1] / "web/index.html").read_text()
     footer = page.split("<footer>", 1)[1].split("</footer>", 1)[0]
-    assert '<time class="footer-updated" datetime="2026-08-30">Updated on August 30, 2026</time>' in footer
-    assert footer.index('class="brand"') < footer.index('class="footer-updated"')
-    rule = re.search(r"\.footer-updated\s*\{([^}]+)\}", CSS).group(1)
-    assert "text-align: right" in rule
-    assert "min-width: 0" in rule
-    mobile = CSS.split("@media (max-width: 720px)", 1)[1]
-    assert re.search(r"footer\s*\{\s*display: flex;", mobile)
+    assert 'class="brand"' in footer
+    assert "footer-updated" not in footer
+    assert "Updated on" not in footer
+    assert ".footer-updated" not in CSS
+
+
+def test_demo_titles_and_trial_links_share_one_row_on_mobile_and_desktop() -> None:
+    rule = re.search(r"\.dq-card-head\s*\{([^}]+)\}", CSS).group(1)
+    assert "display: flex" in rule
+    assert "flex-wrap: nowrap" in rule
+    assert "justify-content: space-between" in rule
+    assert "align-items: center" in rule
+    assert ".dq-card-head { display: block; }" not in CSS
+    assert ".dq-card-head a { display: inline-block; margin-top: 12px; }" not in CSS
