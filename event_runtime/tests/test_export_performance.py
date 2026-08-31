@@ -690,7 +690,7 @@ def test_dashboard_loads_continuous_readouts() -> None:
     assert ".observation-cards { display: grid; grid-template-columns: 1fr;" in styles
     assert ".observation-cards { grid-template-columns: 1fr; gap: 18px; }" in styles
     assert "app.js?v=20260830-charts26" in page
-    assert '"version":"20260831-2"' in (ROOT / "web/version.json").read_text()
+    assert '"version":"20260831-3"' in (ROOT / "web/version.json").read_text()
     assert "AUC cutoff" not in app
     assert "auc-cap-line" not in app
     assert ".auc-cap-line" not in styles
